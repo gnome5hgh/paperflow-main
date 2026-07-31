@@ -33,4 +33,5 @@ class TestValidateUrlTarget:
         )  # 不应抛
 
     def test_allows_public_url(self):
-        validate_url_target("http://export.arxiv.org/api/query")  # 不应抛
+        # 8.8.8.8 是 Google DNS 公共 IP，非私有段；用 IP 字面量避免环境 DNS/fake-IP 干扰
+        validate_url_target("http://8.8.8.8/")  # 不应抛
