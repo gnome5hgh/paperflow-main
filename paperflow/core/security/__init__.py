@@ -83,6 +83,7 @@ class SecurityBlocked(SecurityError):
 from paperflow.core.security.audit import AuditMiddleware, AuditEntry
 from paperflow.core.security.workspace import WorkspacePolicy, WorkspacePolicyMiddleware
 from paperflow.core.security.scanner import scan, has_critical, SecurityScanMiddleware
+from paperflow.core.security.policy_engine import PolicyEngineMiddleware
 
 __all__ = [
     "ToolContext", "SecurityMiddleware", "SecurityError",
@@ -90,4 +91,5 @@ __all__ = [
     "AuditMiddleware", "AuditEntry",
     "WorkspacePolicy", "WorkspacePolicyMiddleware",
     "scan", "has_critical", "SecurityScanMiddleware",
+    "PolicyEngineMiddleware",
 ]
