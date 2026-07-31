@@ -63,6 +63,10 @@ class PaperFlowConfig:
     #: Agent 插件扫描目录，默认扫描项目根下的 agents/
     agents_dir: str = "agents"
 
+    #: 会话风险阈值（工具 risk_level 超过此值即被 PolicyEngine 拦截，
+    #: 取值 ∈ RISK_ORDER 的键，如 "medium" / "high"）
+    max_risk: str = "medium"
+
     @classmethod
     def from_env(cls, config_path: str | None = None) -> "PaperFlowConfig":
         """
@@ -100,7 +104,7 @@ class PaperFlowConfig:
                     setattr(self.llm, key, val)
 
         # 顶层配置字段
-        for key in ("workspace", "agents_dir"):
+        for key in ("workspace", "agents_dir", "max_risk"):
             if key in data:
                 setattr(self, key, data[key])
 
@@ -115,6 +119,7 @@ class PaperFlowConfig:
             PAPERFLOW_MODEL       → llm.model
             PAPERFLOW_WORKSPACE   → workspace
             PAPERFLOW_AGENTS_DIR  → agents_dir
+            PAPERFLOW_MAX_RISK    → max_risk
         """
         # 映射表：环境变量名 → (父对象名, 属性名)
         # parent 为 "llm" 表示写入 self.llm.<attr>，None 表示写入 self.<attr>
@@ -124,6 +129,7 @@ class PaperFlowConfig:
             "PAPERFLOW_MODEL": ("llm", "model"),
             "PAPERFLOW_WORKSPACE": (None, "workspace"),
             "PAPERFLOW_AGENTS_DIR": (None, "agents_dir"),
+            "PAPERFLOW_MAX_RISK": (None, "max_risk"),
         }
 
         for env_var, (parent, attr) in env_map.items():
