@@ -81,9 +81,11 @@ class SecurityBlocked(SecurityError):
 # 注意：audit 子模块依赖本模块的异常/中间件类，须在类定义之后导入，
 # 否则触发 "partially initialized module" 循环导入错误
 from paperflow.core.security.audit import AuditMiddleware, AuditEntry
+from paperflow.core.security.workspace import WorkspacePolicy, WorkspacePolicyMiddleware
 
 __all__ = [
     "ToolContext", "SecurityMiddleware", "SecurityError",
     "PolicyDenied", "ConfirmRequired", "SecurityBlocked",
     "AuditMiddleware", "AuditEntry",
+    "WorkspacePolicy", "WorkspacePolicyMiddleware",
 ]
