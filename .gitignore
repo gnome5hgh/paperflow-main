@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime data (except .gitkeep)
+data/*
+!data/.gitkeep
+
+# Documentation (not version controlled)
+docs/
+
+# Environment
+.env
+.env.local
+config.yaml
