@@ -13,6 +13,15 @@ Tool 抽象基类 —— 所有 Agent 可调用工具的契约定义。
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 
+#: 可声明的副作用集合，side_effects 字段的值必须 ∈ 此集合
+SIDE_EFFECTS = frozenset({"write_file", "delete_file", "network", "read_file"})
+
+#: 合法风险等级集合，risk_level 字段的值必须 ∈ 此集合
+RISK_LEVELS = frozenset({"low", "medium", "high", "critical"})
+
+#: 风险等级 → 数值映射，供 Layer 1 Policy Engine 比较风险大小
+RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
 
 @dataclass
 class ToolResult:
@@ -62,7 +71,22 @@ class Tool(ABC):
     parameters: dict
 
     #: 风险等级，Layer 0 仅声明，Layer 1 由 Policy Engine 据此决定 allow/deny/confirm
-    risk_level: str = "low"
+    risk_level: str = "low"                  # ∈ RISK_LEVELS
+
+    #: 副作用声明，值 ∈ SIDE_EFFECTS；Layer 1 Policy Engine 据此聚合风险
+    side_effects: list[str] = []
+
+    #: 需要用户确认（高风险操作），Layer 1 Policy Engine 据此进入 confirm 分支
+    requires_confirm: bool = False
+
+    #: 默认拦截（如危险工具未配置时 fail-safe），Layer 1 Policy Engine 据此 deny
+    blocked_by_default: bool = False
+
+    #: 允许访问的文件/目录路径前缀，空 = fail-safe 禁止文件访问
+    allowed_paths: list[str] = []
+
+    #: 输出扫描模式，Layer 1 SecurityScanMiddleware 据此决定扫描方式；"mark" | None
+    output_scan: str | None = None
 
     @abstractmethod
     def execute(self, **kwargs) -> ToolResult:
