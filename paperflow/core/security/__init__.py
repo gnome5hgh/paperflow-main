@@ -13,7 +13,7 @@
 """
 
 from abc import ABC
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from paperflow.core.tool import Tool, ToolResult
 
@@ -23,9 +23,9 @@ class ToolContext:
     trace_id: str
     session_id: str
     agent_type: str
-    tool: Tool
-    tool_name: str
-    args: dict
+    tool: Tool | None = None       # None = 未知工具（LLM 幻觉/注入），仍走 after 链审计
+    tool_name: str = ""
+    args: dict = field(default_factory=dict)
     timestamp: str | None = None
     started_at: float | None = None
     result: ToolResult | None = None

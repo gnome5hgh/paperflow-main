@@ -52,6 +52,8 @@ class WorkspacePolicyMiddleware(SecurityMiddleware):
         return {k for k, v in props.items() if v.get("format") == "path"}
 
     async def before(self, ctx: ToolContext) -> None:
+        if ctx.tool is None:
+            return
         path_names = self._path_param_names(ctx.tool.parameters)
         if not path_names:
             return

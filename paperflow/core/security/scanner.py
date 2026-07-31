@@ -95,6 +95,8 @@ class SecurityScanMiddleware(SecurityMiddleware):
         ]
 
     async def before(self, ctx: ToolContext) -> None:
+        if ctx.tool is None:
+            return
         for key, value in self._get_content_args(ctx):
             violations = scan(value)
             if has_critical(violations):

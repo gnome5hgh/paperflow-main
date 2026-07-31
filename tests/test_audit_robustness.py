@@ -117,7 +117,8 @@ class TestNonDictArgsDoNotCrashSanitize:
         )
         result = await agent._exec_tool(tool_call("kwargstool", '["hello"]'))
         assert isinstance(result, ToolResult)
-        assert result.text.startswith("Tool error")  # **list 非法，转错误结果
+        # v2（spec 1.4.2）：非 dict 参数归一化为 {} 后再执行，工具以无参方式正常运行
+        assert result.text == "ok"
 
     @pytest.mark.asyncio
     async def test_audit_entry_written_with_sanitized_empty_params(self, tmp_path):

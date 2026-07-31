@@ -226,17 +226,24 @@ class Agent:
         """
         执行单个 LLM 请求的工具调用，内部处理所有异常。
 
-        流程（Layer 1 中间件管道）::
+        流程（Layer 1 中间件管道，v2）::
 
-            1. 解析 JSON 参数（失败 → 错误 ToolResult，不进管道）
-            2. 查找 Tool 实例（不存在 → 错误 ToolResult，不进管道）
-            3. 构建 ToolContext（trace_id / session_id / agent_type / 工具 / 参数）
-            4. before 阶段：顺序执行各中间件的 before 钩子
+            1. 构造 ToolContext（trace_id / session_id / agent_type / 工具 / 参数）
+               —— ctx 在参数解析前构造，保证所有路径都能走 after 链审计
+            2. 解析 JSON 参数（失败 → 走 after 链 → 错误 ToolResult）
+            3. 非 dict 参数归一化为 {}（防止 ** 展开崩溃，审计记录空参数）
+            4. 未知工具（不存在 → 走 after 链 → 错误 ToolResult）
+            5. before 阶段：顺序执行各中间件的 before 钩子
                - 抛 ConfirmRequired → 调用 confirm_callback 决策：
                  拒绝 → user_denied ToolResult；通过 → 执行工具
                - 抛其他 SecurityError → policy_denied / security_blocked ToolResult
-            5. 执行工具（异常 → ToolResult(text="Tool error: ...")）
-            6. after 阶段：逆序执行各中间件的 after 钩子（洋葱模型）
+            6. 执行工具（异常 → ToolResult(text="Tool error: ...")）
+            7. after 阶段：逆序执行各中间件的 after 钩子（洋葱模型）
+
+        v2 与 v1 的区别：JSON 解析失败和未知工具不再绕过中间件管道——
+        ctx 在解析前构造，early return 走 after 链（仅审计），
+        保证这些异常路径同样留下审计痕迹（tool=None 时各中间件
+        before 钩子不执行，只有 Audit 记录调用）。
 
         错误处理采用"degrade to text"策略：
         所有异常（JSON 解析失败、未知工具名、工具执行异常、中间件拦截）
@@ -251,34 +258,42 @@ class Agent:
         """
         name = tool_call["function"]["name"]
 
-        # 1. 解析 LLM 生成的 JSON 参数字符串
-        try:
-            args = json.loads(tool_call["function"]["arguments"])
-        except json.JSONDecodeError as e:
-            # LLM 生成了非法 JSON → 反馈给 LLM，让它重新生成
-            return ToolResult(text=f"Tool argument parse error: {e}")
-
-        # 2. 按工具名查找 Tool 实例
+        # 1. 按工具名查找 Tool 实例（可能 None = 未知工具，LLM 幻觉/注入）
         tool = self.tools.get(name)
-        if tool is None:
-            # LLM 请求了不存在的工具（幻觉或 prompt injection）→ 反馈可用工具列表
-            return ToolResult(
-                text=f"Unknown tool: {name}. Available: {list(self.tools.keys())}"
-            )
 
-        # 3. 构建工具调用的上下文对象，供中间件读写
+        # 2. 构建工具调用的上下文对象，供中间件读写
+        #    （提前构造：JSON 解析失败 / 未知工具也要走 after 链审计）
         ctx = ToolContext(
             trace_id=self._trace_id,
             session_id=self.session_id,
             agent_type=self.agent_type,
             tool=tool,
             tool_name=name,
-            args=args,
             timestamp=datetime.now().isoformat(),
             started_at=time.monotonic(),
         )
 
-        # 4. before 阶段：中间件按顺序放行 / 拦截
+        # 3. 解析 LLM 生成的 JSON 参数字符串
+        try:
+            raw_args = json.loads(tool_call["function"]["arguments"])
+        except json.JSONDecodeError as e:
+            # LLM 生成了非法 JSON → 走 after 链记录审计后反馈给 LLM
+            ctx.error = e
+            await self._run_after_hooks(ctx)
+            return ToolResult(text=f"Tool argument parse error: {e}")
+
+        # 4. 非 dict 参数（数组/字符串等）归一化为 {}，防止 ** 展开崩溃
+        ctx.args = raw_args if isinstance(raw_args, dict) else {}
+
+        # 5. 未知工具（LLM 幻觉或 prompt injection）→ 走 after 链审计后反馈可用工具列表
+        if tool is None:
+            ctx.error = ValueError(f"Unknown tool: {name}")
+            await self._run_after_hooks(ctx)
+            return ToolResult(
+                text=f"Unknown tool: {name}. Available: {list(self.tools.keys())}"
+            )
+
+        # 6. before 阶段：中间件按顺序放行 / 拦截
         for mw in self.security_middleware:
             try:
                 await mw.before(ctx)
@@ -304,7 +319,7 @@ class Agent:
                     summary={"decision": se.decision, "violations": getattr(se, "violations", [])},
                 )
 
-        # 5. 执行工具逻辑（结果统一规范化为 ToolResult）
+        # 7. 执行工具逻辑（结果统一规范化为 ToolResult）
         try:
             raw = tool.execute(**ctx.args)
             ctx.result = raw if isinstance(raw, ToolResult) else ToolResult(text=str(raw))
@@ -313,7 +328,7 @@ class Agent:
             ctx.error = e
             ctx.result = ToolResult(text=f"Tool error: {e}")
 
-        # 6. after 阶段（逆序 = 洋葱模型，后注册的中间件先看到结果）
+        # 8. after 阶段（逆序 = 洋葱模型，后注册的中间件先看到结果）
         await self._run_after_hooks(ctx)
         return ctx.result
 

@@ -27,6 +27,8 @@ class PolicyEngineMiddleware(SecurityMiddleware):
         self._confirmed: set[str] = set()
 
     async def before(self, ctx: ToolContext) -> None:
+        if ctx.tool is None:
+            return        # 未知工具由 after 链审计
         tool = ctx.tool
 
         if tool.blocked_by_default:

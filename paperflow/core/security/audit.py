@@ -136,7 +136,7 @@ class AuditMiddleware(SecurityMiddleware):
             session_id=ctx.session_id,
             agent_type=ctx.agent_type,
             tool_name=ctx.tool_name,
-            risk_level=ctx.tool.risk_level,
+            risk_level=ctx.tool.risk_level if ctx.tool else "unknown",
             params=_sanitize(ctx.args),
             policy_decision=_derive_decision(ctx),
             result_status=_result_status(ctx),
