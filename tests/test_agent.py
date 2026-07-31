@@ -76,7 +76,8 @@ class TestExecTool:
     这些测试直接调用它，无需 mock 整个 ReAct 循环。
     """
 
-    def test_routes_to_correct_tool(self):
+    @pytest.mark.asyncio
+    async def test_routes_to_correct_tool(self):
         """
         验证 _exec_tool 能根据 tool_call 中的 name 正确查找并执行目标工具。
 
@@ -96,13 +97,14 @@ class TestExecTool:
         agent = Agent(llm=llm, agent_registry=registry, agent_type="test")
 
         # 直接测试 _exec_tool —— 不触发 ReAct 循环
-        result = agent._exec_tool({
+        result = await agent._exec_tool({
             "id": "call_1",
             "function": {"name": "echo", "arguments": '{"message": "hello"}'},
         })
         assert result.text == "Echo: hello"
 
-    def test_returns_error_on_json_decode_error(self):
+    @pytest.mark.asyncio
+    async def test_returns_error_on_json_decode_error(self):
         """
         验证 LLM 生成的非法 JSON 参数被优雅处理。
 
@@ -117,13 +119,14 @@ class TestExecTool:
         agent = Agent(llm=llm, agent_registry=registry, agent_type="test")
 
         # arguments 缺少闭合引号和括号 → json.loads 抛出 JSONDecodeError
-        result = agent._exec_tool({
+        result = await agent._exec_tool({
             "id": "call_1",
             "function": {"name": "any", "arguments": "{bad json"},
         })
         assert "Tool argument parse error" in result.text
 
-    def test_returns_error_on_unknown_tool(self):
+    @pytest.mark.asyncio
+    async def test_returns_error_on_unknown_tool(self):
         """
         验证 LLM 请求不存在的工具时返回友好错误信息。
 
@@ -138,7 +141,7 @@ class TestExecTool:
         llm = make_mock_llm([])
         agent = Agent(llm=llm, agent_registry=registry, agent_type="test")
 
-        result = agent._exec_tool({
+        result = await agent._exec_tool({
             "id": "call_1",
             "function": {"name": "nonexistent", "arguments": "{}"},
         })
