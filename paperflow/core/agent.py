@@ -102,6 +102,8 @@ class Agent:
         security_middleware: list[SecurityMiddleware] | None = None,
         confirm_callback: Callable[[ConfirmRequired], bool] | None = None,
         session_id: str | None = None,
+        memory_index=None,          # MemoryIndex | None
+        compressor=None,            # ContextCompressor | None
         max_turns: int = 20,
     ):
         """
@@ -114,6 +116,10 @@ class Agent:
             返回 bool；None 时使用 fail-safe 的 _default_confirm（始终拒绝）
         :param session_id: 会话标识，跨多次 run 保持一致，便于审计聚合；
             None 时自动生成 8 位 hex
+        :param memory_index: MemoryIndex 实例（可选），每轮 run 读取
+            MEMORY.md 索引并注入 system 消息（②位）；None 时完全跳过
+        :param compressor: ContextCompressor 实例（可选），跨轮摘要注入
+            system 消息（③位）+ 每次 model call 前压缩检查；None 时完全跳过
         :param max_turns: ReAct 循环最大轮数，防止死循环
         """
         # Pull 模式：从唯一注册表按类型加载完整配置
@@ -147,6 +153,12 @@ class Agent:
         #: 会话标识：跨多轮 run 保持一致，供中间件审计日志聚合
         self.session_id = session_id or uuid.uuid4().hex[:8]
 
+        #: MEMORY.md 索引（MemoryIndex | None）：每轮 run 读取注入 system 消息
+        self.memory_index = memory_index
+
+        #: 上下文压缩器（ContextCompressor | None）：system 摘要注入 + 每轮压缩检查
+        self.compressor = compressor
+
         #: 当前 run 的追踪 ID，每次 run 开始时重新生成，注入 ToolContext
         self._trace_id: str | None = None
 
@@ -169,8 +181,10 @@ class Agent:
         ReAct 循环步骤::
 
             1. 生成本次 run 的 trace_id（trace_<12位hex>）
-            2. 构建初始消息列表 [system_prompt, user_task]
-            3. 调用 LLM → 获取 response
+            2. 构建初始消息列表：① system_prompt → ② MEMORY.md 索引（若有）
+               → ③ 压缩摘要（若有）→ ④ user_task（消息顺序固定）
+            3. 调用 LLM 前检查压缩（compressor.should_compress → compress
+               重建 messages），随后调用 LLM → 获取 response
             4. 如果无 tool_calls → 顺序执行各中间件的 on_finish 钩子，
                返回改写后的 content（LLM 判定任务完成）
             5. 如果有 tool_calls → 逐个执行，将 ToolResult 附加到消息列表
@@ -180,13 +194,26 @@ class Agent:
         # 每次 run 独立追踪 ID：同一 session 的多次 run 由 trace_id 区分
         self._trace_id = f"trace_{uuid.uuid4().hex[:12]}"
 
-        # 构建初始对话上下文
-        messages: list[Message] = [
-            Message(role="system", content=self.system_prompt),
-            Message(role="user", content=task),
-        ]
+        # 构建初始对话上下文，消息顺序固定：① SKILL ② MEMORY ③ summary ④ user
+        messages: list[Message] = [Message(role="system", content=self.system_prompt)]
+
+        # ② MEMORY.md 索引（每轮读取，Dream 间隙写入 → 下一轮生效）
+        if self.memory_index:
+            index = await self.memory_index.read()
+            if index:
+                messages.append(Message(role="system", content=index))
+
+        # ③ 压缩摘要（跨轮状态，有才注入）
+        if self.compressor and self.compressor.summary:
+            messages.append(Message(role="system", content=self.compressor.summary))
+
+        messages.append(Message(role="user", content=task))
 
         for _ in range(self.max_turns):
+            # 每次 model call 前检查压缩（压缩后 messages 被重建）
+            if self.compressor and self.compressor.should_compress(messages):
+                messages = await self.compressor.compress(messages)
+
             # 调用 LLM，传入当前对话历史和可用工具 Schema
             response = await self.llm.chat(
                 messages,
