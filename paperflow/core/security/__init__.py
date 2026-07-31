@@ -82,10 +82,12 @@ class SecurityBlocked(SecurityError):
 # 否则触发 "partially initialized module" 循环导入错误
 from paperflow.core.security.audit import AuditMiddleware, AuditEntry
 from paperflow.core.security.workspace import WorkspacePolicy, WorkspacePolicyMiddleware
+from paperflow.core.security.scanner import scan, has_critical, SecurityScanMiddleware
 
 __all__ = [
     "ToolContext", "SecurityMiddleware", "SecurityError",
     "PolicyDenied", "ConfirmRequired", "SecurityBlocked",
     "AuditMiddleware", "AuditEntry",
     "WorkspacePolicy", "WorkspacePolicyMiddleware",
+    "scan", "has_critical", "SecurityScanMiddleware",
 ]
