@@ -4,8 +4,9 @@ from paperflow.core.memory.experience_memory import (
 )
 from paperflow.core.memory.context_config import ContextConfig, SummarySchema
 from paperflow.core.memory.memory_index import MemoryIndex
+from paperflow.core.memory.gitstore import GitStore
 
 __all__ = [
     "MemoryStore", "ExperienceMemoryMiddleware", "_error_type",
-    "ContextConfig", "SummarySchema", "MemoryIndex",
+    "ContextConfig", "SummarySchema", "MemoryIndex", "GitStore",
 ]
