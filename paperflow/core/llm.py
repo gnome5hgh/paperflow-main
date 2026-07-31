@@ -23,6 +23,7 @@ LLM 客户端 —— OpenAI-compatible API 的异步封装。
 """
 
 import asyncio
+import re
 from dataclasses import dataclass
 
 from openai import OpenAI
@@ -87,11 +88,17 @@ class LLMClient:
         #: 采样温度，0.0 = 确定性输出
         self.temperature = config.temperature
 
+        #: 模型上下文窗口大小（token 数），上下文压缩时用于自动推导压缩尺寸
+        self.context_window = config.context_window
+
     async def chat(
         self,
         messages: list[Message],
         tools: list[dict] | None = None,
         tool_choice: str = "auto",
+        json_mode: bool = False,
+        temperature: float | None = None,
+        extra_body: dict | None = None,
     ) -> Message:
         """
         单次非流式 LLM 调用，返回 assistant message（可能包含 tool_calls）。
@@ -99,6 +106,10 @@ class LLMClient:
         :param messages: 对话历史，第一条通常为 system prompt
         :param tools: 可用的 Tool 定义列表（JSON Schema 格式），None 表示不传 tools 参数
         :param tool_choice: "auto" 由 LLM 决定是否调用工具，"none" 禁止，"required" 强制
+        :param json_mode: True 时传 response_format="json_object" 强制 JSON 输出
+        :param temperature: 单次调用温度覆盖，None 表示用 config 默认值
+        :param extra_body: 附加请求体参数（如 DeepSeek 的 enable_thinking），
+            端点为不支持时自动降级重试一次
         :returns: 封装后的 assistant Message
         :raises: SDK 异常直接向上抛，由 Agent 自行决定是否 recover
         """
@@ -107,7 +118,7 @@ class LLMClient:
             model=self.model,
             messages=[_message_to_openai(m) for m in messages],
             max_tokens=self.max_tokens,
-            temperature=self.temperature,
+            temperature=self.temperature if temperature is None else temperature,
         )
 
         # tools 和 tool_choice 仅在有可用工具时传入
@@ -116,10 +127,27 @@ class LLMClient:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
 
+        # json_mode → response_format；extra_body → 附加参数（DeepSeek 推理开关等）
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+
         # 将同步阻塞的 SDK 调用包装为 async，释放事件循环给其他协程
-        response = await asyncio.to_thread(
-            self.client.chat.completions.create, **kwargs
-        )
+        try:
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create, **kwargs
+            )
+        except Exception as e:
+            # 端点不支持 response_format / extra_body → 降级重试一次
+            if (json_mode or extra_body) and _looks_like_unsupported_param(e):
+                kwargs.pop("response_format", None)
+                kwargs.pop("extra_body", None)
+                response = await asyncio.to_thread(
+                    self.client.chat.completions.create, **kwargs
+                )
+            else:
+                raise
         choice = response.choices[0].message
 
         # 解析 tool_calls：提取 id / type / function name / arguments
@@ -144,6 +172,28 @@ class LLMClient:
             content=choice.content or "",
             tool_calls=tool_calls,
         )
+
+
+_UNSUPPORTED_PARAM_PATTERNS = [
+    re.compile(r"response_format", re.IGNORECASE),
+    re.compile(r"extra_body", re.IGNORECASE),
+    re.compile(r"enable_thinking", re.IGNORECASE),
+    re.compile(r"unknown parameter", re.IGNORECASE),
+    re.compile(r"unexpected parameter", re.IGNORECASE),
+    re.compile(r"unsupported parameter", re.IGNORECASE),
+]
+
+
+def _looks_like_unsupported_param(e: Exception) -> bool:
+    """
+    判断异常是否由"端点不支持某参数"引起。
+
+    不同兼容端点（OpenAI / DeepSeek / vLLM / Ollama）对不支持参数的
+    报错措辞各异，用正则模式匹配常见说法（如 response_format、
+    enable_thinking、unknown parameter 等），命中则允许 chat 降级重试。
+    """
+    text = str(e)
+    return any(p.search(text) for p in _UNSUPPORTED_PARAM_PATTERNS)
 
 
 def _message_to_openai(m: Message) -> dict:
