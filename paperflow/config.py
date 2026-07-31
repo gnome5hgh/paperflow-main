@@ -20,6 +20,8 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+from paperflow.core.memory.context_config import ContextConfig
+
 
 @dataclass
 class LLMConfig:
@@ -45,6 +47,10 @@ class LLMConfig:
     #: 采样温度，0.0 表示确定性输出（适合工具调用场景）
     temperature: float = 0.0
 
+    #: 模型上下文窗口大小（token 数），压缩时用于自动推导上下文尺寸；
+    #: 默认 65536 对应 DeepSeek 64K 上下文
+    context_window: int = 65536
+
 
 @dataclass
 class PaperFlowConfig:
@@ -66,6 +72,9 @@ class PaperFlowConfig:
     #: 会话风险阈值（工具 risk_level 超过此值即被 PolicyEngine 拦截，
     #: 取值 ∈ RISK_ORDER 的键，如 "medium" / "high"）
     max_risk: str = "medium"
+
+    #: 上下文压缩配置（触发比例、保留比例、压缩提示词等）
+    context: ContextConfig = field(default_factory=ContextConfig)
 
     @classmethod
     def from_env(cls, config_path: str | None = None) -> "PaperFlowConfig":
