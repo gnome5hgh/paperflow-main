@@ -1,7 +1,12 @@
 import json
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
+
+from paperflow.core.security import (
+    SecurityMiddleware, ToolContext, PolicyDenied, SecurityBlocked, ConfirmRequired,
+)
 
 
 class MemoryStore:
@@ -109,3 +114,32 @@ class MemoryStore:
             return int(self.dream_cursor_path.read_text(encoding="utf-8").strip())
         except (ValueError, OSError):
             return 0
+
+
+def _error_type(error: Exception | None) -> str:
+    if error is None:
+        return ""
+    if isinstance(error, PolicyDenied):     return "policy_denied"
+    if isinstance(error, SecurityBlocked):  return "security_blocked"
+    if isinstance(error, ConfirmRequired):  return "user_denied"
+    return "exec_error"
+
+
+class ExperienceMemoryMiddleware(SecurityMiddleware):
+    """管道最后一个中间件（第 ⑤ 个）：after 阶段记录工具调用。"""
+
+    def __init__(self, store: MemoryStore):
+        self.store = store
+
+    async def after(self, ctx: ToolContext) -> None:
+        if ctx.tool is None:
+            # 未知工具/解析失败：由 Audit 覆盖（含幻觉工具名），Experience 只学真实工具经验
+            return
+        self.store.append_history({
+            "type": "tool",
+            "tool_name": ctx.tool_name,
+            "success": ctx.error is None,
+            "duration_ms": int((time.monotonic() - (ctx.started_at or 0.0)) * 1000),
+            "error_type": _error_type(ctx.error),
+            "summary": ctx.result.summary if ctx.result else {},
+        })
