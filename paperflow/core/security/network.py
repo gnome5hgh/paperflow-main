@@ -12,7 +12,13 @@ metadata.google.internal），支持按 netloc（host 或 host:port）放行；
 - 本模块不挂载为中间件，由 Layer 2/3 网络 Tool 自行调用；
 - DNS 解析采用本机 ``socket.gethostbyname``，以实际解析结果为准，
   避免仅按字面 hostname 判断造成的绕过（如 0x7f000001 形式的地址）；
-- allowlist 匹配的是 ``parsed.netloc``，允许显式放行本地开发地址。
+- allowlist 匹配的是 ``parsed.netloc``（精确的 host:port 字符串），
+  允许显式放行本地开发地址；
+- allowlist 不对称：``169.254.169.254`` 命中的是 PRIVATE_NETS 分支，
+  allowlist 检查先于 metadata 检查 → 可被 allowlist 放行；
+  而 ``metadata.google.internal`` 的检查在 allowlist 之前 → 不可放行；
+- allowlist 为精确 netloc 匹配：裸 host 条目（如 ``"localhost"``）
+  永不匹配带端口的 URL，GROBID 本地服务场景须写 ``"127.0.0.1:8070"``。
 """
 
 import ipaddress

@@ -24,12 +24,12 @@ from paperflow.core.security import SecurityMiddleware, ToolContext, SecurityBlo
 SCAN_RULES = [
     {
         "id": "shell_command",
-        "pattern": r"\b(rm\s+-rf|curl\s+.*\|.*(?:ba)?sh|`[^`]{3,}`|\$\([^)]+\))\b",
+        "pattern": r"(?:rm\s+-rf|curl\s+.*\|.*(?:ba)?sh|`[^`]{3,}`|\$\([^)]+\))",
         "severity": "critical",
     },
     {
         "id": "abs_path_leak",
-        "pattern": r"(?:^|\s)(/(?:home|etc|root|tmp|var)/[^\s]{2,})",
+        "pattern": r"(?:\s|^|[\"'(=])(/(?:home|etc|root|tmp|var)/[^\s]{2,})",
         "severity": "important",
     },
     {

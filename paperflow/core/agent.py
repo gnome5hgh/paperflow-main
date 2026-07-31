@@ -41,6 +41,7 @@ ReAct 循环流程::
 """
 
 import json
+import sys
 import time
 import uuid
 from datetime import datetime
@@ -325,4 +326,8 @@ class Agent:
         保证审计等横切关注点在所有路径上都能记录。
         """
         for mw in reversed(self.security_middleware):
-            await mw.after(ctx)
+            try:
+                await mw.after(ctx)
+            except Exception as e:
+                # 审计等 after 钩子失败不应中止工具执行结果返回
+                print(f"[security] after hook {type(mw).__name__} failed: {e}", file=sys.stderr)

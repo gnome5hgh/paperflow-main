@@ -76,6 +76,9 @@ class AuditEntry:
 
 
 def _sanitize(args: dict) -> dict:
+    # 防御：LLM 可能返回非 dict 的 JSON（如数组/字符串），脱敏不应崩溃
+    if not isinstance(args, dict):
+        return {}
     sanitized = {}
     for key, value in args.items():
         for pattern, replacement in SENSITIVE_KEY_PATTERNS:
@@ -95,7 +98,8 @@ def _derive_decision(ctx: ToolContext) -> str:
         return "user_confirmed" if ctx.user_confirmed else "auto_allowed"
     if isinstance(ctx.error, ConfirmRequired):
         return "user_denied"
-    return ctx.error.decision
+    # 工具抛出的普通异常（RuntimeError 等）没有 decision 属性
+    return getattr(ctx.error, "decision", "error")
 
 
 def _result_status(ctx: ToolContext) -> str:
