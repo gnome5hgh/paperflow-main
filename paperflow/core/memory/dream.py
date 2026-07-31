@@ -31,7 +31,7 @@ class DreamEditBatch(BaseModel):
 
 #: 路径白名单：只允许 MEMORY.md 与 user_role/feedback_*/project_*/reference_* 顶层 .md
 _EDIT_FILE_PATTERN = re.compile(
-    r"^(MEMORY|user_role|feedback_[A-Za-z0-9_]+|project_[A-Za-z0-9_]+|reference_[A-Za-z0-9_]+)\.md$"
+    r"^(MEMORY|user_role|feedback_[A-Za-z0-9_]+|project_[A-Za-z0-9_]+|reference_[A-Za-z0-9_]+)\.md\Z"
 )
 
 
@@ -64,6 +64,7 @@ class Dream:
             await self._run_once()
         finally:
             self._running = False
+            self._last_run = time.monotonic()   # 每次实际运行后更新（失败重试也计入）
 
     async def _run_once(self) -> None:
         entries, max_cursor = self._read_dream_entries(self.max_entries)

@@ -1,7 +1,8 @@
 # tests/test_dream.py
+import time
+
 import pytest
 from unittest.mock import MagicMock
-from pathlib import Path
 from paperflow.core.memory.dream import (
     Dream, DreamEdit, DreamEditBatch, DREAM_CONSUMABLE_TYPES,
 )
@@ -45,6 +46,19 @@ class TestRunOnceIfDue:
         await dream.run_once_if_due()
         dream.structured.extract.assert_not_called()   # 间隔未到
 
+    @pytest.mark.asyncio
+    async def test_interval_between_consecutive_runs(self, tmp_path):
+        dream = make_dream(tmp_path)
+        dream.min_interval_s = 3600.0
+        dream.store.append_history({"type": "tool", "tool_name": "echo"})
+        dream._last_run = time.monotonic() - 7200.0   # 上次运行在 2h 前 → 该跑
+        await dream.run_once_if_due()
+        assert dream.structured.extract.call_count == 1
+        # 新历史到达后再检查——否则游标已推进、短路返回，测不到间隔门控本身
+        dream.store.append_history({"type": "tool", "tool_name": "echo"})
+        await dream.run_once_if_due()                 # 刚跑完 → 应被间隔挡住
+        assert dream.structured.extract.call_count == 1
+
 
 class TestRunOnce:
     @pytest.mark.asyncio
@@ -79,8 +93,8 @@ class TestRunOnce:
         dream.structured.extract = extract
 
         await dream.run_once_if_due()
-        # 文件未写入
-        assert not (Path("/etc/crontab")).exists() or True   # 不实际验证系统文件，验证无异常冒出
+        # ../../etc/crontab 从 tmp_path/memory 解析 → tmp_path/etc/crontab（未写入）
+        assert not (tmp_path / "etc" / "crontab").exists()
         # 失败计数 +1（首次不强制前进）
         assert dream._failures == 1
 
