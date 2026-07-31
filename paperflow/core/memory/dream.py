@@ -109,12 +109,19 @@ class Dream:
         return "\n".join(parts)
 
     def _read_dream_entries(self, limit: int) -> tuple[list[dict], int]:
-        """白名单过滤。游标推进必须用原始最大 cursor（含被过滤的监控条目）。"""
+        """白名单过滤。游标推进到最后一个消费条目的 cursor——
+        不越过本次未消费的条目（否则超 limit 的 pending 永远不被 Dream）。
+        剩余全是坏行（半写崩溃残留）时推进到 .cursor 单调最大值，
+        绝不回退（回退会把已处理条目重新 Dream，append 类编辑重复写入）。
+        """
         all_entries = self.store.read_unprocessed_history()
         if not all_entries:
-            return [], 0
+            return [], self.store._read_cursor()
         filtered = [e for e in all_entries if e.get("type") in DREAM_CONSUMABLE_TYPES]
-        return filtered[:limit], all_entries[-1]["cursor"]
+        consumed = filtered[:limit]
+        if not consumed:
+            return [], all_entries[-1]["cursor"]    # 纯监控：推进到已检查位置
+        return consumed, consumed[-1]["cursor"]     # 推进到最后消费条目的 cursor
 
     def _apply_edit(self, edit: DreamEdit) -> None:
         path = self._validate_edit_path(edit.file)

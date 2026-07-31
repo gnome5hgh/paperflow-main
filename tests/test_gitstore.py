@@ -11,6 +11,11 @@ class TestGitStore:
         store = make_store(tmp_path)
         assert store.commit("no changes") is None
 
+    def test_log_empty_repo_returns_empty(self, tmp_path):
+        # 空仓库（无 commit）不得抛 KeyError，返回空列表
+        store = make_store(tmp_path)
+        assert store.log() == []
+
     def test_commit_and_log(self, tmp_path):
         store = make_store(tmp_path)
         (tmp_path / "user_role.md").write_text("hello", encoding="utf-8")

@@ -149,6 +149,40 @@ class TestRunOnce:
         assert dream.store.read_unprocessed_count() == 0    # 连败 3 次强制前进
 
 
+class TestCursorAdvance:
+    @pytest.mark.asyncio
+    async def test_more_than_max_entries_consumes_limit_keeps_rest(self, tmp_path):
+        # 25 条 pending > max_entries=20 → 本轮只消费 20 条，
+        # 游标推进到最后消费条目的 cursor（第 20 条），剩余 5 条下次再 Dream
+        dream = make_dream(tmp_path)
+        dream.max_entries = 20
+        for i in range(25):
+            dream.store.append_history({"type": "tool", "tool_name": f"echo{i}"})
+        await dream.run_once_if_due()
+        assert dream.store.read_unprocessed_count() == 5       # 第 21-25 条未跳过
+        await dream.run_once_if_due()                          # 下一轮消费剩余 5 条
+        assert dream.store.read_unprocessed_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_bad_line_tail_cursor_never_regresses(self, tmp_path):
+        # 已处理 3 条后出现半写坏行（.cursor=4 但记录未写完）：
+        # 游标推进到单调最大值，绝不回退 → 已处理条目不被重新 Dream
+        dream = make_dream(tmp_path)
+        for i in range(3):
+            dream.store.append_history({"type": "tool", "tool_name": f"echo{i}"})
+        await dream.run_once_if_due()
+        assert dream.store.read_unprocessed_count() == 0
+        # 模拟崩溃残留：游标已推进到 4，但 history 只有半写坏行
+        with open(dream.store.history_path, "a", encoding="utf-8") as f:
+            f.write('{"type": "tool", "tool_nam')
+        dream.store._write_cursor(4)
+        assert dream.store.read_unprocessed_count() == 1       # 触发一次 run
+        await dream.run_once_if_due()
+        assert dream.store.read_unprocessed_count() == 0       # 不回退（旧实现回退到 0 → 重新处理 3 条）
+        assert dream.store._read_dream_cursor() == 4           # 停在单调最大值
+        assert dream.structured.extract.call_count == 1        # 坏行轮不触发 LLM
+
+
 class TestApplyEdit:
     @pytest.mark.asyncio
     async def test_append_syncs_index(self, tmp_path):

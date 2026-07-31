@@ -47,6 +47,10 @@ class GitStore:
 
     def log(self, max_entries: int = 20) -> list[dict]:
         repo = self._ensure_repo()
+        try:
+            repo.head()
+        except KeyError:
+            return []    # 空仓库（无 commit，HEAD 未指向任何对象）：无日志
         entries = []
         for entry in repo.get_walker(max_entries=max_entries):
             commit = entry.commit

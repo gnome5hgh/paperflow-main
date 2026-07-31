@@ -67,11 +67,14 @@ class ContextCompressor:
             fallback=lambda: SummarySchema(
                 task_overview="", current_state="",
                 important_discoveries="", next_steps="",
-                context_to_preserve=prompt[:2000],
+                # 只保留对话部分（_build_compression_prompt 在"对话内容："标记后），
+                # 不把压缩指令本身存进 context_to_preserve
+                context_to_preserve=prompt.split("对话内容：")[-1][:2000],
             ),
         )
+        old_summary = self.summary      # 重建前保存旧值：_rebuild_messages 排除旧摘要用
         self.summary = self.config.summary_template.format(**summary.model_dump())
-        return self._rebuild_messages(messages)
+        return self._rebuild_messages(messages, old_summary)
 
     def _build_compression_prompt(self, messages: list[Message]) -> str:
         """输入集 = 待压缩消息 + 现有 self.summary（若有）——增量压缩。"""
@@ -102,6 +105,9 @@ class ContextCompressor:
             if used + cost > budget and kept:
                 break
             used += cost
+            if any(m is k for k in kept):
+                continue    # 配对循环已补回该 assistant，跳过重复追加（用身份比较——
+                            # Message 值相等性会把内容相同的两条真实消息误判为重复）
             kept.append(m)
             if m.role == "tool":
                 # 向前补回对应的 assistant(tool_calls) 消息（成对约束）
@@ -115,12 +121,20 @@ class ContextCompressor:
         seen_tool_ids = {tc["id"] for m in result if m.role == "assistant" and m.tool_calls for tc in m.tool_calls}
         return [m for m in result if not (m.role == "tool" and m.tool_call_id not in seen_tool_ids)]
 
-    def _rebuild_messages(self, messages: list[Message]) -> list[Message]:
-        """三段式重组：头部 system（只取前两条）+ 新 summary + 尾部。"""
+    def _rebuild_messages(self, messages: list[Message],
+                          old_summary: str | None = None) -> list[Message]:
+        """三段式重组：头部 system（SKILL + MEMORY，排除旧摘要）+ 新 summary + 尾部。
+
+        old_summary = 压缩前的 self.summary。无 MEMORY.md 时 messages 前三条是
+        [SKILL, 旧摘要, ...]，若不做排除，旧摘要在头部占位存活 → [SKILL, 旧, 新] 并存。
+        注意时序：compress() 在调用前已把 self.summary 更新为新摘要，故排除必须
+        用重建前保存的旧值，不能用 self.summary 现值比较。
+        """
         # 惰性导入 Message：llm → config → memory 包初始化链存在循环依赖，
         # 模块顶层导入会在 llm 未完成初始化时触发 ImportError
         from paperflow.core.llm import Message
-        head = [m for m in messages[:2] if m.role == "system"]
+        head = [m for m in messages[:3]
+                if m.role == "system" and m.content != old_summary][:2]
         tail = self._split_tail(messages, ratio=self.config.reserve_ratio)
         return head + [
             Message(role="system", content=self.summary or ""),
