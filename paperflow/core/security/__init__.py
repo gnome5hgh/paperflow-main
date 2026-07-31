@@ -84,6 +84,7 @@ from paperflow.core.security.audit import AuditMiddleware, AuditEntry
 from paperflow.core.security.workspace import WorkspacePolicy, WorkspacePolicyMiddleware
 from paperflow.core.security.scanner import scan, has_critical, SecurityScanMiddleware
 from paperflow.core.security.policy_engine import PolicyEngineMiddleware
+from paperflow.core.security.network import SSRFError, validate_url_target, resolve_url_target
 
 __all__ = [
     "ToolContext", "SecurityMiddleware", "SecurityError",
@@ -92,4 +93,5 @@ __all__ = [
     "WorkspacePolicy", "WorkspacePolicyMiddleware",
     "scan", "has_critical", "SecurityScanMiddleware",
     "PolicyEngineMiddleware",
+    "SSRFError", "validate_url_target", "resolve_url_target",
 ]
