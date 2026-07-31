@@ -20,6 +20,18 @@ PAPERFLOW_API_KEY=sk-xxx conda run -n paperflow python -m paperflow
 
 Always use `conda run -n paperflow` — never bare `python` or `pip`.
 
+## Code style
+
+Write detailed comments in all code. Explain the WHY behind non-obvious logic — design constraints, edge cases, workarounds, and architectural intent. Assume future readers (including yourself) have zero context on why a piece of code exists. Comments should be in Chinese.
+
+Good comments explain the reason, not the mechanics:
+```python
+# BAD: "Loop over items and add to result"
+# GOOD: "遍历所有 items 并去重，因为多源搜索结果可能包含同一篇论文的不同版本"
+```
+
+Keep comments up to date when modifying code — stale comments are worse than no comments.
+
 ## Architecture
 
 paperFlow is an LLM-driven academic research workflow assistant. Architecture reference: ADR 0003.
