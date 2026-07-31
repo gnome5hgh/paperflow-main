@@ -65,7 +65,9 @@ class AuditEntry:
     parent_entry_id: str | None = None
     #: 调用链深度（预留给子工具调用链）
     depth: int = 0
-    #: 策略决策推导结果
+    #: 策略决策推导结果（auto_allowed / user_confirmed / policy_denied /
+    #: security_blocked / user_denied / error —— error 用于工具执行失败和
+    #: 早期返回路径如 JSON 解析失败、未知工具）
     policy_decision: str = ""
     #: 结果状态推导结果
     result_status: str = ""
