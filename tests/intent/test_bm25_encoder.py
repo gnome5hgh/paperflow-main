@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from paperflow.core.intent.bm25_encoder import JiebaTokenizer, BM25Encoder
 
 
@@ -70,3 +71,16 @@ class TestBM25Encoder:
         arr = np.array([[0.0, 0.5, 0.0, 0.25]])
         out = BM25Encoder._array_to_sparse(arr)
         assert out == [{1: 0.5, 3: 0.25}]
+
+    def test_encode_queries_before_fit_raises(self):
+        """未 fit 就 encode_queries 必须抛干净的 ValueError（上游 0.1.16 对齐）。
+        否则 _df 里 mask * None 会崩 TypeError，Layer 4 空 routes.yaml 首条 query 直接踩中。"""
+        enc = BM25Encoder()
+        with pytest.raises(ValueError, match="not fitted"):
+            enc.encode_queries(["circRNA"])
+
+    def test_encode_documents_before_fit_raises(self):
+        """未 fit 就 encode_documents 必须抛干净的 ValueError（上游 0.1.16 对齐）。"""
+        enc = BM25Encoder()
+        with pytest.raises(ValueError, match="not fitted"):
+            enc.encode_documents(["circRNA"])

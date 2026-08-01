@@ -89,7 +89,14 @@ class BM25Encoder:
         return mask * self._documents_containing_word
 
     def encode_queries(self, queries: list[str]) -> list[dict[int, float]]:
-        """对齐 encode_queries()：df+0.5 平滑 → (N+1)/df → log → 行归一化。"""
+        """对齐 encode_queries()：df+0.5 平滑 → (N+1)/df → log → 行归一化。
+
+        ⚠️ 未 fit 守卫：_df 里 `mask * self._documents_containing_word` 在未 fit 时为
+        `mask * None`，会崩 `TypeError: unsupported operand type(s) for *: 'bool' and 'NoneType'`
+        ——对齐上游 0.1.16 bm25.py:180 的 `ValueError("Encoder not fitted...")` 干净报错。
+        Layer 4 Supervisor 集成时空 routes.yaml 会让 REPL 首条 query 走这里，必须显式兜底。"""
+        if self.corpus_size is None or self._avg_doc_len is None or self._documents_containing_word is None:
+            raise ValueError("Encoder not fitted. Please call fit() first")
         ids = self.tokenizer.tokenize(queries)
         df = self._df(ids)
         df = df + np.where(df > 0, 0.5, 0)
@@ -101,7 +108,13 @@ class BM25Encoder:
         return self._array_to_sparse(idf_norm)
 
     def encode_documents(self, documents: list[str]) -> list[dict[int, float]]:
-        """对齐 encode_documents()：TF 归一化。⚠️ 保留 0.1.16 的 b*b 公式（决策 A）。"""
+        """对齐 encode_documents()：TF 归一化。⚠️ 保留 0.1.16 的 b*b 公式（决策 A）。
+
+        ⚠️ 未 fit 守卫：分母 `self._avg_doc_len` 未 fit 时为 None，`len/avgdl` 会崩
+        `TypeError`。与 encode_queries 同源，统一对齐上游 0.1.16 bm25.py:229 的
+        `ValueError("Encoder not fitted...")`。"""
+        if self.corpus_size is None or self._avg_doc_len is None or self._documents_containing_word is None:
+            raise ValueError("Encoder not fitted. Please call fit() first")
         ids = self.tokenizer.tokenize(documents)
         tf = self._tf(ids)
         tf_sum = tf.sum(axis=1)
