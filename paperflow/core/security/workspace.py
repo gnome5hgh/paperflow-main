@@ -8,14 +8,18 @@ WorkspacePolicyMiddleware —— 工作区路径边界检查中间件。
 ``SecurityBlocked``（violations 规则名为 ``workspace_boundary``）。
 
 设计要点：
-- ``resolve_path``：相对路径基于 workspace 拼接后统一 ``resolve()``，
-  消除 ``..`` 与符号链接，绝对路径原样保留；
+- **相对路径直接拒绝**（Layer 2 起）：vault 为外部绝对路径，相对路径
+  无法可靠映射到任何根，因此不再 resolve 到猜测的根，直接判越界并给出
+  可行动报错（reason="路径必须是绝对路径"），引导 LLM 改用绝对路径；
+- ``resolve_path`` 静态方法语义**保持不变**：相对路径基于 workspace 拼接后
+  统一 ``resolve()``，绝对路径原样保留（Layer 1 测试直接依赖该静态方法）；
 - ``check_path``：通过 ``Path.relative_to`` 判断前缀归属，天然阻断
   目录穿越（如 ``allowed/../../etc/passwd`` resolve 后跳出根目录）；
 - 空 ``allowed_paths`` 视为拒绝所有路径（权限最小化，ADR 0003）；
 - 无 ``format="path"`` 参数的工具直接放行，不引入额外开销。
 """
 
+import os
 from pathlib import Path
 
 from paperflow.core.security import SecurityMiddleware, ToolContext, SecurityBlocked
@@ -67,6 +71,16 @@ class WorkspacePolicyMiddleware(SecurityMiddleware):
         for name in path_names:
             path = ctx.args.get(name)
             if not isinstance(path, str):
+                continue
+            # 相对路径直接拒绝：不 resolve 到任何猜测的根（vault 为外部绝对路径，
+            # 相对路径无法可靠映射；给出可行动的报错引导 LLM 改用绝对路径）
+            if not os.path.isabs(path):
+                violations.append({
+                    "rule": "workspace_boundary",
+                    "param": name,
+                    "path": path,
+                    "reason": "路径必须是绝对路径",
+                })
                 continue
             resolved = WorkspacePolicy.resolve_path(path, self.workspace)
             if not WorkspacePolicy.check_path(str(resolved), allowed):

@@ -77,8 +77,18 @@ class TestWorkspacePolicyMiddleware:
     @pytest.mark.asyncio
     async def test_allows_legit_path(self, tmp_path):
         mw = WorkspacePolicyMiddleware(workspace=str(tmp_path))
-        ctx = make_ctx(FileTool(), {"path": "paper/note/a.md"})
+        # 相对路径语义已改为拒绝；合法用例必须传绝对路径
+        ctx = make_ctx(FileTool(), {"path": str(tmp_path / "paper" / "note" / "a.md")})
         await mw.before(ctx)  # 不应抛
+
+    @pytest.mark.asyncio
+    async def test_blocks_relative_path(self, tmp_path):
+        mw = WorkspacePolicyMiddleware(workspace=str(tmp_path))
+        ctx = make_ctx(FileTool(), {"path": "paper/note/a.md"})
+        with pytest.raises(SecurityBlocked) as exc:
+            await mw.before(ctx)
+        assert exc.value.violations[0]["rule"] == "workspace_boundary"
+        assert "必须是绝对路径" in exc.value.violations[0]["reason"]
 
     @pytest.mark.asyncio
     async def test_blocks_outside_path(self, tmp_path):

@@ -63,6 +63,8 @@ class TestFullPipeline:
         workspace = str(tmp_path / "ws")
         audit_dir = str(tmp_path / "audit")
         accepted = []
+        # WorkspacePolicy 相对路径语义已改为拒绝（Layer 2）；合法路径必须绝对
+        abs_path = str(tmp_path / "ws" / "paper" / "note" / "a.md")
         async def confirm(cr):
             accepted.append(cr.tool_name)
             return True
@@ -74,10 +76,10 @@ class TestFullPipeline:
             "id": "c1",
             "function": {
                 "name": "write_note",
-                "arguments": '{"path": "paper/note/a.md", "content": "note body"}',
+                "arguments": json.dumps({"path": abs_path, "content": "note body"}),
             },
         })
-        assert result.text == "wrote paper/note/a.md"
+        assert result.text == f"wrote {abs_path}"
         assert accepted == ["write_note"]
 
         # 审计记录了 user_confirmed
@@ -101,7 +103,11 @@ class TestFullPipeline:
             "id": "c1",
             "function": {
                 "name": "write_note",
-                "arguments": '{"path": "../../etc/passwd", "content": "x"}',
+                # 绝对路径但越过工作区根（等价于原相对遍历 "../../etc/passwd"）
+                "arguments": json.dumps({
+                    "path": str(tmp_path / "ws" / ".." / "etc" / "passwd"),
+                    "content": "x",
+                }),
             },
         })
         assert result.summary["decision"] == "security_blocked"
@@ -129,7 +135,11 @@ class TestFullPipeline:
             "id": "c1",
             "function": {
                 "name": "write_note",
-                "arguments": '{"path": "paper/note/a.md", "content": "run rm -rf /"}',
+                # 绝对路径保证通过 WorkspacePolicy，真正触发 SecurityScan 对内容扫描
+                "arguments": json.dumps({
+                    "path": str(tmp_path / "ws" / "paper" / "note" / "a.md"),
+                    "content": "run rm -rf /",
+                }),
             },
         })
         assert result.summary["decision"] == "security_blocked"
