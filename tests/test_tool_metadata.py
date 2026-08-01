@@ -105,3 +105,20 @@ def test_validate_tool_rejects_bad_output_scan():
 
 def test_validate_tool_accepts_valid():
     AgentRegistry._validate_tool(MetaTool())  # 不应抛异常
+
+
+# ─── allowed_roots 语义根声明测试（Layer 2）─────────────────────────
+
+class RootTool(Tool):
+    name = "root_tool"
+    description = "declares semantic roots"
+    parameters = {"type": "object", "properties": {}}
+    allowed_roots = ["note", "pdf"]
+
+    def execute(self) -> ToolResult:
+        return ToolResult(text="ok")
+
+
+def test_allowed_roots_default_empty():
+    assert Tool.allowed_roots == []
+    assert RootTool().allowed_roots == ["note", "pdf"]

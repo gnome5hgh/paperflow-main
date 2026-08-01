@@ -85,6 +85,11 @@ class Tool(ABC):
     #: 允许访问的文件/目录路径前缀，空 = fail-safe 禁止文件访问
     allowed_paths: list[str] = []
 
+    #: 语义根名（如 ["note", "memory"]），由 tools/factory.py 启动时解析为
+    #: 绝对路径注入 allowed_paths。allowed_paths 保持 Layer 1 "绝对路径列表"语义，
+    #: WorkspacePolicy 零改动。
+    allowed_roots: list[str] = []
+
     #: 输出扫描模式，Layer 1 SecurityScanMiddleware 据此决定扫描方式；"mark" | None
     output_scan: str | None = None
 
