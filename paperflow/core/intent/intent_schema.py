@@ -1,99 +1,83 @@
 # paperflow/core/intent/intent_schema.py
-"""
-意图识别输出契约（ADR 0007）。
+"""意图识别输出契约（spec Section 4，Layer 1 定死，Layer 4 扩展）。
 
-四级级联管线（Stage 0 预处理 / Stage 1 追问检测 / Stage 2 HybridRouter / Stage 3 LLM 兜底）
-的统一产出：
+四级级联管线（Stage 0 实体提取 / Stage 1 追问检测 / Stage 2 HybridRouter /
+Stage 3 LLM 兜底）的统一产出：
 
-- ``IntentType``: 7 类细粒度意图枚举（值即路由名）。
-- ``IntentStep``: 单步意图 = 意图类型 + 实体字典（query / pdf_path / paper_id / note_path /
-  figure_ref / download / mode）。普通输入产生 1 个 step，复合意图由 Stage 3 拆分为有序 steps。
-- ``IntentOutput``: 管线最终输出，Supervisor 直接消费。
-  消费规则（ADR 0007）：steps=[...] → 逐 step spawn；steps=[] + clarification → ask_user 闭环；
-  steps=[] + reply_suggestion → 直接回复。
-- ``IntentionResult``: 管线统一出口 —— 封装 IntentOutput + 路由器原始决策
-  （RouteChoice / 近失候选），供审计记录与 Stage 3 近失注入使用。
+- ``IntentType``: 5 类意图枚举（value 即路由名，= routes.yaml 的 route 名集合）。
+- ``IntentStep``: 产出阶段枚举——审计/监控据此区分"这条意图是 router 定的还是
+  LLM 兜底的"（router 命中率、LLM 兜底率 = Stage 2 质量指标）。
+- ``IntentOutput``: 管线逐级产出的结构化意图，Supervisor 直接消费。
+- ``IntentionResult``: Stage 3 的 LLM 兜底 schema（ADR 0006 StructuredOutput 消费），
+  扁平三字段，不封装路由器内部决策。
 """
 
 from enum import Enum
-from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from paperflow.core.intent.route import RouteChoice
-
 
 class IntentType(str, Enum):
-    """意图类型枚举，value 与路由名一致（routes.yaml 中的 name）。"""
+    """意图类型枚举，value 与路由名一致（routes.yaml 中的 name）。
 
-    SEARCH_PAPER = "search_paper"
-    DOWNLOAD_PAPER = "download_paper"
-    READ_PAPER = "read_paper"
-    ANSWER_QUESTION = "answer_question"
-    QUERY_NOTES = "query_notes"
-    GENERATE_NOTE = "generate_note"
-    CHITCHAT = "chitchat"
-
-
-class IntentStep(BaseModel):
-    """单步意图：意图类型 + 实体字典。
-
-    entities 键集合（ADR 0007）：query / pdf_path / paper_id / note_path /
-    figure_ref / download / mode，由后续实体提取任务填充。
+    枚举 = 契约 = 当前实现集——不允许"枚举允许但系统无处理路径"的悬空值。
     """
 
-    #: 意图类型
-    intent: IntentType
+    SEARCH_PAPER = "search_paper"          # 搜索/查找论文（ADR 的 search/download 合并，参数 download 区分留 Layer 4）
+    GENERATE_NOTE = "generate_note"        # 撰写笔记
+    ASK_QUESTION = "ask_question"          # 具体问答（ADR 的 read/answer/query_notes 合并，mode 参数留 Layer 4）
+    MANAGE_MEMORY = "manage_memory"        # 记忆查询（读过哪些/阅读记录）
+    GENERAL = "general"                    # 兜底：路由未命中 / LLM 解析失败
+    # READ_PAPER / QUERY_NOTES：Layer 4 细化时加入（届时同步扩 routes.yaml + 枚举）
 
-    #: 实体字典（随意图类型不同而不同，无固定 schema）
-    entities: dict[str, Any] = Field(default_factory=dict)
+
+class IntentStep(str, Enum):
+    """产出阶段枚举——审计/监控可观测（spec 的 B 核心价值）。"""
+
+    ENTITIES = "entities"                  # Stage 0 实体提取（Layer 4 实现）
+    FOLLOWUP = "followup"                  # Stage 1 追问检测（Layer 4 实现，依赖 session）
+    ROUTER = "router"                      # Stage 2 HybridRouter（真实）
+    LLM = "llm"                            # Stage 3 LLM 兜底（真实）
 
 
 class IntentOutput(BaseModel):
-    """意图管线最终输出契约（ADR 0007 输出契约一节）。
+    """管线逐级产出的结构化意图。
 
-    steps 为空时走澄清/直接回复路径：clarification 非空 → Supervisor 调 ask_user；
-    reply_suggestion 非空 → Supervisor 直接回复。两者互斥，由 Stage 3 保证。
+    confidence 语义（两种来源，消费方按 source 区分解释）：
+    ROUTER 来源 = 融合分数 clip 到 [0,1]（非概率，可为边缘值）；LLM 来源 = 模型概率。
     """
 
-    #: 有序意图步骤列表；空列表表示无明确意图（走澄清或直接回复路径）
-    steps: list[IntentStep] = Field(default_factory=list)
+    #: 意图类型
+    intent_type: IntentType
 
-    #: 管线置信度（Stage 3 由 LLM 给出，Stage 2 来自 RouteChoice 相似度）
-    confidence: float | None = None
+    #: 置信度范围约束（LLM 可能输出越界值，pydantic 强制 [0,1]）
+    confidence: float = Field(ge=0.0, le=1.0)
 
-    #: 产出来源（四级级联的哪一级）
-    source: Literal["stage0", "stage1", "stage2", "stage3"]
+    #: Stage 0 提取的实体（Layer 4 填充）
+    entities: dict = Field(default_factory=dict)
 
-    #: RouteChoice 的相似度分数（仅 Stage 2 有值），审计用
-    similarity_score: float | None = None
+    #: 管线输入原文 / Stage 3 LLM 改写（缺省原文）
+    rewritten_query: str = ""
 
-    #: steps 为空时：ask_user 的问题（澄清闭环）
-    clarification: str | None = None
+    #: 产出阶段——审计/监控可观测（spec 的 B 核心价值）
+    source: IntentStep
 
-    #: steps 为空时：Supervisor 直接回复的内容（chitchat）
-    reply_suggestion: str | None = None
-
-    #: Stage 3 发现的新意图写回候选（人工确认后入 routes.yaml）
-    new_intent_candidate: dict[str, Any] | None = None
-
-    #: 原始用户输入（审计用，逐字保留）
-    raw_input: str
+    #: Stage 1 填充的前一意图（Layer 4，session 提供）
+    prev_intent: IntentType | None = None
 
 
 class IntentionResult(BaseModel):
-    """意图管线统一出口。
+    """Stage 3 的 LLM 兜底 schema（ADR 0006 StructuredOutput 消费）。
 
-    output 为结构化意图输出；route_choice / near_misses 保留路由器原始决策——
-    前者记录命中的 RouteChoice（含相似度），后者是未达阈值但分数靠前的近失候选
-    （Stage 3 LLM 兜底时注入提示词，辅助歧义消解与新意图发现）。
+    扁平三字段：StructuredOutput 只校验类型不校验范围，故 confidence 仍保留
+    pydantic 范围约束，避免 LLM 越界值流入上游。
     """
 
-    #: 结构化意图输出（Supervisor 实际消费的对象）
-    output: IntentOutput
+    #: 意图类型
+    intent_type: IntentType
 
-    #: Stage 2 命中的 RouteChoice（Stage 0/1/3 直出时为 None）
-    route_choice: RouteChoice | None = None
+    #: 置信度（模型概率，范围约束 [0,1]）
+    confidence: float = Field(ge=0.0, le=1.0)
 
-    #: 近失候选（按相似度降序），供 Stage 3 注入
-    near_misses: list[RouteChoice] = Field(default_factory=list)
+    #: LLM 改写后的查询（缺省为空串，pipeline 回落原文）
+    query_rewrite: str = ""
