@@ -14,6 +14,7 @@ Agent ReAct 循环的单元测试。
 提供可控的 mock 对象，保证测试的确定性和速度。
 """
 
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -21,6 +22,7 @@ import pytest
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.agent_registry import AgentConfig, AgentRegistry
 from paperflow.core.llm import Message
+from paperflow.core.tool import Tool, ToolResult
 
 
 # ─── Mock 工厂函数 ────────────────────────────────────────────────
@@ -264,3 +266,45 @@ class TestAgentRun:
 
         with pytest.raises(MaxTurnsExceeded):
             await agent.run("Loop forever!")
+
+
+# ─── TestExecTool：工具执行线程化（Layer 2）─────────────────────────
+
+
+class ThreadProbeTool(Tool):
+    """
+    线程探针工具 —— 返回当前执行线程名，用于验证 _exec_tool 是否把
+    同步工具放到线程池执行（而非阻塞事件循环所在线程）。
+    """
+
+    name = "probe"
+    description = "returns current thread name"
+    parameters = {"type": "object", "properties": {}}
+
+    def execute(self) -> ToolResult:
+        # 返回当前线程名：事件循环跑在 MainThread，而线程池是 worker 线程
+        return ToolResult(text=threading.current_thread().name)
+
+
+@pytest.mark.asyncio
+async def test_tool_executes_off_main_thread():
+    """
+    验证 _exec_tool 用 asyncio.to_thread 把同步工具放到线程池执行。
+
+    给定：
+      - ThreadProbeTool 返回当前执行线程名
+    预期：
+      - 工具执行线程不是 MainThread（事件循环所在线程）
+        —— 说明重工具（CPU/网络密集）不会阻塞事件循环
+
+    这是 Layer 4 parallel_spawn 并行与 Dream 后台任务能跑的前提：
+    若工具同步执行会卡住事件循环，Agent 就无法同时处理多个工具。
+    """
+    tool = ThreadProbeTool()
+    registry = make_mock_registry([tool])
+    llm = make_mock_llm([Message(role="assistant", content="Done.")])
+    agent = Agent(llm=llm, agent_registry=registry, agent_type="test")
+
+    # 直接测试 _exec_tool —— 不触发 ReAct 循环
+    result = await agent._exec_tool({"function": {"name": "probe", "arguments": "{}"}})
+    assert result.text != "MainThread"

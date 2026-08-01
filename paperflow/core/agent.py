@@ -40,6 +40,7 @@ ReAct 循环流程::
   LLM 陷入了无法自主退出的循环，需要调用方介入
 """
 
+import asyncio
 import json
 import sys
 import time
@@ -348,7 +349,9 @@ class Agent:
 
         # 7. 执行工具逻辑（结果统一规范化为 ToolResult）
         try:
-            raw = tool.execute(**ctx.args)
+            # CPU/网络密集型工具在线程池执行，避免阻塞事件循环
+            # （影响 Layer 4 parallel_spawn 并行与 Dream 后台任务）
+            raw = await asyncio.to_thread(tool.execute, **ctx.args)
             ctx.result = raw if isinstance(raw, ToolResult) else ToolResult(text=str(raw))
         except Exception as e:
             # 工具执行失败（网络超时、文件不存在等）→ 反馈给 LLM
