@@ -1,0 +1,83 @@
+# paperflow/core/intent/pipeline.py
+"""意图识别四级级联编排。Layer 1：Stage 0/1 为 stub，Stage 2 真实，Stage 3 接 StructuredOutput。
+
+四级级联（自顶向下逐级判定，前级未定夺才落到后级）：
+- Stage 0  实体提取（stub——Layer 4 实现正则提取 PDF 路径/arXiv ID/DOI/Figure）
+- Stage 1  追问检测（stub——Layer 4 实现，依赖 session prev_intent）
+- Stage 2  HybridRouter 真实路由：命中非 general → 直接产出，confidence 为
+  融合分数 clip 到 [0,1]（cosine 可为负、稀疏点积可 >1，非概率）
+- Stage 3  LLM 兜底（ADR 0006 StructuredOutput）：注入路由近失候选，改写缺省原文
+"""
+from pydantic import BaseModel
+
+from paperflow.core.intent.intent_schema import (
+    IntentOutput, IntentType, IntentStep, IntentionResult,
+)
+
+
+class IntentPipeline:
+    """意图识别四级级联编排。消费 HybridRouter（Task 5）+ StructuredOutput（core/structured）。"""
+
+    def __init__(self, router, structured,
+                 llm_fallback_schema: type[BaseModel] = IntentionResult):
+        self.router = router
+        self.structured = structured
+        self.llm_fallback_schema = llm_fallback_schema
+
+    async def run(self, query: str, prev_intent: IntentType | None = None) -> IntentOutput:
+        # Stage 0：实体提取（stub——Layer 4 实现正则提取 PDF 路径/arXiv ID/DOI/Figure）
+        entities = self._extract_entities(query)
+
+        # Stage 1：追问检测（stub——Layer 4 实现，依赖 session prev_intent）
+        is_followup = self._detect_followup(query, prev_intent)
+        if is_followup:
+            return IntentOutput(
+                intent_type=prev_intent, confidence=1.0,
+                entities=entities, source=IntentStep.FOLLOWUP,
+                prev_intent=prev_intent, rewritten_query=query)
+
+        # Stage 2：HybridRouter（真实）
+        choice = self.router(query)
+        if choice is not None and choice.name != "general":
+            return IntentOutput(
+                intent_type=IntentType(choice.name),
+                # 融合分数 clip 到 [0,1]（cosine 可为负、稀疏点积可 >1，非概率）
+                confidence=float(max(0.0, min(1.0, choice.similarity_score or 0.0))),
+                entities=entities, source=IntentStep.ROUTER, prev_intent=prev_intent,
+                rewritten_query=query)
+
+        # Stage 3：LLM 兜底（ADR 0006 StructuredOutput）——注入路由近失候选
+        near_miss = self.router.scores(query, k=3)
+        result = await self.structured.extract(
+            prompt=self._build_llm_prompt(query, near_miss),
+            schema=self.llm_fallback_schema,
+            fallback=lambda: IntentionResult(intent_type=IntentType.GENERAL,
+                                             confidence=0.0),
+        )
+        return IntentOutput(
+            intent_type=result.intent_type,
+            confidence=result.confidence,
+            entities=entities, source=IntentStep.LLM, prev_intent=prev_intent,
+            rewritten_query=result.query_rewrite or query)
+
+    def _extract_entities(self, query: str) -> dict:
+        return {}      # Layer 4：正则提取 pdf_path/arxiv_id/doi/figure
+
+    def _detect_followup(self, query: str, prev_intent) -> bool:
+        return False   # Layer 4：承接标记 + 无动作动词 + 指代判断
+
+    def _build_llm_prompt(self, query: str, near_miss: list[tuple[str, float]]) -> str:
+        """注入意图契约说明（IntentType 枚举）+ 路由近失候选（top 分数）
+        + 原始 query。近失示例："路由层倾向 search_paper（0.31，差阈值一点），
+        请确认或改判"。"""
+        parts = [
+            "你是意图分类器。从以下意图中选择一个：",
+            ", ".join(t.value for t in IntentType),
+            "输出 JSON：{intent_type, confidence, query_rewrite}。",
+        ]
+        if near_miss:
+            parts.append("路由层近失候选（供参考，可确认或改判）：")
+            for name, score in near_miss:
+                parts.append(f"  - {name}: {score:.3f}")
+        parts.append(f"用户输入：{query}")
+        return "\n".join(parts)
