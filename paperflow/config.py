@@ -76,6 +76,29 @@ class PaperFlowConfig:
     #: 上下文压缩配置（触发比例、保留比例、压缩提示词等）
     context: ContextConfig = field(default_factory=ContextConfig)
 
+    #: Obsidian vault 笔记目录（数据源 note/），绝对路径
+    vault_note_dir: str = "/Users/gnomeshgh/Documents/Obsidian Vault/paper/note"
+
+    #: Obsidian vault PDF 目录（数据源 pdf/），绝对路径
+    vault_pdf_dir: str = "/Users/gnomeshgh/Documents/Obsidian Vault/paper/pdf"
+
+    #: GROBID Docker 服务地址（PDF 结构解析）
+    grobid_url: str = "http://127.0.0.1:8070"
+
+    #: ChromaDB 持久化路径；空 = 从 workspace 推导 <workspace>/chromadb/
+    chroma_path: str = ""
+
+    #: 嵌入模型（真实 bge 落地，维度从模型读取不硬编码）
+    embed_model: str = "BAAI/bge-small-zh-v1.5"
+
+    #: 重排模型（Cross-encoder）
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+
+    @property
+    def chroma_dir(self) -> str:
+        """ChromaDB 目录：显式配置优先，否则从 workspace 推导。"""
+        return self.chroma_path or str(Path(self.workspace) / "chromadb")
+
     @classmethod
     def from_env(cls, config_path: str | None = None) -> "PaperFlowConfig":
         """
@@ -112,8 +135,11 @@ class PaperFlowConfig:
                 if hasattr(self.llm, key):
                     setattr(self.llm, key, val)
 
-        # 顶层配置字段
-        for key in ("workspace", "agents_dir", "max_risk"):
+        # 顶层配置字段（含 Layer 2 新增的 vault / RAG 键，
+        # 均可通过 config.yaml 顶层覆盖默认值）
+        for key in ("workspace", "agents_dir", "max_risk",
+                    "vault_note_dir", "vault_pdf_dir", "grobid_url",
+                    "chroma_path", "embed_model", "rerank_model"):
             if key in data:
                 setattr(self, key, data[key])
 
@@ -123,12 +149,18 @@ class PaperFlowConfig:
 
         支持的环境变量::
 
-            PAPERFLOW_API_KEY     → llm.api_key
-            PAPERFLOW_BASE_URL    → llm.base_url
-            PAPERFLOW_MODEL       → llm.model
-            PAPERFLOW_WORKSPACE   → workspace
-            PAPERFLOW_AGENTS_DIR  → agents_dir
-            PAPERFLOW_MAX_RISK    → max_risk
+            PAPERFLOW_API_KEY       → llm.api_key
+            PAPERFLOW_BASE_URL      → llm.base_url
+            PAPERFLOW_MODEL         → llm.model
+            PAPERFLOW_WORKSPACE     → workspace
+            PAPERFLOW_AGENTS_DIR    → agents_dir
+            PAPERFLOW_MAX_RISK      → max_risk
+            PAPERFLOW_VAULT_NOTE_DIR → vault_note_dir
+            PAPERFLOW_VAULT_PDF_DIR  → vault_pdf_dir
+            PAPERFLOW_GROBID_URL     → grobid_url
+            PAPERFLOW_CHROMA_PATH    → chroma_path
+            PAPERFLOW_EMBED_MODEL    → embed_model
+            PAPERFLOW_RERANK_MODEL   → rerank_model
         """
         # 映射表：环境变量名 → (父对象名, 属性名)
         # parent 为 "llm" 表示写入 self.llm.<attr>，None 表示写入 self.<attr>
@@ -139,6 +171,12 @@ class PaperFlowConfig:
             "PAPERFLOW_WORKSPACE": (None, "workspace"),
             "PAPERFLOW_AGENTS_DIR": (None, "agents_dir"),
             "PAPERFLOW_MAX_RISK": (None, "max_risk"),
+            "PAPERFLOW_VAULT_NOTE_DIR": (None, "vault_note_dir"),
+            "PAPERFLOW_VAULT_PDF_DIR": (None, "vault_pdf_dir"),
+            "PAPERFLOW_GROBID_URL": (None, "grobid_url"),
+            "PAPERFLOW_CHROMA_PATH": (None, "chroma_path"),
+            "PAPERFLOW_EMBED_MODEL": (None, "embed_model"),
+            "PAPERFLOW_RERANK_MODEL": (None, "rerank_model"),
         }
 
         for env_var, (parent, attr) in env_map.items():
