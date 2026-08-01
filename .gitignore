@@ -23,9 +23,13 @@ Thumbs.db
 # Runtime data (except .gitkeep)
 data/*
 !data/.gitkeep
+!data/intents/
 
 # Documentation (not version controlled)
 docs/
+
+# Claude Code local settings & Memory Bank (not version controlled)
+.claude/
 
 # Environment
 .env

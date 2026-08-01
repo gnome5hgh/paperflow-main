@@ -1,0 +1,19 @@
+# data/intents/routes.yaml —— Layer 1 最小验证集（Layer 4 替换为完整 105 条）
+
+routes:
+  - name: search_paper
+    utterances:
+      - "下载最新论文"
+      - "搜索 circRNA 文献"
+  - name: generate_note
+    utterances:
+      - "把这篇论文整理成笔记"
+      - "写一份笔记"
+  - name: ask_question
+    utterances:
+      - "circRNA 的机制是什么"
+      - "解释一下这个公式"
+  - name: manage_memory
+    utterances:
+      - "我读过哪些论文"
+      - "显示阅读记录"
