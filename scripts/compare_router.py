@@ -13,7 +13,13 @@
    ③ 确定性种子：md5(text)（不能用内置 hash()——PYTHONHASHSEED 跨进程随机化）
    ④ ours 侧 import paperflow 需 sys.path.insert(0, 项目根)（scripts/ 不在包内）
    ⑤ --impl 分支延迟 import（ours 环境没装 semantic-router、theirs 没装 paperflow）
-   ⑥ evaluate 返回形态按 impl 适配：ours=单个 float，theirs=按 batch 的列表
+   ⑥ evaluate 两侧均返回单个 float（0.1.16 的 evaluate 返回 float，非 per-batch
+      accuracy 列表）——直接 print，不需要 np.mean 包装
+   ⑦ theirs 侧 Route 从 semantic_router.route import——0.1.16 的 schema.py 无 Route
+      类（只有 EncoderType/RouteChoice/SparseEmbedding 等），Route 定义在 route.py
+   ⑧ theirs 侧构造后需显式 router.add(routes)——0.1.16 的 HybridRouter.__init__
+      只设置 encoder/索引对象，不调用 self.add(routes)，索引为空则 evaluate 恒为 0；
+      ours 侧（paperflow 版）构造时已 add，无需重复
 """
 import argparse
 import hashlib
@@ -89,7 +95,7 @@ def main() -> None:
         sparse_encoder = FixedSparseEncoder()
     else:
         from semantic_router.routers.hybrid import HybridRouter        # 约束 ⑤
-        from semantic_router.schema import Route as RouteCls
+        from semantic_router.route import Route as RouteCls            # 约束 ⑦：0.1.16 的 Route 在 route 模块
         from semantic_router.schema import SparseEmbedding
 
         class SparseAdapter:
@@ -103,12 +109,14 @@ def main() -> None:
 
     router = HybridRouter(encoder=FixedDenseEncoder(), routes=routes,
                           sparse_encoder=sparse_encoder)
-    if args.impl == "ours":
-        # ours: evaluate 返回单个 float（_vec_evaluate 对全部样本求均值）
-        acc = router.evaluate(X, y)
-    else:
-        # theirs (0.1.16): evaluate 返回按 batch 的 accuracy 列表——取均值对齐输出（约束 ⑥）
-        acc = float(np.mean(router.evaluate(X, y)))
+    if args.impl == "theirs":
+        # 约束 ⑧：0.1.16 的 HybridRouter.__init__ 只设置 encoder/稀疏编码器/索引对象，
+        # 不调用 self.add(routes)——不显式 add 则索引为空，evaluate 恒返回 0。
+        # ours 侧（paperflow 版）构造时内部已 self.add(routes)，无需重复。
+        router.add(routes)
+
+    # 约束 ⑥：两侧 evaluate 均返回单个 float，直接输出，不需要 np.mean 包装
+    acc = router.evaluate(X, y)
     print(f"[{args.impl}] accuracy = {acc:.4f}")
 
 
