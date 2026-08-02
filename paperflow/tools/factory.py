@@ -17,6 +17,10 @@ def _root_map(config: PaperFlowConfig) -> dict[str, str]:
         "note": config.vault_note_dir,
         "pdf": config.vault_pdf_dir,
         "memory": str(Path(config.workspace) / "memory"),
+        # 模板与 scratch 统一 workspace 派生基准（修 Layer 2 分叉根因）：
+        # FormatCheckTool 默认同此基准，_SKELETON 仅降级
+        "templates": str(Path(config.workspace) / "templates"),
+        "scratch": str(Path(config.workspace) / "tmp"),
     }
 
 
