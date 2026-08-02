@@ -125,7 +125,7 @@ class MarkReadTool(Tool):
         "required": ["path"],
     }
     risk_level = "low"
-    allowed_roots = ["pdf", "note"]
+    allowed_roots = ["pdf"]                    # MINOR-6：对齐 spec §14，mark-read 针对论文（pdf 只读根）
     side_effects = ["write_file"]
 
     def execute(self, path: str) -> ToolResult:
@@ -168,17 +168,33 @@ class FormatCheckTool(Tool):
     risk_level = "low"
     allowed_roots = ["note"]
 
+    #: 模板缺失时落盘的最小骨架（spec §1/§14：缺失时建最小骨架而非报错）
+    _SKELETON = ("# <论文标题>\n"
+                 "## 概述\n"
+                 "## 方法\n"
+                 "## 实验结果\n"
+                 "## 相关工作\n"
+                 "## 局限与展望\n")
+
     def __init__(self):
         super().__init__()
         # 模板是工具内部常量路径（非 LLM 可指定的 path 参数），不进 allowed_roots 映射；
         # 默认按 <workspace>/templates/paper_note.md；测试可注入 _template_path
         self._template_path = None
 
-    def _load_template(self) -> list[str]:
+    def _ensure_template(self) -> list[str]:
+        """读取模板标题树；文件不存在时先建最小骨架再读。
+
+        IMPORTANT-4 修复：spec §1 承诺"缺失时建最小骨架"，原 _load_template
+        直接 read_text 会在默认 workspace="data" 且模板未生成时 FileNotFoundError
+        中断 review-note 流程。先确保模板存在（生产路径不再抛错），再提取标题。"""
         cfg = get_rag_service().config
         # cfg.workspace 是 str（config.py:67），需先包 Path 才能用 / 拼接；
         # 模板是内部常量路径，不进 allowed_roots 映射（WorkspacePolicy 不校验）
         tpl = Path(self._template_path or (Path(cfg.workspace) / "templates" / "paper_note.md"))
+        if not tpl.exists():
+            tpl.parent.mkdir(parents=True, exist_ok=True)
+            tpl.write_text(self._SKELETON, encoding="utf-8")
         return [ln.lstrip("# ").strip() for ln in tpl.read_text(encoding="utf-8").splitlines()
                 if ln.startswith("#")]
 
@@ -186,7 +202,7 @@ class FormatCheckTool(Tool):
         note_heads = [ln.lstrip("# ").strip()
                       for ln in Path(path).read_text(encoding="utf-8").splitlines()
                       if ln.startswith("#")]
-        missing = [h for h in self._load_template() if h not in note_heads]
+        missing = [h for h in self._ensure_template() if h not in note_heads]
         if missing:
             return ToolResult(text=f"缺少模板章节: {', '.join(missing)}")
         return ToolResult(text="结构完整，与模板一致")

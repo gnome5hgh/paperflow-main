@@ -7,6 +7,7 @@ from pathlib import Path
 from paperflow.config import PaperFlowConfig
 from paperflow.rag.embedder import FakeEmbedder
 from paperflow.rag.indexer import RagIndexer
+from paperflow.rag.reranker import FakeReranker
 from paperflow.rag.service import RAGService
 
 
@@ -116,3 +117,78 @@ def test_shrink_removes_old_chunks(tmp_path):
     after = svc._ensure_vector_store().count()
     assert after < before                                     # 旧块被清
     assert svc._ensure_bm25().count() == after               # BM25 投影一致
+
+
+# ─── CRITICAL-1 回归：memory 根不得进 RAG 索引（SCOPE 只索引 note/pdf）────────
+
+def test_index_document_memory_root_is_noop(tmp_path):
+    # memory 文件（非 vault 根）index_document → no-op：向量库/BM25 计数不变。
+    # 修复前 _rel_path 回退 basename → memory/shared.md 与 note/shared.md
+    # 同 doc id，index_document(memory) 静默覆盖并删除 note chunks（数据丢失）。
+    note_dir = tmp_path / "vault" / "note"; note_dir.mkdir(parents=True)
+    pdf_dir = tmp_path / "vault" / "pdf"
+    svc = _make_service(tmp_path, note_dir, pdf_dir)
+    svc._embedder = FakeEmbedder()
+    idx = RagIndexer(svc)
+    memory = tmp_path / "ws" / "memory" / "shared.md"
+    memory.parent.mkdir(parents=True)
+    memory.write_text("# 记忆\n\n一些记忆内容", encoding="utf-8")
+    idx.index_document(str(memory))
+    assert svc._ensure_vector_store().count() == 0
+    assert svc._ensure_bm25().count() == 0
+    # state 也不应写入 memory 键（index_document 在写 state 前已 no-op）
+    state = json.loads((tmp_path / "ws" / "index_state.json").read_text()) \
+        if (tmp_path / "ws" / "index_state.json").exists() else {}
+    assert str(memory.resolve()) not in state
+
+
+def test_memory_note_same_basename_no_collision(tmp_path):
+    # 同 basename：note/shared.md + memory/shared.md。先索引 note，再索引 memory
+    # （修复前会覆盖并删除 note chunks）。修复后 note 的 chunks 仍在。
+    note_dir = tmp_path / "vault" / "note"; note_dir.mkdir(parents=True)
+    pdf_dir = tmp_path / "vault" / "pdf"
+    svc = _make_service(tmp_path, note_dir, pdf_dir)
+    svc._embedder = FakeEmbedder()
+    idx = RagIndexer(svc)
+    note = note_dir / "shared.md"
+    note.write_text("# 笔记\n\ncircRNA 网络调控内容", encoding="utf-8")
+    idx.index_document(str(note))
+    note_count = svc._vector_store.count()
+    assert note_count > 0
+    memory = tmp_path / "ws" / "memory" / "shared.md"
+    memory.parent.mkdir(parents=True)
+    memory.write_text("# 记忆\n\n无关记忆内容", encoding="utf-8")
+    idx.index_document(str(memory))            # 修复前这里覆盖并删除 note chunks
+    assert svc._vector_store.count() == note_count
+    assert svc._ensure_bm25().count() == note_count
+    # note 的块仍在：metadata path 为相对 note 根的 shared.md，且文本未被 memory 内容替换
+    note_docs = [d for d in svc._vector_store.all_documents()
+                 if d[2] == "shared.md" and d[1].find("circRNA") >= 0]
+    assert note_docs, "note 的 chunks 被 memory 覆盖/删除了（CRITICAL-1）"
+
+
+def test_index_all_excludes_memory_and_note_retrievable(tmp_path):
+    # index_all 只扫 note/pdf 根：memory 不进索引；note 仍可检索。
+    # 同时覆盖：state 中残留 memory 键时孤儿清理对 rel=None 防御性 continue。
+    note_dir = tmp_path / "vault" / "note"; note_dir.mkdir(parents=True)
+    pdf_dir = tmp_path / "vault" / "pdf"
+    svc = _make_service(tmp_path, note_dir, pdf_dir)
+    svc._embedder = FakeEmbedder()
+    svc._reranker = FakeReranker()             # retrieve 需要（不加载真实模型）
+    idx = RagIndexer(svc)
+    note = note_dir / "a.md"
+    note.write_text("# 笔记\n\ncircRNA 可检索内容", encoding="utf-8")
+    idx.index_all()
+    assert svc._vector_store.count() > 0
+    # 残留 memory 键（历史 bug 产物）→ 孤儿清理必须跳过，不误删不崩溃
+    memory = tmp_path / "ws" / "memory" / "a.md"
+    memory.parent.mkdir(parents=True)
+    idx._save_state({str(memory): 1.0})
+    memory.write_text("# 记忆\n\n不该进索引", encoding="utf-8")
+    idx.index_all()                            # 修复前 memory/a.md 会覆盖 note/a.md
+    assert svc._vector_store.count() > 0
+    rels = {d[2] for d in svc._vector_store.all_documents()}
+    assert rels == {"a.md"}                    # 只有 note 相对路径，无 memory 混入
+    # note 仍可检索（BM25 + vector 双命中 note 内容）
+    hits = svc.get_retriever().retrieve("circRNA 可检索内容", top_k=3)
+    assert any("circRNA" in h.text for h in hits)

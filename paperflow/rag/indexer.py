@@ -19,8 +19,15 @@ class RagIndexer:
         self._state_path = Path(service.config.workspace) / "index_state.json"
 
     # —— 路径/状态工具 ——
-    def _rel_path(self, path: str) -> str:
-        """绝对路径 → 相对 vault 根（doc id 与 metadata 共用，跨机器稳定）。"""
+    def _rel_path(self, path: str) -> str | None:
+        """绝对路径 → 相对 vault 根（doc id 与 metadata 共用，跨机器稳定）。
+
+        两个 vault 根（note/pdf）都不匹配时返回 None——**不**回退 basename。
+        修复 CRITICAL-1：memory 根（WriteFileTool 的 _NOTE_ROOTS 含 memory）
+        此前回退 abs_path.name，与 note 下同名文件（memory/shared.md vs
+        note/shared.md）得到同一 rel → 同一 chunk id → index_document 静默
+        覆盖并删除 note chunks（数据丢失）。RAG 只索引 note/pdf（SCOPE），
+        非 vault 路径必须返回 None 由调用方 no-op。"""
         abs_path = Path(path).resolve()
         for root in (Path(self.service.config.vault_note_dir).resolve(),
                      Path(self.service.config.vault_pdf_dir).resolve()):
@@ -28,7 +35,7 @@ class RagIndexer:
                 return str(abs_path.relative_to(root))
             except ValueError:
                 continue
-        return abs_path.name
+        return None
 
     def _rel_to_abs(self, rel: str) -> str:
         """相对 vault 根 → 绝对路径（guard-2 从 metadata 重建 state 用）。"""
@@ -99,8 +106,14 @@ class RagIndexer:
         p = Path(path)
         if not p.exists():
             return                      # 索引不存在的文件 → no-op
-        source, sections = self._sections_from_file(p)
         rel = self._rel_path(str(p))
+        if rel is None:
+            # CRITICAL-1 修复：非 vault 根路径（如 memory/ 下）→ no-op。
+            # memory 写会触发本钩子，但 RAG 只索引 note/pdf（SCOPE）——跳过，
+            # 否则 memory/shared.md 与 note/shared.md 撞同一 rel/doc id 会
+            # 覆盖并删除 note chunks。
+            return
+        source, sections = self._sections_from_file(p)
         store = self.service._ensure_vector_store()
         bm25 = self.service._ensure_bm25()
         # 文档级幂等：先删该文档全部旧块（ChromaDB + BM25），再重切重写
@@ -157,6 +170,11 @@ class RagIndexer:
         removed = [k for k in state if k not in {str(s) for s in seen}]
         for abs_path in removed:
             rel = self._rel_path(abs_path)
+            if rel is None:
+                # CRITICAL-1 修复的防御性兜底：state 键经 _rel_path 修复后
+                # 只可能是 vault 路径（index_document 不再写入非 vault 键），
+                # 但历史 state 可能残留 memory 键——rel=None 时跳过，勿误删
+                continue
             rm_ids = [d[0] for d in store.all_documents() if d[2] == rel]
             for did in rm_ids:
                 self.service._ensure_bm25().remove_document(did)

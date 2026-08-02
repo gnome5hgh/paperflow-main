@@ -103,19 +103,21 @@ def _download_pdf(client, url: str, dest: Path) -> None:
 
 class ArxivSearchTool(Tool):
     name = "arxiv_search"
-    description = "搜索 arXiv 论文；可选下载 PDF 到本地（download_to 缺省落 vault pdf 目录）"
+    # IMPORTANT-3：description 与 execute 行为对齐——缺省不下载，传 download_to 才下载
+    description = "搜索 arXiv 论文；可选下载 PDF（缺省不下载，传入 download_to 才下载）"
     parameters = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "检索词"},
             "max_results": {"type": "integer", "default": 5},
             "download_to": {"type": "string", "format": "path",
-                            "description": "PDF 保存绝对路径（可选）"},
+                            "description": "PDF 保存绝对路径（可选；缺省不下载，传入才下载）"},
         },
         "required": ["query"],
     }
     risk_level = "medium"
     allowed_roots = ["pdf"]
+    output_scan = "mark"                       # MINOR-7：返回外部内容（标题/摘要/URL）→ 未校验横幅
     side_effects = ["network", "write_file"]
 
     def __init__(self):
@@ -148,19 +150,21 @@ class ArxivSearchTool(Tool):
 
 class OpenAlexSearchTool(Tool):
     name = "openalex_search"
-    description = "搜索 OpenAlex 论文；可选下载开放获取 PDF"
+    # IMPORTANT-3：description 与 execute 行为对齐——缺省不下载，传 download_to 才下载
+    description = "搜索 OpenAlex 论文；可选下载开放获取 PDF（缺省不下载，传入 download_to 才下载）"
     parameters = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "检索词"},
             "max_results": {"type": "integer", "default": 5},
             "download_to": {"type": "string", "format": "path",
-                            "description": "PDF 保存绝对路径（可选）"},
+                            "description": "PDF 保存绝对路径（可选；缺省不下载，传入才下载）"},
         },
         "required": ["query"],
     }
     risk_level = "medium"
     allowed_roots = ["pdf"]
+    output_scan = "mark"                       # MINOR-7：返回外部内容（标题/摘要/URL）→ 未校验横幅
     side_effects = ["network", "write_file"]
 
     def __init__(self):

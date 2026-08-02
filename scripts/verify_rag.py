@@ -30,7 +30,7 @@ def main() -> int:
     print("重排索引:", order)
 
     print("== 4. 检索链路（索引需先有数据）==")
-    svc.get_indexer().index_all()
+    svc.index_all()                            # 持锁便捷入口（IMPORTANT-2）
     hits = svc.retrieve("circRNA 网络", top_k=3)
     print("检索命中:", len(hits))
     for h in hits:

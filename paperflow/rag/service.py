@@ -96,6 +96,13 @@ class RAGService:
         with self.lock:
             self.get_indexer().index_document(path)
 
+    def index_all(self) -> None:
+        # IMPORTANT-2 修复：index_all 全量扫描此前只能走 get_indexer().index_all()
+        # 绕过锁，与持锁的 index_document/retrieve 不一致——并发下 BM25 重建、
+        # ChromaDB 全量写会与查询读半截状态。与 index_document 同级暴露持锁入口。
+        with self.lock:
+            self.get_indexer().index_all()
+
     def retrieve(self, query: str, top_k: int = 5):
         with self.lock:
             return self.get_retriever().retrieve(query, top_k)

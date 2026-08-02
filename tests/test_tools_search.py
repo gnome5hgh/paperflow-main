@@ -48,6 +48,18 @@ def _otransport():
     return httpx.MockTransport(lambda req: httpx.Response(200, json=_OPENALEX))
 
 
+def test_search_tools_metadata():
+    # MINOR-7：返回外部内容（标题/摘要/URL）的搜索工具需 output_scan="mark"，
+    # 与 ReadFileTool/ReadPdfTool 一致（外部内容打"未经安全校验"横幅）。
+    assert ArxivSearchTool.output_scan == "mark"
+    assert OpenAlexSearchTool.output_scan == "mark"
+    # IMPORTANT-3：description / 参数描述与行为一致——缺省不下载
+    assert "缺省不下载" in ArxivSearchTool.description
+    assert "缺省不下载" in OpenAlexSearchTool.description
+    assert "缺省不下载" in ArxivSearchTool.parameters["properties"]["download_to"]["description"]
+    assert "缺省不下载" in OpenAlexSearchTool.parameters["properties"]["download_to"]["description"]
+
+
 def test_arxiv_search_parses():
     tool = ArxivSearchTool()
     tool._client = ArxivSearchTool._make_client(transport=_atransport(), ssrf_check=lambda u: None)
