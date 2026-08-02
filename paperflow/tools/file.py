@@ -85,3 +85,128 @@ class EditFileTool(Tool):
         p.write_text(content, encoding="utf-8")
         get_rag_service().index_document(str(p))
         return ToolResult(text=f"已编辑 {path}")
+
+
+class ReadPdfTool(Tool):
+    name = "read_pdf"
+    description = "解析 PDF 论文为结构化文本（GROBID，不可用时回退 PyMuPDF）"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "format": "path", "description": "PDF 绝对路径"},
+        },
+        "required": ["path"],
+    }
+    risk_level = "low"
+    allowed_roots = ["pdf"]                    # Paper 只读
+    output_scan = "mark"
+    side_effects = ["read_file"]
+
+    def execute(self, path: str) -> ToolResult:
+        parser = get_rag_service().pdf_parser()
+        doc = parser.parse_pdf(path)
+        text = "\n\n".join(f"## {h}\n{t}" for h, t in doc.sections)
+        return ToolResult(text=text or "（PDF 未能解析出文本）")
+
+
+class MarkReadTool(Tool):
+    """标记已读：只把 pdf 路径记入 history.jsonl，不读文件内容。
+
+    pdf 根声明与只读边界一致；写入经 MemoryStore.append_history（已带 self._lock）。
+    """
+
+    name = "mark_read"
+    description = "标记某篇论文/笔记为已读（记录到阅读历史）"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "format": "path", "description": "论文/笔记绝对路径"},
+        },
+        "required": ["path"],
+    }
+    risk_level = "low"
+    allowed_roots = ["pdf", "note"]
+    side_effects = ["write_file"]
+
+    def execute(self, path: str) -> ToolResult:
+        from paperflow.core.memory.experience_memory import MemoryStore
+        from paperflow.config import PaperFlowConfig
+        config = PaperFlowConfig.from_env()
+        store = MemoryStore(Path(config.workspace) / "memory")
+        store.append_history({"type": "mark_read", "path": path})
+        return ToolResult(text=f"已标记已读: {path}")
+
+
+class FormatAnswerTool(Tool):
+    name = "format_answer"
+    description = "格式化最终回答输出（内容安全扫描硬阻断由中间件执行）"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "answer": {"type": "string", "format": "content", "description": "回答文本"},
+        },
+        "required": ["answer"],
+    }
+    risk_level = "low"
+
+    def execute(self, answer: str) -> ToolResult:
+        return ToolResult(text=f"## 回答\n\n{answer}")
+
+
+class FormatCheckTool(Tool):
+    """笔记 Markdown 标题树 vs 模板对比（确定性代码，供 review-note 用）。"""
+
+    name = "format_check"
+    description = "检查笔记结构是否符合模板（对比 Markdown 标题树）"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "format": "path", "description": "笔记绝对路径"},
+        },
+        "required": ["path"],
+    }
+    risk_level = "low"
+    allowed_roots = ["note"]
+
+    def __init__(self):
+        super().__init__()
+        # 模板是工具内部常量路径（非 LLM 可指定的 path 参数），不进 allowed_roots 映射；
+        # 默认按 <workspace>/templates/paper_note.md；测试可注入 _template_path
+        self._template_path = None
+
+    def _load_template(self) -> list[str]:
+        cfg = get_rag_service().config
+        # cfg.workspace 是 str（config.py:67），需先包 Path 才能用 / 拼接；
+        # 模板是内部常量路径，不进 allowed_roots 映射（WorkspacePolicy 不校验）
+        tpl = Path(self._template_path or (Path(cfg.workspace) / "templates" / "paper_note.md"))
+        return [ln.lstrip("# ").strip() for ln in tpl.read_text(encoding="utf-8").splitlines()
+                if ln.startswith("#")]
+
+    def execute(self, path: str) -> ToolResult:
+        note_heads = [ln.lstrip("# ").strip()
+                      for ln in Path(path).read_text(encoding="utf-8").splitlines()
+                      if ln.startswith("#")]
+        missing = [h for h in self._load_template() if h not in note_heads]
+        if missing:
+            return ToolResult(text=f"缺少模板章节: {', '.join(missing)}")
+        return ToolResult(text="结构完整，与模板一致")
+
+
+class SuggestEditTool(Tool):
+    name = "suggest_edit"
+    description = "汇总对一篇笔记的修改建议（供 review-note 返回）"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "format": "path", "description": "笔记绝对路径"},
+            "suggestions": {"type": "array", "items": {"type": "string"},
+                            "description": "修改建议列表"},
+        },
+        "required": ["path", "suggestions"],
+    }
+    risk_level = "low"
+    allowed_roots = ["note"]
+
+    def execute(self, path: str, suggestions: list[str]) -> ToolResult:
+        lines = "\n".join(f"- {s}" for s in suggestions)
+        return ToolResult(text=f"对 {path} 的建议：\n{lines}")
