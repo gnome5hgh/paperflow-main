@@ -77,3 +77,19 @@ def test_format_check_allows_scratch_not_write(tmp_path):
     for name in ("write_file", "edit_file"):
         assert str(tmp_path / "ws" / "tmp") not in tools[name].allowed_paths
         assert str(tmp_path / "pdf") not in tools[name].allowed_paths
+
+
+from paperflow.tools.file import ReadFileTool
+
+
+def test_make_tools_injects_config_and_path_hints(tmp_path):
+    cfg = PaperFlowConfig(
+        workspace=str(tmp_path / "ws"),
+        vault_note_dir=str(tmp_path / "note"),
+        vault_pdf_dir=str(tmp_path / "pdf"),
+    )
+    tool = make_tools(cfg, [ReadFileTool])[0]
+    assert tool._config is cfg                         # _config 注入
+    assert f"note={str(tmp_path / 'note')}" in tool.description   # 路径提示
+    assert f"templates={str(tmp_path / 'ws' / 'templates')}" in tool.description
+    assert "scratch=" not in tool.description          # scratch 不透明

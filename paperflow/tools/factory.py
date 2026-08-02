@@ -31,5 +31,13 @@ def make_tools(config: PaperFlowConfig, tool_classes: list[type[Tool]]) -> list[
         tool = cls()
         # 赋新列表而非 in-place 变异（allowed_paths 是共享类属性，变异会污染所有子类）
         tool.allowed_paths = [roots[r] for r in tool.allowed_roots if r in roots]
+        # 注入 config：依赖配置派生路径的工具（如 ReviewDraftTool scratch）用它，
+        # 避免经 get_rag_service().config 间接取（agent 专属模块的命名空间无法 monkeypatch）
+        tool._config = config
+        # 路径发现：把解析后的绝对路径追加进 description，LLM 经 function schema 可见。
+        # 排除 scratch——scratch 路径对 LLM 不透明（draft 路径由任务文本给出，无 ls 工具枚举不到）
+        for r in tool.allowed_roots:
+            if r in roots and r != "scratch":
+                tool.description += f"\n[目录] {r}={roots[r]}"
         tools.append(tool)
     return tools
