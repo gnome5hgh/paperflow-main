@@ -24,6 +24,7 @@ Thumbs.db
 data/*
 !data/.gitkeep
 !data/intents/
+!data/templates/
 
 # Documentation (not version controlled)
 docs/
