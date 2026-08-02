@@ -73,3 +73,78 @@ def test_ssrf_check_blocks_private():
     tool._client = ArxivSearchTool._make_client(transport=_atransport(), ssrf_check=blocking_check)
     result = tool.execute(query="x", max_results=1)
     assert "SSRF" in result.text
+
+
+def test_download_resolves_redirect_and_indexes(tmp_path, monkeypatch):
+    # 302 → 200 PDF 开心路径：解析后的最终 URL 被 GET、写盘字节正确、触发 index_document
+    from paperflow.tools import search as search_mod
+
+    def fake_resolve(url):
+        # 模拟 HEAD 逐跳校验把 arxiv pdf 302 到最终地址的解析结果；
+        # 匹配 arxiv pdf_url（含 /pdf/），搜索 API 路径（/api/query）原样返回
+        return "http://test/real.pdf" if "/pdf/" in url else url
+    monkeypatch.setattr(search_mod, "resolve_url_target", fake_resolve)
+
+    got = []
+    def handler(req):
+        if "/api/query" in str(req.url):
+            return httpx.Response(200, content=_ATOM.encode(), request=req)
+        got.append(str(req.url))
+        return httpx.Response(200, content=b"%PDF-1.4 fake content", request=req)
+    transport = httpx.MockTransport(handler)
+    tool = ArxivSearchTool()
+    tool._client = ArxivSearchTool._make_client(transport=transport, ssrf_check=lambda u: None)
+
+    class FakeSvc:
+        def __init__(self):
+            self.lock = __import__("threading").RLock()
+            self.indexed = []
+        def index_document(self, p):
+            self.indexed.append(p)
+    fake = FakeSvc()
+    monkeypatch.setattr("paperflow.tools.search.get_rag_service", lambda: fake)
+
+    dest = tmp_path / "out.pdf"
+    result = tool.execute(query="link prediction", max_results=1, download_to=str(dest))
+    assert "已下载" in result.text
+    assert dest.read_bytes().startswith(b"%PDF")          # 写盘字节正确
+    assert fake.indexed == [str(dest)]                    # 触发 index_document
+    assert "http://test/real.pdf" in got                  # GET 的是解析后的最终 URL
+
+
+def test_download_blocks_private_redirect(tmp_path, monkeypatch):
+    # 302 → 私网 IP 被拒：下载报错、无文件落盘、不触发索引
+    from paperflow.core.security.network import SSRFError
+    from paperflow.tools import search as search_mod
+
+    monkeypatch.setattr(search_mod, "resolve_url_target",
+                        lambda url: "http://169.254.169.254/latest/meta-data/" if "/pdf/" in url else url)
+
+    def handler(req):
+        if "/api/query" in str(req.url):
+            return httpx.Response(200, content=_ATOM.encode(), request=req)
+        return httpx.Response(200, content=b"%PDF", request=req)
+    transport = httpx.MockTransport(handler)
+    tool = ArxivSearchTool()
+    # ssrf_check 注入桩：只拒绝 metadata 私网 IP，搜索 URL 放行——若用真实
+    # validate_url_target，本沙箱 DNS 会把搜索域名解析到 198.18.0.0/15 私网段，
+    # 搜索阶段即被拒，测不到下载路径的重定向拒绝（无法确定性地覆盖修复点）。
+    def check(url):
+        if "169.254.169.254" in url:
+            raise SSRFError("blocked for test")
+    tool._client = ArxivSearchTool._make_client(transport=transport, ssrf_check=check)
+
+    class FakeSvc:
+        def __init__(self):
+            self.lock = __import__("threading").RLock()
+            self.indexed = []
+        def index_document(self, p):
+            self.indexed.append(p)
+    fake = FakeSvc()
+    monkeypatch.setattr("paperflow.tools.search.get_rag_service", lambda: fake)
+
+    dest = tmp_path / "evil.pdf"
+    result = tool.execute(query="link prediction", max_results=1, download_to=str(dest))
+    assert "下载失败" in result.text or "SSRF" in result.text
+    assert not dest.exists()                              # 无文件落盘
+    assert fake.indexed == []                             # 不触发索引

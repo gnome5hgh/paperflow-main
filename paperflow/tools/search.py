@@ -16,6 +16,10 @@ from paperflow.core.security.network import (
     validate_url_target, resolve_url_target, SSRFError,
 )
 from paperflow.core.tool import Tool, ToolResult
+# 模块级绑定 get_rag_service（与 tools/file.py 一致）：execute 内直接引用模块
+# 全局，测试可 monkeypatch paperflow.tools.search.get_rag_service 注入假服务。
+# rag.service 不反向依赖 tools，无循环 import 风险。
+from paperflow.rag.service import get_rag_service
 
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
@@ -78,6 +82,25 @@ class OpenAlexClient(_SearchClientMixin):
         return papers
 
 
+def _download_pdf(client, url: str, dest: Path) -> None:
+    """共享下载助手：逐跳 SSRF 校验重定向链，绝不把 3xx 或非 PDF 响应体写盘。
+
+    spec §13：重定向链走 resolve_url_target。两个搜索分支共用此路径，
+    避免各自写下载逻辑再引入同类缺陷。
+    """
+    resolved = resolve_url_target(url)      # HEAD 逐跳 SSRF 校验，返回最终 URL
+    client.ssrf_check(resolved)             # 最终 URL 也校验（validate_url_target 要求公网 IP，私网全拒）
+    r = client.client.get(resolved, follow_redirects=False)
+    if r.is_redirect:
+        # HEAD 与 GET 的重定向路径可能分叉（签名/方法相关）；残余 3xx 绝不写盘
+        raise RuntimeError(f"重定向未解析完整: {url} -> {resolved}")
+    r.raise_for_status()                    # 4xx/5xx
+    if not r.content.startswith(b"%PDF"):
+        # 服务器 200 但返回 HTML（错误页/登录墙）——magic bytes 比 content-type 可靠
+        raise ValueError(f"响应不是 PDF（缺 %PDF magic bytes）: {url}")
+    dest.write_bytes(r.content)
+
+
 class ArxivSearchTool(Tool):
     name = "arxiv_search"
     description = "搜索 arXiv 论文；可选下载 PDF 到本地（download_to 缺省落 vault pdf 目录）"
@@ -114,18 +137,13 @@ class ArxivSearchTool(Tool):
         if download_to and papers:
             dest = Path(download_to)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            client._get(papers[0]["pdf_url"])   # 触发 SSRF 校验后下载
-            self._download(client, papers[0]["pdf_url"], dest)
-            from paperflow.rag.service import get_rag_service
+            try:
+                _download_pdf(client, papers[0]["pdf_url"], dest)
+            except Exception as e:
+                return ToolResult(text=f"下载失败: {e}")   # 含 SSRFError/RuntimeError/ValueError
             get_rag_service().index_document(str(dest))   # 热更新钩子
             lines.append(f"已下载 PDF: {dest}")
         return ToolResult(text="\n".join(lines) if lines else "无搜索结果")
-
-    def _download(self, client, url: str, dest: Path) -> None:
-        client.ssrf_check(url)
-        r = client.client.get(url)
-        r.raise_for_status()
-        dest.write_bytes(r.content)
 
 
 class OpenAlexSearchTool(Tool):
@@ -163,11 +181,10 @@ class OpenAlexSearchTool(Tool):
         if download_to and papers and papers[0].get("pdf_url"):
             dest = Path(download_to)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            client.ssrf_check(papers[0]["pdf_url"])
-            r = client.client.get(papers[0]["pdf_url"])
-            r.raise_for_status()
-            dest.write_bytes(r.content)
-            from paperflow.rag.service import get_rag_service
-            get_rag_service().index_document(str(dest))
+            try:
+                _download_pdf(client, papers[0]["pdf_url"], dest)
+            except Exception as e:
+                return ToolResult(text=f"下载失败: {e}")   # 含 SSRFError/RuntimeError/ValueError
+            get_rag_service().index_document(str(dest))   # 热更新钩子
             lines.append(f"已下载 PDF: {dest}")
         return ToolResult(text="\n".join(lines) if lines else "无搜索结果")
