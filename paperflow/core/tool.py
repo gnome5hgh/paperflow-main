@@ -93,6 +93,9 @@ class Tool(ABC):
     #: 输出扫描模式，Layer 1 SecurityScanMiddleware 据此决定扫描方式；"mark" | None
     output_scan: str | None = None
 
+    #: 需要父 Agent 引用（如嵌套子 agent 的工具）。默认 False——原子工具不声明。
+    needs_parent: bool = False
+
     @abstractmethod
     def execute(self, **kwargs) -> ToolResult:
         """
@@ -103,3 +106,7 @@ class Tool(ABC):
         :raises Exception: 执行失败时由 Agent._exec_tool 捕获并转为错误 ToolResult
         """
         ...
+
+    def attach_agent(self, agent) -> None:
+        """注入父 Agent 引用（opt-in）。默认存 self._parent。"""
+        self._parent = agent

@@ -126,11 +126,20 @@ class Agent:
         # Pull 模式：从唯一注册表按类型加载完整配置
         config = agent_registry.get_config(agent_type)
 
+        #: Agent 注册表（ReviewDraftTool 等嵌套工具需要它构造子 agent）
+        self.agent_registry = agent_registry
+
         #: LLM 客户端（async 接口）
         self.llm = llm
 
         #: Tool 字典，key = tool.name，供 _exec_tool 快速查找
         self.tools = {t.name: t for t in config.tools}
+
+        # opt-in 注入：仅对声明 needs_parent 的工具注入父引用。
+        # 原子工具不需要 parent；只有嵌套子 agent 的工具声明——权限最小化。
+        for t in self.tools.values():
+            if getattr(t, "needs_parent", False):
+                t.attach_agent(self)
 
         #: 注入 LLM 的系统提示词，定义本 Agent 的行为规范
         self.system_prompt = config.system_prompt
