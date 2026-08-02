@@ -223,7 +223,10 @@ class SuggestEditTool(Tool):
         "required": ["path", "suggestions"],
     }
     risk_level = "low"
-    allowed_roots = ["note"]
+    # 审稿流目标是 scratch 草稿路径（review-note 对草稿给建议），与 FormatCheckTool 同根；
+    # 不加 scratch 时真实 WorkspacePolicy 会拦截草稿路径（draft 在 workspace/tmp），
+    # 且 execute 不读文件内容（只把 suggestions 按 path 标签格式化），放开零安全影响。
+    allowed_roots = ["note", "scratch"]
 
     def execute(self, path: str, suggestions: list[str]) -> ToolResult:
         lines = "\n".join(f"- {s}" for s in suggestions)
