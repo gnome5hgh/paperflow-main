@@ -188,3 +188,88 @@ class OpenAlexSearchTool(Tool):
             get_rag_service().index_document(str(dest))   # 热更新钩子
             lines.append(f"已下载 PDF: {dest}")
         return ToolResult(text="\n".join(lines) if lines else "无搜索结果")
+
+
+class DedupPapersTool(Tool):
+    """多源去重：DOI → arXiv ID → 规范化标题 四级匹配。纯逻辑、无副作用。"""
+
+    name = "dedup_papers"
+    description = "对多来源论文列表去重（DOI → arXiv ID → 标题四级匹配）"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "papers": {"type": "array", "items": {"type": "object"},
+                       "description": "论文元数据列表"},
+        },
+        "required": ["papers"],
+    }
+    risk_level = "low"
+
+    @staticmethod
+    def _norm_title(title: str) -> str:
+        import re
+        return re.sub(r"[^\w]", "", title).lower()
+
+    def execute(self, papers: list[dict]) -> ToolResult:
+        # 四级匹配：DOI 最可靠，其次 arXiv ID，最后规范化标题（退化键）。
+        # 多源搜索可能返回同一论文的不同版本（标题带版本号/期刊名后缀），
+        # 先按强键合并，避免后续 Filter 阶段重复计算。
+        seen_doi, seen_arxiv, seen_title = set(), set(), set()
+        merged = []
+        for p in papers:
+            key = None
+            if p.get("doi"):
+                key = ("doi", p["doi"])
+            elif p.get("arxiv_id"):
+                key = ("arxiv", p["arxiv_id"])
+            else:
+                key = ("title", self._norm_title(p.get("title", "")))
+            sig, val = key
+            bucket = seen_doi if sig == "doi" else (seen_arxiv if sig == "arxiv" else seen_title)
+            if val in bucket:
+                continue
+            bucket.add(val)
+            merged.append(p)
+        # 输出带上 arXiv ID（若有）：让 LLM 可观测"同一 arXiv ID 只留一条"的去重结果
+        # （brief 测试断言 arxiv_id 在文本中出现一次）。缺 arXiv ID 的条目只打标题，
+        # 避免输出 "None" 噪音。
+        lines = [f"- {p.get('title')} ({p['arxiv_id']})" if p.get("arxiv_id")
+                 else f"- {p.get('title')}" for p in merged]
+        return ToolResult(text="\n".join(lines) if lines else "（空列表）")
+
+
+class FilterPapersTool(Tool):
+    """综合筛选：年份/引用数/期刊白名单。阈值由 LLM 传参；期刊白名单可省略。"""
+
+    name = "filter_papers"
+    description = "按年份/引用数/期刊筛选论文列表"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "papers": {"type": "array", "items": {"type": "object"}},
+            "year_min": {"type": "integer", "description": "最小年份（可选）"},
+            "min_citations": {"type": "integer", "description": "最小引用数（可选）"},
+            "journals": {"type": "array", "items": {"type": "string"},
+                         "description": "期刊白名单（可选）"},
+        },
+        "required": ["papers"],
+    }
+    risk_level = "low"
+
+    def execute(self, papers: list[dict], year_min: int | None = None,
+                min_citations: int | None = None,
+                journals: list[str] | None = None) -> ToolResult:
+        out = []
+        for p in papers:
+            if year_min is not None and (p.get("year") or 0) < year_min:
+                continue
+            if min_citations is not None and (p.get("cited_by_count") or 0) < min_citations:
+                continue
+            # journals 白名单可省略：p 缺 journal 字段时 (p.get("journal") is None)
+            # 不 ∈ journals → 会被筛掉。但 OpenAlex 条目无 journal 信息是常态，
+            # 若 LLM 未传白名单就不应自动淘汰，故用 `journals and ...` 短路。
+            if journals and p.get("journal") not in journals:
+                continue
+            out.append(p)
+        lines = [f"- {p.get('title')}" for p in out]
+        return ToolResult(text="\n".join(lines) if lines else "（无满足条件的论文）")
