@@ -26,12 +26,17 @@ def _deterministic_seed(text: str) -> int:
 
 
 class FakeEmbedder:
-    """测试替身：md5 确定性伪向量（对齐 FixedDenseEncoder 模式），维度任意。"""
+    """测试替身：md5 确定性伪向量（对齐 FixedDenseEncoder 模式），维度任意。
+
+    ``calls`` 累计已 embedding 的文本数，供 indexer 测试断言
+    guard-2 不重 embedding 不变文档（数量而非次数，直接反映工作量）。"""
 
     def __init__(self, dim: int = 64):
         self.dim = dim
+        self.calls = 0
 
     def __call__(self, texts: list[str]) -> np.ndarray:
+        self.calls += len(texts)
         vecs = []
         for t in texts:
             rng = np.random.RandomState(_deterministic_seed(t))

@@ -67,3 +67,47 @@ def test_authority_collection_empty_state_nonempty_rescans(tmp_path):
     idx._save_state({"old/path.md": 123.0})
     idx.index_all()
     assert svc._vector_store.count() > 0    # 触发全量重扫而非跳过
+
+
+def test_guard2_derives_state_and_skips_unchanged(tmp_path):
+    note_dir = tmp_path / "vault" / "note"; note_dir.mkdir(parents=True)
+    a = note_dir / "a.md"; a.write_text("# 标题\n\ncircRNA 内容", encoding="utf-8")
+    svc = _make_service(tmp_path, note_dir, tmp_path / "vault" / "pdf")
+    svc._embedder = FakeEmbedder()
+    idx = RagIndexer(svc)
+    idx.index_all()
+    first_calls = svc._embedder.calls
+    (tmp_path / "ws" / "index_state.json").unlink()   # 模拟 state 丢失
+    b = note_dir / "b.md"; b.write_text("# 新\n\nmiRNA 内容", encoding="utf-8")
+    idx.index_all()
+    # guard-2 从 metadata 重建 state → a.md 不变不重 embedding，只 embed b.md（1 个 text）
+    assert svc._embedder.calls == first_calls + 1
+
+
+def test_hot_update_no_bm25_accumulation(tmp_path):
+    note_dir = tmp_path / "vault" / "note"; note_dir.mkdir(parents=True)
+    p = note_dir / "n.md"; p.write_text("# H\n\nbody text", encoding="utf-8")
+    svc = _make_service(tmp_path, note_dir, tmp_path / "vault" / "pdf")
+    svc._embedder = FakeEmbedder()
+    idx = RagIndexer(svc)
+    idx.index_document(str(p))
+    first = svc._ensure_bm25().count()
+    p.write_text("# H\n\nbody text changed", encoding="utf-8")   # 同 chunk 结构编辑
+    idx.index_document(str(p))
+    assert svc._ensure_bm25().count() == first                  # dict 幂等不膨胀
+
+
+def test_shrink_removes_old_chunks(tmp_path):
+    note_dir = tmp_path / "vault" / "note"; note_dir.mkdir(parents=True)
+    p = note_dir / "s.md"
+    p.write_text("# 概述\n\n第一部分内容\n## 方法\n\n第二部分内容", encoding="utf-8")
+    svc = _make_service(tmp_path, note_dir, tmp_path / "vault" / "pdf")
+    svc._embedder = FakeEmbedder()
+    idx = RagIndexer(svc)
+    idx.index_document(str(p))
+    before = svc._ensure_vector_store().count()
+    p.write_text("# 概述\n\n只有概述了", encoding="utf-8")   # 方法 section 删除
+    idx.index_document(str(p))
+    after = svc._ensure_vector_store().count()
+    assert after < before                                     # 旧块被清
+    assert svc._ensure_bm25().count() == after               # BM25 投影一致
