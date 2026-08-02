@@ -1,5 +1,6 @@
 # tests/test_rag_indexer.py
 import json
+import os
 import time
 from pathlib import Path
 
@@ -72,6 +73,10 @@ def test_authority_collection_empty_state_nonempty_rescans(tmp_path):
 def test_guard2_derives_state_and_skips_unchanged(tmp_path):
     note_dir = tmp_path / "vault" / "note"; note_dir.mkdir(parents=True)
     a = note_dir / "a.md"; a.write_text("# 标题\n\ncircRNA 内容", encoding="utf-8")
+    # 冻结 a.md mtime：消除 APFS 亚秒级 st_mtime 方差——否则 guard-2 的
+    # metadata mtime vs 磁盘 mtime 比对在负载下偶发不等，a.md 被误判"已变更"重 embedding，
+    # 断言 calls == first_calls + 1 偶发失败（已两次复现）
+    os.utime(a, ns=(1_000_000_000_000, 1_000_000_000_000))
     svc = _make_service(tmp_path, note_dir, tmp_path / "vault" / "pdf")
     svc._embedder = FakeEmbedder()
     idx = RagIndexer(svc)
