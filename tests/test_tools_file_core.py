@@ -77,3 +77,13 @@ async def test_workspace_boundary_enforced(tmp_path):
                       args={"path": str(tmp_path / "outside.md")})
     with pytest.raises(SecurityBlocked):
         await mw.before(ctx)
+
+
+def test_write_rejects_existing(tmp_path):
+    tools, _ = _tools(tmp_path)
+    write_tool = next(t for t in tools if isinstance(t, WriteFileTool))
+    target = tmp_path / "note" / "x.md"
+    target.write_text("old", encoding="utf-8")
+    result = write_tool.execute(path=str(target), content="new")
+    assert "已存在" in result.text            # 返回拒绝
+    assert target.read_text(encoding="utf-8") == "old"   # 内容不变（未写入）
