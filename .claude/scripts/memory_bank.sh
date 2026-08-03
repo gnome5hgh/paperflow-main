@@ -128,6 +128,21 @@ $hint"
       exit 0
     fi
 
+    # 可选兜底：若 claude CLI 可用，把原始尾部总结为语义交接（成本换质量）。
+    # 失败/不可用/输出为空时静默回退为原始尾部，不影响 hook 退出（保持 set -e 安全）。
+    # MEMORY_BANK_SESSION_END 守卫：claude --print 子进程若也触发 SessionEnd hook，
+    # 会继承该环境变量并跳过摘要调用，防止递归嵌套调用 claude --print。
+    summary_text="$tail_text"
+    tail_label="会话尾部摘录"
+    if [[ -z "${MEMORY_BANK_SESSION_END:-}" ]] && command -v claude >/dev/null 2>&1; then
+      export MEMORY_BANK_SESSION_END=1
+      candidate="$(printf '%s' "$tail_text" | claude --print '将以下 Claude Code 会话尾部摘录总结为 HANDOFF 的「上次在哪」段。只输出总结本身，中文，覆盖：当前目标、进展到哪、阻塞/疑问、下一步。150 字以内。' 2>/dev/null | head -c 3000 || true)"
+      if [[ -n "${candidate//[[:space:]]/}" ]]; then
+        summary_text="$candidate"
+        tail_label="语义总结（claude --print）"
+      fi
+    fi
+
     # 确定性 git 事实：新窗口无需重新探索就能知道分支/改动/测试进度。best-effort，失败不阻塞 hook。
     # 注意 set -o pipefail 下，git status 若失败会导致整个管道非零退出，必须用 || echo 兜底。
     git_branch="$(git branch --show-current 2>/dev/null || echo 'N/A')"
@@ -142,9 +157,9 @@ $hint"
       # 因此 $session_id 必须用 ${} 包裹，否则报 "unbound variable"。
       echo "自动生成：$(date '+%Y-%m-%d %H:%M:%S')；session=${session_id}；reason=${reason:-unknown}"
       echo ""
-      echo "## 上次在哪（会话尾部摘录）"
+      echo "## 上次在哪（${tail_label}）"
       echo ""
-      echo "${tail_text}"
+      echo "${summary_text}"
       echo ""
       echo "## 当前状态快照（git 事实，自动附加，勿改）"
       echo ""

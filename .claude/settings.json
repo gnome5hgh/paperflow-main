@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/memory_bank.sh\" start",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/memory_bank.sh\" start 2>/dev/null || true",
             "timeout": 30
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/memory_bank.sh\" archive",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/memory_bank.sh\" archive 2>/dev/null || true",
             "timeout": 30
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/memory_bank.sh\" end",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/memory_bank.sh\" end 2>/dev/null || true",
             "timeout": 60
           }
         ]

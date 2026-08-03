@@ -91,3 +91,9 @@
 **决策**：ADR 文档直接描述当前实现的方案形态（用"已实现 / 待实现"标注状态），不写分层实施细节（"Layer N 怎么实现"、"留到 Layer N"），不留"实现修订/注记"节。
 
 **理由**：ADR 是架构决策记录——旧设计 + 修订注记的双层结构让读者读两遍且易过时；直接同步正文为当前实现更可维护。实现揭示 ADR 设计缺陷时，融合进正文而非追加注记。
+
+## 2026-08-03 — Memory Bank v2：交接语义化 + 压缩快照 + worktree 支持
+
+**决策**：SessionStart 注入「维护指令」让 Claude 会话中主动维护 HANDOFF 的「下一步」；PreCompact 新增 `latest-snapshot.md` 快照并在压缩后按 mtime「prefer 更新者」注入；hooks 移入可提交的 `settings.json` 并用 `.claude/*` + `!` 反选解除 `.claude/` 整体 gitignore；SessionEnd 先备份再覆盖、空尾部不覆盖、附加确定性 git 事实；`claude --print` 作为可选兜底把会话尾部总结为语义交接。
+
+**理由**：原始 Memory Bank 只解决「新窗口注入」，但四个缺口导致实际效果打折——① HANDOFF 是 transcript 尾部原文摘录，质量依赖结尾措辞；② PreCompact 只备份不刷新，压缩后 SessionStart 重注入的是「会话开始状态」而非「压缩瞬间状态」；③ `.claude/` 整目录 gitignored，worktree 开发时 hook 静默失效（最需要连续性的场景没覆盖）；④ SessionEnd 覆盖无备份，短会话直接丢弃旧交接。v2 分别对治。关键取舍：交接语义来源优先「Claude 会话中主动维护」而非事后摘录（维护指令零成本、上下文最新鲜）；快照注入用 mtime 规则保证语义内容优先于原始尾部；`claude --print` 兜底成本换质量，不可用时静默降级。见 `.claude/scripts/memory_bank.sh`。

@@ -34,6 +34,7 @@ Layer 4  Orchestration（Supervisor / CLI REPL / SubAgentResult 失败传播）
 - **ADR 表述原则**：正文 = 当前实现形态，用「已实现 / 待实现」标注状态，不写分层实施细节、不留「实现修订/注记」节
 - **代码注释必须中文，讲 WHY 不讲 WHAT**
 - **jq**：Memory Bank 脚本（`.claude/scripts/memory_bank.sh`）依赖 jq
+- **claude --print（可选兜底）**：SessionEnd 检测到 `claude` CLI 在 PATH 上时，会把会话尾部总结为语义交接（「上次在哪」标注「语义总结」）；不可用/失败/输出为空时静默回退为原始尾部摘录，不影响 hook 退出
 
 ## 踩过的坑
 
