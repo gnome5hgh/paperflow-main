@@ -68,3 +68,34 @@ class TestIntentionResult:
         # 范围约束同样作用于 LLM 兜底 schema（StructuredOutput 不校验范围）
         with pytest.raises(ValidationError):
             IntentionResult(intent_type=IntentType.GENERAL, confidence=-0.2)
+
+
+# ---- Layer 4 Task 2：steps / clarification 契约扩展（spec §4.3，D7） ----
+# 两个新字段承载 Stage 3 的复合意图拆分（steps）与歧义澄清（clarification），
+# Task 6/7（LLM 兜底 / pipeline 前置钩子）消费；Stage 2 命中时 steps 保持空。
+
+
+def test_intent_output_steps_clarification_defaults():
+    out = IntentOutput(intent_type=IntentType.SEARCH_PAPER, confidence=0.9,
+                       source=IntentStep.ROUTER)
+    assert out.steps == []
+    assert out.clarification is None
+
+
+def test_intent_output_carries_steps_and_clarification():
+    out = IntentOutput(
+        intent_type=IntentType.ASK_QUESTION, confidence=0.6,
+        source=IntentStep.LLM,
+        steps=[IntentType.SEARCH_PAPER, IntentType.GENERATE_NOTE],
+        clarification="要搜索还是生成笔记？")
+    assert out.steps == [IntentType.SEARCH_PAPER, IntentType.GENERATE_NOTE]
+    assert out.clarification == "要搜索还是生成笔记？"
+
+
+def test_intention_result_carries_steps_and_clarification():
+    r = IntentionResult(
+        intent_type=IntentType.SEARCH_PAPER, confidence=0.8,
+        steps=[IntentType.SEARCH_PAPER, IntentType.GENERATE_NOTE],
+        clarification="要搜索还是生成笔记？")
+    assert r.steps == [IntentType.SEARCH_PAPER, IntentType.GENERATE_NOTE]
+    assert r.clarification == "要搜索还是生成笔记？"

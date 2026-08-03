@@ -65,6 +65,12 @@ class IntentOutput(BaseModel):
     #: Stage 1 填充的前一意图（Layer 4，session 提供）
     prev_intent: IntentType | None = None
 
+    #: 复合意图有序拆分（Stage 3 填；Stage 2 路由命中保持空——单意图交 Supervisor ReAct 推断）
+    steps: list["IntentType"] = []
+
+    #: 歧义澄清问题（Stage 3 填；非空时 run() 前置钩子提前返回，CLI 跨轮挂起 pending_intent）
+    clarification: str | None = None
+
 
 class IntentionResult(BaseModel):
     """Stage 3 的 LLM 兜底 schema（ADR 0006 StructuredOutput 消费）。
@@ -81,3 +87,9 @@ class IntentionResult(BaseModel):
 
     #: LLM 改写后的查询（缺省为空串，pipeline 回落原文）
     query_rewrite: str = ""
+
+    #: 复合意图有序拆分（Stage 3 的 StructuredOutput schema——不带则 LLM 兜底无法产出）
+    steps: list["IntentType"] = []
+
+    #: 歧义澄清问题（同上；非空时 run() 前置钩子提前返回，CLI 跨轮挂起 pending_intent）
+    clarification: str | None = None
