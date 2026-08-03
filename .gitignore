@@ -29,8 +29,15 @@ data/*
 # Documentation (not version controlled)
 docs/
 
-# Claude Code local settings & Memory Bank (not version controlled)
-.claude/
+# Claude Code Memory Bank — 静态资产进 git（settings.json/scripts/稳定文档），易变/个人文件保持忽略
+# 注意：反选子文件必须用 .claude/* 排除内容而非 .claude/ 排除目录本身，否则 ! 规则对父目录被排除的子路径无效
+.claude/*
+!.claude/settings.json
+!.claude/scripts/
+!.claude/scripts/*
+!.claude/SCOPE.md
+!.claude/SYSTEM.md
+!.claude/DECISIONS.md
 
 # Environment
 .env
