@@ -75,3 +75,82 @@ async def test_generate_note_single_round(agent_env, agent_registry):
     result = await agent.run(f"为 {pdf} 生成笔记")
     assert "笔记已生成" in result
     assert note_out.exists()              # 定稿落盘（confirm_callback 已接受 write_file）
+
+
+import json
+from paperflow.core.llm import Message
+from tests.conftest import make_agent, _tc  # LoopMockLLM 本文件自定义
+
+
+class LoopMockLLM:
+    """e2e 专用 mock：预设响应序列；callable 项接收 messages 动态构造。
+
+    子 agent 的 read_file 轮次需要 draft_path（uuid 文件名测试无法预知），
+    只能从子 agent 的 user 任务文本（"审阅草稿文件 <draft>，对照原文 <pdf>"）解析。"""
+
+    def __init__(self):
+        self.responses = []
+        self.seen_tasks = []
+        self.callable_hits = 0
+
+    def add(self, resp):
+        self.responses.append(resp)
+
+    async def chat(self, messages, tools=None, tool_choice="auto"):
+        for m in messages:
+            if m.role == "user":
+                self.seen_tasks.append(m.content)
+        resp = self.responses.pop(0)
+        if callable(resp):
+            self.callable_hits += 1
+            return resp(messages)
+        return resp
+
+    model = "mock"
+
+
+def child_read(messages):
+    """子 agent 第一轮：从任务文本解析 draft_path，返回 read_file 调用。"""
+    task = [m.content for m in messages if m.role == "user"][-1]
+    draft_path = task.split("审阅草稿文件 ")[1].split("，")[0]
+    return Message(role="assistant", content=None, tool_calls=[{
+        "id": "cr", "type": "function",
+        "function": {"name": "read_file", "arguments": json.dumps({"path": draft_path})},
+    }])
+
+
+@pytest.mark.asyncio
+async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
+    cfg, _ = agent_env
+    pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
+    pdf.write_bytes(b"dummy")
+    note_out = Path(cfg.vault_note_dir) / "paper.md"
+    template = Path(cfg.workspace) / "templates" / "paper_note.md"
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text("# 标题\n## 概述\n## 方法\n## 实验结果\n", encoding="utf-8")
+
+    mock = LoopMockLLM()
+    # generate-note 轮次（静态）
+    mock.add(_tc("read_file", {"path": str(template)}))
+    mock.add(_tc("read_pdf", {"path": str(pdf)}))
+    mock.add(_tc("review_draft", {"draft_text": "# 标题\n## 概述\n## 方法\n", "pdf_path": str(pdf)}))
+    # 审稿循环 第 1 轮：子 agent 读草稿 → 意见"缺实验结果"（驱动 in-context 修订）
+    mock.add(child_read)
+    mock.add(Message(role="assistant", content="草稿缺实验结果，请补充"))
+    # 第 2 轮：修订后草稿 → 子 agent 读草稿 → 意见"通过"
+    mock.add(_tc("review_draft", {"draft_text": "# 标题\n## 概述\n## 方法\n## 实验结果\n", "pdf_path": str(pdf)}))
+    mock.add(child_read)
+    mock.add(Message(role="assistant", content="结构完整，通过"))
+    # 定稿
+    mock.add(_tc("write_file", {"path": str(note_out), "content": "# 标题\n## 概述\n## 方法\n## 实验结果\n"}))
+    mock.add(Message(role="assistant", content="笔记已生成"))
+
+    # make_agent：真实安全链 + confirm_callback 自动接受（write_file 定稿是用户门）
+    agent = make_agent(agent_registry, "generate-note", mock, cfg)
+    result = await agent.run(f"为 {pdf} 生成笔记")
+    assert "笔记已生成" in result
+    assert mock.callable_hits == 2                 # 子 agent 跑了两轮（审稿两次）
+    assert note_out.exists()                       # 定稿落盘
+    assert note_out.read_text(encoding="utf-8").startswith("# 标题")
+    # scratch 清理：两轮审稿后 workspace/tmp 无残留
+    assert not list((Path(cfg.workspace) / "tmp").glob("review_*.md"))
