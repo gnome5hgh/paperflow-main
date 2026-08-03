@@ -24,6 +24,7 @@ AuditMiddleware —— 工具调用审计中间件。
 
 import json
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -125,6 +126,10 @@ def _extract_violations(ctx: ToolContext) -> dict | None:
 class AuditMiddleware(SecurityMiddleware):
     def __init__(self, audit_dir: str = "data/audit"):
         self.audit_path = Path(audit_dir) / f"audit_{datetime.now():%Y%m%d}.jsonl"
+        # 并发写锁（Layer 4 parallel_spawn 就绪）：多个子 agent 的工具调用可能并发跑在
+        # 不同线程打本中间件，JSONL append 无锁会分段交叉污染审计行——与 MemoryStore
+        # 的 _lock 同款，保证逐行原子。
+        self._lock = threading.Lock()
 
     async def before(self, ctx: ToolContext) -> None:
         return
@@ -146,5 +151,7 @@ class AuditMiddleware(SecurityMiddleware):
             security_scan=_extract_violations(ctx),
         )
         self.audit_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.audit_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry.__dict__, ensure_ascii=False) + "\n")
+        # 加锁写盘：整段「open + write」在锁内，保证 JSONL 行不会被并发线程分段交叉
+        with self._lock:
+            with open(self.audit_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry.__dict__, ensure_ascii=False) + "\n")
