@@ -7,6 +7,8 @@ from paperflow.core.intent.intent_schema import (
 )
 from paperflow.core.intent.hybrid_router import HybridRouter
 from paperflow.core.intent.dense_encoder import FixedDenseEncoder
+from paperflow.core.intent.entities import extract_entities
+from paperflow.core.intent.followup_detector import detect_followup
 
 
 class _MissRouter(HybridRouter):
@@ -104,3 +106,32 @@ class TestPipeline:
         pipe = IntentPipeline(router=make_router(), structured=structured)
         await pipe.run("完全无关的随机文本")
         assert "search_paper" in captured["prompt"] or "路由" in captured["prompt"]
+
+
+class TestPipelineLayer4Wiring:
+    @pytest.mark.asyncio
+    async def test_followup_inherits_prev_intent_with_merged_entities(self):
+        pipe = IntentPipeline(router=make_router(), structured=make_structured())
+        out = await pipe.run("那 Figure 3 呢？", prev_intent=IntentType.ASK_QUESTION,
+                             prev_user_input="/Users/me/paper.pdf 讲了什么")
+        assert out.source == IntentStep.FOLLOWUP
+        assert out.intent_type == IntentType.ASK_QUESTION
+        assert out.entities["pdf_path"] == "/Users/me/paper.pdf"   # 上轮实体继承
+        assert out.entities["figure"] == "3"                        # 本轮覆盖/新增
+
+    @pytest.mark.asyncio
+    async def test_stage3_passes_steps_and_clarification(self):
+        result = IntentionResult(intent_type=IntentType.GENERAL, confidence=0.4,
+                                 steps=[IntentType.SEARCH_PAPER, IntentType.GENERATE_NOTE],
+                                 clarification="要搜索还是生成笔记？")
+        pipe = IntentPipeline(router=make_router(), structured=make_structured(result))
+        out = await pipe.run("帮我写个笔记吧")     # miss 查询 → Stage 3
+        assert out.steps == [IntentType.SEARCH_PAPER, IntentType.GENERATE_NOTE]
+        assert out.clarification == "要搜索还是生成笔记？"
+
+    @pytest.mark.asyncio
+    async def test_real_extract_entities_delegation(self):
+        """方法形态委托：既兼容 stub 断言，又是真实实现。"""
+        pipe = IntentPipeline(router=make_router(), structured=make_structured())
+        assert pipe._extract_entities("/abs/x.pdf") == {"pdf_path": "/abs/x.pdf"}
+        assert pipe._detect_followup("那第三篇呢", IntentType.SEARCH_PAPER) is True

@@ -13,6 +13,8 @@ from pydantic import BaseModel
 from paperflow.core.intent.intent_schema import (
     IntentOutput, IntentType, IntentStep, IntentionResult,
 )
+from paperflow.core.intent.entities import extract_entities
+from paperflow.core.intent.followup_detector import detect_followup
 
 
 class IntentPipeline:
@@ -24,17 +26,25 @@ class IntentPipeline:
         self.structured = structured
         self.llm_fallback_schema = llm_fallback_schema
 
-    async def run(self, query: str, prev_intent: IntentType | None = None) -> IntentOutput:
-        # Stage 0：实体提取（stub——Layer 4 实现正则提取 PDF 路径/arXiv ID/DOI/Figure）
+    async def run(self, query: str, prev_intent: IntentType | None = None,
+                  prev_user_input: str = "") -> IntentOutput:
+        # prev_user_input：上轮原始输入，仅追问分支重跑 Stage 0 用（spec §4.5——
+        # 上轮实体不存 Session，确定性正则重提取零状态）。Task 6 前置钩子按
+        # run(query, prev_intent, prev_user_input) 三参调用，缺参会 TypeError。
+
+        # Stage 0：实体提取（确定性正则，只提取不判定意图）
         entities = self._extract_entities(query)
 
-        # Stage 1：追问检测（stub——Layer 4 实现，依赖 session prev_intent）
-        is_followup = self._detect_followup(query, prev_intent)
-        if is_followup:
+        # Stage 1：追问检测（词表启发式，依赖 session prev_intent/prev_user_input）
+        if self._detect_followup(query, prev_intent):
+            # 继承上轮意图；实体 = 上轮实体（从 prev_user_input 重跑 Stage 0）+ 本轮覆盖。
+            # 合并顺序关键：prev_entities 在前，本轮实体在后——同键（如 Figure）本轮赢
+            prev_entities = extract_entities(prev_user_input) if prev_user_input else {}
             return IntentOutput(
                 intent_type=prev_intent, confidence=1.0,
-                entities=entities, source=IntentStep.FOLLOWUP,
-                prev_intent=prev_intent, rewritten_query=query)
+                entities={**prev_entities, **entities},
+                source=IntentStep.FOLLOWUP, prev_intent=prev_intent,
+                rewritten_query=query)
 
         # Stage 2：HybridRouter（真实）
         choice = self.router(query)
@@ -54,17 +64,24 @@ class IntentPipeline:
             fallback=lambda: IntentionResult(intent_type=IntentType.GENERAL,
                                              confidence=0.0),
         )
+        # steps/clarification 透传：Task 2 扩展的字段，Supervisor 据此分解复合意图
+        # 或提前返回澄清（run() 前置钩子消费）
         return IntentOutput(
             intent_type=result.intent_type,
             confidence=result.confidence,
             entities=entities, source=IntentStep.LLM, prev_intent=prev_intent,
-            rewritten_query=result.query_rewrite or query)
+            rewritten_query=result.query_rewrite or query,
+            steps=result.steps or [],
+            clarification=result.clarification,
+        )
 
     def _extract_entities(self, query: str) -> dict:
-        return {}      # Layer 4：正则提取 pdf_path/arxiv_id/doi/figure
+        """Stage 0 实体提取（委托 entities.extract_entities；保留方法形态供既有 stub 测试兼容）。"""
+        return extract_entities(query)
 
     def _detect_followup(self, query: str, prev_intent) -> bool:
-        return False   # Layer 4：承接标记 + 无动作动词 + 指代判断
+        """Stage 1 追问检测（委托 followup_detector.detect_followup）。"""
+        return detect_followup(query, prev_intent)
 
     def _build_llm_prompt(self, query: str, near_miss: list[tuple[str, float]]) -> str:
         """注入意图契约说明（IntentType 枚举）+ 路由近失候选（top 分数）
