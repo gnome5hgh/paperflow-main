@@ -1,6 +1,8 @@
-# agents/generate-note/tools.py（本任务：仅 ReviewDraftTool；Task 6 补全 TOOLS）
+# agents/generate-note/tools.py（6 工具完整装配：5 原子工具 + ReviewDraftTool）
 """generate-note 的工具装配。
 
+5 个原子工具（read_file/read_pdf/write_file/edit_file/mark_read）复用
+paperflow/tools/file.py 的集中式安全边界（WorkspacePolicy 白名单、风险语义）；
 ReviewDraftTool 是"集中式原子工具"约定的刻意例外——定义在 agent 目录而非
 paperflow/tools/：单消费者（仅 generate-note）、需 parent 注入（needs_parent）。
 它还是 Layer 4 spawn 的种子：届时 SpawnSubAgentTool 同样落 agents/supervisor/tools.py，
@@ -14,6 +16,9 @@ from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.tools.factory import make_tools
+from paperflow.tools.file import (
+    ReadFileTool, ReadPdfTool, WriteFileTool, EditFileTool, MarkReadTool,
+)
 
 
 class ReviewDraftTool(Tool):
@@ -72,7 +77,10 @@ class ReviewDraftTool(Tool):
             draft_path.unlink(missing_ok=True)
 
 
-# 本任务 TOOLS 仅含 ReviewDraftTool（Task 6 补全为 6 工具）。
-# 必须显式定义：Task 5 测试的 agent.tools["review_draft"] 依赖此列表，
-# 缺失则 KeyError: review_draft。
-TOOLS = make_tools(PaperFlowConfig.from_env(), [ReviewDraftTool])
+# 完整 6 工具：审稿桥（review_draft）+ 5 原子工具。
+# review_draft 必须显式在列表内：Task 5 测试的 agent.tools["review_draft"] 依赖此列表，
+# 缺失则 KeyError: review_draft。SKILL.md 的审稿循环用 review_draft 提交草稿，
+# edit_file 不进循环（修订只在上下文进行），但仍在工具面——留给"修改既有笔记"类任务。
+TOOLS = make_tools(PaperFlowConfig.from_env(), [
+    ReadPdfTool, ReadFileTool, WriteFileTool, EditFileTool, MarkReadTool, ReviewDraftTool,
+])
