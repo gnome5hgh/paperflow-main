@@ -24,7 +24,8 @@ class ReadFileTool(Tool):
         "required": ["path"],
     }
     risk_level = "low"
-    allowed_roots = ["note", "pdf", "memory"]
+    # 读面含 templates（LLM 读模板）+ scratch（子 agent 读落盘桥草稿）
+    allowed_roots = ["note", "pdf", "memory", "templates", "scratch"]
     output_scan = "mark"                       # 外部文件内容 → SecurityScan 打未校验横幅
     side_effects = ["read_file"]
 
@@ -166,7 +167,8 @@ class FormatCheckTool(Tool):
         "required": ["path"],
     }
     risk_level = "low"
-    allowed_roots = ["note"]
+    # 也读草稿文件（execute(path) 从磁盘读结构）→ 需要 scratch；templates 由内部派生不在此
+    allowed_roots = ["note", "scratch"]
 
     #: 模板缺失时落盘的最小骨架（spec §1/§14：缺失时建最小骨架而非报错）
     _SKELETON = ("# <论文标题>\n"
@@ -221,7 +223,10 @@ class SuggestEditTool(Tool):
         "required": ["path", "suggestions"],
     }
     risk_level = "low"
-    allowed_roots = ["note"]
+    # 审稿流目标是 scratch 草稿路径（review-note 对草稿给建议），与 FormatCheckTool 同根；
+    # 不加 scratch 时真实 WorkspacePolicy 会拦截草稿路径（draft 在 workspace/tmp），
+    # 且 execute 不读文件内容（只把 suggestions 按 path 标签格式化），放开零安全影响。
+    allowed_roots = ["note", "scratch"]
 
     def execute(self, path: str, suggestions: list[str]) -> ToolResult:
         lines = "\n".join(f"- {s}" for s in suggestions)

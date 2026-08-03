@@ -52,3 +52,45 @@ def test_make_tools_without_roots_empty():
     cfg = PaperFlowConfig()
     tools = make_tools(cfg, [NoRootTool])
     assert tools[0].allowed_paths == []
+
+
+from paperflow.tools.file import ReadFileTool, WriteFileTool, EditFileTool, FormatCheckTool
+
+
+def test_make_tools_resolves_templates_and_scratch_roots(tmp_path):
+    cfg = PaperFlowConfig(
+        workspace=str(tmp_path / "ws"),
+        vault_note_dir=str(tmp_path / "note"),
+        vault_pdf_dir=str(tmp_path / "pdf"),
+    )
+    tools = make_tools(cfg, [ReadFileTool])
+    allowed = tools[0].allowed_paths
+    assert str(tmp_path / "ws" / "templates") in allowed
+    assert str(tmp_path / "ws" / "tmp") in allowed
+
+
+def test_format_check_allows_scratch_not_write(tmp_path):
+    # vault_pdf_dir 显式给出，否则默认落真实用户 vault 路径，下方 pdf 断言退化为恒真
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"), vault_pdf_dir=str(tmp_path / "pdf"))
+    tools = {t.name: t for t in make_tools(cfg, [ReadFileTool, WriteFileTool, EditFileTool, FormatCheckTool])}
+    assert str(tmp_path / "ws" / "tmp") in tools["format_check"].allowed_paths
+    # Paper 只读 + scratch 只读：Write/Edit 不含 pdf 也不含 scratch
+    for name in ("write_file", "edit_file"):
+        assert str(tmp_path / "ws" / "tmp") not in tools[name].allowed_paths
+        assert str(tmp_path / "pdf") not in tools[name].allowed_paths
+
+
+from paperflow.tools.file import ReadFileTool
+
+
+def test_make_tools_injects_config_and_path_hints(tmp_path):
+    cfg = PaperFlowConfig(
+        workspace=str(tmp_path / "ws"),
+        vault_note_dir=str(tmp_path / "note"),
+        vault_pdf_dir=str(tmp_path / "pdf"),
+    )
+    tool = make_tools(cfg, [ReadFileTool])[0]
+    assert tool._config is cfg                         # _config 注入
+    assert f"note={str(tmp_path / 'note')}" in tool.description   # 路径提示
+    assert f"templates={str(tmp_path / 'ws' / 'templates')}" in tool.description
+    assert "scratch=" not in tool.description          # scratch 不透明

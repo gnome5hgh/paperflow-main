@@ -308,3 +308,38 @@ async def test_tool_executes_off_main_thread():
     # 直接测试 _exec_tool —— 不触发 ReAct 循环
     result = await agent._exec_tool({"function": {"name": "probe", "arguments": "{}"}})
     assert result.text != "MainThread"
+
+
+# ─── 父引用注入（Layer 3）：needs_parent / attach_agent 钩子 ─────────
+
+
+class ParentProbeTool(Tool):
+    """声明 needs_parent 的工具：验证 Agent.__init__ 注入父引用。"""
+    name = "parent_probe"
+    description = "needs parent injection"
+    parameters = {"type": "object", "properties": {}}
+    needs_parent = True
+
+    def execute(self) -> ToolResult:
+        return ToolResult(text="ok")
+
+    def get_parent(self):
+        return getattr(self, "_parent", None)
+
+
+def test_agent_injects_parent_to_optin_tool():
+    tool = ParentProbeTool()
+    registry = make_mock_registry([tool])
+    llm = make_mock_llm([Message(role="assistant", content="Done.")])
+    agent = Agent(llm=llm, agent_registry=registry, agent_type="test")
+    assert agent.agent_registry is registry          # 新增属性
+    assert tool.get_parent() is agent                 # opt-in 注入
+
+
+def test_agent_does_not_inject_into_atomic_tools():
+    from tests.conftest import MockEchoTool
+    tool = MockEchoTool()
+    registry = make_mock_registry([tool])
+    llm = make_mock_llm([Message(role="assistant", content="Done.")])
+    Agent(llm=llm, agent_registry=registry, agent_type="test")
+    assert getattr(tool, "_parent", None) is None     # 原子工具不注入
