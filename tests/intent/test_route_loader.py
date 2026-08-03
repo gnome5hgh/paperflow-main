@@ -98,3 +98,23 @@ def test_load_eval_rejects_invalid_intent(tmp_path):
     path.write_text("eval:\n  - query: x\n    intent: not_a_real_intent\n", encoding="utf-8")
     with pytest.raises(ValueError):
         load_eval(path)
+
+
+def test_eval_disjoint_from_routes():
+    """held-out 泛化保证：eval 查询不得与 routes 例句重复（否则测的是记忆不是泛化）。
+
+    用生产文件默认路径断言——这是版本化验收契约的一部分（spec §4.7.1）。
+    """
+    routes = load_routes()
+    route_utterances = {u for r in routes for u in r.utterances}
+    eval_items = load_eval()
+    overlap = [q for q, _ in eval_items if q in route_utterances]
+    assert overlap == [], f"eval 与 routes 相交 {len(overlap)} 条: {overlap[:5]}"
+
+
+def test_eval_covers_all_intents():
+    """eval 集契约：覆盖全部 5 类意图 + 规模下限（够统计意义，门槛才可信）。"""
+    eval_items = load_eval()
+    labels = {label for _, label in eval_items}
+    assert {"search_paper", "generate_note", "ask_question", "manage_memory", "general"} <= labels
+    assert len(eval_items) >= 100          # 规模下限：够统计意义

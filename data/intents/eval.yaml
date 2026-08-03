@@ -1,0 +1,311 @@
+# data/intents/eval.yaml —— held-out 评估集（验收契约，与 routes 不相交）
+# 规模：30 条/意图 × 5 意图 = 150 条（spec §4.7.1 的 ~25-30/意图）
+# 构成：近义改写 + 边界案例（复合意图取主意图 / 追问无 prev 上下文归 general / chitchat）
+# 领域：生物信息学/计算生物学（circRNA / miRNA / 异构图神经网络 / 链路预测 / 图对比学习 / 药物-靶点关联预测），中英混合
+# ⚠️ 本集与 data/intents/routes.yaml 逐字不相交——不相交测试 test_eval_disjoint_from_routes 兜底（泛化非记忆）
+eval:
+  # search_paper —— 近义改写、下载意图、年代/主题限定、复合意图取主意图
+  - query: 帮我找找关于 circRNA 的最新研究
+    intent: search_paper
+  - query: 下载那篇图对比学习的论文
+    intent: search_paper
+  - query: 2023 年之后的异构图神经网络文献有哪些
+    intent: search_paper
+  - query: 有没有关于 miRNA 调控机制的最新综述
+    intent: search_paper
+  - query: 帮我查一篇药物靶点相互作用的文章
+    intent: search_paper
+  - query: 找一下最近发的关于链路预测的顶会论文
+    intent: search_paper
+  - query: 搜搜 circRNA 在癌症里的研究
+    intent: search_paper
+  - query: 我想下载一篇异构图神经网络的论文
+    intent: search_paper
+  - query: 查一查 graph contrastive learning 的资料
+    intent: search_paper
+  - query: 帮我找找 miRNA 与肿瘤相关的文献
+    intent: search_paper
+  - query: 有没有 drug-target association prediction 的文章
+    intent: search_paper
+  - query: 找一篇关于 circRNA 数据库的文章
+    intent: search_paper
+  - query: 帮我搜一下最新的 GNN 论文
+    intent: search_paper
+  - query: 下载那篇关于蛋白互作的论文
+    intent: search_paper
+  - query: 查查异构图神经网络近年来的进展
+    intent: search_paper
+  - query: 帮我找关于异构图链接预测的文章
+    intent: search_paper
+  - query: 搜索一下 miRNA 靶基因预测的最新论文
+    intent: search_paper
+  - query: 找找图对比学习方向有没有新综述
+    intent: search_paper
+  - query: 帮我查一下药物靶点预测的 benchmark
+    intent: search_paper
+  - query: 搜一下 circRNA 鉴定的经典论文
+    intent: search_paper
+  - query: 找一篇讲 heterogeneous graph transformer 的论文
+    intent: search_paper
+  - query: 帮我下载那篇图对比学习综述
+    intent: search_paper
+  - query: 查查最近有没有异构图神经网络的 survey
+    intent: search_paper
+  - query: 找一篇关于 lncRNA 的综述
+    intent: search_paper
+  - query: 帮我搜一下 graph neural network 做 drug discovery 的论文
+    intent: search_paper
+  - query: 找找那篇关于异构图神经网络的开山之作
+    intent: search_paper
+  - query: 帮我查查 circRNA-miRNA 互作的最新文献
+    intent: search_paper
+  - query: 搜一下图对比学习做药物发现的论文
+    intent: search_paper
+  - query: 找一篇 link prediction 用 GNN 的综述
+    intent: search_paper
+  - query: 下载并整理成笔记那篇链路预测的论文
+    intent: search_paper
+  # generate_note —— 生成/整理/总结笔记的多种表述、复合意图取主意图
+  - query: 给这篇论文做个阅读笔记
+    intent: generate_note
+  - query: 把摘要整理成笔记形式
+    intent: generate_note
+  - query: 帮我写一份这篇文献的总结
+    intent: generate_note
+  - query: 给这篇 circRNA 研究生成笔记
+    intent: generate_note
+  - query: 把异构图神经网络的要点记下来
+    intent: generate_note
+  - query: 帮我整理一下这篇论文的内容
+    intent: generate_note
+  - query: 给这个实验做个笔记
+    intent: generate_note
+  - query: 写一篇关于链路预测的阅读总结
+    intent: generate_note
+  - query: 帮我为这篇药物靶点文章做个笔记
+    intent: generate_note
+  - query: 生成一份学习笔记
+    intent: generate_note
+  - query: 把这篇论文的核心观点写下来
+    intent: generate_note
+  - query: 帮我整理这篇 miRNA 研究的要点
+    intent: generate_note
+  - query: 给这篇文章做一个内容摘要
+    intent: generate_note
+  - query: 帮我记一下这篇图对比学习论文的收获
+    intent: generate_note
+  - query: 整理成结构化笔记
+    intent: generate_note
+  - query: 给这篇综述写个笔记
+    intent: generate_note
+  - query: 帮我做一份这篇论文的阅读笔记
+    intent: generate_note
+  - query: 把这篇异构图神经网络的论文总结成笔记
+    intent: generate_note
+  - query: 写一篇笔记记录这篇文献
+    intent: generate_note
+  - query: 帮我生成这篇论文的要点卡片
+    intent: generate_note
+  - query: 整理一下这篇论文的主要发现
+    intent: generate_note
+  - query: 给这篇 paper 做一份摘要笔记
+    intent: generate_note
+  - query: 把链路预测那篇文章的核心写出来
+    intent: generate_note
+  - query: 帮我把这段摘要整理成笔记
+    intent: generate_note
+  - query: 生成一份这篇文章的阅读笔记
+    intent: generate_note
+  - query: 总结一下这篇 miRNA 论文并保存
+    intent: generate_note
+  - query: 帮我给异构图神经网络那篇做个摘要
+    intent: generate_note
+  - query: 把药物靶点预测这篇的结论记下来
+    intent: generate_note
+  - query: 帮我整理这份笔记并导出
+    intent: generate_note
+  - query: 查完这篇 miRNA 论文帮我写个笔记
+    intent: generate_note
+  # ask_question —— 概念/机制/Figure/公式/方法解释的多种表述
+  - query: 链路预测是怎么做的
+    intent: ask_question
+  - query: 解释一下图 2 的损失函数
+    intent: ask_question
+  - query: 异构图神经网络和同构图有什么区别
+    intent: ask_question
+  - query: circRNA 是怎么生成的
+    intent: ask_question
+  - query: 图对比学习为什么有效
+    intent: ask_question
+  - query: 什么是 miRNA sponge 作用
+    intent: ask_question
+  - query: 药物靶点预测用什么特征
+    intent: ask_question
+  - query: 这个注意力机制的原理是什么
+    intent: ask_question
+  - query: 为什么链路预测要用异构信息
+    intent: ask_question
+  - query: 讲解一下 graph contrastive learning 的流程
+    intent: ask_question
+  - query: 这个图的边代表什么关系
+    intent: ask_question
+  - query: 什么是 node 的 neighbor sampling
+    intent: ask_question
+  - query: circRNA 的 back-splicing 是什么
+    intent: ask_question
+  - query: 解释一下这篇论文里的 metric
+    intent: ask_question
+  - query: 这个模型的参数数量是多少
+    intent: ask_question
+  - query: 图对比学习的 augmentation 是怎么做的
+    intent: ask_question
+  - query: 这个公式里的符号表示什么
+    intent: ask_question
+  - query: 什么是 drug-target 二分类问题
+    intent: ask_question
+  - query: 解释一下跨物种研究的意义
+    intent: ask_question
+  - query: 为什么用 AUC 作为评估指标
+    intent: ask_question
+  - query: 这个数据集是怎么划分的
+    intent: ask_question
+  - query: 讲解一下异构图 attention 的实现
+    intent: ask_question
+  - query: 什么是 over-smoothing 问题
+    intent: ask_question
+  - query: 这个损失函数为什么收敛这么快
+    intent: ask_question
+  - query: 解释一下这篇论文的贡献
+    intent: ask_question
+  - query: 异构图神经网络里消息传递机制是怎样的
+    intent: ask_question
+  - query: 为什么图对比学习需要多个视角
+    intent: ask_question
+  - query: 链路预测中的负采样是怎么做的
+    intent: ask_question
+  - query: 解释一下这张热图的含义
+    intent: ask_question
+  - query: 这个模型的过拟合问题怎么解决
+    intent: ask_question
+  # manage_memory —— 记忆/阅读记录/收藏/历史查询的多种表述
+  - query: 我标记过哪些论文已读
+    intent: manage_memory
+  - query: 历史记录里我搜过什么
+    intent: manage_memory
+  - query: 我之前读过的文献
+    intent: manage_memory
+  - query: 查看我的阅读笔记
+    intent: manage_memory
+  - query: 我记录过哪些内容
+    intent: manage_memory
+  - query: 我的收藏夹里有什么
+    intent: manage_memory
+  - query: 查一下我的历史浏览记录
+    intent: manage_memory
+  - query: 我整理过哪些笔记
+    intent: manage_memory
+  - query: 显示一下我的保存记录
+    intent: manage_memory
+  - query: 我标注过已读的文章有哪些
+    intent: manage_memory
+  - query: 我的阅读列表里有什么
+    intent: manage_memory
+  - query: 帮我查查我关注过哪些话题
+    intent: manage_memory
+  - query: 我下载记录里有哪些论文
+    intent: manage_memory
+  - query: 我的读书笔记在哪里
+    intent: manage_memory
+  - query: 之前存过的文献给我看看
+    intent: manage_memory
+  - query: 我上次搜索的关键词
+    intent: manage_memory
+  - query: 帮我看看我的阅读进度
+    intent: manage_memory
+  - query: 我标星过的论文
+    intent: manage_memory
+  - query: 我的笔记历史记录
+    intent: manage_memory
+  - query: 查查我读过的 circRNA 文献
+    intent: manage_memory
+  - query: 我的文献收藏列表
+    intent: manage_memory
+  - query: 显示我写过的笔记
+    intent: manage_memory
+  - query: 我保存的异构图神经网络论文
+    intent: manage_memory
+  - query: 回顾一下我看过的论文
+    intent: manage_memory
+  - query: 我的学习记录里有什么
+    intent: manage_memory
+  - query: 我订阅了哪些期刊
+    intent: manage_memory
+  - query: 帮我找找我的阅读清单
+    intent: manage_memory
+  - query: 我读过哪些异构图相关的论文
+    intent: manage_memory
+  - query: 我上次保存的笔记在哪
+    intent: manage_memory
+  - query: 我的阅读习惯统计
+    intent: manage_memory
+  # general —— chitchat / 纯寒暄 / 无明确意图 / 追问（无 prev 上下文）
+  - query: 你好，今天天气不错
+    intent: general
+  - query: 谢谢你的帮助
+    intent: general
+  - query: 哈哈哈哈哈哈
+    intent: general
+  - query: 你是谁
+    intent: general
+  - query: 今天吃了吗
+    intent: general
+  - query: 你真厉害
+    intent: general
+  - query: 再见
+    intent: general
+  - query: 好的
+    intent: general
+  - query: 嗯嗯
+    intent: general
+  - query: 帮我倒杯水
+    intent: general
+  - query: 你叫什么名字
+    intent: general
+  - query: 周末愉快
+    intent: general
+  - query: 加油
+    intent: general
+  - query: 哈哈哈笑死我了
+    intent: general
+  - query: 说个笑话
+    intent: general
+  - query: 随便聊聊吧
+    intent: general
+  - query: 没什么事
+    intent: general
+  - query: 哦哦明白了
+    intent: general
+  - query: 好的收到
+    intent: general
+  - query: 拜拜
+    intent: general
+  - query: 辛苦你了
+    intent: general
+  - query: 这样啊
+    intent: general
+  - query: 哈哈好的
+    intent: general
+  - query: 你忙吧
+    intent: general
+  - query: 明天见
+    intent: general
+  - query: 那第三篇呢
+    intent: general
+  - query: 然后呢
+    intent: general
+  - query: 你能帮我写作业吗
+    intent: general
+  - query: 随便说点什么吧
+    intent: general
+  - query: 这是今天的天气吗
+    intent: general
