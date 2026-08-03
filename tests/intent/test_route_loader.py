@@ -1,7 +1,7 @@
 # tests/intent/test_route_loader.py
 import pytest
 from pathlib import Path
-from paperflow.core.intent.route_loader import load_routes
+from paperflow.core.intent.route_loader import load_routes, load_eval, save_thresholds
 from paperflow.core.intent.schema import Route
 
 
@@ -51,3 +51,50 @@ routes:
         names = {r.name for r in routes}
         assert names == {"search_paper", "generate_note", "ask_question",
                          "manage_memory"}
+
+
+def test_save_thresholds_round_trip(tmp_path):
+    """标定写回 → load 读回：per-route 阈值不丢、utterances 不丢。"""
+    path = tmp_path / "routes.yaml"
+    routes = [
+        Route(name="search_paper",
+              utterances=["搜索 circRNA 文献", "下载最新论文"], score_threshold=0.62),
+        Route(name="generate_note",
+              utterances=["写一份笔记", "把这篇整理成笔记"], score_threshold=0.55),
+    ]
+    save_thresholds(path, routes)
+    loaded = load_routes(path)
+    assert [r.score_threshold for r in loaded] == [0.62, 0.55]
+    assert loaded[0].utterances == routes[0].utterances
+    assert loaded[1].utterances == routes[1].utterances
+
+
+def test_save_thresholds_omits_none(tmp_path):
+    """score_threshold=None 时不写该字段（保持最小 diff；load 回落默认 None）。"""
+    path = tmp_path / "routes.yaml"
+    save_thresholds(path, [Route(name="general", utterances=["你好"])])
+    raw = path.read_text(encoding="utf-8")
+    assert "score_threshold" not in raw
+    loaded = load_routes(path)
+    assert loaded[0].score_threshold is None
+
+
+def test_load_eval_parses_and_validates(tmp_path):
+    path = tmp_path / "eval.yaml"
+    path.write_text(
+        "eval:\n"
+        "  - query: 帮我找找 circRNA 论文\n"
+        "    intent: search_paper\n"
+        "  - query: 你好呀\n"
+        "    intent: general\n",
+        encoding="utf-8",
+    )
+    items = load_eval(path)
+    assert items == [("帮我找找 circRNA 论文", "search_paper"), ("你好呀", "general")]
+
+
+def test_load_eval_rejects_invalid_intent(tmp_path):
+    path = tmp_path / "eval.yaml"
+    path.write_text("eval:\n  - query: x\n    intent: not_a_real_intent\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_eval(path)

@@ -26,3 +26,35 @@ def load_routes(path: Path = Path("data/intents/routes.yaml")) -> list[Route]:
         routes.append(Route(name=r["name"], utterances=r["utterances"],
                             score_threshold=r.get("score_threshold")))
     return routes
+
+
+def save_thresholds(path: Path, routes: list[Route]) -> None:
+    """把 per-route score_threshold 写回 routes.yaml（标定持久化端，spec §4.7.4）。
+
+    保留既有结构（routes 列表 + name/utterances）；score_threshold=None 时不输出该
+    字段（最小 diff，load 回落默认 None）。写回是标定验收的一部分，不是运行时路径。
+    """
+    data = {"routes": []}
+    for r in routes:
+        entry = {"name": r.name, "utterances": r.utterances}
+        if r.score_threshold is not None:
+            entry["score_threshold"] = r.score_threshold
+        data["routes"].append(entry)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+
+
+def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, str]]:
+    """eval.yaml → [(query, intent_label)]。held-out 评估集（spec §4.7.1）。
+
+    校验：intent 标签必须在 IntentType 枚举中——否则 evaluate() 的 y 无意义。
+    """
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    valid_names = {t.value for t in IntentType}
+    items = []
+    for e in data["eval"]:
+        if e["intent"] not in valid_names:
+            raise ValueError(f"eval 意图标签不在 IntentType 中: {e['intent']}")
+        items.append((e["query"], e["intent"]))
+    return items
