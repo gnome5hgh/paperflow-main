@@ -42,6 +42,7 @@ ReAct 循环流程::
 
 import asyncio
 import json
+import logging
 import sys
 import time
 import uuid
@@ -54,6 +55,19 @@ from paperflow.core.security import (
     ToolContext, ConfirmRequired, SecurityError, SecurityMiddleware,
 )
 from paperflow.core.tool import ToolResult
+
+#: 模块级 logger（§4.2 管线失败降级用；本项目 core 现无 logger，需初始化）。
+#: 管线 Stage 3 网络异常/解析失败降级时在此留痕，供运维排查而不是静默吞掉。
+logger = logging.getLogger(__name__)
+
+
+def _intent_block(intent) -> str:
+    """把 IntentOutput 格式化为 INTENT 块（ReAct context 的强提示，非命令）。
+
+    排除 clarification 与 prev_intent：澄清只走 CLI 层（跨轮 pending），不暴露给
+    Supervisor（避免其用 AskUserTool 双问）；prev_intent 是 session 内部状态。
+    """
+    return "INTENT: " + intent.model_dump_json(exclude={"clarification", "prev_intent"})
 
 
 class MaxTurnsExceeded(Exception):
@@ -102,6 +116,10 @@ class Agent:
         agent_type: str,
         security_middleware: list[SecurityMiddleware] | None = None,
         confirm_callback: Callable[[ConfirmRequired], bool] | None = None,
+        intent_enabled: bool = False,
+        intent_pipeline=None,      # IntentPipeline | None
+        session=None,              # Session | None
+        ask_user_callback=None,    # Callable[[str], str] | None
         session_id: str | None = None,
         memory_index=None,          # MemoryIndex | None
         compressor=None,            # ContextCompressor | None
@@ -115,6 +133,15 @@ class Agent:
             逆序执行 after；每轮 run 结束时顺序执行 on_finish
         :param confirm_callback: async 确认回调，接收 ConfirmRequired，
             返回 bool；None 时使用 fail-safe 的 _default_confirm（始终拒绝）
+        :param intent_enabled: 意图识别门控（spec D3）。仅 CLI 构造的
+            Supervisor 置 True；spawn 工具构造的子 agent 不传
+            intent_pipeline/session → 门控关闭
+        :param intent_pipeline: 意图识别管线实例（IntentPipeline | None），
+            run() 前置钩子消费；None 时跳过
+        :param session: 会话状态容器（Session | None），提供跨轮
+            prev_intent/prev_user_input 并在 run 结束后回写
+        :param ask_user_callback: 向用户提问的回调（Callable[[str], str] |
+            None），Task 11 AskUserTool 消费；None 时该工具不可用
         :param session_id: 会话标识，跨多次 run 保持一致，便于审计聚合；
             None 时自动生成 8 位 hex
         :param memory_index: MemoryIndex 实例（可选），每轮 run 读取
@@ -166,6 +193,16 @@ class Agent:
         #: 当前 run 的追踪 ID，每次 run 开始时重新生成，注入 ToolContext
         self._trace_id: str | None = None
 
+        # 意图识别门控（spec D3）：只有 CLI 构造的 Supervisor 置 True；spawn 工具
+        # 构造的子 agent 不传 intent_pipeline/session → 门控关闭（子任务是结构化任务，
+        # 非用户意图，跑管线会误分类 + 白花 LLM 调用）
+        self.intent_enabled = intent_enabled
+        self.intent_pipeline = intent_pipeline
+        self.session = session
+        self.ask_user_callback = ask_user_callback
+        #: 本轮 run 的 IntentOutput（CLI 读 clarification 判定 + 跨轮 prev_intent）
+        self.last_intent = None
+
         # opt-in 注入：仅对声明 needs_parent 的工具注入父引用。
         # 原子工具不需要 parent；只有嵌套子 agent 的工具声明——权限最小化。
         # 必须放在所有 __init__ 属性赋值之后：attach_agent 可能被工具覆写为
@@ -179,7 +216,7 @@ class Agent:
         """默认 fail-safe：无人值守时拒绝。"""
         return False
 
-    async def run(self, task: str) -> str:
+    async def run(self, task: str, *, force_dispatch: bool = False) -> str:
         """
         执行 ReAct 循环，返回 LLM 的最终文本回答。
 
@@ -188,6 +225,8 @@ class Agent:
 
         :param task: 用户任务文本（对于 Supervisor 是原始用户输入；
                      对于 SubAgent 是 Supervisor 拆分后的子任务）
+        :param force_dispatch: 强制调度开关（跨轮澄清 ≤2 轮终止路径）——
+            置 True 时即使管线产出 clarification 也跳过早退，直接跑 ReAct
         :returns: LLM 的最终文本回答（经过所有中间件的 on_finish 钩子改写）
         :raises MaxTurnsExceeded: 超过 max_turns 轮仍未停止
 
@@ -195,7 +234,8 @@ class Agent:
 
             1. 生成本次 run 的 trace_id（trace_<12位hex>）
             2. 构建初始消息列表：① system_prompt → ② MEMORY.md 索引（若有）
-               → ③ 压缩摘要（若有）→ ④ user_task（消息顺序固定）
+               → ②b INTENT 块（intent_enabled 且管线成功时）→ ③ 压缩摘要（若有）
+               → ④ user_task（消息顺序固定）
             3. 调用 LLM 前检查压缩（compressor.should_compress → compress
                重建 messages），随后调用 LLM → 获取 response
             4. 如果无 tool_calls → 顺序执行各中间件的 on_finish 钩子，
@@ -215,6 +255,30 @@ class Agent:
             index = await self.memory_index.read()
             if index:
                 messages.append(Message(role="system", content=index))
+
+        # ②b 意图识别前置钩子（Layer 4）：intent_enabled 门控——只有 CLI 构造的
+        # Supervisor 置 True。产出 IntentOutput 注入 INTENT 块作为 ReAct 的强提示
+        # （非命令，LLM 自行决定调度）。
+        if self.intent_enabled and self.intent_pipeline is not None and self.session is not None:
+            try:
+                intent = await self.intent_pipeline.run(
+                    task, prev_intent=self.session.prev_intent,
+                    prev_user_input=self.session.prev_user_input)
+            except Exception:
+                # 管线失败降级（D10）：Stage 3 是 LLM 兜底，网络异常/解析失败会传播到
+                # 这里（structured.extract 只 catch JSONDecode/ValidationError）——不阻断
+                # 本轮：log + 跳过 INTENT 块 + 普通 ReAct 继续（退化到 Layer 0/1）。
+                # last_intent 显式置 None：CLI 澄清检查跳过、session.prev_intent 不更新。
+                logger.warning("intent pipeline failed, degraded to plain ReAct", exc_info=True)
+                self.last_intent = None
+                intent = None
+            if intent is not None:
+                self.last_intent = intent
+                if intent.clarification and not force_dispatch:
+                    # 跨轮澄清（D4①）：ReAct 未开始无状态可丢，提前返回澄清问题让 CLI 挂起。
+                    # 澄清只走 CLI 层；INTENT 块不含 clarification（避免与 AskUserTool 双问）。
+                    return intent.clarification
+                messages.append(Message(role="system", content=_intent_block(intent)))
 
         # ③ 压缩摘要（跨轮状态，有才注入）
         if self.compressor and self.compressor.summary:
@@ -240,6 +304,11 @@ class Agent:
                 # （如追加来源引用、注入安全声明等）
                 for mw in self.security_middleware:
                     content = await mw.on_finish(self, content)
+                # 意图会话更新：本轮消费了 intent → 更新 prev_intent/prev_user_input 供下轮
+                # Stage 1 追问（clarification 早退 / 管线降级时 last_intent 为 None → 不更新）
+                if self.intent_enabled and self.last_intent is not None:
+                    self.session.prev_intent = self.last_intent.intent_type
+                    self.session.prev_user_input = task
                 return content
 
             # LLM 请求调用工具：将 assistant 消息（含 tool_calls）加入对话

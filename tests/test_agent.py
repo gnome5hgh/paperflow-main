@@ -14,6 +14,7 @@ Agent ReAct 循环的单元测试。
 提供可控的 mock 对象，保证测试的确定性和速度。
 """
 
+import asyncio
 import threading
 from unittest.mock import MagicMock
 
@@ -21,7 +22,9 @@ import pytest
 
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.agent_registry import AgentConfig, AgentRegistry
+from paperflow.core.intent.intent_schema import IntentType
 from paperflow.core.llm import Message
+from paperflow.core.session import Session
 from paperflow.core.tool import Tool, ToolResult
 
 
@@ -343,3 +346,140 @@ def test_agent_does_not_inject_into_atomic_tools():
     llm = make_mock_llm([Message(role="assistant", content="Done.")])
     Agent(llm=llm, agent_registry=registry, agent_type="test")
     assert getattr(tool, "_parent", None) is None     # 原子工具不注入
+
+
+# ─── 意图前置钩子（Layer 4）：intent_enabled 门控 + INTENT 块 + 澄清/降级 ──
+
+
+class MockIntentPipeline:
+    """mock 意图管线：记录调用参数，返回预设 IntentOutput 或抛异常。"""
+    def __init__(self, result=None, exc=None):
+        self.result = result
+        self.exc = exc
+        self.calls: list[tuple] = []
+
+    async def run(self, query, prev_intent=None, prev_user_input=""):
+        self.calls.append((query, prev_intent, prev_user_input))
+        if self.exc is not None:
+            raise self.exc
+        return self.result
+
+
+def make_capture_llm(responses, capture):
+    """mock LLM：把每次收到的 messages 追加进 capture，便于断言 INTENT 块注入。"""
+    mock = MagicMock()
+    async def chat(messages, tools=None, tool_choice="auto"):
+        capture.append(messages)
+        return responses.pop(0)
+    mock.chat = chat
+    mock.model = "mock"
+    return mock
+
+
+def _intent(intent_type, *, clarification=None):
+    from paperflow.core.intent.intent_schema import IntentOutput, IntentStep
+    return IntentOutput(intent_type=intent_type, confidence=0.9,
+                        source=IntentStep.ROUTER, clarification=clarification)
+
+
+class TestIntentGate:
+    """intent_enabled 门控 + INTENT 块注入 + 澄清/降级分支。"""
+
+    def test_disabled_skips_pipeline(self):
+        capture = []
+        pipeline = MockIntentPipeline(result=_intent(IntentType.SEARCH_PAPER))
+        llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
+                      agent_type="test")            # intent_enabled 缺省 False
+        asyncio.run(agent.run("搜索 x"))
+        assert pipeline.calls == []
+        assert not any("INTENT:" in m.content for m in capture[0])
+
+    def test_enabled_injects_intent_block(self):
+        from paperflow.core.intent.intent_schema import IntentType
+        capture = []
+        pipeline = MockIntentPipeline(result=_intent(IntentType.SEARCH_PAPER))
+        session = Session()
+        llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
+                      agent_type="test", intent_enabled=True,
+                      intent_pipeline=pipeline, session=session)
+        asyncio.run(agent.run("搜索 circRNA 文献"))
+        assert pipeline.calls == [("搜索 circRNA 文献", None, "")]
+        assert any("INTENT:" in m.content for m in capture[0])
+        assert any("search_paper" in m.content for m in capture[0])
+
+    def test_pipeline_receives_prev_context(self):
+        capture = []
+        pipeline = MockIntentPipeline(result=_intent(IntentType.SEARCH_PAPER))
+        session = Session(prev_intent=IntentType.ASK_QUESTION, prev_user_input="上轮")
+        llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
+                      agent_type="test", intent_enabled=True,
+                      intent_pipeline=pipeline, session=session)
+        asyncio.run(agent.run("那第三篇呢"))
+        assert pipeline.calls == [("那第三篇呢", IntentType.ASK_QUESTION, "上轮")]
+
+    def test_clarification_short_circuits(self):
+        capture = []
+        pipeline = MockIntentPipeline(result=_intent(IntentType.ASK_QUESTION,
+                                                     clarification="要搜索还是生成笔记？"))
+        session = Session()
+        llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
+                      agent_type="test", intent_enabled=True,
+                      intent_pipeline=pipeline, session=session)
+        text = asyncio.run(agent.run("整理这篇"))
+        assert text == "要搜索还是生成笔记？"
+        assert capture == []                       # ReAct 未启动，LLM 未调用
+        assert agent.last_intent.clarification == "要搜索还是生成笔记？"
+
+    def test_clarification_force_dispatch_proceeds(self):
+        capture = []
+        pipeline = MockIntentPipeline(result=_intent(IntentType.ASK_QUESTION,
+                                                     clarification="要哪个？"))
+        session = Session()
+        llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
+                      agent_type="test", intent_enabled=True,
+                      intent_pipeline=pipeline, session=session)
+        text = asyncio.run(agent.run("整理这篇", force_dispatch=True))
+        assert text == "Done."                     # 超轮终止：ReAct 正常跑
+        assert len(capture) == 1
+        assert any("INTENT:" in m.content for m in capture[0])
+
+    def test_pipeline_failure_degrades(self):
+        capture = []
+        pipeline = MockIntentPipeline(exc=RuntimeError("Stage 3 网络超时"))
+        session = Session()
+        llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
+                      agent_type="test", intent_enabled=True,
+                      intent_pipeline=pipeline, session=session)
+        text = asyncio.run(agent.run("搜索 x"))
+        assert text == "Done."                     # 降级：普通 ReAct 继续，不崩
+        assert agent.last_intent is None
+        assert not any("INTENT:" in m.content for m in capture[0])
+
+    def test_session_updated_after_run(self):
+        capture = []
+        pipeline = MockIntentPipeline(result=_intent(IntentType.SEARCH_PAPER))
+        session = Session()
+        llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
+                      agent_type="test", intent_enabled=True,
+                      intent_pipeline=pipeline, session=session)
+        asyncio.run(agent.run("搜索 circRNA"))
+        assert session.prev_intent == IntentType.SEARCH_PAPER
+        assert session.prev_user_input == "搜索 circRNA"
+
+    def test_pipeline_failure_does_not_update_session(self):
+        capture = []
+        pipeline = MockIntentPipeline(exc=RuntimeError("boom"))
+        session = Session()
+        llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
+                      agent_type="test", intent_enabled=True,
+                      intent_pipeline=pipeline, session=session)
+        asyncio.run(agent.run("搜索 x"))
+        assert session.prev_intent is None          # 降级轮不更新 prev_intent
