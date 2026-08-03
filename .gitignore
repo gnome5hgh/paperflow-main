@@ -38,6 +38,7 @@ docs/
 !.claude/SCOPE.md
 !.claude/SYSTEM.md
 !.claude/DECISIONS.md
+!.claude/MEMORY_BANK.md
 
 # Environment
 .env
