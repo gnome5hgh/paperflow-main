@@ -50,17 +50,28 @@ class ReviewDraftTool(Tool):
 
     def execute(self, draft_text: str, pdf_path: str) -> ToolResult:
         parent = getattr(self, "_parent", None)
-        assert parent is not None, "ReviewDraftTool 必须由 Agent 注入 parent"
+        if parent is None:
+            # 不用 assert：python -O 下断言被剥离，而 parent 缺失是安全敏感路径
+            # （无父引用则无法构造子 agent，直接 fail-fast 报错）
+            raise RuntimeError("ReviewDraftTool 必须由 Agent 注入 parent")
         cfg = getattr(self, "_config", None)
-        assert cfg is not None, "ReviewDraftTool 必须经 make_tools 构造（注入 _config）"
+        if cfg is None:
+            # 同上：_config 缺失时 scratch 基准（cfg.workspace）不可得，fail-fast
+            raise RuntimeError("ReviewDraftTool 必须经 make_tools 构造（注入 _config）")
         # scratch 派生基准 = config.workspace（make_tools 注入，避免经 get_rag_service 间接取）
         scratch_dir = Path(cfg.workspace) / "tmp"
         scratch_dir.mkdir(parents=True, exist_ok=True)
         draft_path = scratch_dir / f"review_{parent.session_id}_{uuid4().hex[:8]}.md"
-        draft_path.write_text(draft_text, encoding="utf-8")
         try:
+            # write_text 移入 try：写入失败（磁盘满/权限）也走 finally 清理，
+            # 避免部分写入留下 stray scratch 文件
+            draft_path.write_text(draft_text, encoding="utf-8")
             # 子 agent：继承父的 llm/registry/security_middleware/session_id
             # （审计链延续：子有自己的 trace_id，靠共享 session_id 与父聚合）
+            # 刻意不传 confirm_callback：子默认 fail-safe 的 _default_confirm（始终拒绝）。
+            # review-note 当前无 requires_confirm 工具，不会触发确认；将来若有高风险工具，
+            # 子侧拒绝而非继承父的自动确认才是正确语义——确认是用户与最外层入口之间的门，
+            # 不应被嵌套 agent 透传（spec §4.2）。
             child = Agent(llm=parent.llm, agent_registry=parent.agent_registry,
                           agent_type="review-note",
                           security_middleware=parent.security_middleware,

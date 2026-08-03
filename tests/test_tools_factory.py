@@ -70,7 +70,8 @@ def test_make_tools_resolves_templates_and_scratch_roots(tmp_path):
 
 
 def test_format_check_allows_scratch_not_write(tmp_path):
-    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"))
+    # vault_pdf_dir 显式给出，否则默认落真实用户 vault 路径，下方 pdf 断言退化为恒真
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"), vault_pdf_dir=str(tmp_path / "pdf"))
     tools = {t.name: t for t in make_tools(cfg, [ReadFileTool, WriteFileTool, EditFileTool, FormatCheckTool])}
     assert str(tmp_path / "ws" / "tmp") in tools["format_check"].allowed_paths
     # Paper 只读 + scratch 只读：Write/Edit 不含 pdf 也不含 scratch

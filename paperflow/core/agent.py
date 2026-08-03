@@ -135,12 +135,6 @@ class Agent:
         #: Tool 字典，key = tool.name，供 _exec_tool 快速查找
         self.tools = {t.name: t for t in config.tools}
 
-        # opt-in 注入：仅对声明 needs_parent 的工具注入父引用。
-        # 原子工具不需要 parent；只有嵌套子 agent 的工具声明——权限最小化。
-        for t in self.tools.values():
-            if getattr(t, "needs_parent", False):
-                t.attach_agent(self)
-
         #: 注入 LLM 的系统提示词，定义本 Agent 的行为规范
         self.system_prompt = config.system_prompt
 
@@ -171,6 +165,15 @@ class Agent:
 
         #: 当前 run 的追踪 ID，每次 run 开始时重新生成，注入 ToolContext
         self._trace_id: str | None = None
+
+        # opt-in 注入：仅对声明 needs_parent 的工具注入父引用。
+        # 原子工具不需要 parent；只有嵌套子 agent 的工具声明——权限最小化。
+        # 必须放在所有 __init__ 属性赋值之后：attach_agent 可能被工具覆写为
+        # 读取父 Agent 属性（如 session_id）的访问器，提前注入则构造期父引用
+        # 不完整——被攻陷工具此时读到的 session_id 等仍是缺省值（T1 前瞻坑位）。
+        for t in self.tools.values():
+            if getattr(t, "needs_parent", False):
+                t.attach_agent(self)
 
     async def _default_confirm(self, cr: ConfirmRequired) -> bool:
         """默认 fail-safe：无人值守时拒绝。"""

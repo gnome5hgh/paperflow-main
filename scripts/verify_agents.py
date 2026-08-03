@@ -2,8 +2,9 @@
 """真实 LLM smoke：4 个业务 agent 的 happy path（代码资产，验收后手动执行）。
 
 用法：
-    conda run -n paperflow python scripts/verify_agents.py <pdf路径> [草稿路径]
+    conda run -n paperflow python scripts/verify_agents.py <pdf绝对路径> [草稿绝对路径]
 需 PAPERFLOW_API_KEY（DeepSeek/OpenAI 兼容，经 config）。
+路径必须为绝对路径：WorkspacePolicy 按绝对路径白名单门控，相对路径会被拒绝。
 
 副作用（如实声明）：
 - search-paper 会真打 arXiv/OpenAlex 公开 API

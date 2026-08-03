@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.llm import Message
 from tests.conftest import make_mock_llm, _tc, make_agent
 
@@ -31,6 +32,37 @@ async def test_review_draft_runs_child_and_cleans_scratch(agent_env, agent_regis
     # scratch 清理：workspace/tmp 下无残留
     scratch = Path(cfg.workspace) / "tmp"
     assert not list(scratch.glob("review_*.md"))
+
+
+@pytest.mark.asyncio
+async def test_review_draft_max_turns_cleans_scratch(agent_env, agent_registry, monkeypatch):
+    """ReviewDraftTool 超轮分支：子 agent 抛 MaxTurnsExceeded → 错误文本 + scratch 清理。
+
+    驱动方式：monkeypatch Agent.run 让子 agent 立即抛 MaxTurnsExceeded——
+    比驱动 mock LLM 死循环 20 轮更快，且同样是安全阀触发的真实异常路径。
+    execute 的 except MaxTurnsExceeded 分支应把超轮转成错误文本给父 LLM
+    （而非向上抛），finally 仍须清理 draft 落盘的 scratch 文件。"""
+    cfg, _ = agent_env
+    pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
+    pdf.write_bytes(b"dummy")
+
+    async def _run_boom(self, task):
+        raise MaxTurnsExceeded("boom")
+
+    monkeypatch.setattr(Agent, "run", _run_boom)
+
+    llm = make_mock_llm([])   # child.run 被 patch，llm.chat 不会被调用
+    agent = make_agent(agent_registry, "generate-note", llm, cfg)
+    tool = agent.tools["review_draft"]
+
+    result = await asyncio.to_thread(
+        tool.execute,
+        draft_text="# 标题",
+        pdf_path=str(pdf),
+    )
+    assert "超轮" in result.text              # MaxTurnsExceeded → 错误文本给父 LLM
+    scratch = Path(cfg.workspace) / "tmp"
+    assert not list(scratch.glob("review_*.md"))   # 超轮路径同样清理 scratch
 
 
 def test_generate_note_tools_metadata(agent_env, agent_registry):
@@ -150,6 +182,12 @@ async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
     result = await agent.run(f"为 {pdf} 生成笔记")
     assert "笔记已生成" in result
     assert mock.callable_hits == 2                 # 子 agent 跑了两轮（审稿两次）
+    # 父→子桥接 load-bearing：应恰好 spawn 过 2 个"审阅草稿文件"子任务。
+    # 注意 mock 按"每次 LLM 调用"追加 user 消息：同一子 run 的 task 文本会被追加两次
+    # （首轮工具调用 + 次轮最终回答），故用"不同任务文本数"断言两次 spawn 而非 sum 计数；
+    # 两次 task 各含唯一 uuid draft 路径，天然可区分。
+    child_tasks = {t for t in mock.seen_tasks if "审阅草稿文件" in t}
+    assert len(child_tasks) == 2
     assert note_out.exists()                       # 定稿落盘
     assert note_out.read_text(encoding="utf-8").startswith("# 标题")
     # scratch 清理：两轮审稿后 workspace/tmp 无残留
