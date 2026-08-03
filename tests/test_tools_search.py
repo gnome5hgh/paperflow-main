@@ -1,7 +1,7 @@
 # tests/test_tools_search.py
 import pytest
 import httpx
-from paperflow.tools.search import ArxivSearchTool, OpenAlexSearchTool
+from paperflow.tools import ArxivSearchTool, OpenAlexSearchTool
 
 
 @pytest.fixture(autouse=True)
@@ -14,7 +14,7 @@ def _no_real_redirect(monkeypatch):
     让 httpx.MockTransport 罐头响应成为唯一网络来源；
     生产环境仍保留真实的逐跳重定向 SSRF 防护（此处仅测试隔离）。
     """
-    monkeypatch.setattr("paperflow.tools.search.resolve_url_target", lambda u: u)
+    monkeypatch.setattr("paperflow.tools._search_common.resolve_url_target", lambda u: u)
 
 _ATOM = """<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -89,7 +89,7 @@ def test_ssrf_check_blocks_private():
 
 def test_download_resolves_redirect_and_indexes(tmp_path, monkeypatch):
     # 302 → 200 PDF 开心路径：解析后的最终 URL 被 GET、写盘字节正确、触发 index_document
-    from paperflow.tools import search as search_mod
+    from paperflow.tools import _search_common as search_mod
 
     def fake_resolve(url):
         # 模拟 HEAD 逐跳校验把 arxiv pdf 302 到最终地址的解析结果；
@@ -114,7 +114,7 @@ def test_download_resolves_redirect_and_indexes(tmp_path, monkeypatch):
         def index_document(self, p):
             self.indexed.append(p)
     fake = FakeSvc()
-    monkeypatch.setattr("paperflow.tools.search.get_rag_service", lambda: fake)
+    monkeypatch.setattr("paperflow.tools.arxiv_search.get_rag_service", lambda: fake)
 
     dest = tmp_path / "out.pdf"
     result = tool.execute(query="link prediction", max_results=1, download_to=str(dest))
@@ -127,7 +127,7 @@ def test_download_resolves_redirect_and_indexes(tmp_path, monkeypatch):
 def test_download_blocks_private_redirect(tmp_path, monkeypatch):
     # 302 → 私网 IP 被拒：下载报错、无文件落盘、不触发索引
     from paperflow.core.security.network import SSRFError
-    from paperflow.tools import search as search_mod
+    from paperflow.tools import _search_common as search_mod
 
     monkeypatch.setattr(search_mod, "resolve_url_target",
                         lambda url: "http://169.254.169.254/latest/meta-data/" if "/pdf/" in url else url)
@@ -153,7 +153,7 @@ def test_download_blocks_private_redirect(tmp_path, monkeypatch):
         def index_document(self, p):
             self.indexed.append(p)
     fake = FakeSvc()
-    monkeypatch.setattr("paperflow.tools.search.get_rag_service", lambda: fake)
+    monkeypatch.setattr("paperflow.tools.arxiv_search.get_rag_service", lambda: fake)
 
     dest = tmp_path / "evil.pdf"
     result = tool.execute(query="link prediction", max_results=1, download_to=str(dest))

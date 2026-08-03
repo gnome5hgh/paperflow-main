@@ -5,7 +5,7 @@ import pytest
 
 from paperflow.core.llm import Message
 from paperflow.tools.factory import make_tools
-from paperflow.tools.file import SuggestEditTool
+from paperflow.tools import SuggestEditTool
 from tests.conftest import make_mock_llm, _tc, make_agent
 
 

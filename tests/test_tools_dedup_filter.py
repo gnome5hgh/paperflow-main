@@ -1,4 +1,4 @@
-from paperflow.tools.search import DedupPapersTool, FilterPapersTool
+from paperflow.tools import DedupPapersTool, FilterPapersTool
 
 
 def test_dedup_by_arxiv_id():

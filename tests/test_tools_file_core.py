@@ -8,7 +8,7 @@ from paperflow.core.security.workspace import WorkspacePolicyMiddleware
 from paperflow.core.security.scanner import SecurityScanMiddleware
 from paperflow.core.security import ToolContext
 from paperflow.tools.factory import make_tools
-from paperflow.tools.file import ReadFileTool, WriteFileTool, EditFileTool
+from paperflow.tools import ReadFileTool, WriteFileTool, EditFileTool
 
 TOOL_CLASSES = [ReadFileTool, WriteFileTool, EditFileTool]
 
@@ -35,7 +35,7 @@ def test_pdf_not_in_write_edit_roots(tmp_path):
 def test_write_then_index_document(tmp_path, monkeypatch):
     tools, _ = _tools(tmp_path)
     write_tool = next(t for t in tools if isinstance(t, WriteFileTool))
-    from paperflow.tools import file as file_mod
+    from paperflow.tools import write_file as file_mod
     class FakeSvc:
         def __init__(self):
             self.lock = __import__("threading").RLock()
@@ -43,8 +43,8 @@ def test_write_then_index_document(tmp_path, monkeypatch):
         def index_document(self, path):
             self.calls.append(path)
     fake = FakeSvc()
-    # 注意：tools.file 在模块顶层已绑定 get_rag_service 引用，
-    # 必须 patch tools.file 命名空间（patch rag.service 无效）
+    # 注意：tools.write_file 在模块顶层已绑定 get_rag_service 引用，
+    # 必须 patch tools.write_file 命名空间（patch rag.service 无效）
     monkeypatch.setattr(file_mod, "get_rag_service", lambda: fake)
     target = tmp_path / "note" / "x.md"
     result = write_tool.execute(path=str(target), content="内容")

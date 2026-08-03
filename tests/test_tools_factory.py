@@ -54,7 +54,7 @@ def test_make_tools_without_roots_empty():
     assert tools[0].allowed_paths == []
 
 
-from paperflow.tools.file import ReadFileTool, WriteFileTool, EditFileTool, FormatCheckTool
+from paperflow.tools import ReadFileTool, WriteFileTool, EditFileTool, FormatCheckTool
 
 
 def test_make_tools_resolves_templates_and_scratch_roots(tmp_path):
@@ -80,7 +80,7 @@ def test_format_check_allows_scratch_not_write(tmp_path):
         assert str(tmp_path / "pdf") not in tools[name].allowed_paths
 
 
-from paperflow.tools.file import ReadFileTool
+from paperflow.tools import ReadFileTool
 
 
 def test_make_tools_injects_config_and_path_hints(tmp_path):

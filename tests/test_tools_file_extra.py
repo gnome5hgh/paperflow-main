@@ -1,9 +1,7 @@
 # tests/test_tools_file_extra.py
 from pathlib import Path
 
-from paperflow.tools.file import (
-    ReadPdfTool, MarkReadTool, FormatAnswerTool, FormatCheckTool, SuggestEditTool,
-)
+from paperflow.tools import ReadPdfTool, MarkReadTool, FormatAnswerTool, FormatCheckTool, SuggestEditTool
 
 
 def test_format_check_compares_template(tmp_path):

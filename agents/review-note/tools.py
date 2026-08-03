@@ -5,7 +5,7 @@
 """
 from paperflow.config import PaperFlowConfig
 from paperflow.tools.factory import make_tools
-from paperflow.tools.file import ReadFileTool, ReadPdfTool, FormatCheckTool, SuggestEditTool
+from paperflow.tools import ReadFileTool, ReadPdfTool, FormatCheckTool, SuggestEditTool
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
     ReadFileTool, ReadPdfTool, FormatCheckTool, SuggestEditTool,
