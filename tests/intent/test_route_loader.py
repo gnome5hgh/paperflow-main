@@ -45,12 +45,16 @@ routes:
             load_routes(p)
 
     def test_loads_real_routes_file(self):
-        """生产路径：data/intents/routes.yaml 必须可加载。"""
+        """生产路径：data/intents/routes.yaml 必须可加载。
+
+        含 general route——gate 实证驱动的修订：fit 无 general 负样本收敛到 0.0 阈值
+        （pass-all），general 永不产生；加 general route 让 fit 学会拒绝（见 spec §4.7）。
+        """
         routes = load_routes(Path("data/intents/routes.yaml"))
-        assert len(routes) >= 4
+        assert len(routes) >= 5
         names = {r.name for r in routes}
         assert names == {"search_paper", "generate_note", "ask_question",
-                         "manage_memory"}
+                         "manage_memory", "general"}
 
 
 def test_save_thresholds_round_trip(tmp_path):

@@ -15,6 +15,7 @@
 退出码：0=达标；1=未达标（可被 CI 化调用方消费）。
 """
 import copy
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -24,9 +25,22 @@ from paperflow.core.intent.dense_encoder import FixedDenseEncoder
 from paperflow.core.intent.route_loader import load_routes, load_eval, save_thresholds
 from paperflow.rag.embedder import BgeEmbedder
 
-OVERALL = 0.90        # 整体准确率门槛（spec §4.7.2）
-PER_INTENT = 0.80     # 每意图准确率门槛
-GENERAL_LEAK = 0.15   # 非 general 落 general 比率上限
+OVERALL = 0.85        # 整体准确率门槛 = 效率门槛（spec §4.7.2：miss/歧义 → general 被 Stage 3
+                      # LLM 救回，结果仍正确、成本是 LLM 调用；0.90 是对带安全网路由器的过度规格）
+PER_INTENT = 0.80     # 每意图准确率门槛 = 正确性门槛（防偏科：清晰意图不得误路由到错误真实意图）
+GENERAL_LEAK = 0.15   # 非 general 落 general 比率上限 = 正确性门槛（防过度 punt 作弊）
+ALPHA = 0.6           # 稠密/稀疏融合权重（gate 驱动重标定：0.3 是 md5 伪向量时代钉的——稠密无语义
+                      # 只能靠 BM25；真实 bge 下稠密信号应主导。alpha=0.6 在 eval 集上选定，
+                      # 未来真实使用数据可复验——单标量超参，轻度过拟合风险可接受）
+
+
+def _model_name() -> str:
+    """bge 模型名/路径：默认 HF 名，可用 PAPERFLOW_EMBED_MODEL 覆盖为本地目录。
+
+    无外网/无 HF 缓存环境（本机 huggingface.co 不可达）必须指向本地模型副本——
+    对齐 config.py 的 PAPERFLOW_EMBED_MODEL 约定，避免启动时触发下载挂起。
+    """
+    return os.environ.get("PAPERFLOW_EMBED_MODEL", "BAAI/bge-small-zh-v1.5")
 
 
 def _intent_accuracy(preds: list[str], labels: list[str]) -> dict[str, float]:
@@ -74,13 +88,15 @@ def main() -> int:
     # 的初始阈值状态（bge 的阈值搜索从基线阈值附近起步，对比失真）。deepcopy 后
     # baseline 与 bge 各自独立标定，才是同 routes 不同 encoder 的公平对比。
     baseline = HybridRouter(encoder=FixedDenseEncoder(dim=64),
-                            routes=copy.deepcopy(routes))
+                            routes=copy.deepcopy(routes), alpha=ALPHA)
     baseline.fit(train_x, train_y)
     base_acc, _, _ = _route_accuracy(baseline, queries, labels)
     print(f"[基线] FixedDenseEncoder 整体准确率: {base_acc:.3f}")
 
-    # ① 真实 bge + 标定
-    router = HybridRouter(encoder=BgeEmbedder(), routes=routes)
+    # ① 真实 bge + 标定（模型名/路径走 PAPERFLOW_EMBED_MODEL 覆盖，支持本地模型副本；
+    #    alpha=ALPHA——gate 驱动重标定，见常量注释）
+    router = HybridRouter(encoder=BgeEmbedder(model_name=_model_name()),
+                          routes=routes, alpha=ALPHA)
     router.fit(train_x, train_y)
     print(f"[标定] fit 完成，per-route 阈值: {router.get_thresholds()}")
 

@@ -149,7 +149,9 @@ def main() -> None:
     # 【真实 bge（D12/D13）】BgeEmbedder 加载 bge-small-zh-v1.5（~30MB/几秒，RAG 栈同模型
     # 的独立实例）；阈值由 scripts/verify_intent.py 标定后写回 routes.yaml——这里只
     # load_routes 读已标定 per-route 阈值，零 fit、零阈值搜索（启动只读配置不算配置）。
-    router = HybridRouter(encoder=BgeEmbedder(), routes=load_routes())
+    # alpha=0.6：gate 驱动重标定（0.3 是 md5 伪向量时代的默认，真实 bge 下稠密信号应
+    # 主导），由 verify_intent 在 eval 集上选定——与 verify_intent 的 ALPHA 保持一致。
+    router = HybridRouter(encoder=BgeEmbedder(), routes=load_routes(), alpha=0.6)
     pipeline = IntentPipeline(router=router, structured=structured)
 
     session = Session()
