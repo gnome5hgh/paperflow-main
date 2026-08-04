@@ -80,8 +80,27 @@ class BgeEmbedder:
         global SentenceTransformer
         if SentenceTransformer is None:
             from sentence_transformers import SentenceTransformer
-        self._model = SentenceTransformer(self._model_name)
-        self._dim = self._model.get_sentence_embedding_dimension()
+        # 抑制权重加载进度条（tqdm "Loading weights"）——CLI 启动不该刷屏。
+        # tqdm 4.70 的 disable 是实例参数非类属性，故补丁 __init__ 默认值：
+        # 仅在本次加载期间生效，加载完恢复（不污染后续正常进度显示）。
+        import tqdm as _tqdm_mod
+        _orig_init = _tqdm_mod.tqdm.__init__
+
+        def _quiet_init(self, *args, **kwargs):
+            kwargs.setdefault("disable", True)
+            _orig_init(self, *args, **kwargs)
+
+        _tqdm_mod.tqdm.__init__ = _quiet_init
+        try:
+            self._model = SentenceTransformer(self._model_name)
+        finally:
+            _tqdm_mod.tqdm.__init__ = _orig_init
+        # sentence-transformers 5.x 把 get_sentence_embedding_dimension 重命名为
+        # get_embedding_dimension（FutureWarning）；新名优先，旧名回退兼容两种版本。
+        get_dim = getattr(self._model, "get_embedding_dimension", None)
+        if get_dim is None:
+            get_dim = self._model.get_sentence_embedding_dimension
+        self._dim = get_dim()
 
     @property
     def dim(self) -> int:

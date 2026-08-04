@@ -4,10 +4,16 @@
 唯一替换：PretrainedTokenizer("bert-base-uncased") → JiebaTokenizer（中英文意图 utterance）。
 ⚠️ encode_documents 严格保留 0.1.16 的 b*b 公式（源码笔误，决策 A 保留——与 0.1.16 行为一致）。
 """
+import logging
 from functools import partial
 
 import jieba
 import numpy as np
+
+# 抑制 jieba 启动噪音（"Building prefix dict..." / "Loading model from cache..." /
+# "Prefix dict has been built successfully."）——CLI 启动不该刷屏。jieba 首次
+# lcut 时初始化词典，INFO 级日志默认打到 stderr；setLogLevel 只需设置一次。
+jieba.setLogLevel(logging.ERROR)
 
 
 class JiebaTokenizer:
