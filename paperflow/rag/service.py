@@ -25,6 +25,12 @@ class RAGService:
         self._indexer = None
         self._retriever = None
         self.chunker = AcademicChunker()    # 纯逻辑，构造无副作用
+        # GROBID 解析缓存：key = (绝对路径, mtime_ns, size)。
+        # 【实测瓶颈修复】review-note 每轮审稿都 read_pdf → 3 轮审稿 4 次解析；
+        # 进程内存缓存让 generate-note 与 review-note（同一 RAGService 单例）
+        # 共享一份全文，4×→1×。PDF 替换时 mtime+size 变化自动失效，零维护。
+        # 实例属性而非类属性：测试每例独立实例，避免跨测试污染。
+        self._parse_cache: dict[tuple[str, int, int], "ParsedDoc"] = {}
 
     # —— 惰性组件（double-checked locking）——
     def _ensure_embedder(self):
@@ -79,6 +85,27 @@ class RAGService:
             from paperflow.rag.grobid_client import PyMuPDFParser
             self._pymupdf_parser = PyMuPDFParser()
         return self._pymupdf_parser
+
+    def parse_pdf_cached(self, path: str) -> "ParsedDoc":
+        """GROBID 解析 + 进程内存缓存（透明加速，语义不变）。
+
+        key = (绝对路径, mtime_ns, size)：同一路径 PDF 被替换时自动失效重解析。
+        GROBID 抛异常不缓存——故障不固化，下次调用重试（D4）。
+        """
+        from pathlib import Path
+        resolved = Path(path).resolve()
+        st = resolved.stat()
+        key = (str(resolved), st.st_mtime_ns, st.st_size)
+        with self.lock:
+            hit = self._parse_cache.get(key)
+            if hit is not None:
+                return hit
+            # 持锁解析：并发首个 miss 只解析一次。RAG 段本就整段持锁串行
+            #（GROBID 是单 Docker 服务，fulltext 请求本身就串行处理），
+            # 不引入额外串行化——与 index/retrieve 持锁语义一致。
+            doc = self.pdf_parser().parse_pdf(str(resolved))
+            self._parse_cache[key] = doc
+            return doc
 
     # —— 视图（懒导入防循环 import）——
     def get_indexer(self):
