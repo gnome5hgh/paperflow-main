@@ -192,3 +192,32 @@ async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
     assert note_out.read_text(encoding="utf-8").startswith("# 标题")
     # scratch 清理：两轮审稿后 workspace/tmp 无残留
     assert not list((Path(cfg.workspace) / "tmp").glob("review_*.md"))
+
+
+@pytest.mark.asyncio
+async def test_review_draft_timeout_returns_message(agent_env, agent_registry, monkeypatch):
+    """单轮审稿硬超时（D3）：子 agent 挂起 > review_timeout → 返回超时消息，草稿不落盘。
+
+    驱动方式：monkeypatch Agent.run 让子 agent 无限挂起 + 实例覆盖 review_timeout 为
+    极小值（0.05s，不真等 120s）——与 test_review_draft_max_turns 同款快速驱动。"""
+    cfg, _ = agent_env
+    pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
+    pdf.write_bytes(b"dummy")
+
+    async def _run_hang(self, task):
+        await asyncio.sleep(10)          # 挂起 > 0.05s → wait_for 触发 TimeoutError
+
+    monkeypatch.setattr(Agent, "run", _run_hang)
+
+    llm = make_mock_llm([])
+    agent = make_agent(agent_registry, "generate-note", llm, cfg)
+    tool = agent.tools["review_draft"]
+    tool.review_timeout = 0.05           # 实例覆盖类默认 120s（测试不真等）
+    result = await asyncio.to_thread(
+        tool.execute,
+        draft_text="# 标题",
+        pdf_path=str(pdf),
+    )
+    assert "超时" in result.text         # wait_for 触发 → 超时消息给父 LLM
+    scratch = Path(cfg.workspace) / "tmp"
+    assert not list(scratch.glob("review_*.md"))   # 超时路径同样清理 scratch

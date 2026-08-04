@@ -41,6 +41,10 @@ class ReviewDraftTool(Tool):
         "required": ["draft_text", "pdf_path"],
     }
     risk_level = "medium"                  # 瞬态写盘 + 触发子 agent；不高于 WriteFileTool
+    #: 单轮审稿硬超时（默认 120s）：防单轮挂死吃光父预算（D3）。
+    #: 超时 → 返回超时消息，generate-note 依现有草稿继续（降级不中断，D10 哲学）。
+    #: 类属性（实例可覆盖，测试用极小值）；config 注入留后续。
+    review_timeout = 120
     requires_confirm = False               # 审稿循环最多 3 轮，最终 WriteFileTool 才是用户门
     side_effects = ["write_file"]          # 写 scratch 临时文件
     allowed_roots = ["pdf"]                # pdf_path 父级门控（子 agent ReadPdf 再门控）
@@ -76,8 +80,14 @@ class ReviewDraftTool(Tool):
                           session_id=parent.session_id)
             task = f"审阅草稿文件 {draft_path}，对照原文 {pdf_path}"
             # execute 跑在 to_thread worker 线程（无 running loop）→ asyncio.run 安全新建 loop
-            text = asyncio.run(child.run(task))
+            # 嵌套审稿加 wait_for：单轮审稿有时间盒，不会无限挂起拖垮整个
+            # generate-note（Supervisor 对 generate-note 的总预算之上再加一层
+            # per-round 保护）。超时降级：草稿保持现状，父 LLM 依据现有内容决定。
+            text = asyncio.run(asyncio.wait_for(
+                child.run(task), timeout=self.review_timeout))
             return ToolResult(text=text)
+        except asyncio.TimeoutError:
+            return ToolResult(text="审稿子 agent 超时，草稿保持现状，请依据现有内容决定是否定稿")
         except MaxTurnsExceeded as e:
             # 子 agent 超轮 → 转错误文本给父 LLM 决定下一步（不向上抛）
             return ToolResult(text=f"审稿子 agent 超轮: {e}")
