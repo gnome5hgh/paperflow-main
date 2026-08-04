@@ -1,0 +1,214 @@
+"""Supervisor 调度工具（spec §3）——4 个仅调度类工具，不进 paperflow/tools/。
+
+归属声明：与 ReviewDraftTool 同款刻意例外——agent 专属、需 parent 注入
+（needs_parent），SpawnSubAgentTool 是 Layer 3 ReviewDraftTool 的升级壳。
+Supervisor 是唯一拥有 spawn 工具的 agent（权限最小化：SubAgent 无递归调度）。
+"""
+import asyncio
+import json
+
+from pydantic import BaseModel
+
+from paperflow.core.agent import Agent
+from paperflow.core.tool import Tool, ToolResult
+
+
+class SubAgentResult(BaseModel):
+    """子 agent 结构化结果（ADR 0003 第 3 层）。
+
+    status ∈ {success, failed, timeout, denied}；needs_attention 独立标志
+    （denied + needs_attention=True 表示"被拒且需用户介入"，与 failed 可重试可区分）。
+    """
+    status: str
+    summary: str
+    error_detail: str = ""
+    needs_attention: bool = False
+
+
+class SpawnSubAgentTool(Tool):
+    """派发单个 SubAgent，返回 SubAgentResult 序列化。"""
+
+    name = "spawn_sub_agent"
+    description = ("派发单个 SubAgent 执行子任务，返回结构化结果（status/summary/error_detail/"
+                   "needs_attention）。失败可依据 error_detail 决定重试或上报。")
+    parameters = {
+        "type": "object",
+        "properties": {
+            "agent_type": {"type": "string", "description": "目标 SubAgent 类型，如 search-paper"},
+            "task": {"type": "string", "description": "子任务文本（含实体，已拼入上下文）"},
+        },
+        "required": ["agent_type", "task"],
+    }
+    #: 需要父 Agent 引用（Agent.__init__ 只注入声明者）
+    needs_parent = True
+    risk_level = "low"
+    #: 子 agent 超时秒数（ADR 0003 的 120s；类属性便于测试覆盖）
+    timeout = 120
+
+    def execute(self, agent_type: str, task: str) -> ToolResult:
+        parent = self._parent
+        # ① allowed_spawns 运行时校验（ADR 0003 第 3 层）：supervisor 硬编码放行；
+        #    非 supervisor（未来若有 spawn 工具配置）越界 spawn → denied。
+        #    当前仅 supervisor 拥有 spawn 工具，此分支为未来预留——denied 有真实代码路径。
+        if parent.agent_type != "supervisor":
+            cfg = parent.agent_registry.get_config(parent.agent_type)
+            if agent_type not in cfg.allowed_spawns:
+                result = SubAgentResult(
+                    status="denied", summary=f"{parent.agent_type} 不能 spawn {agent_type}")
+                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+
+        # ② 构造 child：继承 security_middleware + session_id（同一审计链）+ confirm_callback
+        #    （D6 关键：generate-note 的写盘工具 requires_confirm=True，不传则 _default_confirm
+        #    始终拒绝，spawn 出的 generate-note 永远写不出笔记）。
+        #    不传 intent_pipeline/session → child 的 intent_enabled=False（D3）。
+        child = Agent(
+            llm=parent.llm, agent_registry=parent.agent_registry,
+            agent_type=agent_type, security_middleware=parent.security_middleware,
+            session_id=parent.session_id, confirm_callback=parent.confirm_callback,
+        )
+        return self._run_child(child, task)
+
+    def _run_child(self, child: Agent, task: str) -> ToolResult:
+        """执行 child.run 并映射为 SubAgentResult（success/timeout/denied/failed）。
+
+        asyncio.run 桥接：execute 跑在 to_thread worker 线程（无 running loop），
+        必须 asyncio.run 新建事件循环（Layer 3 spec §4.3 钉死，嵌套会抛 RuntimeError）。
+        """
+        try:
+            text = asyncio.run(asyncio.wait_for(child.run(task), timeout=self.timeout))
+            result = SubAgentResult(status="success", summary=text)
+        except asyncio.TimeoutError:
+            result = SubAgentResult(status="timeout", summary="子任务执行超时",
+                                    error_detail="SubAgent 在 120s 内未完成")
+        except PermissionError as e:
+            # 防御性分支（spec ⚪2）：当前架构 child 的 _exec_tool 把 PolicyDenied/
+            # SecurityBlocked degrade-to-text 吸收，不向上抛——几乎不会触发。对齐
+            # ADR 0003 保留，implementer 不要据此推导存在真实路径。
+            result = SubAgentResult(status="denied", summary="子任务被策略引擎拒绝",
+                                    error_detail=str(e), needs_attention=True)
+        except Exception as e:
+            result = SubAgentResult(status="failed", summary="子任务执行失败",
+                                    error_detail=str(e))
+        return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+
+
+class ParallelSpawnTool(Tool):
+    """并行派发多个 SubAgent，逐 child 隔离——一个失败不拖垮其他（spec 🟠3）。"""
+
+    name = "parallel_spawn"
+    description = ("并行派发多个 SubAgent，返回 SubAgentResult 列表。各子任务独立——"
+                   "一个失败不影响其他。注意：都打 RAG 时并行度在 RAG 锁边界封顶。")
+    parameters = {
+        "type": "object",
+        "properties": {
+            "spawns": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "agent_type": {"type": "string"},
+                        "task": {"type": "string"},
+                    },
+                    "required": ["agent_type", "task"],
+                },
+            },
+        },
+        "required": ["spawns"],
+    }
+    needs_parent = True
+    risk_level = "low"
+    timeout = 120
+
+    def execute(self, spawns: list[dict]) -> ToolResult:
+        parent = self._parent
+
+        async def _run_one(agent_type: str, task: str) -> SubAgentResult:
+            # 每个 spawn 独立构造 child（继承 confirm_callback，同 SpawnSubAgentTool）
+            child = Agent(
+                llm=parent.llm, agent_registry=parent.agent_registry,
+                agent_type=agent_type, security_middleware=parent.security_middleware,
+                session_id=parent.session_id, confirm_callback=parent.confirm_callback,
+            )
+            try:
+                text = await asyncio.wait_for(child.run(task), timeout=self.timeout)
+                return SubAgentResult(status="success", summary=text)
+            except asyncio.TimeoutError:
+                return SubAgentResult(status="timeout", summary="子任务执行超时",
+                                      error_detail="SubAgent 在 120s 内未完成")
+            except Exception as e:
+                return SubAgentResult(status="failed", summary="子任务执行失败",
+                                      error_detail=str(e))
+
+        async def _run_all() -> list[SubAgentResult]:
+            # asyncio.gather 是普通函数（非 async def），必须在 running loop 内调用：
+            # 在 asyncio.run 外部直接 gather 会经 get_event_loop() 取"当前 loop"，
+            # Python 3.11 下拿不到可用 loop（pytest-asyncio 已 set 过又关闭）→
+            # RuntimeError/ValueError。故包一层 _run_all，让 gather 在新建 loop 内执行。
+            return await asyncio.gather(*[
+                _run_one(s["agent_type"], s["task"]) for s in spawns
+            ])
+
+        # _run_one 内部全捕获 → gather 永不因单 child 失败 cancel（per-child 隔离）。
+        # asyncio.run 桥接同 SpawnSubAgentTool（execute 跑在 to_thread worker 线程无 loop）。
+        results = asyncio.run(_run_all())
+        payload = [r.model_dump() for r in results]
+        return ToolResult(text=json.dumps(payload, ensure_ascii=False),
+                          summary={"count": len(payload)})
+
+
+class AggregateResultsTool(Tool):
+    """汇总 SubAgentResult 列表；needs_attention 标记呈现（规则 6）。纯文本不做决策。"""
+
+    name = "aggregate_results"
+    description = "汇总多个 SubAgentResult 为清晰列表；带 ⚠️ 标记的项需最终呈现给用户。"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "results": {"type": "array", "items": {"type": "object"}},
+        },
+        "required": ["results"],
+    }
+    # 纯文本汇总，无需 parent 引用
+    risk_level = "low"
+
+    def execute(self, results: list[dict]) -> ToolResult:
+        lines = []
+        for r in results:
+            status = r.get("status", "?")
+            needs = r.get("needs_attention", False)
+            mark = " ⚠️" if needs else ""
+            lines.append(f"- [{status}{mark}] {r.get('summary', '')}")
+        text = "\n".join(lines) if lines else "(无结果)"
+        return ToolResult(text=text)
+
+
+class AskUserTool(Tool):
+    """向用户确认信息（in-turn 阻塞，spec D4②）。
+
+    经 parent.ask_user_callback 读 stdin；callback 为 None（程序化/测试）→
+    fail-safe 返回"无法交互"（与 _default_confirm 同款，Supervisor ReAct 自行处理）。
+    """
+
+    name = "ask_user"
+    description = "向用户提问并等待回答（阻塞直到用户输入）。答案作为工具结果返回。"
+    parameters = {
+        "type": "object",
+        "properties": {"question": {"type": "string", "description": "要问用户的问题"}},
+        "required": ["question"],
+    }
+    needs_parent = True
+    risk_level = "low"
+
+    def execute(self, question: str) -> ToolResult:
+        cb = getattr(self._parent, "ask_user_callback", None)
+        if cb is None:
+            # fail-safe：无法交互时明确告知，Supervisor 依据已有信息自行决策（不挂死）
+            return ToolResult(text="无法交互：当前环境未提供用户回调，请基于已有信息决定")
+        # cb 是 CLI 注入的 stdin 读（worker 线程 input() 可用，spec §3.5 线程注记）
+        answer = cb(question)
+        return ToolResult(text=f"用户回答：{answer}")
+
+
+TOOLS = [SpawnSubAgentTool(), ParallelSpawnTool(), AggregateResultsTool(), AskUserTool()]
+# 注：supervisor 工具无 allowed_roots（无文件访问），无需 make_tools 装配——
+# 直接实例化列表即可（AgentRegistry 约定 TOOLS 是 Tool 实例列表）。
