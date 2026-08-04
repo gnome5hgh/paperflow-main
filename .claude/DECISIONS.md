@@ -115,3 +115,9 @@
 **决策**：新增 `core/text_util.py::sanitize_surrogates`（U+D800-DFFF → U+FFFD），在 `BgeEmbedder.__call__` 输入与 LLM 消息出站 `_message_to_openai` 两处信任边界统一清洗。
 
 **理由**：实测暴露——PDF 提取（GROBID TEI / PyMuPDF 回退）或外部文本可能携带未配对 surrogate（孤立高/低代理位），在两处爆炸：① embed encode → tokenizer 抛 `TypeError: TextEncodeInput`，意图路由整条降级；② openai SDK 把消息 UTF-8 编码 → `UnicodeEncodeError: surrogates not allowed`，整轮 ReAct 崩溃。选**边界清洗**而非溯源逐个 PDF 修：任何来源的脏文本都被兜住（PyMuPDF 对用户那篇 PDF 提取是干净的，来源应为 GROBID/TEI 或特定字符），且不影响合法代理对（emoji）。见提交 84fb4f9。
+
+## 2026-08-04 — generate-note 长论文超时修复三决策（实测瓶颈驱动）
+
+**决策**：① GROBID 解析缓存放 RAGService 进程内存（key=绝对路径+mtime+size，`parse_pdf_cached` 持锁解析），ReadPdfTool 改路由——generate-note 与 review-note 共享单例缓存，3 轮审稿 4×→1× 解析；② 超时按 agent 配置化（`agent_timeouts`，generate-note 默认 300s；`SpawnSubAgentTool.timeout=120` 保留 fallback 保住测试 seam）；③ 审稿轮数 3→2（SKILL 软上限）+ ReviewDraftTool 嵌套 `wait_for` 单轮硬超时（120s，超时降级不中断）。
+
+**理由**：实测暴露——review-note 每轮审稿都重新 GROBID 解析论文（`read_pdf` 在 review-note SKILL 第 2 步），3 轮 = 4 次解析，每次对长论文 10-60s 且 httpx 超时 60s 是天花板，审稿循环必然在 120s/子任务预算内跑不完、连续超时。brainstorming 否决了"分发子 agent 并行读"——单 PDF 的 GROBID 解析是原子调用拆不开，并行不成立且碰权限最小化墙；真正可消除的是**重复解析**。解析缓存是透明加速语义不变；超时按 agent 是治疗"只有 generate-note 吃紧、全局调大让 stuck 搜索白等"；审稿收敛是软硬结合（SKILL 软上限 + wait_for 硬边界，防单轮挂死吃光预算）。见 `docs/superpowers/specs/2026-08-04-generate-note-timeout-fix-design.md`。
