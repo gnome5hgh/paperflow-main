@@ -15,15 +15,15 @@
 退出码：0=达标；1=未达标（可被 CI 化调用方消费）。
 """
 import copy
-import os
 import sys
 from collections import defaultdict
 from pathlib import Path
 
+from paperflow.config import PaperFlowConfig
 from paperflow.core.intent.hybrid_router import HybridRouter
 from paperflow.core.intent.dense_encoder import FixedDenseEncoder
 from paperflow.core.intent.route_loader import load_routes, load_eval, save_thresholds
-from paperflow.rag.embedder import BgeEmbedder
+from paperflow.rag.embedder import BgeEmbedder, resolve_model_dir
 
 OVERALL = 0.85        # 整体准确率门槛 = 效率门槛（spec §4.7.2：miss/歧义 → general 被 Stage 3
                       # LLM 救回，结果仍正确、成本是 LLM 调用；0.90 是对带安全网路由器的过度规格）
@@ -34,13 +34,13 @@ ALPHA = 0.6           # 稠密/稀疏融合权重（gate 驱动重标定：0.3 �
                       # 未来真实使用数据可复验——单标量超参，轻度过拟合风险可接受）
 
 
-def _model_name() -> str:
-    """bge 模型名/路径：默认 HF 名，可用 PAPERFLOW_EMBED_MODEL 覆盖为本地目录。
+def _model_name(config) -> str:
+    """bge 模型加载路径：走 resolve_model_dir（本地 data/models/<name> 优先，回退 HF 名）。
 
-    无外网/无 HF 缓存环境（本机 huggingface.co 不可达）必须指向本地模型副本——
-    对齐 config.py 的 PAPERFLOW_EMBED_MODEL 约定，避免启动时触发下载挂起。
+    PAPERFLOW_EMBED_MODEL 覆盖经 config._load_env 生效（config.embed_model）——
+    离线/本地模型副本场景设置该 env 即可。
     """
-    return os.environ.get("PAPERFLOW_EMBED_MODEL", "BAAI/bge-small-zh-v1.5")
+    return resolve_model_dir(config.workspace, config.embed_model)
 
 
 def _intent_accuracy(preds: list[str], labels: list[str]) -> dict[str, float]:
@@ -72,6 +72,7 @@ def _route_accuracy(router, queries: list[str], labels: list[str]) -> tuple[floa
 
 
 def main() -> int:
+    config = PaperFlowConfig.from_env()   # config.embed_model 解析模型路径（含 env 覆盖）
     eval_items = load_eval()
     labels = [l for _, l in eval_items]
     queries = [q for q, _ in eval_items]
@@ -95,7 +96,7 @@ def main() -> int:
 
     # ① 真实 bge + 标定（模型名/路径走 PAPERFLOW_EMBED_MODEL 覆盖，支持本地模型副本；
     #    alpha=ALPHA——gate 驱动重标定，见常量注释）
-    router = HybridRouter(encoder=BgeEmbedder(model_name=_model_name()),
+    router = HybridRouter(encoder=BgeEmbedder(model_name=_model_name(config)),
                           routes=routes, alpha=ALPHA)
     router.fit(train_x, train_y)
     print(f"[标定] fit 完成，per-route 阈值: {router.get_thresholds()}")

@@ -16,7 +16,7 @@ from paperflow.core.agent_registry import AgentRegistry
 from paperflow.core.session import Session
 from paperflow.core.intent.pipeline import IntentPipeline
 from paperflow.core.intent.hybrid_router import HybridRouter
-from paperflow.rag.embedder import BgeEmbedder
+from paperflow.rag.embedder import BgeEmbedder, resolve_model_dir
 from paperflow.core.intent.route_loader import load_routes
 
 
@@ -43,7 +43,10 @@ async def main() -> None:
     memory_dir = Path(config.workspace) / "memory"
     store = MemoryStore(memory_dir)
     structured = StructuredOutput(llm, store=store)
-    router = HybridRouter(encoder=BgeEmbedder(), routes=load_routes())
+    # 模型路径本地优先（data/models/<name>），回退 HF 名（resolve_model_dir）
+    router = HybridRouter(
+        encoder=BgeEmbedder(model_name=resolve_model_dir(config.workspace, config.embed_model)),
+        routes=load_routes())
     pipeline = IntentPipeline(router=router, structured=structured)
     session = Session()
     agent = Agent(llm=llm, agent_registry=registry, agent_type="supervisor",

@@ -31,8 +31,10 @@ class RAGService:
         if self._embedder is None:
             with self.lock:
                 if self._embedder is None:
-                    from paperflow.rag.embedder import BgeEmbedder
-                    self._embedder = BgeEmbedder(self.config.embed_model)
+                    from paperflow.rag.embedder import BgeEmbedder, resolve_model_dir
+                    # 模型路径本地优先（data/models/<name>），回退 HF 名（resolve_model_dir）
+                    self._embedder = BgeEmbedder(resolve_model_dir(
+                        self.config.workspace, self.config.embed_model))
         return self._embedder
 
     def _ensure_reranker(self):

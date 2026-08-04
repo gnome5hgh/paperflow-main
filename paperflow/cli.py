@@ -26,7 +26,7 @@ from paperflow.core.memory import (
 )
 from paperflow.core.intent.pipeline import IntentPipeline
 from paperflow.core.intent.hybrid_router import HybridRouter
-from paperflow.rag.embedder import BgeEmbedder
+from paperflow.rag.embedder import BgeEmbedder, resolve_model_dir
 from paperflow.core.intent.route_loader import load_routes
 
 logger = logging.getLogger(__name__)
@@ -151,7 +151,10 @@ def main() -> None:
     # load_routes 读已标定 per-route 阈值，零 fit、零阈值搜索（启动只读配置不算配置）。
     # alpha=0.6：gate 驱动重标定（0.3 是 md5 伪向量时代的默认，真实 bge 下稠密信号应
     # 主导），由 verify_intent 在 eval 集上选定——与 verify_intent 的 ALPHA 保持一致。
-    router = HybridRouter(encoder=BgeEmbedder(), routes=load_routes(), alpha=0.6)
+    # 模型路径本地优先（resolve_model_dir：data/models/<name>，回退 HF 名）
+    router = HybridRouter(
+        encoder=BgeEmbedder(model_name=resolve_model_dir(config.workspace, config.embed_model)),
+        routes=load_routes(), alpha=0.6)
     pipeline = IntentPipeline(router=router, structured=structured)
 
     session = Session()

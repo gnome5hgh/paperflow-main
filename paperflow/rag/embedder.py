@@ -1,5 +1,6 @@
 """稠密编码器：协议 + 真实 bge + 测试替身。真实 bge 同时是 Intent DenseEncoder 的替换实现。"""
 import hashlib
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -43,6 +44,22 @@ class FakeEmbedder:
             v = rng.rand(self.dim)
             vecs.append(v / np.linalg.norm(v))   # L2 归一化（对齐余弦语义）
         return np.array(vecs)
+
+
+def resolve_model_dir(workspace: str, model_name: str) -> str:
+    """HF 模型名 → 实际加载路径（项目本地优先，回退 HF 名）。
+
+    模型是运行时大文件（~100MB，`data/*` gitignored 不进 git）——项目本地化
+    （`<workspace>/models/<name>/`）避免依赖全局 HF 缓存或外部项目路径；fresh
+    clone 无本地模型时回退 HF 名（首次使用自动下载）。
+
+    解析顺序：① model_name 本身已是存在的本地目录 → 直接用；②
+    `<workspace>/models/<model_name 末段>` 存在 → 用本地；③ 否则回退 HF 名。
+    """
+    if Path(model_name).is_dir():
+        return model_name
+    local = Path(workspace) / "models" / Path(model_name).name
+    return str(local) if local.is_dir() else model_name
 
 
 class BgeEmbedder:
