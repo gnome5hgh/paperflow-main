@@ -203,7 +203,14 @@ def _message_to_openai(m: Message) -> dict:
     只有非 None 的字段才会出现在输出中 ——
     OpenAI API 拒绝 null tool_call_id 或空 tool_calls 字段。
     """
-    msg: dict = {"role": m.role, "content": m.content}
+    # 出站边界清洗未配对 surrogate（PDF 提取/工具结果可能携带）——否则 openai
+    # SDK UTF-8 编码消息时抛 UnicodeEncodeError: surrogates not allowed，
+    # 整轮 ReAct 崩溃（见 core/text_util.py）。
+    from paperflow.core.text_util import sanitize_surrogates
+    content = m.content
+    if isinstance(content, str):
+        content = sanitize_surrogates(content)
+    msg: dict = {"role": m.role, "content": content}
     if m.tool_calls is not None:
         msg["tool_calls"] = m.tool_calls
     if m.tool_call_id is not None:
