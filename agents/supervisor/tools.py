@@ -25,6 +25,24 @@ class SubAgentResult(BaseModel):
     needs_attention: bool = False
 
 
+def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
+    """allowed_spawns 运行时校验（ADR 0003 第 3 层）——Spawn/Parallel 两个工具共用。
+
+    supervisor 硬编码放行；非 supervisor（未来若有 spawn 工具配置）越界 spawn
+    返回错误信息（调用方映射为 denied），放行返回 None。
+
+    共享原因：审阅发现（R1）ParallelSpawnTool._run_one 曾跳过此校验、无条件构造
+    child——两个 spawn 工具不对称。抽成单点校验保证二者永远一致：当前仅 supervisor
+    拥有 spawn 工具，此分支为未来预留——denied 有真实代码路径（非死代码）。
+    """
+    if parent.agent_type == "supervisor":
+        return None
+    cfg = parent.agent_registry.get_config(parent.agent_type)
+    if agent_type not in cfg.allowed_spawns:
+        return f"{parent.agent_type} 不能 spawn {agent_type}"
+    return None
+
+
 class SpawnSubAgentTool(Tool):
     """派发单个 SubAgent，返回 SubAgentResult 序列化。"""
 
@@ -47,15 +65,13 @@ class SpawnSubAgentTool(Tool):
 
     def execute(self, agent_type: str, task: str) -> ToolResult:
         parent = self._parent
-        # ① allowed_spawns 运行时校验（ADR 0003 第 3 层）：supervisor 硬编码放行；
-        #    非 supervisor（未来若有 spawn 工具配置）越界 spawn → denied。
-        #    当前仅 supervisor 拥有 spawn 工具，此分支为未来预留——denied 有真实代码路径。
-        if parent.agent_type != "supervisor":
-            cfg = parent.agent_registry.get_config(parent.agent_type)
-            if agent_type not in cfg.allowed_spawns:
-                result = SubAgentResult(
-                    status="denied", summary=f"{parent.agent_type} 不能 spawn {agent_type}")
-                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+        # ① allowed_spawns 运行时校验（ADR 0003 第 3 层）：抽成 _check_spawn_allowed
+        #    共享 helper（ParallelSpawnTool._run_one 同款调用，防两工具校验漂移）。
+        #    supervisor 硬编码放行；非 supervisor 越界 spawn → denied（有真实代码路径）。
+        denied = _check_spawn_allowed(parent, agent_type)
+        if denied is not None:
+            result = SubAgentResult(status="denied", summary=denied)
+            return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
         # ② 构造 child：继承 security_middleware + session_id（同一审计链）+ confirm_callback
         #    （D6 关键：generate-note 的写盘工具 requires_confirm=True，不传则 _default_confirm
@@ -123,7 +139,13 @@ class ParallelSpawnTool(Tool):
         parent = self._parent
 
         async def _run_one(agent_type: str, task: str) -> SubAgentResult:
-            # 每个 spawn 独立构造 child（继承 confirm_callback，同 SpawnSubAgentTool）
+            # ① 与 SpawnSubAgentTool 同款 allowed_spawns 校验（R1：两 spawn 工具对称）。
+            #    越界 spawn 返回 per-child denied——不构造 child、不拖垮其他 child
+            #    （per-child 隔离语义：gather 只收集各 child 的独立 SubAgentResult）。
+            denied = _check_spawn_allowed(parent, agent_type)
+            if denied is not None:
+                return SubAgentResult(status="denied", summary=denied)
+            # ② 每个 spawn 独立构造 child（继承 confirm_callback，同 SpawnSubAgentTool）
             child = Agent(
                 llm=parent.llm, agent_registry=parent.agent_registry,
                 agent_type=agent_type, security_middleware=parent.security_middleware,

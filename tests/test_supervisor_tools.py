@@ -115,6 +115,28 @@ class TestParallelSpawnTool:
         parsed = json.loads(result.text)
         assert [p["status"] for p in parsed] == ["success", "success"]
 
+    def test_denied_when_spawn_not_allowed(self):
+        """R1 修复：ParallelSpawn 越界 spawn 也返回 per-child denied（与 Spawn 校验对齐）。
+
+        审阅发现 SpawnSubAgentTool 有 allowed_spawns 运行时校验，ParallelSpawnTool
+        的 _run_one 却无条件构造 child——两工具不对称。此用例钉死：非 supervisor
+        parent 的越界 spawn 必须 denied，且不构造 child（MockAgent 不被调用）。"""
+        tool = ParallelSpawnTool()
+        with patch("agents.supervisor.tools.Agent") as MockAgent:
+            MockAgent.return_value.run = AsyncMock(return_value="ok")
+            registry = make_mock_registry([tool])     # allowed_spawns 缺省 []
+            agent = Agent(llm=make_mock_llm([]), agent_registry=registry,
+                          agent_type="generate-note")
+            result = tool.execute(spawns=[
+                {"agent_type": "a", "task": "t1"},
+                {"agent_type": "b", "task": "t2"},
+            ])
+        parsed = json.loads(result.text)
+        assert len(parsed) == 2
+        assert [p["status"] for p in parsed] == ["denied", "denied"]
+        assert all("不能 spawn" in p["summary"] for p in parsed)
+        MockAgent.assert_not_called()
+
 
 class TestAggregateResultsTool:
     def test_marks_needs_attention(self):
