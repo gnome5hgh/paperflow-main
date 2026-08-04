@@ -39,6 +39,14 @@ routes:
   - 看看近年有什么新研究
   - 查查相关领域的经典工作
   - 下载那篇论文的全文
+  - 把这篇图对比学习的论文下载下来
+  - 找最近发表的顶会文章
+  - 查一下药物靶点预测的 benchmark 结果
+  - 找一下这个方向的开山之作
+  - 搜一下 circRNA 在疾病中的研究
+  - 有没有 drug-target association prediction 的论文
+  - 找一篇 heterogeneous graph transformer 的文章
+  - 搜一下 circRNA 鉴定的经典文献
   score_threshold: 0.0
 - name: generate_note
   utterances:
