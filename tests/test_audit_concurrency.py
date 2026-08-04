@@ -2,7 +2,6 @@
 import asyncio
 import json
 import threading
-from datetime import datetime
 
 from paperflow.core.security import ToolContext
 from paperflow.core.security.audit import AuditMiddleware
@@ -49,8 +48,9 @@ def test_audit_concurrent_append_lines_intact(tmp_path):
         t.join()
 
     assert not errors
-    day = datetime.now().strftime("%Y%m%d")
-    lines = (tmp_path / f"audit_{day}.jsonl").read_text(encoding="utf-8").splitlines()
+    # M4：用 mw.audit_path.name（__init__ 时确定）而非断言时重算 datetime.now()——
+    # 若测试跨午夜运行，重算会拼出次日文件名导致 FileNotFoundError（final review M4）
+    lines = (tmp_path / mw.audit_path.name).read_text(encoding="utf-8").splitlines()
     assert len(lines) == 16
     for line in lines:
         entry = json.loads(line)          # 每行合法 JSON = 无交叉

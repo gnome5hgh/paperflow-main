@@ -95,7 +95,9 @@ class SpawnSubAgentTool(Tool):
             result = SubAgentResult(status="success", summary=text)
         except asyncio.TimeoutError:
             result = SubAgentResult(status="timeout", summary="子任务执行超时",
-                                    error_detail="SubAgent 在 120s 内未完成")
+                                    # M3：插值 self.timeout——测试会覆盖类属性为 0.05s，
+                                    # 写死 "120s" 会与真实生效值漂移（final review M3）
+                                    error_detail=f"SubAgent 在 {self.timeout}s 内未完成")
         except PermissionError as e:
             # 防御性分支（spec ⚪2）：当前架构 child 的 _exec_tool 把 PolicyDenied/
             # SecurityBlocked degrade-to-text 吸收，不向上抛——几乎不会触发。对齐
@@ -156,7 +158,9 @@ class ParallelSpawnTool(Tool):
                 return SubAgentResult(status="success", summary=text)
             except asyncio.TimeoutError:
                 return SubAgentResult(status="timeout", summary="子任务执行超时",
-                                      error_detail="SubAgent 在 120s 内未完成")
+                                      # M3：插值 self.timeout（与 SpawnSubAgentTool 同款，
+                                      # 两工具对称——防写死值与实际生效超时漂移）
+                                      error_detail=f"SubAgent 在 {self.timeout}s 内未完成")
             except Exception as e:
                 return SubAgentResult(status="failed", summary="子任务执行失败",
                                       error_detail=str(e))

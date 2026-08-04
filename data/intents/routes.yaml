@@ -1,3 +1,6 @@
+# ⚠️ 未标定状态：score_threshold 未写回（verify_intent.py 需真实 bge 运行标定，
+#   属验收后手动步骤）；未标定时路由器无阈值门控、永不产生 general（chitchat 会误路由
+#   到最高分真实意图）——标定后此注释删除
 # data/intents/routes.yaml —— 意图知识库（训练集；初始扩展 ~每类 20 条）
 # 规模：4 真实意图 × ~20 条 = 80 条（门槛涌现起点，最终规模由 verify_intent 门槛驱动迭代）
 # general 无 route 例句——兜底不配例句（fit 只在真实意图上校准，general 是阈值涌现副产品，spec §4.7.6）

@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 
 from paperflow.config import PaperFlowConfig
-from paperflow.core.agent import Agent
+from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.agent_registry import AgentRegistry
 from paperflow.core.llm import LLMClient
 from paperflow.core.session import Session, PendingClarification
@@ -36,8 +36,15 @@ logger = logging.getLogger(__name__)
 _stdin_lock = threading.Lock()
 
 
-def _stdin_confirm(cr) -> bool:
-    """yes/no 确认回调（PolicyEngine requires_confirm）。fail-safe：EOF/空 → False。"""
+async def _stdin_confirm(cr) -> bool:
+    """yes/no 确认回调（PolicyEngine requires_confirm）。fail-safe：EOF/空 → False。
+
+    async 契约：Agent._exec_tool 以 `await self.confirm_callback(cr)` 调用（agent.py），
+    confirm_callback 必须是可 await 的——若此处保持 sync，`await True` 会抛 TypeError，
+    generate-note 的写盘工具（requires_confirm=True）在真实 CLI 里永远写不出笔记
+    （final review C1，merge blocker）。body 仍是同步的 input()（线程安全用 _stdin_lock），
+    仅把函数签名改为 async 以满足 await 契约。
+    """
     with _stdin_lock:
         try:
             answer = input(f"[需要确认] {cr.tool_name} 是否继续？(y/N) ").strip().lower()
@@ -89,7 +96,19 @@ async def _repl(supervisor: Agent, session: Session, *,
             break
         p = session.pending_intent
         query, force = _merge_pending(session, raw)
-        result = await supervisor.run(query, force_dispatch=force)
+        try:
+            result = await supervisor.run(query, force_dispatch=force)
+        except MaxTurnsExceeded:
+            # 安全阀（D10 降级哲学）：LLM 陷入 tool-call 循环时不杀 REPL——报错并继续，
+            # 让用户能换一种更简单的说法重试（而不是丢 pending 状态/整进程崩溃）
+            print_fn("任务超过最大轮数，请简化请求后重试")
+            continue
+        except Exception as e:
+            # 网络失败等不可恢复异常同样不杀 REPL（D10）：打印错误，下一轮照常运行。
+            # 这是降级声明的兜底——Supervisor.run 内部已把多数错误 degrade-to-text，
+            # 到这里的是真正未预期的异常（如 LLM 客户端网络超时）。
+            print_fn(f"执行出错：{e}")
+            continue
         intent = supervisor.last_intent
         if intent is not None and intent.clarification and not force:
             # 未超轮：挂起澄清，round 链式累计（REPL 重建时用 p.round，不重置为 0）

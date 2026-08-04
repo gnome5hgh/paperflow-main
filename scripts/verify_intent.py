@@ -14,6 +14,7 @@
 
 退出码：0=达标；1=未达标（可被 CI 化调用方消费）。
 """
+import copy
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -45,7 +46,9 @@ def _route_accuracy(router, queries: list[str], labels: list[str]) -> tuple[floa
     预测集上判定，且用生产路径。返回 (整体准确率, per-意图准确率, 非general落general比率)。
     """
     preds = [_pred(router, q) for q in queries]
-    acc = sum(1 for p, l in zip(preds, labels) if p == l) / len(labels)
+    # M1：除零守卫——空 eval 集时整体准确率记为 0.0（与 leak guard 同款 fail-safe，
+    #     否则 `x / 0` 抛 ZeroDivisionError 而非给出"未达标"信号）
+    acc = sum(1 for p, l in zip(preds, labels) if p == l) / len(labels) if labels else 0.0
     per = _intent_accuracy(preds, labels)
     non_general = [l for l in labels if l != "general"]
     leaked = sum(1 for p, l in zip(preds, labels)
@@ -66,7 +69,12 @@ def main() -> int:
     # 基线：FixedDenseEncoder，**同样 fit**（🟠1——未 fit 时 score_threshold=None →
     # hybrid_router.py:123 passed=True，路由器永不产生 general，bge≥基线对比平凡为真、
     # 毫无意义；同 routes 同标定流程才是"换 bge 是否真的更好"的公平测试）
-    baseline = HybridRouter(encoder=FixedDenseEncoder(dim=64), routes=routes)
+    # M2：baseline 必须 deepcopy routes——fit() 会原地改写 Route.score_threshold
+    # （_update_thresholds），若共享同一份对象，baseline 先 fit 会污染后建的 bge router
+    # 的初始阈值状态（bge 的阈值搜索从基线阈值附近起步，对比失真）。deepcopy 后
+    # baseline 与 bge 各自独立标定，才是同 routes 不同 encoder 的公平对比。
+    baseline = HybridRouter(encoder=FixedDenseEncoder(dim=64),
+                            routes=copy.deepcopy(routes))
     baseline.fit(train_x, train_y)
     base_acc, _, _ = _route_accuracy(baseline, queries, labels)
     print(f"[基线] FixedDenseEncoder 整体准确率: {base_acc:.3f}")

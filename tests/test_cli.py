@@ -1,11 +1,31 @@
 """CLI REPL 测试：注入 input_fn/print_fn，验证循环/澄清挂起/超轮终止/EOF 路径。"""
+import asyncio
+
 import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from paperflow.cli import _repl, _stdin_confirm, _stdin_ask
+from paperflow.core.agent import Agent, MaxTurnsExceeded
+from paperflow.core.security import PolicyEngineMiddleware
+from paperflow.core.llm import Message
 from paperflow.core.session import Session
+from paperflow.core.tool import Tool, ToolResult
 from paperflow.core.intent.intent_schema import IntentType, IntentOutput, IntentStep
+from tests.test_agent import make_mock_registry, make_capture_llm
+
+
+class ConfirmWriteTool(Tool):
+    """requires_confirm=True 的写盘类工具：触发 PolicyEngine 的 ConfirmRequired 路径。
+
+    （与 generate-note 的 WriteFileTool 同形态，真实 CLI 里靠 confirm_callback 放行。）"""
+    name = "confirm_write"
+    description = "写盘，需用户确认"
+    parameters = {"type": "object", "properties": {}}
+    requires_confirm = True
+
+    def execute(self) -> ToolResult:
+        return ToolResult(text="written")
 
 
 def _seq_input(values: list[str]):
@@ -92,12 +112,99 @@ async def test_repl_ctrl_d_exits_gracefully():
     assert sv._calls == []
 
 
+@pytest.mark.asyncio
+async def test_repl_run_guard_max_turns_exceeded():
+    """I1 回归：MaxTurnsExceeded 不杀 REPL——打印提示后 continue，能进入下一轮。
+
+    D10 降级哲学：LLM 安全阀触发只报错不崩溃，REPL 存活可让用户换说法重试。
+    _seq_input 会在耗尽后发 /exit，故循环必然正常退出（证明 continue 未破坏循环）。"""
+    sv = MagicMock()
+    async def run(query, force_dispatch=False):
+        raise MaxTurnsExceeded("boom")
+    sv.run = run
+    sv.last_intent = None
+    out = []
+    await _repl(sv, Session(), input_fn=_seq_input(["搜索 x"]),
+                print_fn=lambda *a: out.append(a[0]))
+    assert any("任务超过最大轮数" in s for s in out)
+
+
+@pytest.mark.asyncio
+async def test_repl_run_guard_generic_exception():
+    """I1 回归：未预期异常（如 LLM 网络失败）不杀 REPL——打印错误、continue。"""
+    sv = MagicMock()
+    async def run(query, force_dispatch=False):
+        raise RuntimeError("LLM 网络超时")
+    sv.run = run
+    sv.last_intent = None
+    out = []
+    await _repl(sv, Session(), input_fn=_seq_input(["搜索 x"]),
+                print_fn=lambda *a: out.append(a[0]))
+    assert any("执行出错：LLM 网络超时" in s for s in out)
+
+
 def test_stdin_confirm_eof_failsafe(monkeypatch):
-    """confirm 回调 Ctrl-D → False（spec §6.3 fail-safe 承诺，🟠1）。"""
+    """confirm 回调 Ctrl-D → False（spec §6.3 fail-safe 承诺，🟠1）。
+
+    C1 后 _stdin_confirm 是 async——同步调用拿到的是 coroutine 而非 bool，
+    必须 asyncio.run 包一层（回调本身跑在 Agent 的事件循环里，_repl 外是 sync 测试）。"""
     def _eof(*a, **k):
         raise EOFError
     monkeypatch.setattr("builtins.input", _eof)
-    assert _stdin_confirm(SimpleNamespace(tool_name="write_file")) is False
+    assert asyncio.run(_stdin_confirm(SimpleNamespace(tool_name="write_file"))) is False
+
+
+@pytest.mark.asyncio
+async def test_confirm_callback_async_contract_confirm(monkeypatch):
+    """C1 回归（merge blocker）：confirm_callback=_stdin_confirm（async）+ ConfirmRequired 不崩。
+
+    agent.py:411 以 `await self.confirm_callback(cr)` 调用——若回调是 sync 的，`await True`
+    抛 TypeError，generate-note 写盘工具（requires_confirm=True）在真实 CLI 永远写不出笔记。
+    构造真实 Agent（真实 PolicyEngineMiddleware + async _stdin_confirm），断言完整 ReAct
+    走通：输入 y → 确认放行 → 工具执行 → 返回最终答案，全程无 TypeError。
+    """
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+    capture = []
+    llm = make_capture_llm([
+        Message(role="assistant", content=None, tool_calls=[{
+            "id": "c1", "type": "function",
+            "function": {"name": "confirm_write", "arguments": "{}"},
+        }]),
+        Message(role="assistant", content="已写入"),
+    ], capture)
+    agent = Agent(
+        llm=llm, agent_registry=make_mock_registry([ConfirmWriteTool()]),
+        agent_type="test",
+        security_middleware=[PolicyEngineMiddleware()],
+        confirm_callback=_stdin_confirm,          # C1 修复点：async 回调
+    )
+    text = await agent.run("写笔记")
+    assert text == "已写入"
+    # 工具真实执行（y → 放行）：最后一轮 LLM 输入里含工具结果
+    assert capture[-1][-1].content == "written"
+
+
+@pytest.mark.asyncio
+async def test_confirm_callback_async_contract_denied(monkeypatch):
+    """C1 补充：确认回调返回 False（用户拒绝）→ 不执行工具，返回 user denied，不抛 TypeError。"""
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+    capture = []
+    llm = make_capture_llm([
+        Message(role="assistant", content=None, tool_calls=[{
+            "id": "c1", "type": "function",
+            "function": {"name": "confirm_write", "arguments": "{}"},
+        }]),
+        Message(role="assistant", content="已取消"),
+    ], capture)
+    agent = Agent(
+        llm=llm, agent_registry=make_mock_registry([ConfirmWriteTool()]),
+        agent_type="test",
+        security_middleware=[PolicyEngineMiddleware()],
+        confirm_callback=_stdin_confirm,
+    )
+    text = await agent.run("写笔记")
+    assert text == "已取消"
+    assert "User denied: confirm_write" in capture[-1][-1].content  # 工具未执行
 
 
 def test_stdin_ask_eof_returns_empty(monkeypatch):

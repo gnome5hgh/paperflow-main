@@ -57,11 +57,14 @@ class TestSpawnSubAgentTool:
                 agent = _supervisor([SpawnSubAgentTool()])
                 result = agent.tools["spawn_sub_agent"].execute(
                     agent_type="search-paper", task="t")
+            # M3：断言用执行期生效的 self.timeout（0.05）插值——写死 "120s" 会与
+            # 类属性覆盖后的真实值漂移，无法防插值回归
+            expected = f"SubAgent 在 {SpawnSubAgentTool.timeout}s 内未完成"
         finally:
             SpawnSubAgentTool.timeout = old
         parsed = json.loads(result.text)
         assert parsed["status"] == "timeout"
-        assert parsed["error_detail"] == "SubAgent 在 120s 内未完成"
+        assert parsed["error_detail"] == expected
 
     def test_max_turns_maps_to_failed(self):
         with patch("agents.supervisor.tools.Agent") as MockAgent:
