@@ -32,3 +32,23 @@ def test_no_entities_returns_empty():
 def test_relative_pdf_not_matched():
     """相对路径不算实体（WorkspacePolicy 要求绝对路径；且兼容既有 stub 断言）。"""
     assert "pdf_path" not in extract_entities("下载 paper/pdf/x.pdf")
+
+
+def test_extract_pdf_path_with_spaces():
+    """RC2a 回归：vault 目录/文件名含空格是常态，实体必须能提取（修复前 [^\s:] 排除空白返回空）。"""
+    path = "/Users/me/vault/pdf/Heterogeneous graph/Variational Disentangled Graph Auto-Encoders for Link Prediction.pdf"
+    assert extract_entities(f"读 {path} 生成笔记")["pdf_path"] == path
+
+
+def test_extract_preserves_double_space():
+    """RC2b 前提：双空格文件名必须逐字保留（修复前正则不匹配，取不到）。"""
+    path = "/Users/me/vault/pdf/a  b.pdf"
+    assert extract_entities(f"读 {path}")["pdf_path"] == path
+
+
+def test_extract_coexisting_pdf_and_md_independent():
+    """多实体共存契约：pdf+md 同行各自独立提取——初稿 [^\n]*? 会让后出现者被
+    前者 / 起点吸收，分段式正则修复。"""
+    entities = extract_entities("根据 /a/doc.pdf 更新 /b/note.md")
+    assert entities["pdf_path"] == "/a/doc.pdf"
+    assert entities["note_path"] == "/b/note.md"
