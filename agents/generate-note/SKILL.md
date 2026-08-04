@@ -1,6 +1,6 @@
 ---
 name: generate-note
-description: 基于指定 PDF 生成结构化笔记。当用户要求"把这篇论文整理成笔记""生成笔记""写个 note"时由 Supervisor 派发本 agent。内部自动调用 review-note 审稿（最多 3 轮）。只产出笔记，不回答开放问题、不检索知识库。
+description: 基于指定 PDF 生成结构化笔记。当用户要求"把这篇论文整理成笔记""生成笔记""写个 note"时由 Supervisor 派发本 agent。内部自动调用 review-note 审稿（最多 2 轮）。只产出笔记，不回答开放问题、不检索知识库。
 allowed_agents: []
 allowed_spawns: [review-note]
 ---
@@ -12,7 +12,7 @@ allowed_spawns: [review-note]
 1. **读模板**：`read_file` 读笔记模板（工具描述 [目录] templates=... 下的 `paper_note.md`）；若不存在，按标准结构生成：概述 / 方法 / 实验结果 / 相关工作 / 局限与展望。
 2. **读论文**：`read_pdf` 读主论文全文。
 3. **起草**：按模板结构在上下文中起草笔记（**不落盘**）。
-4. **审稿循环（最多 3 轮）**：
+4. **审稿循环（最多 2 轮）**：
    - 提交：`review_draft(draft_text=草稿全文, pdf_path=主论文路径)` 交 review-note 审稿。
    - 意见可执行（补充缺失章节 / 修正事实）→ **在上下文中修订草稿**，重新 `review_draft`。
    - 意见通过 → 结束循环，进入第 5 步。
