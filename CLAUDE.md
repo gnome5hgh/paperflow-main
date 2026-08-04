@@ -14,11 +14,23 @@ conda run -n paperflow python -m pytest tests/ -v
 # Run a single test
 conda run -n paperflow python -m pytest tests/test_agent.py::TestExecTool -v
 
-# Run the app (needs PAPERFLOW_API_KEY for DeepSeek)
-PAPERFLOW_API_KEY=sk-xxx conda run -n paperflow python -m paperflow
+# Run the app — 交互式 REPL（⚠️ 不能经 conda run）
+# conda run 不转发 stdin 给子进程 → 交互式 REPL 的 input() 立即 EOF 退出。
+# 必须先在激活的 env 里跑，或用 env 的 python 直接跑：
+conda activate paperflow && python -m paperflow
+# 或 /opt/miniconda3/envs/paperflow/bin/python -m paperflow
 ```
 
-Always use `conda run -n paperflow` — never bare `python` or `pip`.
+Always use `conda run -n paperflow` for 非交互命令（测试/脚本/安装）——never bare `python` or `pip`。**例外：交互式 REPL（`python -m paperflow`）不能经 `conda run`**——它不转发 stdin，REPL 一启动就 EOF 退出；需 `conda activate paperflow` 后直接 `python -m paperflow`。
+
+## 文档同步规则
+
+修改代码时，必须同步更新关联的设计文档：
+
+- **新增/修改任何代码后，都要先思考是否需要同步更新 ADR / spec / plan**：接口签名、行为语义、结构或已记录决策发生变化都算。需要同步时，在**测试代码通过后**再更新对应文档——先让代码行为被测试锁住，再让文档描述现状
+- 如果在实现过程中发现 Layer N 的 spec/plan 文档与最终代码不一致，修改代码后需同步更新对应的 spec（`docs/superpowers/specs/`）和 plan（`docs/superpowers/plans/`）
+- 如果当前 Layer 的修改影响了上层 Layer 的 spec/plan（如 Layer 1 实现时发现 Layer 0 的接口需要调整），同样需要回修受影响的上层文档
+- ADR（`docs/adr/`）是架构决策记录，一般不应被实现代码反向修改。但如果代码实现揭示出 ADR 设计缺陷（如接口不可行、组件拆分不合理），需在 ADR 中追加修正说明
 
 ## Code style
 

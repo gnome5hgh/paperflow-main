@@ -7,7 +7,7 @@
 ```
 Layer 0  Core Framework（tool.py / agent.py / llm.py / agent_registry.py / config.py）✅
 Layer 1  Framework Services：1.1 Security ✅ 1.2 Memory ✅ 1.3 Intent Recognition ✅（226 tests 全绿）
-Layer 2  Tools & RAG（search / file / rag）→ 下一轮（真实 bge embedder 在此落地）
+Layer 2  Tools & RAG（paperflow/tools/ 一工具一文件 + rag/）
 Layer 3  Business Agents（search-paper / answer-question / generate-note / review-note）
 Layer 4  Orchestration（Supervisor / CLI REPL / SubAgentResult 失败传播）
 ```

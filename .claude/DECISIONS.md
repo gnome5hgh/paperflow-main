@@ -97,3 +97,21 @@
 **决策**：SessionStart 注入「维护指令」让 Claude 会话中主动维护 HANDOFF 的「下一步」；PreCompact 新增 `latest-snapshot.md` 快照并在压缩后按 mtime「prefer 更新者」注入；hooks 移入可提交的 `settings.json` 并用 `.claude/*` + `!` 反选解除 `.claude/` 整体 gitignore；SessionEnd 先备份再覆盖、空尾部不覆盖、附加确定性 git 事实；`claude --print` 作为可选兜底把会话尾部总结为语义交接。
 
 **理由**：原始 Memory Bank 只解决「新窗口注入」，但四个缺口导致实际效果打折——① HANDOFF 是 transcript 尾部原文摘录，质量依赖结尾措辞；② PreCompact 只备份不刷新，压缩后 SessionStart 重注入的是「会话开始状态」而非「压缩瞬间状态」；③ `.claude/` 整目录 gitignored，worktree 开发时 hook 静默失效（最需要连续性的场景没覆盖）；④ SessionEnd 覆盖无备份，短会话直接丢弃旧交接。v2 分别对治。关键取舍：交接语义来源优先「Claude 会话中主动维护」而非事后摘录（维护指令零成本、上下文最新鲜）；快照注入用 mtime 规则保证语义内容优先于原始尾部；`claude --print` 兜底成本换质量，不可用时静默降级。见 `.claude/scripts/memory_bank.sh`。
+
+## 2026-08-03 — paperflow/tools/ 一工具一文件拆分
+
+**决策**：`paperflow/tools/` 从 `file.py`（8 个文件工具）+ `search.py`（4 个搜索工具 + 2 客户端）拆分为一工具一文件（12 个工具模块 + `_constants`/`_search_common` 两个私有共享模块），`__init__.py` 再导出全部 12 个 Tool 作为公共导入面（消费方 `from paperflow.tools import ...`）。
+
+**理由**：偏好驱动（一工具一文件利于单工具导航与独立 diff），行为中性——类体原样迁移、全量测试零回归（307 passed）。客户端随工具同文件（ArxivClient 随 arxiv_search、OpenAlexClient 随 openalex_search），共享代码收敛到私有模块（防漂移，对齐模板路径统一的 single-source 取向）。代价：get_rag_service 测试 patch 面从 2 个模块扩到 6 个（read_pdf/write_file/edit_file/format_check/arxiv_search/openalex_search）——惰性导入（execute 内 import）让 patch 源头一次生效的简化留后续可选项。
+
+## 2026-08-04 — 路由门槛 gate 实证修订（alpha + 整体门槛 + eval 标签语义）
+
+**决策**：① alpha 0.3→0.6（md5 伪向量时代的 0.3 已过期，真实 bge 稠密信号主导；verify_intent 与生产 cli.py 都显式传 0.6，router 默认保留 0.3 对齐复现）；② 整体门槛 0.90→0.85（整体是**效率门槛**——残余走 Stage 3 LLM 兜底、结果仍正确，正确性由 per-intent ≥0.80 + leak ≤0.15 承担）；③ eval 的 router-punt 类（无上下文追问/伪装请求）标 general，general route 补请求式 chitchat 例句。
+
+**理由**：首次标定 gate 实证：fit 无 general 负样本收敛 0.0 pass-all（general 永不产生）→ 加 general route 修复（general 0.0→0.9）；但剩余 ~4 条"本质难"（"帮我倒杯水"→search、"那第三篇呢"→generate）暴露两类问题——① 伪装请求是 general route 欠覆盖（请求式例句可修，非本质难）；② 无上下文追问 router 的正确输出就是 punt（→ Stage 3），eval 标 general 是正确指定 router 责任边界而非放水（leak + per-intent 防作弊）。0.86 整体 + per-intent 全过 + leak 0 说明路由器已无系统性缺陷，残余是设计兜底而非错误。这是 evaluate 当门槛的价值——gate 驱动、实证优先于"定死"。
+
+## 2026-08-04 — 信任边界 surrogate 清洗
+
+**决策**：新增 `core/text_util.py::sanitize_surrogates`（U+D800-DFFF → U+FFFD），在 `BgeEmbedder.__call__` 输入与 LLM 消息出站 `_message_to_openai` 两处信任边界统一清洗。
+
+**理由**：实测暴露——PDF 提取（GROBID TEI / PyMuPDF 回退）或外部文本可能携带未配对 surrogate（孤立高/低代理位），在两处爆炸：① embed encode → tokenizer 抛 `TypeError: TextEncodeInput`，意图路由整条降级；② openai SDK 把消息 UTF-8 编码 → `UnicodeEncodeError: surrogates not allowed`，整轮 ReAct 崩溃。选**边界清洗**而非溯源逐个 PDF 修：任何来源的脏文本都被兜住（PyMuPDF 对用户那篇 PDF 提取是干净的，来源应为 GROBID/TEI 或特定字符），且不影响合法代理对（emoji）。见提交 84fb4f9。
