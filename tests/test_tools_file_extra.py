@@ -49,3 +49,24 @@ def test_read_pdf_tool_meta():
 
 def test_mark_read_tool_meta():
     assert MarkReadTool.allowed_roots == ["pdf"]   # MINOR-6：对齐 spec §14
+
+
+def test_read_pdf_routes_through_parse_pdf_cached(agent_env):
+    """缓存入口路由：ReadPdfTool 走 parse_pdf_cached（而非裸 pdf_parser().parse_pdf）。
+
+    agent_env fixture 已把 paperflow.tools.read_pdf.get_rag_service patch 成 svc
+    （含 StubPdfParser）；断言 execute 确实经缓存入口——若改回 pdf_parser() 直调，
+    此测试失败（called 为空）。"""
+    from pathlib import Path
+    cfg, svc = agent_env
+    pdf = Path(cfg.vault_pdf_dir) / "p.pdf"
+    pdf.write_bytes(b"dummy")
+    called = []
+    original = svc.parse_pdf_cached
+    def spy(path):
+        called.append(path)
+        return original(path)
+    svc.parse_pdf_cached = spy
+    result = ReadPdfTool().execute(path=str(pdf))
+    assert called
+    assert "Abstract text." in result.text      # StubPdfParser 的 sections 内容

@@ -24,7 +24,9 @@ class ReadPdfTool(Tool):
     side_effects = ["read_file"]
 
     def execute(self, path: str) -> ToolResult:
-        parser = get_rag_service().pdf_parser()
-        doc = parser.parse_pdf(path)
+        # 经缓存入口解析：generate-note 初读与 review-note 每轮审稿复用同一份全文
+        #（RAGService 单例共享缓存）——消除重复 GROBID 解析（实测瓶颈，见
+        # 2026-08-04-generate-note-timeout-fix design）。解析器选择仍在 service 层。
+        doc = get_rag_service().parse_pdf_cached(path)
         text = "\n\n".join(f"## {h}\n{t}" for h, t in doc.sections)
         return ToolResult(text=text or "（PDF 未能解析出文本）")
