@@ -119,6 +119,12 @@ class PaperFlowConfig:
         config = cls()
         config._load_yaml(config_path)  # 第一步：YAML 文件（优先级最低）
         config._load_env()               # 第二步：环境变量（覆盖 YAML 值）
+        # workspace 绝对化：RC1 根因——相对 workspace（默认 "data"）派生相对根
+        #（_root_map 的 Path(workspace)/"templates"），被 WorkspacePolicy.before 的
+        # resolve_path(root, workspace) 二次拼接成 data/data/templates → 正确绝对路径
+        # 也被 security_blocked。绝对化后所有派生根一致绝对、[目录] 提示变绝对。
+        # 只在此生产入口处理：直接构造 PaperFlowConfig(...) 的测试值不受影响。
+        config.workspace = str(Path(config.workspace).expanduser().resolve())
         return config
 
     def _load_yaml(self, config_path: str | None) -> None:

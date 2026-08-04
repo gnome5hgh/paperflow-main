@@ -6,6 +6,8 @@ PaperFlowConfig 配置加载测试。
 默认值、chroma_dir 推导、以及环境变量覆盖路径。
 """
 
+from pathlib import Path
+
 from paperflow.config import PaperFlowConfig
 
 
@@ -45,3 +47,29 @@ def test_agent_timeouts_from_yaml(tmp_path):
     cfg_path.write_text("agent_timeouts:\n  generate-note: 300\n", encoding="utf-8")
     cfg = PaperFlowConfig.from_env(str(cfg_path))
     assert cfg.agent_timeouts == {"generate-note": 300}
+
+
+def test_from_env_resolves_workspace_absolute(tmp_path):
+    """RC1 回归：from_env 后 workspace 必须绝对——修复前相对 workspace 派生相对根，
+    WorkspacePolicy 二次拼接成 data/data/templates 双前缀，正确绝对路径被拦。"""
+    from paperflow.config import PaperFlowConfig
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text("workspace: data\n", encoding="utf-8")
+    cfg = PaperFlowConfig.from_env(str(cfg_path))
+    assert Path(cfg.workspace).is_absolute()
+
+
+def test_make_tools_roots_absolute_no_double_prefix(tmp_path):
+    """RC1 端到端：from_env 相对 workspace 的配置 → _root_map 产出绝对根、无双前缀，
+    且正确绝对模板路径能通过 WorkspacePolicy.check_path（修复前被 data/data 拦）。"""
+    from paperflow.config import PaperFlowConfig
+    from paperflow.tools.factory import _root_map
+    from paperflow.core.security.workspace import WorkspacePolicy
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text("workspace: data\n", encoding="utf-8")
+    cfg = PaperFlowConfig.from_env(str(cfg_path))
+    roots = _root_map(cfg)
+    assert Path(roots["templates"]).is_absolute()
+    assert "data/data" not in roots["templates"]
+    template = Path(roots["templates"]) / "paper_note.md"
+    assert WorkspacePolicy.check_path(str(template), [roots["templates"]])
