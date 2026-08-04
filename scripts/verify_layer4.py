@@ -5,7 +5,7 @@
 验证点：
   1. supervisor 装配成功（intent_enabled + 4 工具）
   2. 一条 search_paper 查询：INTENT 块命中 → supervisor 真实 spawn search-paper → 返回论文列表
-  3. 一条 generate_note 查询：需 pdf 路径，验证 spawn + confirm_callback 接线（写盘需用户确认）
+  3. generate_note + confirm 接线走 `python -m paperflow` 交互式验证，本脚本只 smoke search_paper
 """
 import asyncio
 
@@ -18,6 +18,16 @@ from paperflow.core.intent.pipeline import IntentPipeline
 from paperflow.core.intent.hybrid_router import HybridRouter
 from paperflow.rag.embedder import BgeEmbedder
 from paperflow.core.intent.route_loader import load_routes
+
+
+async def _auto_confirm(cr) -> bool:
+    """程序化自动确认回调。
+
+    必须 async：Agent._exec_tool 以 `await self.confirm_callback(cr)` 调用
+    （agent.py:411）——sync lambda 返回 True 在 ConfirmRequired 触发时会抛
+    `TypeError: object bool can't be used in 'await' expression`（审阅 R1）。
+    """
+    return True
 
 
 async def main() -> None:
@@ -38,7 +48,7 @@ async def main() -> None:
     session = Session()
     agent = Agent(llm=llm, agent_registry=registry, agent_type="supervisor",
                   intent_enabled=True, intent_pipeline=pipeline, session=session,
-                  confirm_callback=lambda cr: True)
+                  confirm_callback=_auto_confirm)
     text = await agent.run("搜索 circRNA 文献")
     print(text)
 
