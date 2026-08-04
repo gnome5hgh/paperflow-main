@@ -96,6 +96,11 @@ class PaperFlowConfig:
     #: 重排模型（Cross-encoder）
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
 
+    #: 子 agent 超时（秒）按 agent_type 覆盖；空 = 全部用 SpawnSubAgentTool.timeout 默认（120）。
+    #: 只有 generate-note 吃紧（长论文），全局调大会让 stuck search-paper 白等。
+    #: 仅 config.yaml 顶层配置（dict 无自然 env 形态，不设 PAPERFLOW_* 变量）。
+    agent_timeouts: dict[str, int] = field(default_factory=dict)
+
     @property
     def chroma_dir(self) -> str:
         """ChromaDB 目录：显式配置优先，否则从 workspace 推导。"""
@@ -141,7 +146,8 @@ class PaperFlowConfig:
         # 均可通过 config.yaml 顶层覆盖默认值）
         for key in ("workspace", "agents_dir", "max_risk",
                     "vault_note_dir", "vault_pdf_dir", "grobid_url",
-                    "chroma_path", "embed_model", "rerank_model"):
+                    "chroma_path", "embed_model", "rerank_model",
+                    "agent_timeouts"):
             if key in data:
                 setattr(self, key, data[key])
 

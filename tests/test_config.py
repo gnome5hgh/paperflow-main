@@ -36,3 +36,12 @@ def test_rag_keys_env_override(monkeypatch):
     assert c.vault_note_dir == "/tmp/note"
     assert c.vault_pdf_dir == "/tmp/pdf"
     assert c.chroma_path == "/tmp/db"
+
+
+def test_agent_timeouts_from_yaml(tmp_path):
+    """agent_timeouts 经 config.yaml 顶层配置读入（D2，仅 YAML 无 env——dict 无自然 env 形态）。"""
+    from paperflow.config import PaperFlowConfig
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text("agent_timeouts:\n  generate-note: 300\n", encoding="utf-8")
+    cfg = PaperFlowConfig.from_env(str(cfg_path))
+    assert cfg.agent_timeouts == {"generate-note": 300}

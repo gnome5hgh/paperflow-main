@@ -9,6 +9,7 @@ import json
 
 from pydantic import BaseModel
 
+from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent
 from paperflow.core.tool import Tool, ToolResult
 
@@ -60,8 +61,18 @@ class SpawnSubAgentTool(Tool):
     #: 需要父 Agent 引用（Agent.__init__ 只注入声明者）
     needs_parent = True
     risk_level = "low"
-    #: 子 agent 超时秒数（ADR 0003 的 120s；类属性便于测试覆盖）
+    #: 子 agent 超时秒数（fallback 默认；config.agent_timeouts 命中时被覆盖）。
+    #: 类属性保留——既是无 config 时的 fallback，也是测试覆盖点（M3：测例设 0.05s）。
     timeout = 120
+
+    def __init__(self, agent_timeouts: dict[str, int] | None = None):
+        # 按 agent 超时覆盖表（D2）：config.agent_timeouts 注入。测试直接构造
+        #（无 map）→ fallback 到类属性 timeout——覆盖 0.05s 的既有测例不破坏。
+        self._agent_timeouts = agent_timeouts or {}
+
+    def _resolve_timeout(self, agent_type: str) -> int:
+        """解析该 agent 生效超时：config 命中优先，否则类默认（M3 seam 保留）。"""
+        return self._agent_timeouts.get(agent_type, self.timeout)
 
     def execute(self, agent_type: str, task: str) -> ToolResult:
         parent = self._parent
@@ -82,22 +93,23 @@ class SpawnSubAgentTool(Tool):
             agent_type=agent_type, security_middleware=parent.security_middleware,
             session_id=parent.session_id, confirm_callback=parent.confirm_callback,
         )
-        return self._run_child(child, task)
+        # 传解析后的超时：_run_child 用实际生效值（config > 类默认）
+        return self._run_child(child, agent_type, task)
 
-    def _run_child(self, child: Agent, task: str) -> ToolResult:
+    def _run_child(self, child: Agent, agent_type: str, task: str) -> ToolResult:
         """执行 child.run 并映射为 SubAgentResult（success/timeout/denied/failed）。
 
         asyncio.run 桥接：execute 跑在 to_thread worker 线程（无 running loop），
         必须 asyncio.run 新建事件循环（Layer 3 spec §4.3 钉死，嵌套会抛 RuntimeError）。
         """
+        timeout = self._resolve_timeout(agent_type)
         try:
-            text = asyncio.run(asyncio.wait_for(child.run(task), timeout=self.timeout))
+            text = asyncio.run(asyncio.wait_for(child.run(task), timeout=timeout))
             result = SubAgentResult(status="success", summary=text)
         except asyncio.TimeoutError:
             result = SubAgentResult(status="timeout", summary="子任务执行超时",
-                                    # M3：插值 self.timeout——测试会覆盖类属性为 0.05s，
-                                    # 写死 "120s" 会与真实生效值漂移（final review M3）
-                                    error_detail=f"SubAgent 在 {self.timeout}s 内未完成")
+                                    # M3：插值解析后的 timeout（config 命中时非类默认）
+                                    error_detail=f"SubAgent 在 {timeout}s 内未完成")
         except PermissionError as e:
             # 防御性分支（spec ⚪2）：当前架构 child 的 _exec_tool 把 PolicyDenied/
             # SecurityBlocked degrade-to-text 吸收，不向上抛——几乎不会触发。对齐
@@ -137,6 +149,13 @@ class ParallelSpawnTool(Tool):
     risk_level = "low"
     timeout = 120
 
+    def __init__(self, agent_timeouts: dict[str, int] | None = None):
+        # 与 SpawnSubAgentTool 对称（R1 哲学：两 spawn 工具永不漂移）
+        self._agent_timeouts = agent_timeouts or {}
+
+    def _resolve_timeout(self, agent_type: str) -> int:
+        return self._agent_timeouts.get(agent_type, self.timeout)
+
     def execute(self, spawns: list[dict]) -> ToolResult:
         parent = self._parent
 
@@ -153,14 +172,13 @@ class ParallelSpawnTool(Tool):
                 agent_type=agent_type, security_middleware=parent.security_middleware,
                 session_id=parent.session_id, confirm_callback=parent.confirm_callback,
             )
+            timeout = self._resolve_timeout(agent_type)
             try:
-                text = await asyncio.wait_for(child.run(task), timeout=self.timeout)
+                text = await asyncio.wait_for(child.run(task), timeout=timeout)
                 return SubAgentResult(status="success", summary=text)
             except asyncio.TimeoutError:
                 return SubAgentResult(status="timeout", summary="子任务执行超时",
-                                      # M3：插值 self.timeout（与 SpawnSubAgentTool 同款，
-                                      # 两工具对称——防写死值与实际生效超时漂移）
-                                      error_detail=f"SubAgent 在 {self.timeout}s 内未完成")
+                                      error_detail=f"SubAgent 在 {timeout}s 内未完成")
             except Exception as e:
                 return SubAgentResult(status="failed", summary="子任务执行失败",
                                       error_detail=str(e))
@@ -235,6 +253,18 @@ class AskUserTool(Tool):
         return ToolResult(text=f"用户回答：{answer}")
 
 
-TOOLS = [SpawnSubAgentTool(), ParallelSpawnTool(), AggregateResultsTool(), AskUserTool()]
+def _make_supervisor_tools() -> list:
+    """装配 4 个调度工具。config 在 import 时构造（每进程静态，对齐 make_tools 惯例）；
+    agent_timeouts 经 config.yaml 顶层注入 spawn 工具按 agent 解析超时。"""
+    cfg = PaperFlowConfig.from_env()
+    return [
+        SpawnSubAgentTool(agent_timeouts=cfg.agent_timeouts),
+        ParallelSpawnTool(agent_timeouts=cfg.agent_timeouts),
+        AggregateResultsTool(),
+        AskUserTool(),
+    ]
+
+
 # 注：supervisor 工具无 allowed_roots（无文件访问），无需 make_tools 装配——
 # 直接实例化列表即可（AgentRegistry 约定 TOOLS 是 Tool 实例列表）。
+TOOLS = _make_supervisor_tools()

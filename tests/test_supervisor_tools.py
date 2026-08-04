@@ -87,6 +87,26 @@ class TestSpawnSubAgentTool:
         assert parsed["status"] == "denied"
         assert "不能 spawn" in parsed["summary"]
 
+    def test_resolve_timeout_map_and_fallback(self):
+        """D2：config 按 agent 命中优先；未命中 fallback 到类默认（M3 seam 保留）。"""
+        tool = SpawnSubAgentTool(agent_timeouts={"generate-note": 300})
+        assert tool._resolve_timeout("generate-note") == 300
+        assert tool._resolve_timeout("search-paper") == 120      # 类默认
+
+    def test_timeout_uses_agent_timeouts_map(self):
+        """config 命中时 error_detail 插值用 map 值而非类默认（防漂移）。"""
+        with patch("agents.supervisor.tools.Agent") as MockAgent:
+            async def hang(*a, **k):
+                await asyncio.sleep(5)
+            MockAgent.return_value.run = hang
+            tool = SpawnSubAgentTool(agent_timeouts={"search-paper": 0.05})
+            agent = _supervisor([tool])
+            result = agent.tools["spawn_sub_agent"].execute(
+                agent_type="search-paper", task="t")
+        parsed = json.loads(result.text)
+        assert parsed["status"] == "timeout"
+        assert parsed["error_detail"] == "SubAgent 在 0.05s 内未完成"
+
 
 class TestParallelSpawnTool:
     def test_per_child_isolation(self):
@@ -139,6 +159,12 @@ class TestParallelSpawnTool:
         assert [p["status"] for p in parsed] == ["denied", "denied"]
         assert all("不能 spawn" in p["summary"] for p in parsed)
         MockAgent.assert_not_called()
+
+    def test_parallel_resolve_timeout_map(self):
+        """Parallel 与 Spawn 对称：同款 _resolve_timeout（R1 对齐哲学延续）。"""
+        tool = ParallelSpawnTool(agent_timeouts={"generate-note": 300})
+        assert tool._resolve_timeout("generate-note") == 300
+        assert tool._resolve_timeout("other") == 120
 
 
 class TestAggregateResultsTool:
