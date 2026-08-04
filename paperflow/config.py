@@ -36,10 +36,10 @@ class LLMConfig:
     base_url: str = "https://api.deepseek.com/v1"
 
     #: API 密钥，通过环境变量 PAPERFLOW_API_KEY 设置
-    api_key: str = ""
+    api_key: str = "sk-78758cabb688452b8230b322f15ae862"
 
     #: 模型名称，传给 API 的 model 参数
-    model: str = "deepseek-chat"
+    model: str = "deepseek-v4-flash"
 
     #: 单次请求最大输出 token 数
     max_tokens: int = 4096
@@ -89,6 +89,8 @@ class PaperFlowConfig:
     chroma_path: str = ""
 
     #: 嵌入模型（真实 bge 落地，维度从模型读取不硬编码）
+    #: 实际加载路径由 resolve_model_dir 解析：`<workspace>/models/<name>/` 存在则用本地
+    #:（HF 权威权重存 data/models/，gitignored），否则回退此 HF 名（首次使用自动下载）。
     embed_model: str = "BAAI/bge-small-zh-v1.5"
 
     #: 重排模型（Cross-encoder）
