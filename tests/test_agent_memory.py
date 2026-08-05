@@ -57,25 +57,30 @@ class TestMemoryInjection:
         assert "user_role" in seen["contents"][1]
 
     @pytest.mark.asyncio
-    async def test_injects_summary_between_memory_and_user(self, tmp_path):
+    async def test_replays_summary_and_history_before_user(self, tmp_path):
         (tmp_path / "MEMORY.md").write_text("idx\n")
         idx = MemoryIndex(tmp_path)
         compressor = MagicMock()
-        compressor.summary = "SUMMARY_TEXT"
+        # 新模型：摘要消息是 history[0]（system），随 history 回放而非独立③位注入
+        compressor.history = [
+            Message(role="system", content="SUMMARY_TEXT"),
+            Message(role="user", content="上一轮问题"),
+        ]
         # MagicMock 的 should_compress 默认返回 truthy，会误入压缩分支；
         # 本测试只验证消息顺序，显式关闭压缩
         compressor.should_compress.return_value = False
         seen = {}
         def responder(messages):
-            seen["contents"] = [m.content for m in messages[:4]]
+            seen["contents"] = [m.content for m in messages[:5]]
             return Message(role="assistant", content="ok")
         agent = make_agent(memory_index=idx, compressor=compressor,
                            llm=make_llm(responder))
         await agent.run("hi")
         assert seen["contents"][0] == "SKILL_PROMPT"
         assert seen["contents"][1] == "idx"
-        assert seen["contents"][2] == "SUMMARY_TEXT"
-        assert seen["contents"][3] == "hi"
+        assert seen["contents"][2] == "SUMMARY_TEXT"      # 摘要消息随 history 回放（③位）
+        assert seen["contents"][3] == "上一轮问题"         # 历史对话回放
+        assert seen["contents"][4] == "hi"                # 当前轮 user
 
     @pytest.mark.asyncio
     async def test_checks_compression_per_turn(self, tmp_path):
