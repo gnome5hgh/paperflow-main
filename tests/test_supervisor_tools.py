@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from paperflow.core.agent import Agent, MaxTurnsExceeded
+from paperflow.core.agent import Agent, MaxTurnsExceeded, StreamEvent
 from paperflow.core.tool import ToolResult
 from tests.test_agent import make_mock_llm, make_mock_registry
 
@@ -196,3 +196,33 @@ class TestAskUserTool:
         tool._parent = MagicMock(ask_user_callback=None)
         result = tool.execute(question="要搜索吗？")
         assert "无法交互" in result.text
+
+
+class TestStreamCallbackPropagation:
+    def test_spawn_passes_stream_callback_to_child(self):
+        """子 agent 继承父 stream_callback：单 spawn 全量流式的基础。"""
+        cb = lambda ev: None
+        with patch("agents.supervisor.tools.Agent") as MockAgent:
+            MockAgent.return_value.run = AsyncMock(return_value="done")
+            agent = _supervisor([SpawnSubAgentTool()], stream_callback=cb)
+            result = agent.tools["spawn_sub_agent"].execute(
+                agent_type="search-paper", task="搜索 x")
+        kwargs = MockAgent.call_args.kwargs
+        assert kwargs["stream_callback"] is cb
+        assert "done" in json.loads(result.text)["summary"]
+
+    def test_parallel_filters_content_and_prefixes_tool_events(self):
+        """并行包装回调：content 丢弃、tool 加 [agent_type] 前缀（防多路 token 串字）。"""
+        received = []
+        parent_cb = received.append
+        with patch("agents.supervisor.tools.Agent") as MockAgent:
+            MockAgent.return_value.run = AsyncMock(return_value="ok")
+            agent = _supervisor([ParallelSpawnTool()], stream_callback=parent_cb)
+            agent.tools["parallel_spawn"].execute(spawns=[
+                {"agent_type": "a", "task": "t1"},
+            ])
+        child_cb = MockAgent.call_args.kwargs["stream_callback"]
+        child_cb(StreamEvent("content", "推理文本", "a"))              # content 被丢弃
+        assert received == []
+        child_cb(StreamEvent("tool", "调用 search_arxiv(query=x)", "a"))  # tool 加前缀透传
+        assert received == [StreamEvent("tool", "[a] 调用 search_arxiv(query=x)", "a")]

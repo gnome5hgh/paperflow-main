@@ -10,7 +10,7 @@ import json
 from pydantic import BaseModel
 
 from paperflow.config import PaperFlowConfig
-from paperflow.core.agent import Agent
+from paperflow.core.agent import Agent, StreamEvent
 from paperflow.core.tool import Tool, ToolResult
 
 
@@ -92,6 +92,10 @@ class SpawnSubAgentTool(Tool):
             llm=parent.llm, agent_registry=parent.agent_registry,
             agent_type=agent_type, security_middleware=parent.security_middleware,
             session_id=parent.session_id, confirm_callback=parent.confirm_callback,
+            # 流式透传：单 spawn 子 agent 继承父 stream_callback，其推理 token
+            # 带自己的 agent_type 实时流式（CLI 渲染为 child 分段）。
+            # getattr（而非 parent.stream_callback）让 mock / 真实 Agent 都可用。
+            stream_callback=getattr(parent, "stream_callback", None),
         )
         # 传解析后的超时：_run_child 用实际生效值（config > 类默认）
         return self._run_child(child, agent_type, task)
@@ -167,10 +171,21 @@ class ParallelSpawnTool(Tool):
             if denied is not None:
                 return SubAgentResult(status="denied", summary=denied)
             # ② 每个 spawn 独立构造 child（继承 confirm_callback，同 SpawnSubAgentTool）
+            #    并行子 agent 各自在独立 to_thread 线程流式：多路 content token 并发会
+            #    搅成一团，故丢弃 content 只透传 tool 行（行级、完整）并加 [agent_type]
+            #    前缀；推理文本由 supervisor 汇总后在最终回答呈现。
+            pcb = getattr(parent, "stream_callback", None)
+            if pcb is None:
+                child_cb = None
+            else:
+                def child_cb(ev: StreamEvent) -> None:
+                    if ev.kind == "tool":
+                        pcb(StreamEvent("tool", f"[{agent_type}] {ev.text}", ev.agent_type))
             child = Agent(
                 llm=parent.llm, agent_registry=parent.agent_registry,
                 agent_type=agent_type, security_middleware=parent.security_middleware,
                 session_id=parent.session_id, confirm_callback=parent.confirm_callback,
+                stream_callback=child_cb,
             )
             timeout = self._resolve_timeout(agent_type)
             try:
