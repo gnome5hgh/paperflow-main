@@ -89,6 +89,28 @@ class StreamEvent:
     agent_type: str
 
 
+def _compact(v) -> str:
+    """参数值压缩为单行并截断到 40 字符（工具状态行的可读性约束，spec §3.4）。"""
+    s = str(v).replace("\n", " ")
+    return s if len(s) <= 40 else s[:37] + "..."
+
+
+def _format_tool_call(name: str, raw_args: str) -> str:
+    """把工具调用格式化为终端一行（claude code 风格：Read(path)）。
+
+    尽力解析参数；LLM 产出非法 JSON 时只显示工具名——错误路径保持可读，
+    且缓冲清理不依赖参数解析成功（见 _ReplStreamer）。
+    """
+    try:
+        args = json.loads(raw_args) if raw_args.strip() else {}
+    except json.JSONDecodeError:
+        return f"调用 {name}"
+    if not isinstance(args, dict) or not args:
+        return f"调用 {name}"
+    pairs = ", ".join(f"{k}={_compact(v)}" for k, v in args.items())
+    return f"调用 {name}({pairs[:80]})"
+
+
 class Agent:
     """
     ReAct 循环的执行单元，Supervisor 和 SubAgent 共用。
@@ -394,6 +416,12 @@ class Agent:
         :returns: ToolResult，始终返回（不抛异常）
         """
         name = tool_call["function"]["name"]
+
+        # 工具事件放解析前：即使后续 JSON 解析失败 / 未知工具 / 被中间件拦截，
+        # root 的中间内容缓冲也要被清掉（_ReplStreamer 依赖），否则 should_print
+        # 会把中间思考文本误当最终答案。
+        self._emit(StreamEvent("tool", _format_tool_call(
+            name, tool_call["function"]["arguments"]), self.agent_type))
 
         # 1. 按工具名查找 Tool 实例（可能 None = 未知工具，LLM 幻觉/注入）
         tool = self.tools.get(name)

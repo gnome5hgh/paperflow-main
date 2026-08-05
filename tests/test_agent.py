@@ -521,3 +521,51 @@ class TestStreaming:
         assert [e.kind for e in events] == ["content", "content"]
         assert [e.text for e in events] == ["你好", "世界"]
         assert all(e.agent_type == "test" for e in events)
+
+
+# ─── 工具状态行（Task 4）：_format_tool_call + _exec_tool 工具事件 ──
+
+
+class TestFormatToolCall:
+    def test_shows_compacted_args(self):
+        from paperflow.core.agent import _format_tool_call
+        assert _format_tool_call(
+            "search_paper", '{"query": "circRNA", "max_results": 5}'
+        ) == "调用 search_paper(query=circRNA, max_results=5)"
+
+    def test_falls_back_on_invalid_json(self):
+        from paperflow.core.agent import _format_tool_call
+        assert _format_tool_call("echo", "{bad json") == "调用 echo"
+
+    def test_empty_or_missing_args_just_name(self):
+        from paperflow.core.agent import _format_tool_call
+        assert _format_tool_call("echo", "{}") == "调用 echo"
+        assert _format_tool_call("echo", "") == "调用 echo"
+
+
+class TestToolEvent:
+    @pytest.mark.asyncio
+    async def test_emits_tool_event_before_execution(self):
+        from tests.conftest import MockEchoTool
+
+        events = []
+        responses = [
+            Message(role="assistant", content=None, tool_calls=[{
+                "id": "c1", "type": "function",
+                "function": {"name": "echo", "arguments": '{"message": "hi"}'}}]),
+            Message(role="assistant", content="done"),
+        ]
+        llm = MagicMock()
+
+        async def chat_stream(messages, tools=None, tool_choice="auto", on_delta=None):
+            return responses.pop(0)
+
+        llm.chat_stream = chat_stream
+        llm.model = "mock"
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([MockEchoTool()]),
+                      agent_type="test", stream_callback=events.append)
+        assert await agent.run("hi") == "done"
+        tool_events = [e for e in events if e.kind == "tool"]
+        assert len(tool_events) == 1
+        assert tool_events[0].text == "调用 echo(message=hi)"
+        assert tool_events[0].agent_type == "test"
