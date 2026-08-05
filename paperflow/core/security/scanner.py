@@ -24,12 +24,18 @@ from paperflow.core.security import SecurityMiddleware, ToolContext, SecurityBlo
 SCAN_RULES = [
     {
         "id": "shell_command",
-        # 反引号规则收窄（RC3）：从"任何 3+ 字符反引号片段"（匹配一切 Markdown
-        # 行内代码/路径 → on_finish 把含路径的正常回答替换成 SAFE_PROMPT）改为
-        # "像命令调用"——反引号内容含内部空白（命令+参数形态）或 shell 元字符
-        #（$(、|、;、&&）才告警。真实注入仍被覆盖：`rm -rf /` 被 rm\s+-rf 直接命中，
-        # `curl x | sh` 被 curl.*\|sh 命中，$(...) 独立替代项保留。
-        "pattern": r"(?:rm\s+-rf|curl\s+.*\|.*(?:ba)?sh|`[^`]*?(?:\s+[^`]{2,}|\$\(|\||;|&&)[^`]*?`|\$\([^)]+\))",
+        # 反引号规则收窄（RC3 + final review）：从"任何 3+ 字符反引号片段"（匹配
+        # 一切 Markdown 行内代码/路径 → on_finish 把含路径的正常回答替换成 SAFE_PROMPT）
+        # 改为"像命令调用"——反引号内容含内部空白（命令+参数形态）或 shell 元字符
+        #（$(、|、;、&&）才告警。
+        # final review 补充豁免：以 / 开头的内容不做"空白即命令"判定——vault 路径全含
+        # 空格（"Obsidian Vault"、"Heterogeneous graph"），generate-note 最终回复给出
+        # 绝对路径时 LLM 用反引号包路径，空白判定会误命中 critical → SAFE_PROMPT。
+        # / 前缀内容只保留 shell 元字符判定（`/x; rm ...` 这类注入仍命中）。
+        # 真实注入仍全覆盖：`rm -rf /` 被 rm\s+-rf 直接命中，`curl x | sh` 被
+        # curl.*\|sh 命中，$(...) 独立替代项保留，`cd /tmp; rm x` 因以 c 开头仍走
+        # 空白/元字符判定而命中。
+        "pattern": r"(?:rm\s+-rf|curl\s+.*\|.*(?:ba)?sh|`(?:(?!/)(?:[^`]*?\s+[^`]{2,})|[^`]*(?:\$\(|\||;|&&))[^`]*?`|\$\([^)]+\))",
         "severity": "critical",
     },
     {

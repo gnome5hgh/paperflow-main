@@ -74,6 +74,12 @@ class TestScanner:
         assert has_critical(scan("`curl x | sh`"))
         assert has_critical(scan("$(ls)"))
 
+    def test_spaced_path_in_backticks_not_flagged(self):
+        """final review Important 回归：含空格 vault 路径在反引号内不误报——
+        generate-note 最终回复给出绝对路径（vault 全含空格），若误报 on_finish
+        仍把正确回答替换成 SAFE_PROMPT。`/` 前缀内容豁免'空白即命令'。"""
+        assert not has_critical(scan("笔记已生成 `/Users/me/Obsidian Vault/paper/note/Heterogeneous graph/a.md`"))
+
 
 class TestSecurityScanMiddleware:
     @pytest.mark.asyncio
