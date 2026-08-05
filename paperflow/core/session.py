@@ -3,8 +3,8 @@
 意图管线的 Stage 1 追问检测消费 prev_intent / prev_user_input（spec §4.6）；
 跨轮澄清挂起消费 pending_intent（spec §6.2，≤2 轮）。
 
-注：省略 ADR 提及的 recent_summaries——跨轮上下文由 ContextCompressor.summary
-跨轮累计承担（CLI 复用同一 Supervisor 实例，compressor 常驻），Session 不冗余存。
+注：省略 ADR 提及的 recent_summaries——跨轮上下文由 ContextCompressor.history
+跨轮累积承担（CLI 复用同一 Supervisor 实例，compressor 常驻），Session 不冗余存。
 """
 from dataclasses import dataclass
 

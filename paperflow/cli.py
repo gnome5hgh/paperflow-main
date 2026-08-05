@@ -3,7 +3,7 @@
 每轮：读 stdin → 合并 pending（若挂起）→ supervisor.run(query, force_dispatch) →
 若 last_intent.clarification 且未超轮 → 挂起打印问题；否则打印结果。
 跨轮状态由 Session 承载（prev_intent / pending_intent），复用同一 Supervisor 实例
-使 ContextCompressor.summary 跨轮累计。
+使 ContextCompressor.history 跨轮累积。
 """
 import asyncio
 import logging
