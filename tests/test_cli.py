@@ -213,3 +213,58 @@ def test_stdin_ask_eof_returns_empty(monkeypatch):
         raise EOFError
     monkeypatch.setattr("builtins.input", _eof)
     assert _stdin_ask("要哪个？") == ""
+
+
+from paperflow.cli import _ReplStreamer
+from paperflow.core.agent import StreamEvent
+
+
+def _collect():
+    """返回 (out, print_fn)：print_fn 兼容 end=/flush= kwargs，捕获每次调用首参。"""
+    out = []
+
+    def _fn(*a, **k):
+        out.append(a[0])
+    return out, _fn
+
+
+class TestReplStreamer:
+    def test_content_segments_insert_newlines_on_transition(self):
+        out, fn = _collect()
+        s = _ReplStreamer(fn, root_agent_type="supervisor")
+        s.on_event(StreamEvent("content", "答", "supervisor"))
+        s.on_event(StreamEvent("content", "案", "supervisor"))
+        s.on_event(StreamEvent("content", "推理", "search-paper"))   # root → child
+        s.on_event(StreamEvent("content", "续", "search-paper"))
+        s.on_event(StreamEvent("content", "总结", "supervisor"))     # child → root
+        assert "".join(out) == "答案\n推理续\n总结"
+
+    def test_root_tool_event_clears_buffer(self):
+        out, fn = _collect()
+        s = _ReplStreamer(fn, "supervisor")
+        s.on_event(StreamEvent("content", "中间想法", "supervisor"))
+        s.on_event(StreamEvent("tool", "调用 search_paper(query=x)", "supervisor"))
+        assert s.should_print("最终答案") == "最终答案"    # buffer 被清 → 走现状
+        s.on_event(StreamEvent("content", "最终答案", "supervisor"))
+        assert s.should_print("最终答案") == ""            # 已逐字展示 → 只补换行
+
+    def test_should_print_rewrite_case(self):
+        out, fn = _collect()
+        s = _ReplStreamer(fn, "supervisor")
+        s.on_event(StreamEvent("content", "原始内容", "supervisor"))
+        assert s.should_print("SAFE_PROMPT") == "\nSAFE_PROMPT"   # on_finish 改写 → 补打
+
+    def test_child_content_does_not_pollute_buffer(self):
+        out, fn = _collect()
+        s = _ReplStreamer(fn, "supervisor")
+        s.on_event(StreamEvent("content", "子agent回答", "search-paper"))   # child 不入 buffer
+        assert s.should_print("最终答案") == "最终答案"
+        s.on_event(StreamEvent("content", "最终答案", "supervisor"))
+        assert s.should_print("最终答案") == ""
+
+    def test_reset_clears_stale_buffer(self):
+        out, fn = _collect()
+        s = _ReplStreamer(fn, "supervisor")
+        s.on_event(StreamEvent("content", "残留", "supervisor"))
+        s.reset()
+        assert s.should_print("结果") == "结果"           # 残留被清 → 走现状

@@ -63,6 +63,54 @@ def _stdin_ask(question: str) -> str:
             return ""             # Ctrl-D：返回空串，Supervisor ReAct 自行处理
 
 
+class _ReplStreamer:
+    """把 Agent 流式事件渲染为终端增量输出，并决定最终结果如何打印。
+
+    段模型：root content / child content / tool 三类输出段，段间切换补换行；
+    root content 额外缓冲，供 should_print 判断最终答案是否已被逐字展示
+    （on_finish 改写如 SAFE_PROMPT 时需要补打最终版）。
+
+    线程安全：on_event 实践上不会被并发调用——root content 来自主 ReAct 的
+    chat_stream 线程（串行）；parallel_spawn 子 agent 的 content 被上层包装
+    过滤（只留 tool 事件，且都在同一 worker 事件循环上串行）；sequential spawn
+    时父 await 子 run，父子流式严格串行。故无锁设计成立。
+    """
+    def __init__(self, print_fn, root_agent_type: str):
+        self._print = print_fn          # 透传 end=/flush=（简单 lambda 会忽略 kwargs）
+        self._root = root_agent_type
+        self._last_segment = None       # None | "root" | "child" | "tool"
+        self._buffer: list[str] = []    # 仅 root content，用于最终答案比对
+
+    def reset(self) -> None:
+        """每轮 run 前调用：清空上一轮残留（异常/澄清路径不消费 should_print）。"""
+        self._buffer.clear()
+        self._last_segment = None
+
+    def on_event(self, ev) -> None:
+        if ev.kind == "content":
+            seg = "root" if ev.agent_type == self._root else "child"
+            if self._last_segment not in (None, seg):
+                self._print("\n")                    # 段切换补换行
+            self._print(ev.text, end="", flush=True) # 逐字打字机效果
+            if seg == "root":
+                self._buffer.append(ev.text)
+            self._last_segment = seg
+        elif ev.kind == "tool":
+            self._print("\n")
+            self._print(ev.text, flush=True)
+            if ev.agent_type == self._root:
+                self._buffer.clear()    # 工具调用前的中间内容作废，只留最终轮的流式文本
+            self._last_segment = "tool"
+
+    def should_print(self, result: str) -> str:
+        streamed = "".join(self._buffer)
+        if not streamed:
+            return result               # 没流式（澄清早退/纯工具轮）→ 维持现状
+        if streamed == result:
+            return ""                   # 已逐字展示 → print_fn("") 只补换行
+        return "\n" + result            # on_finish 改写了（如 SAFE_PROMPT）→ 补打最终版
+
+
 def _merge_pending(session: Session, raw: str) -> tuple[str, bool]:
     """合并跨轮澄清输入，返回 (query, force_dispatch)。
 
