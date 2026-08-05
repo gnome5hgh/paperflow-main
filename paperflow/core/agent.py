@@ -46,6 +46,7 @@ import logging
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
@@ -78,6 +79,14 @@ class MaxTurnsExceeded(Exception):
     （例如 LLM 反复调用同一个工具但不用其结果给出最终回答）。
     调用方（Supervisor 或 CLI）捕获此异常后应终止任务并向用户报告。
     """
+
+
+@dataclass
+class StreamEvent:
+    """流式事件：kind ∈ {"content","tool"}；text 为片段；agent_type 区分 root/child。"""
+    kind: str
+    text: str
+    agent_type: str
 
 
 class Agent:
@@ -124,6 +133,7 @@ class Agent:
         memory_index=None,          # MemoryIndex | None
         compressor=None,            # ContextCompressor | None
         max_turns: int = 20,
+        stream_callback: Callable[[StreamEvent], None] | None = None,
     ):
         """
         :param llm: LLM 客户端实例
@@ -149,6 +159,8 @@ class Agent:
         :param compressor: ContextCompressor 实例（可选），跨轮摘要注入
             system 消息（③位）+ 每次 model call 前压缩检查；None 时完全跳过
         :param max_turns: ReAct 循环最大轮数，防止死循环
+        :param stream_callback: 流式事件回调（CLI 渲染器消费）；None =
+            非流式路径——run() 保持调 chat()，mock/无 UI 调用方零影响
         """
         # Pull 模式：从唯一注册表按类型加载完整配置
         config = agent_registry.get_config(agent_type)
@@ -170,6 +182,9 @@ class Agent:
 
         #: ReAct 循环最大轮数安全阀
         self.max_turns = max_turns
+
+        #: 流式事件回调（CLI 渲染器）；None = 非流式路径（mock 测试/无 UI 调用方）
+        self.stream_callback = stream_callback
 
         #: 预计算的 OpenAI function calling JSON Schema 列表
         #: 在构造时转换一次，避免每轮 run 都重复转换
@@ -215,6 +230,12 @@ class Agent:
     async def _default_confirm(self, cr: ConfirmRequired) -> bool:
         """默认 fail-safe：无人值守时拒绝。"""
         return False
+
+    def _emit(self, ev: StreamEvent) -> None:
+        """转发流式事件；无回调时零开销空操作（非 CLI 调用方完全不受影响）。"""
+        cb = self.stream_callback
+        if cb is not None:
+            cb(ev)
 
     async def run(self, task: str, *, force_dispatch: bool = False) -> str:
         """
@@ -291,11 +312,18 @@ class Agent:
             if self.compressor and self.compressor.should_compress(messages):
                 messages = await self.compressor.compress(messages)
 
-            # 调用 LLM，传入当前对话历史和可用工具 Schema
-            response = await self.llm.chat(
-                messages,
-                tools=self._tool_schemas if self._tool_schemas else None,
-            )
+            # 流式门控：挂了 stream_callback 才走 chat_stream（否则保持 chat()）。
+            # mock LLM 只有 chat 方法，无条件换 chat_stream 会让 MagicMock 不可
+            # await 抛 TypeError——门控同时是零开销路径（无 UI 调用方不受影响）。
+            tools = self._tool_schemas if self._tool_schemas else None
+            if self.stream_callback is not None:
+                response = await self.llm.chat_stream(
+                    messages, tools=tools,
+                    on_delta=lambda d: self._emit(
+                        StreamEvent("content", d, self.agent_type)),
+                )
+            else:
+                response = await self.llm.chat(messages, tools=tools)
 
             # LLM 判定任务完成：返回无 tool_calls 的纯文本消息
             if not response.tool_calls:

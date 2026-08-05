@@ -489,3 +489,35 @@ class TestIntentGate:
                       intent_pipeline=pipeline, session=session)
         asyncio.run(agent.run("搜索 x"))
         assert session.prev_intent is None          # 降级轮不更新 prev_intent
+
+
+# ─── 流式输出（Task 3）：StreamEvent + stream_callback 门控 ──────────
+
+
+class TestStreaming:
+    @pytest.mark.asyncio
+    async def test_no_stream_callback_uses_chat(self):
+        """门控回归（F1）：mock LLM 只有 chat（无 chat_stream），stream_callback=None
+        → run 走 chat 路径；若误调 chat_stream 会因 MagicMock 不可 await 抛 TypeError。"""
+        llm = make_mock_llm([Message(role="assistant", content="ok")])
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([]), agent_type="test")
+        assert await agent.run("hi") == "ok"
+
+    @pytest.mark.asyncio
+    async def test_streams_content_deltas_via_callback(self):
+        events = []
+        llm = MagicMock()
+
+        async def chat_stream(messages, tools=None, tool_choice="auto", on_delta=None):
+            on_delta("你好")
+            on_delta("世界")
+            return Message(role="assistant", content="你好世界")
+
+        llm.chat_stream = chat_stream
+        llm.model = "mock"
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([]), agent_type="test",
+                      stream_callback=events.append)
+        assert await agent.run("hi") == "你好世界"
+        assert [e.kind for e in events] == ["content", "content"]
+        assert [e.text for e in events] == ["你好", "世界"]
+        assert all(e.agent_type == "test" for e in events)
