@@ -509,6 +509,20 @@ class TestIntentGate:
         asyncio.run(agent.run("搜索 x"))
         assert session.prev_intent is None          # 降级轮不更新 prev_intent
 
+    def test_task_surrogates_sanitized_before_session(self):
+        """2026-08-05 回归：run() 入口清洗未配对 surrogate（信任边界）——否则
+        session.prev_user_input 携带脏字符，下轮意图管线从它重提实体时再注入。
+        正常输入零开销（sanitize_surrogates 无匹配返回原串）。"""
+        capture = []
+        pipeline = MockIntentPipeline(result=_intent(IntentType.GENERATE_NOTE))
+        session = Session()
+        llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
+                      agent_type="test", intent_enabled=True,
+                      intent_pipeline=pipeline, session=session)
+        asyncio.run(agent.run("笔记\udce5脏字符"))
+        assert "\udce5" not in session.prev_user_input
+
 
 # ─── 流式输出（Task 3）：StreamEvent + stream_callback 门控 ──────────
 

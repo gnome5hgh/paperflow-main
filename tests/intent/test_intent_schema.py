@@ -57,6 +57,23 @@ class TestIntentOutput:
             IntentOutput(intent_type=IntentType.GENERAL, confidence=1.5,
                          source=IntentStep.LLM)
 
+    def test_sanitizes_surrogates_on_construction(self):
+        """2026-08-05 回归：未配对 surrogate（PDF 提取 / LLM 兜底输出可能携带）在
+        构造时被清洗——否则 `_intent_block` 的 model_dump_json 抛
+        PydanticSerializationError（真实冒烟：'将上面内容总结为笔记' 触发 '\udce5'）。"""
+        out = IntentOutput(
+            intent_type=IntentType.GENERATE_NOTE, confidence=0.9,
+            source=IntentStep.LLM,
+            rewritten_query="重写\udce5查询",
+            clarification="含\udce5歧义",
+            entities={"query": "脏\udce5字符"},
+        )
+        s = out.model_dump_json()          # 不应抛 PydanticSerializationError
+        assert "\udce5" not in s
+        assert out.rewritten_query == "重写�查询"
+        assert out.clarification == "含�歧义"
+        assert out.entities["query"] == "脏�字符"
+
 
 class TestIntentionResult:
     def test_construction(self):
