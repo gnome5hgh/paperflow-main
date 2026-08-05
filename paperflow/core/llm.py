@@ -174,6 +174,53 @@ class LLMClient:
         )
 
 
+def _accumulate_stream_chunks(chunks, on_delta):
+    """把 OpenAI 流式 chunks 累加为 (content, tool_calls, role)。
+
+    on_delta 每收到一段 content 片段即同步回调（跑在流线程内，须线程安全）。
+    tool_calls 按 delta.tool_calls[].index 分片累加，arguments 分片拼接。
+    """
+    content_parts: list[str] = []
+    tool_acc: dict[int, dict] = {}
+    role = "assistant"
+    for chunk in chunks:
+        # 某些端点（如 OpenAI）尾部会发一个空 choices 的 chunk，跳过避免取下标崩溃
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if delta.role:
+            role = delta.role
+        # tool-call 类型的 chunk 常无 content（None）——不回调、不累积
+        if delta.content:
+            content_parts.append(delta.content)
+            if on_delta:
+                on_delta(delta.content)
+        if delta.tool_calls:
+            # tool_calls 增量按 index 分片：id/name 只在首个分片出现，
+            # arguments 是跨分片拼接的 JSON 字符串片段
+            for tc in delta.tool_calls:
+                acc = tool_acc.setdefault(
+                    tc.index, {"id": None, "type": "function", "name": None, "args": []})
+                if tc.id:
+                    acc["id"] = tc.id
+                if tc.type:
+                    acc["type"] = tc.type
+                if tc.function:
+                    if tc.function.name:
+                        acc["name"] = tc.function.name
+                    if tc.function.arguments:
+                        acc["args"].append(tc.function.arguments)
+    tool_calls = None
+    if tool_acc:
+        tool_calls = [
+            {"id": tool_acc[i]["id"], "type": tool_acc[i]["type"],
+             "function": {"name": tool_acc[i]["name"],
+                          "arguments": "".join(tool_acc[i]["args"])}}
+            for i in sorted(tool_acc)
+        ]
+    return "".join(content_parts), tool_calls, role
+
+
 _UNSUPPORTED_PARAM_PATTERNS = [
     re.compile(r"response_format", re.IGNORECASE),
     re.compile(r"extra_body", re.IGNORECASE),

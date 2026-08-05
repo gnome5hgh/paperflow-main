@@ -83,3 +83,59 @@ class TestChatJsonMode:
             [Message(role="user", content="hi")], extra_body={"enable_thinking": False}
         )
         assert msg.content == "ok"
+
+
+from types import SimpleNamespace
+
+
+def _chunk(delta, choices=None):
+    """构造 fake 流式 chunk：choices[0].delta，或空 choices（模拟端点尾部空 chunk）。"""
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)] if choices is None else choices)
+
+
+class TestAccumulateStreamChunks:
+    def test_accumulates_content_and_calls_on_delta_in_order(self):
+        from paperflow.core.llm import _accumulate_stream_chunks
+        deltas = []
+        chunks = [
+            _chunk(SimpleNamespace(role="assistant", content="你好", tool_calls=None)),
+            _chunk(SimpleNamespace(role=None, content="世界", tool_calls=None)),
+        ]
+        content, tool_calls, role = _accumulate_stream_chunks(chunks, deltas.append)
+        assert content == "你好世界"
+        assert role == "assistant"
+        assert tool_calls is None
+        assert deltas == ["你好", "世界"]
+
+    def test_accumulates_tool_calls_by_index(self):
+        from paperflow.core.llm import _accumulate_stream_chunks
+        tc1_first = SimpleNamespace(index=0, id="call_1", type="function",
+                                    function=SimpleNamespace(name="search_paper", arguments='{"qu'))
+        tc1_second = SimpleNamespace(index=0, id=None, type=None,
+                                     function=SimpleNamespace(name=None, arguments='ery": "x"}'))
+        tc2 = SimpleNamespace(index=1, id="call_2", type="function",
+                              function=SimpleNamespace(name="read_file", arguments='{"path": "a"}'))
+        chunks = [
+            _chunk(SimpleNamespace(role="assistant", content=None, tool_calls=[tc1_first])),
+            _chunk(SimpleNamespace(role=None, content=None, tool_calls=[tc1_second, tc2])),
+        ]
+        content, tool_calls, role = _accumulate_stream_chunks(chunks, None)
+        assert content == ""
+        assert tool_calls == [
+            {"id": "call_1", "type": "function",
+             "function": {"name": "search_paper", "arguments": '{"query": "x"}'}},
+            {"id": "call_2", "type": "function",
+             "function": {"name": "read_file", "arguments": '{"path": "a"}'}},
+        ]
+
+    def test_skips_empty_choices_and_none_content(self):
+        from paperflow.core.llm import _accumulate_stream_chunks
+        deltas = []
+        chunks = [
+            _chunk(SimpleNamespace(role="assistant", content="a", tool_calls=None)),
+            _chunk(None, choices=[]),          # 空 choices chunk
+            _chunk(SimpleNamespace(role=None, content=None, tool_calls=None)),  # None content
+        ]
+        content, _, _ = _accumulate_stream_chunks(chunks, deltas.append)
+        assert content == "a"
+        assert deltas == ["a"]                 # None content 不回调
