@@ -9,11 +9,13 @@ ContextCompressor —— 对话上下文压缩器。
 2. **压缩触发**：``should_compress`` —— 估算 × 1.1 buffer 超过
    trigger_ratio × context_size 时返回 True。×1.1 是为了吸收
    tiktoken 对 DeepSeek 等模型的估算偏差，避免低估时实际超窗口。
-3. **增量压缩**：旧摘要（若有）+ 待压缩消息 → LLM 结构化提取
-   SummarySchema → 按 summary_template 格式化为新摘要。summary
-   作为跨轮状态存活，每轮注入。
-4. **三段重组**（``_rebuild_messages``）：头部 system（SKILL + MEMORY，
-   只取前两条）+ 新摘要 + 尾部最近消息（``_split_tail``）。
+3. **跨轮累积**：``accumulate`` 每轮 run 结束把对话消息追加进 history
+   （唯一写入口，不 append system）——history 是压缩器唯一跨轮状态。
+4. **压缩改写**（``compress_history``）：history 超出预算时增量压缩——
+   旧摘要（history[0] 若是 system 摘要消息则取之）作输入，LLM 提取
+   SummarySchema 后新摘要消息写入 history[0]，``_split_tail`` 保留近
+   对话作下轮回放素材（reserve_ratio）。失败降级：保留原始 history
+   不压缩——安全侧宁可多带 token 也不丢对话。
    ``_split_tail`` 有成对约束：assistant(tool_calls) 与其 tool 结果
    必须成对保留或整对丢弃，绝不允许孤立 role="tool" 消息。
 """
@@ -39,14 +41,13 @@ def _get_encoder():
 
 
 class ContextCompressor:
-    """有状态压缩器：summary 跨轮存活，每次 run() 注入。"""
+    """有状态压缩器：history 跨轮累积，压缩后摘要消息稳坐 history[0]。"""
 
     def __init__(self, config: ContextConfig, llm,
                  structured):   # structured 构造注入：与组装点顶层实例共享
         self.config = config
         self.llm = llm
         self.structured = structured
-        self.summary: str | None = None     # 跨轮状态（Task 5 移除，过渡期保留）
         #: 跨轮累积的对话消息（合并方案唯一状态）。压缩后 history[0] 是 system
         #: 摘要消息，其余是未压缩的近期对话——history 整体作为下轮回放素材。
         self.history: list = []
@@ -89,24 +90,6 @@ class ContextCompressor:
         # ×1.1 buffer：tiktoken 对 DeepSeek 的估算偏差 → 低估时不至于实际超窗口
         return estimate * 1.1 > self.config.trigger_ratio * ctx_size
 
-    async def compress(self, messages: list[Message]) -> list[Message]:
-        """增量压缩：旧 summary（若有）+ 待压缩消息 → LLM SummarySchema → 三段重组。"""
-        prompt = self._build_compression_prompt(messages, self.summary)
-        summary = await self.structured.extract(
-            prompt=prompt,
-            schema=SummarySchema,
-            fallback=lambda: SummarySchema(
-                task_overview="", current_state="",
-                important_discoveries="", next_steps="",
-                # 只保留对话部分（_build_compression_prompt 在"对话内容："标记后），
-                # 不把压缩指令本身存进 context_to_preserve
-                context_to_preserve=prompt.split("对话内容：")[-1][:2000],
-            ),
-        )
-        old_summary = self.summary      # 重建前保存旧值：_rebuild_messages 排除旧摘要用
-        self.summary = self.config.summary_template.format(**summary.model_dump())
-        return self._rebuild_messages(messages, old_summary)
-
     async def compress_history(self) -> None:
         """压缩改写 history：旧对话折叠进 history[0] 摘要消息，近对话保留回放。
 
@@ -140,9 +123,9 @@ class ContextCompressor:
     def _build_compression_prompt(self, messages: list[Message], old_summary=None) -> str:
         """输入集 = 待压缩消息 + 已有摘要（若有）——增量压缩。
 
-        old_summary 来自 history[0]（压缩产物摘要）或旧 self.summary，作为增量输入
-        让 LLM 基于它更新而非从零总结。循环跳过 role=="system"——SKILL/旧摘要不是
-        对话内容，不该混进压缩输入（摘要经 old_summary 块单独给出）。
+        old_summary 来自 history[0]（压缩产物摘要），作为增量输入让 LLM 基于它
+        更新而非从零总结。循环跳过 role=="system"——SKILL/旧摘要不是对话内容，
+        不该混进压缩输入（摘要经 old_summary 块单独给出）。
         """
         parts = [self.config.compression_prompt]
         if old_summary:
@@ -157,8 +140,8 @@ class ContextCompressor:
     def _split_tail(self, messages: list[Message], ratio: float) -> list[Message]:
         """从后往前截到 ratio × context_size。
 
-        约束1：tail 不含 system 消息 —— 头部 system（SKILL + MEMORY）
-        与新摘要由 _rebuild_messages 负责，旧摘要绝不与尾部并存。
+        约束1：tail 不含 system 消息 —— system（SKILL/摘要）由头部注入，
+        compress_history 把新摘要写入 history[0]，旧摘要绝不与尾部并存。
         约束2：assistant(tool_calls) 与其 tool 结果必须成对保留或整对丢弃——
         绝不允许孤立 role="tool" 消息（tool_call_id 无对应 → API 报错）。
         """
@@ -188,22 +171,3 @@ class ContextCompressor:
         # 后置清理：若尾部残留孤立 tool 消息（其 assistant 没进来），丢弃
         seen_tool_ids = {tc["id"] for m in result if m.role == "assistant" and m.tool_calls for tc in m.tool_calls}
         return [m for m in result if not (m.role == "tool" and m.tool_call_id not in seen_tool_ids)]
-
-    def _rebuild_messages(self, messages: list[Message],
-                          old_summary: str | None = None) -> list[Message]:
-        """三段式重组：头部 system（SKILL + MEMORY，排除旧摘要）+ 新 summary + 尾部。
-
-        old_summary = 压缩前的 self.summary。无 MEMORY.md 时 messages 前三条是
-        [SKILL, 旧摘要, ...]，若不做排除，旧摘要在头部占位存活 → [SKILL, 旧, 新] 并存。
-        注意时序：compress() 在调用前已把 self.summary 更新为新摘要，故排除必须
-        用重建前保存的旧值，不能用 self.summary 现值比较。
-        """
-        # 惰性导入 Message：llm → config → memory 包初始化链存在循环依赖，
-        # 模块顶层导入会在 llm 未完成初始化时触发 ImportError
-        from paperflow.core.llm import Message
-        head = [m for m in messages[:3]
-                if m.role == "system" and m.content != old_summary][:2]
-        tail = self._split_tail(messages, ratio=self.config.reserve_ratio)
-        return head + [
-            Message(role="system", content=self.summary or ""),
-        ] + tail

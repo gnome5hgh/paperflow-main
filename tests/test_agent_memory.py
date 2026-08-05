@@ -85,7 +85,6 @@ class TestMemoryInjection:
     @pytest.mark.asyncio
     async def test_checks_compression_per_turn(self, tmp_path):
         compressor = MagicMock()
-        compressor.summary = None
         # 空 history：压缩重建 messages = head + history + conv 后仍保持短消息，
         # responder 第一轮看到 len<3 → tool_call，第二轮（不压缩）看到 tool → final
         compressor.history = []
