@@ -127,3 +127,9 @@
 **决策**：① `from_env()` workspace 绝对化（相对 workspace 派生相对根被 WorkspacePolicy 二次拼接成 data/data/templates 双前缀，正确绝对路径被 security_blocked——生产默认 workspace="data" 触发，测试用绝对 tmp workspace 掩盖）；② 实体提取正则 `[^\s:]*?`→`[^\n]*?`（含空格路径可提取、双空格逐字保留，vault 目录/文件名含空格常态）；③ 扫描器 shell_command 反引号规则收窄为"命令形态（内部空白或 shell 元字符）"（原规则把任意 Markdown 行内代码/路径当 critical → on_finish 把 generate-note 失败回答替换成 SAFE_PROMPT 空结果）；④ read_pdf 精确 miss 时按归一化 basename 在 pdf root 下唯一命中（抗 LLM 空格折叠，0/多候选报错不猜）。
 
 **理由**：用户实测为含空格路径 PDF 生成笔记，generate-note 连续两次返回「回答内容因包含不安全信息已被替换」空结果。审计日志（trace_f03a7feff079）显示 17 次工具调用全失败（read_file 4×security_blocked + read_pdf 13×error）。四个根因各自独立、全部实测复现：① 双前缀让模板永远读不到；② 实体提取不出含空格路径 → INTENT 块无 pdf_path；③ Supervisor LLM 折叠双空格 → PDF 精确路径到不了子 agent；④ 失败回答被扫描器误报吞掉。修复选**工具层容错**（read_pdf 归一化命中）而非追求 LLM 精确复现路径——LLM 空白折叠是系统性问题，工具层兜住任何来源的路径污染；唯一命中不猜保持权限最小化语义。见 `docs/superpowers/specs/2026-08-04-generate-note-path-bugfix-design.md`。
+
+## 2026-08-05 — 四修复的 D2/D3 实现期修订（追加注记）
+
+**决策**：四修复条目的两处实现期修订：② 实体正则从 `[^\s:]*?`→`[^\n]*?` 改为**分段式**（`/` + dir 段可含内部空格 + 独立 filename 段 + `.pdf`/`.md`，且 `.pdf`/`.md` 各自独立 pattern 不合一）——初稿 `[^\n]*?` 实测回归"多实体共存"契约（"根据 /a/doc.pdf 更新 /b/note.md" → note_path 被污染成整段）；③ 反引号规则在收窄为"命令形态"后，final review 发现含空格路径在反引号内仍被"内部空白=命令"误伤（vault 路径全含空格），再修订为对 `/` 前缀内容豁免"空白即命令"判定、只保留 shell 元字符（`$(`、`|`、`;`、`&&`）。
+
+**理由**：DECISIONS 只追加不改旧条目，实现期发现初稿方案不完善时以本注记记录最终形态，避免后续读者被旧正则误导。两处修订均以测试锁定（共存测试 + 含空格路径不误报测试），真实注入（`rm -rf /`/`curl x | sh`/`$(...)`）仍全覆盖。见 `docs/superpowers/specs/2026-08-04-generate-note-path-bugfix-design.md`。
