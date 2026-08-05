@@ -581,6 +581,17 @@ class TestFormatToolCall:
         mega = "tool_" + "x" * 100
         assert _format_tool_call(mega, args).startswith("调用")
 
+    def test_path_arg_shown_in_full(self):
+        """2026-08-05 回归：绝对路径参数完整展示不截断——真实冒烟反馈路径被截成
+        .../Obsidian V... 看不出在读哪个文件。含路径的行也不压 80（终端可换行）。"""
+        from paperflow.core.agent import _format_tool_call
+        path = ("/Users/gnomeshgh/Documents/Obsidian Vault/paper/pdf/"
+                "link prediction/circRNA-disease/GMNN2CD.pdf")
+        line = _format_tool_call("read_pdf", f'{{"path": "{path}"}}')
+        assert path in line            # 完整路径在行内
+        assert "..." not in line       # 未被截断
+        assert line.startswith("调用 read_pdf(path=")
+
 
 class TestToolEvent:
     @pytest.mark.asyncio

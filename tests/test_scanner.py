@@ -80,6 +80,25 @@ class TestScanner:
         仍把正确回答替换成 SAFE_PROMPT。`/` 前缀内容豁免'空白即命令'。"""
         assert not has_critical(scan("笔记已生成 `/Users/me/Obsidian Vault/paper/note/Heterogeneous graph/a.md`"))
 
+    def test_math_formulas_in_backticks_not_flagged_as_shell(self):
+        """2026-08-05 回归：学术回答里的反引号数学公式不是 shell_command——
+        旧"非 / 开头 + 含空白"判定把 `G = (V, E, x_V)` 等误判为 critical →
+        answer-question 整个回答被 on_finish 替换成 SAFE_PROMPT（真实冒烟复现）。
+        命令词形态收窄后：数学公式首 token 大写或以 ( 开头、形如 x = 5 的赋值式
+        被负向前瞻排除，全部豁免。"""
+        assert not has_critical(scan("图 `G = (V, E, x_V)` 半监督学习"))
+        assert not has_critical(scan("按公式 `DDE = q × ...` 随层数递减"))
+        assert not has_critical(scan("构造 `F(c(i), d(j))` 作为输入"))
+        assert not has_critical(scan("`num(DAGs(E)) / num(Diseases)` 因子"))
+        assert not has_critical(scan("`x = 5` 赋值式"))
+
+    def test_real_commands_without_metachar_still_flagged(self):
+        """2026-08-05：命令词形态收窄后，无元字符的真实命令（cat/dd/ls）仍命中
+        ——首 token 小写命令词 + 空白（非赋值）即告警，不因收窄而漏检。"""
+        assert has_critical(scan("运行 `cat /etc/passwd`"))
+        assert has_critical(scan("`dd if=/dev/zero of=/dev/sda` 危险"))
+        assert has_critical(scan("`ls -la` 列目录"))
+
 
 class TestSecurityScanMiddleware:
     @pytest.mark.asyncio

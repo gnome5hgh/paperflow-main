@@ -90,8 +90,14 @@ class StreamEvent:
 
 
 def _compact(v) -> str:
-    """参数值压缩为单行并截断到 40 字符（工具状态行的可读性约束，spec §3.4）。"""
+    """参数值压缩为单行；绝对路径（/ 开头）完整展示，其余值截断到 40 字符。
+
+    路径是文件类工具（read_pdf/write_file/mark_read 等）的关键信息，截断会让人
+    看不出在读哪个文件——真实冒烟反馈（2026-08-05）路径被截成 .../Obsidian V...。
+    """
     s = str(v).replace("\n", " ")
+    if s.lstrip().startswith("/"):
+        return s
     return s if len(s) <= 40 else s[:37] + "..."
 
 
@@ -100,8 +106,9 @@ def _format_tool_call(name: str, raw_args: str) -> str:
 
     尽力解析参数；LLM 产出非法 JSON / 参数缺失（None）时只显示工具名——错误
     路径保持可读，且缓冲清理不依赖参数解析成功（见 _ReplStreamer）。
-    整行 ≤80：pairs 按“固定前缀后的剩余预算”截断，工具名自身过长（预算≤0）
-    时退化为纯工具名（不截断名字）。
+    行宽策略（spec §3.4 修订）：含绝对路径的行不再压 80——路径是文件类工具的
+    关键信息，终端可换行展示完整；其余行按“固定前缀后的剩余预算”截断 pairs，
+    工具名自身过长（预算≤0）时退化为纯工具名。
     """
     try:
         args = json.loads(raw_args) if (raw_args or "").strip() else {}
@@ -110,6 +117,8 @@ def _format_tool_call(name: str, raw_args: str) -> str:
     if not isinstance(args, dict) or not args:
         return f"调用 {name}"
     pairs = ", ".join(f"{k}={_compact(v)}" for k, v in args.items())
+    if any(str(v).lstrip().startswith("/") for v in args.values()):
+        return f"调用 {name}({pairs})"
     budget = max(0, 80 - len(f"调用 {name}()"))
     if budget <= 0:
         return f"调用 {name}()"
