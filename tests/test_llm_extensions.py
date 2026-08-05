@@ -139,3 +139,39 @@ class TestAccumulateStreamChunks:
         content, _, _ = _accumulate_stream_chunks(chunks, deltas.append)
         assert content == "a"
         assert deltas == ["a"]                 # None content 不回调
+
+
+class TestChatStream:
+    @pytest.mark.asyncio
+    async def test_passes_stream_true_and_accumulates(self):
+        client = make_client()
+        deltas = []
+        chunks = [
+            _chunk(SimpleNamespace(role="assistant", content="hi", tool_calls=None)),
+            _chunk(SimpleNamespace(role=None, content="!", tool_calls=None)),
+        ]
+        client.client.chat.completions.create.return_value = iter(chunks)
+        msg = await client.chat_stream(
+            [Message(role="user", content="x")], tools=[{}], on_delta=deltas.append)
+        kwargs = client.client.chat.completions.create.call_args.kwargs
+        assert kwargs["stream"] is True
+        assert kwargs["tools"] == [{}]
+        assert msg.content == "hi!"
+        assert msg.tool_calls is None
+        assert deltas == ["hi", "!"]
+
+    @pytest.mark.asyncio
+    async def test_returns_tool_calls_message(self):
+        client = make_client()
+        tc = SimpleNamespace(index=0, id="c1", type="function",
+                             function=SimpleNamespace(name="echo", arguments='{"m": "x"}'))
+        chunks = [
+            _chunk(SimpleNamespace(role="assistant", content=None, tool_calls=[tc])),
+        ]
+        client.client.chat.completions.create.return_value = iter(chunks)
+        msg = await client.chat_stream([Message(role="user", content="x")])
+        assert msg.content == ""
+        assert msg.tool_calls == [{
+            "id": "c1", "type": "function",
+            "function": {"name": "echo", "arguments": '{"m": "x"}'},
+        }]

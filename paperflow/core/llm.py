@@ -17,9 +17,10 @@ LLM 客户端 —— OpenAI-compatible API 的异步封装。
    不做中间抽象层 —— ``tool_to_openai_schema()`` 直接将 ``Tool`` 对象
    转为 function calling 的 JSON Schema dict，LLM 不感知工具实现细节。
 
-4. **非流式调用**
-   ReAct 循环需要完整解析 tool_calls 才能决定下一步，
-   流式响应增加复杂度且 LLM 推理延迟本身远大于 streaming 节省的时间。
+4. **双模式：非流式 `chat()` + 流式 `chat_stream()`**
+   `chat()` 保持非流式——ReAct 循环需要完整解析 tool_calls 才能决定下一步，
+   StructuredOutput 等 JSON 抽取也要完整响应。`chat_stream()` 为 CLI 的实时
+   反馈而设：stream=True + on_delta 回调，返回与 chat() 同形状的 Message。
 """
 
 import asyncio
@@ -102,6 +103,7 @@ class LLMClient:
     ) -> Message:
         """
         单次非流式 LLM 调用，返回 assistant message（可能包含 tool_calls）。
+        流式变体见 chat_stream()。
 
         :param messages: 对话历史，第一条通常为 system prompt
         :param tools: 可用的 Tool 定义列表（JSON Schema 格式），None 表示不传 tools 参数
@@ -172,6 +174,35 @@ class LLMClient:
             content=choice.content or "",
             tool_calls=tool_calls,
         )
+
+    async def chat_stream(self, messages, tools=None, tool_choice="auto",
+                          on_delta=None) -> Message:
+        """流式版 chat()：stream=True + 边收边回调 on_delta，返回完整 Message。
+
+        仅 Agent（ReAct）消费；StructuredOutput 等要完整 JSON 的调用方继续用 chat()。
+        :param on_delta: 每段 content 片段同步回调（跑在 to_thread 流线程内——
+            非主事件循环线程，回调只能做追加/打印，别碰事件循环）
+        """
+        kwargs = dict(
+            model=self.model,
+            messages=[_message_to_openai(m) for m in messages],
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            stream=True,                    # 与 chat() 的唯一区别：开流式
+        )
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = tool_choice
+
+        def _do_stream() -> Message:
+            # create 与 iterate 必须同线程：Stream 是同步迭代器，逐 chunk 阻塞在
+            # httpx 读取上；不能把 Stream 交回事件循环再迭代（否则阻塞 loop，
+            # 杀死 parallel_spawn 并发）。
+            stream = self.client.chat.completions.create(**kwargs)
+            content, tool_calls, role = _accumulate_stream_chunks(stream, on_delta)
+            return Message(role=role, content=content, tool_calls=tool_calls)
+
+        return await asyncio.to_thread(_do_stream)
 
 
 def _accumulate_stream_chunks(chunks, on_delta):
