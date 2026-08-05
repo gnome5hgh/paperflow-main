@@ -217,3 +217,39 @@ class TestSplitTailPairing:
         out = await comp.compress(messages)
         assert "tool" not in [m.role for m in out]
         assert comp.summary is not None
+
+
+class TestHistoryAccumulate:
+    def test_accumulate_appends_conv(self):
+        comp = make_compressor()
+        comp.accumulate([
+            Message(role="user", content="q"),
+            Message(role="assistant", content="a"),
+        ])
+        assert [m.content for m in comp.history] == ["q", "a"]
+
+    def test_accumulate_dedup_tail_window(self):
+        # 防御性双算：conv 与 history 尾有同对象时不重复追加
+        comp = make_compressor()
+        comp.accumulate([Message(role="user", content="q")])
+        m = comp.history[-1]                      # 取 history 里的同对象
+        comp.accumulate([m, Message(role="assistant", content="a")])
+        assert [x.content for x in comp.history] == ["q", "a"]
+
+    def test_accumulate_skips_system(self):
+        # 只存对话消息，system（SKILL/摘要）不进累积
+        comp = make_compressor()
+        comp.accumulate([Message(role="system", content="SKILL"),
+                         Message(role="user", content="q")])
+        assert [m.role for m in comp.history] == ["user"]
+
+    def test_summary_text_none_when_no_system_head(self):
+        comp = make_compressor()
+        comp.accumulate([Message(role="user", content="q")])
+        assert comp._summary_text() is None
+
+    def test_summary_text_when_system_head(self):
+        comp = make_compressor()
+        comp.history = [Message(role="system", content="摘要"),
+                        Message(role="user", content="q")]
+        assert comp._summary_text() == "摘要"

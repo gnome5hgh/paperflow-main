@@ -42,7 +42,34 @@ class ContextCompressor:
         self.config = config
         self.llm = llm
         self.structured = structured
-        self.summary: str | None = None     # 跨轮状态
+        self.summary: str | None = None     # 跨轮状态（Task 5 移除，过渡期保留）
+        #: 跨轮累积的对话消息（合并方案唯一状态）。压缩后 history[0] 是 system
+        #: 摘要消息，其余是未压缩的近期对话——history 整体作为下轮回放素材。
+        self.history: list = []
+
+    def _summary_text(self):
+        """history[0] 若为 system（压缩产物摘要）则返回其文本，否则 None。
+
+        增量压缩的输入（"基于已有摘要更新，不从零总结"）。摘要消息由 accumulate
+        不 append system 保证稳坐 history[0]（见 spec §4.3）。
+        """
+        if self.history and self.history[0].role == "system":
+            return self.history[0].content
+        return None
+
+    def accumulate(self, conv):
+        """把一轮 run 的对话消息追加进 history（唯一写入口）。
+
+        conv = run() 内旁路收集的本轮对话 [user, assistant(tool_calls), tool, ..., 最终 assistant]。
+        追加前用身份比对跳过已在 history 尾部的消息——防御性双算防护（正常路径本轮
+        消息尚未进 history，无重叠；中途压缩不改 conv，故身份比对极少命中，成本可忽略）。
+        只 append 对话消息（user/assistant/tool），绝不 append system——保证摘要消息
+        稳坐 history[0]。
+        """
+        tail_ids = {id(m) for m in self.history[-8:]}   # 只比对尾窗，防 O(n²)
+        # 过滤 role == "system"：SKILL/摘要消息只作为头部注入，绝不进入累积
+        self.history.extend(m for m in conv
+                            if m.role != "system" and id(m) not in tail_ids)
 
     def _estimate_tokens(self, messages: list[Message]) -> int:
         """tiktoken 估算总 token（每消息 +4 token 格式开销）。"""
