@@ -253,3 +253,73 @@ class TestHistoryAccumulate:
         comp.history = [Message(role="system", content="摘要"),
                         Message(role="user", content="q")]
         assert comp._summary_text() == "摘要"
+
+
+class TestCompressHistory:
+    @pytest.mark.asyncio
+    async def test_rewrites_history_in_place(self):
+        llm = make_llm()
+        comp = make_compressor(llm=llm, structured=make_structured(full_summary()))
+        comp.history = [
+            Message(role="user", content="q1"),
+            Message(role="assistant", content="a1"),
+            Message(role="user", content="q2"),
+            Message(role="assistant", content="a2"),
+        ]
+        await comp.compress_history()
+        assert comp.history[0].role == "system"
+        assert comp.history[0].content.startswith("[对话摘要]")
+        # 近对话 tail 保留（小消息远低于 reserve_ratio×32K → 全部保留）
+        assert [m.role for m in comp.history[1:]] == ["user", "assistant", "user", "assistant"]
+
+    @pytest.mark.asyncio
+    async def test_incremental_uses_old_summary(self):
+        # 已有摘要消息时，_build_compression_prompt 把旧摘要作为增量输入
+        llm = make_llm()
+        seen_prompts = []
+        structured = MagicMock()
+        async def extract(prompt, schema, fallback=None):
+            seen_prompts.append(prompt)
+            return full_summary()
+        structured.extract = extract
+        comp = make_compressor(llm=llm, structured=structured)
+        comp.history = [Message(role="system", content="旧摘要"),
+                        Message(role="user", content="q")]
+        await comp.compress_history()
+        assert "旧摘要" in seen_prompts[0]                    # 增量输入
+        assert "对话内容：" in seen_prompts[0]
+        assert "SKILL" not in seen_prompts[0]                 # system 不进压缩输入
+
+    @pytest.mark.asyncio
+    async def test_tail_pairing_no_orphan_tool(self):
+        llm = make_llm()
+        comp = make_compressor(
+            llm=llm, structured=make_structured(full_summary()),
+            config=ContextConfig(context_size=200, reserve_ratio=0.1),
+        )
+        comp.history = [
+            Message(role="user", content="q"),
+            Message(role="assistant", content="z" * 500,
+                    tool_calls=[{"id": "call_1", "type": "function",
+                                 "function": {"name": "f", "arguments": "{}"}}]),
+            Message(role="tool", content="result", tool_call_id="call_1"),
+            Message(role="user", content="q2"),
+        ]
+        await comp.compress_history()
+        tool_ids = [m.tool_call_id for m in comp.history if m.role == "tool"]
+        ass_ids = {tc["id"] for m in comp.history
+                   if m.role == "assistant" and m.tool_calls
+                   for tc in m.tool_calls}
+        assert all(tid in ass_ids for tid in tool_ids)        # 无孤立 tool
+
+    @pytest.mark.asyncio
+    async def test_failure_keeps_raw_history(self):
+        llm = make_llm()
+        structured = MagicMock()
+        async def extract(prompt, schema, fallback=None):
+            raise RuntimeError("boom")
+        structured.extract = extract
+        comp = make_compressor(llm=llm, structured=structured)
+        comp.history = [Message(role="user", content="q")]
+        await comp.compress_history()
+        assert [m.content for m in comp.history] == ["q"]     # 原样保留，不丢对话

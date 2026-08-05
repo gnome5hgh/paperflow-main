@@ -19,8 +19,12 @@ ContextCompressor —— 对话上下文压缩器。
 """
 from __future__ import annotations
 
+import logging
+
 from paperflow.core.memory.context_config import ContextConfig, SummarySchema
 
+
+logger = logging.getLogger(__name__)
 
 _enc = None
 
@@ -87,7 +91,7 @@ class ContextCompressor:
 
     async def compress(self, messages: list[Message]) -> list[Message]:
         """增量压缩：旧 summary（若有）+ 待压缩消息 → LLM SummarySchema → 三段重组。"""
-        prompt = self._build_compression_prompt(messages)
+        prompt = self._build_compression_prompt(messages, self.summary)
         summary = await self.structured.extract(
             prompt=prompt,
             schema=SummarySchema,
@@ -103,13 +107,50 @@ class ContextCompressor:
         self.summary = self.config.summary_template.format(**summary.model_dump())
         return self._rebuild_messages(messages, old_summary)
 
-    def _build_compression_prompt(self, messages: list[Message]) -> str:
-        """输入集 = 待压缩消息 + 现有 self.summary（若有）——增量压缩。"""
+    async def compress_history(self) -> None:
+        """压缩改写 history：旧对话折叠进 history[0] 摘要消息，近对话保留回放。
+
+        触发方是 Agent.run 的 should_compress（见 spec §3.3）。增量压缩：old_summary
+        （若有）作为输入，LLM 提取 SummarySchema 后生成新摘要消息，_split_tail 保留
+        近对话（reserve_ratio）。失败降级：保留原始 history 不压缩——安全侧宁可多带
+        token 也不丢对话（spec §5）。
+        """
+        from paperflow.core.llm import Message    # 惰性导入（llm → memory 循环依赖）
+
+        old_summary = self._summary_text()
+        prompt = self._build_compression_prompt(self.history, old_summary)
+        try:
+            summary = await self.structured.extract(
+                prompt=prompt,
+                schema=SummarySchema,
+                fallback=lambda: SummarySchema(
+                    task_overview="", current_state="",
+                    important_discoveries="", next_steps="",
+                    context_to_preserve=prompt.split("对话内容：")[-1][:2000],
+                ),
+            )
+            summary_text = self.config.summary_template.format(**summary.model_dump())
+        except Exception:
+            logger.warning("compress_history failed, keeping raw history", exc_info=True)
+            return
+
+        tail = self._split_tail(self.history, ratio=self.config.reserve_ratio)
+        self.history = [Message(role="system", content=summary_text)] + tail
+
+    def _build_compression_prompt(self, messages: list[Message], old_summary=None) -> str:
+        """输入集 = 待压缩消息 + 已有摘要（若有）——增量压缩。
+
+        old_summary 来自 history[0]（压缩产物摘要）或旧 self.summary，作为增量输入
+        让 LLM 基于它更新而非从零总结。循环跳过 role=="system"——SKILL/旧摘要不是
+        对话内容，不该混进压缩输入（摘要经 old_summary 块单独给出）。
+        """
         parts = [self.config.compression_prompt]
-        if self.summary:
-            parts.append(f"\n已有摘要（基于它更新，不要从零总结）：\n{self.summary}")
+        if old_summary:
+            parts.append(f"\n已有摘要（基于它更新，不要从零总结）：\n{old_summary}")
         parts.append("\n\n对话内容：\n")
         for m in messages:
+            if m.role == "system":
+                continue
             parts.append(f"{m.role}: {m.content[:2000]}")
         return "\n".join(parts)
 
