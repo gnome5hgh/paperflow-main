@@ -282,6 +282,19 @@ class TestReplStreamer:
         assert "\n\n" not in joined
         assert joined == "答\n推理\n调用 search_arxiv(query=x)\n"
 
+    def test_no_blank_between_tools_or_tool_to_content(self):
+        """回归 OOS#2：连续工具行、工具行后接内容不得有空行（真实 print 模拟）。"""
+        out = []
+        def _fn(*a, **k):
+            out.append(a[0] + k.get("end", "\n"))
+        s = _ReplStreamer(_fn, "supervisor")
+        s.on_event(StreamEvent("tool", "调用 search_arxiv(query=a)", "supervisor"))
+        s.on_event(StreamEvent("tool", "调用 filter_papers(...)", "supervisor"))
+        s.on_event(StreamEvent("content", "最终答案", "supervisor"))
+        joined = "".join(out)
+        assert "\n\n" not in joined
+        assert joined == "调用 search_arxiv(query=a)\n调用 filter_papers(...)\n最终答案"
+
 
 @pytest.mark.asyncio
 async def test_repl_streams_live_and_no_duplicate_final_print():

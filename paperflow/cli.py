@@ -89,19 +89,23 @@ class _ReplStreamer:
     def on_event(self, ev) -> None:
         if ev.kind == "content":
             seg = "root" if ev.agent_type == self._root else "child"
-            if self._last_segment not in (None, seg):
-                # 段切换补换行（end=""：真实 print 默认 end="\n"，否则多出空行）
+            # 段切换（root↔child，或 content→content 换段）才补换行；tool→content
+            # 不补（工具行已显式终止，游标已在行首）；同段续打不换行
+            if self._last_segment in ("root", "child") and self._last_segment != seg:
                 self._print("\n", end="")
-            self._print(ev.text, end="", flush=True) # 逐字打字机效果
+            self._print(ev.text, end="", flush=True)  # 逐字打字机效果
             if seg == "root":
                 self._buffer.append(ev.text)
             self._last_segment = seg
         elif ev.kind == "tool":
-            # 工具行前补换行（end=""：print 默认 end="\n" 会双换行——见上）
-            self._print("\n", end="")
-            self._print(ev.text, flush=True)
+            # 工具行：上一段是未自终止的内容（root/child）→ 先补换行结束它；
+            # 上一段是 tool（已终止）或 None → 不补，避免空行
+            if self._last_segment in ("root", "child"):
+                self._print("\n", end="")
+            self._print(ev.text, end="", flush=True)
+            self._print("\n", end="")  # 工具行显式自终止（不再靠 print 隐式 end）
             if ev.agent_type == self._root:
-                self._buffer.clear()    # 工具调用前的中间内容作废，只留最终轮的流式文本
+                self._buffer.clear()   # 工具调用前的中间内容作废，只留最终轮的流式文本
             self._last_segment = "tool"
 
     def should_print(self, result: str) -> str:
