@@ -291,9 +291,10 @@ class Agent:
         ReAct 循环步骤::
 
             1. 生成本次 run 的 trace_id（trace_<12位hex>）
-            2. 构建初始消息列表：① system_prompt → ② MEMORY.md 索引（若有）
-               → ②b INTENT 块（intent_enabled 且管线成功时）→ ③ 压缩摘要（若有）
-               → ④ user_task（消息顺序固定）
+            2. 构建初始消息列表：head（① system_prompt → ② MEMORY.md 索引（若有）
+               → ②b INTENT 块（intent_enabled 且管线成功时））→ 跨轮回放 history
+               （若有）→ user_task（消息顺序固定）。每轮 run 结束把本轮对话累积进
+               compressor.history，供下轮回放（短对话跨轮上下文闭合）
             3. 调用 LLM 前检查压缩（compressor.should_compress → compress
                重建 messages），随后调用 LLM → 获取 response
             4. 如果无 tool_calls → 顺序执行各中间件的 on_finish 钩子，
@@ -310,18 +311,20 @@ class Agent:
         # session.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 
-        # 构建初始对话上下文，消息顺序固定：① SKILL ② MEMORY ③ summary ④ user
-        messages: list[Message] = [Message(role="system", content=self.system_prompt)]
+        # 构建初始对话上下文：head（SKILL/MEMORY/INTENT，每轮重建不进累积）+
+        # 跨轮回放 history + 本轮 user。history 是 ContextCompressor 累积的对话消息
+        # （压缩后 history[0] 是摘要消息，天然落在 INTENT 后、user 前的③位）。
+        head: list[Message] = [Message(role="system", content=self.system_prompt)]
 
         # ② MEMORY.md 索引（每轮读取，Dream 间隙写入 → 下一轮生效）
         if self.memory_index:
             index = await self.memory_index.read()
             if index:
-                messages.append(Message(role="system", content=index))
+                head.append(Message(role="system", content=index))
 
         # ②b 意图识别前置钩子（Layer 4）：intent_enabled 门控——只有 CLI 构造的
         # Supervisor 置 True。产出 IntentOutput 注入 INTENT 块作为 ReAct 的强提示
-        # （非命令，LLM 自行决定调度）。
+        # （非命令，LLM 自行决定调度）。逻辑不变，产出 append 到 head（不进累积）。
         if self.intent_enabled and self.intent_pipeline is not None and self.session is not None:
             try:
                 intent = await self.intent_pipeline.run(
@@ -338,16 +341,21 @@ class Agent:
             if intent is not None:
                 self.last_intent = intent
                 if intent.clarification and not force_dispatch:
-                    # 跨轮澄清（D4①）：ReAct 未开始无状态可丢，提前返回澄清问题让 CLI 挂起。
+                    # 跨轮澄清（D4①）：早退在 conv 收集前 → 不累积（非任务轮）。
                     # 澄清只走 CLI 层；INTENT 块不含 clarification（避免与 AskUserTool 双问）。
                     return intent.clarification
-                messages.append(Message(role="system", content=_intent_block(intent)))
+                head.append(Message(role="system", content=_intent_block(intent)))
 
-        # ③ 压缩摘要（跨轮状态，有才注入）
-        if self.compressor and self.compressor.summary:
-            messages.append(Message(role="system", content=self.compressor.summary))
+        #: messages = head + 跨轮回放 history（④位）+ 本轮 user
+        messages = list(head)
+        if self.compressor:
+            messages.extend(self.compressor.history)      # ④ 跨轮回放（首轮为空 → 现状）
 
-        messages.append(Message(role="user", content=task))
+        #: conv = 本轮对话残留（旁路列表）。兼两职：(a) 压缩重建时拼回 messages（Task 4）；
+        #: (b) run 结束时作为 accumulate 输入。与 messages 始终同步 append，不用索引
+        #: 定位——压缩重建会改变 head+history 长度，固定索引会错位。
+        conv: list[Message] = [Message(role="user", content=task)]
+        messages.append(conv[0])
 
         for _ in range(self.max_turns):
             # 每次 model call 前检查压缩（压缩后 messages 被重建）
@@ -374,15 +382,21 @@ class Agent:
                 # （如追加来源引用、注入安全声明等）
                 for mw in self.security_middleware:
                     content = await mw.on_finish(self, content)
-                # 意图会话更新：本轮消费了 intent → 更新 prev_intent/prev_user_input 供下轮
+                # 意图会话更新（不变）：本轮消费了 intent → 更新 prev_intent/prev_user_input 供下轮
                 # Stage 1 追问（clarification 早退 / 管线降级时 last_intent 为 None → 不更新）
                 if self.intent_enabled and self.last_intent is not None:
                     self.session.prev_intent = self.last_intent.intent_type
                     self.session.prev_user_input = task
+                # 跨轮累积：最终 assistant（on_finish 改写后的 content——回放给 LLM 的
+                # 是"用户看到的事实"，SAFE_PROMPT 等安全声明跨轮保留）补进 conv 后入 history
+                if self.compressor:
+                    conv.append(Message(role="assistant", content=content))
+                    self.compressor.accumulate(conv)
                 return content
 
             # LLM 请求调用工具：将 assistant 消息（含 tool_calls）加入对话
             messages.append(response)
+            conv.append(response)          # conv 与 messages 同步追加（见 conv 定义注释）
 
             # 逐个执行 LLM 请求的工具调用（经过中间件管道）
             for tc in response.tool_calls:
@@ -390,11 +404,13 @@ class Agent:
 
                 # 将工具执行结果以 tool 角色消息加入对话
                 # tool_call_id 将这条结果关联到 LLM 请求的对应 tool_call
-                messages.append(Message(
+                tool_msg = Message(
                     role="tool",
                     content=result.text,
                     tool_call_id=tc["id"],
-                ))
+                )
+                messages.append(tool_msg)
+                conv.append(tool_msg)
 
         # 安全阀触发：LLM 陷入了无法在限定轮数内退出的循环
         raise MaxTurnsExceeded(
