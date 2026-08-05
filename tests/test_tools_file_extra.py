@@ -70,3 +70,45 @@ def test_read_pdf_routes_through_parse_pdf_cached(agent_env):
     result = ReadPdfTool().execute(path=str(pdf))
     assert called
     assert "Abstract text." in result.text      # StubPdfParser 的 sections 内容
+
+
+def _make_pdf(cfg, sub="Heterogeneous graph", name="Variational Disentangled Graph Auto-Encoders  for Link Prediction.pdf"):
+    d = Path(cfg.vault_pdf_dir) / sub
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_bytes(b"dummy")
+    return p
+
+
+def test_read_pdf_exact_path_preferred(agent_env):
+    """exact 命中走原逻辑（parse 一次），不触发模糊分支。"""
+    cfg, svc = agent_env
+    p = _make_pdf(cfg)
+    calls = []
+    original = svc.parse_pdf_cached
+    def spy(path):
+        calls.append(path)
+        return original(path)
+    svc.parse_pdf_cached = spy
+    result = ReadPdfTool().execute(path=str(p))
+    assert calls == [str(p)]                    # 精确路径一次调用
+    assert "Abstract text." in result.text
+
+
+def test_read_pdf_fuzzy_matches_single_space_to_double_space(agent_env):
+    """RC2b 回归：请求单空格路径（LLM 折叠后），实际文件双空格 → 归一化唯一命中。"""
+    cfg, _ = agent_env
+    p = _make_pdf(cfg)
+    requested = str(p).replace("Auto-Encoders  for", "Auto-Encoders for")
+    result = ReadPdfTool().execute(path=requested)
+    assert "Abstract text." in result.text
+
+
+def test_read_pdf_fuzzy_ambiguous_errors(agent_env):
+    """D4 安全语义：归一化后多候选 → 明确错误（不猜），0 候选同样报错。"""
+    cfg, _ = agent_env
+    _make_pdf(cfg, sub="Heterogeneous graph")
+    _make_pdf(cfg, sub="Heterogeneous graph copy")
+    requested = str(Path(cfg.vault_pdf_dir) / "Heterogeneous graph" / "Variational Disentangled Graph Auto-Encoders for Link Prediction.pdf")
+    result = ReadPdfTool().execute(path=requested)
+    assert "不唯一" in result.text or "未找到" in result.text
