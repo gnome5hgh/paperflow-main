@@ -268,3 +268,25 @@ class TestReplStreamer:
         s.on_event(StreamEvent("content", "残留", "supervisor"))
         s.reset()
         assert s.should_print("结果") == "结果"           # 残留被清 → 走现状
+
+
+@pytest.mark.asyncio
+async def test_repl_streams_live_and_no_duplicate_final_print():
+    """流式端到端：run() 经 sv.stream_callback 发 content 事件 → 增量实时打到
+    print_fn；最终答案已逐字展示 → 只补空行不重复打印（print_fn 需兼容 kwargs）。"""
+    sv = MagicMock()
+    sv.agent_type = "supervisor"
+
+    async def run(query, force_dispatch=False):
+        sv.stream_callback(StreamEvent("content", "答", "supervisor"))
+        sv.stream_callback(StreamEvent("content", "案", "supervisor"))
+        return "答案"
+
+    sv.run = run
+    sv.last_intent = None
+    out = []
+    await _repl(sv, Session(), input_fn=_seq_input(["hi"]),
+                print_fn=lambda *a, **k: out.append(a[0]))
+    assert "答" in out and "案" in out          # 增量逐字捕获
+    assert "" in out                            # should_print 返回 "" → 补换行
+    assert not any(s == "答案" for s in out)    # 完整答案不重复打印

@@ -135,6 +135,14 @@ async def _repl(supervisor: Agent, session: Session, *,
     用旧值 +1，绝不重置为 0）+ 打印问题，等下一轮；否则打印结果。
     """
     print_fn("🌏 paperFlow 学术助手")
+    # 流式接线：构造渲染器（print_fn 包装透传 end=/flush= kwargs，简单 lambda
+    # 测试也兼容），并把事件回调挂到 supervisor。root_agent_type 用 getattr 兜底
+    # （mock supervisor 的 agent_type 可能是自动创建的 MagicMock，测试须显式设置）。
+    streamer = _ReplStreamer(
+        lambda *a, **k: print_fn(*a, **k),
+        root_agent_type=getattr(supervisor, "agent_type", None) or "supervisor",
+    )
+    supervisor.stream_callback = streamer.on_event
     while True:
         try:
             raw = input_fn("> ")
@@ -144,6 +152,7 @@ async def _repl(supervisor: Agent, session: Session, *,
             break
         p = session.pending_intent
         query, force = _merge_pending(session, raw)
+        streamer.reset()                    # 每轮清残留：异常/澄清路径不消费 should_print
         try:
             result = await supervisor.run(query, force_dispatch=force)
         except MaxTurnsExceeded:
@@ -166,7 +175,7 @@ async def _repl(supervisor: Agent, session: Session, *,
                 round=prev_round + 1)
             print_fn(intent.clarification)
             continue
-        print_fn(result)
+        print_fn(streamer.should_print(result))
         if dream is not None:
             try:
                 await dream.run_once_if_due()
