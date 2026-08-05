@@ -15,7 +15,6 @@ async def test_answer_question_read_pdf_mode(agent_env, agent_registry):
     llm = make_mock_llm([
         _tc("read_pdf", {"path": str(pdf)}),
         _tc("mark_read", {"path": str(pdf)}),
-        _tc("format_answer", {"answer": "该论文介绍..."}),
         Message(role="assistant", content="回答完成"),
     ])
     agent = make_agent(agent_registry, "answer-question", llm, cfg)
@@ -32,7 +31,6 @@ async def test_answer_question_rag_empty_degrades(agent_env, agent_registry):
     # svc 用 FakeEmbedder 但空索引 → RagRetrieveTool 返回"检索无命中"→ LLM 如实降级
     llm = make_mock_llm([
         _tc("rag_retrieve", {"query": "circRNA 机制", "top_k": 3}),
-        _tc("format_answer", {"answer": "知识库暂未检索到相关内容"}),
         Message(role="assistant", content="已回答"),
     ])
     agent = make_agent(agent_registry, "answer-question", llm, cfg)
@@ -47,9 +45,19 @@ async def test_answer_question_notes_mode(agent_env, agent_registry):
     note.write_text("# 旧笔记\n\n内容", encoding="utf-8")
     llm = make_mock_llm([
         _tc("read_file", {"path": str(note)}),
-        _tc("format_answer", {"answer": "笔记内容..."}),
         Message(role="assistant", content="已回答"),
     ])
     agent = make_agent(agent_registry, "answer-question", llm, cfg)
     result = await agent.run(f"我之前的笔记 {note} 写了什么？")
     assert "已回答" in result
+
+
+def test_answer_question_excludes_format_answer(agent_env, agent_registry):
+    """回归（真实 CLI 冒烟）：answer-question 不再装配 format_answer。
+
+    冒烟发现该 agent 用 format_answer 格式化最终回答会劣化质量——常把"已读取"
+    这类状态文本当 answer 传入，产出无用的 `## 回答` 包装，真实答案另起炉灶。
+    内容安全由 on_finish 兜底，移除无安全缺口。"""
+    cfg, _ = agent_env
+    agent = make_agent(agent_registry, "answer-question", make_mock_llm([]), cfg)
+    assert "format_answer" not in agent.tools
