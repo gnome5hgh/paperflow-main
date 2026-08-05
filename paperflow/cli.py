@@ -90,13 +90,15 @@ class _ReplStreamer:
         if ev.kind == "content":
             seg = "root" if ev.agent_type == self._root else "child"
             if self._last_segment not in (None, seg):
-                self._print("\n")                    # 段切换补换行
+                # 段切换补换行（end=""：真实 print 默认 end="\n"，否则多出空行）
+                self._print("\n", end="")
             self._print(ev.text, end="", flush=True) # 逐字打字机效果
             if seg == "root":
                 self._buffer.append(ev.text)
             self._last_segment = seg
         elif ev.kind == "tool":
-            self._print("\n")
+            # 工具行前补换行（end=""：print 默认 end="\n" 会双换行——见上）
+            self._print("\n", end="")
             self._print(ev.text, flush=True)
             if ev.agent_type == self._root:
                 self._buffer.clear()    # 工具调用前的中间内容作废，只留最终轮的流式文本

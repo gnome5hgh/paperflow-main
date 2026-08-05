@@ -98,17 +98,22 @@ def _compact(v) -> str:
 def _format_tool_call(name: str, raw_args: str) -> str:
     """把工具调用格式化为终端一行（claude code 风格：Read(path)）。
 
-    尽力解析参数；LLM 产出非法 JSON 时只显示工具名——错误路径保持可读，
-    且缓冲清理不依赖参数解析成功（见 _ReplStreamer）。
+    尽力解析参数；LLM 产出非法 JSON / 参数缺失（None）时只显示工具名——错误
+    路径保持可读，且缓冲清理不依赖参数解析成功（见 _ReplStreamer）。
+    整行 ≤80：pairs 按“固定前缀后的剩余预算”截断，工具名自身过长（预算≤0）
+    时退化为纯工具名（不截断名字）。
     """
     try:
-        args = json.loads(raw_args) if raw_args.strip() else {}
+        args = json.loads(raw_args) if (raw_args or "").strip() else {}
     except json.JSONDecodeError:
         return f"调用 {name}"
     if not isinstance(args, dict) or not args:
         return f"调用 {name}"
     pairs = ", ".join(f"{k}={_compact(v)}" for k, v in args.items())
-    return f"调用 {name}({pairs[:80]})"
+    budget = max(0, 80 - len(f"调用 {name}()"))
+    if budget <= 0:
+        return f"调用 {name}()"
+    return f"调用 {name}({pairs[:budget]})"
 
 
 class Agent:
@@ -420,8 +425,11 @@ class Agent:
         # 工具事件放解析前：即使后续 JSON 解析失败 / 未知工具 / 被中间件拦截，
         # root 的中间内容缓冲也要被清掉（_ReplStreamer 依赖），否则 should_print
         # 会把中间思考文本误当最终答案。
-        self._emit(StreamEvent("tool", _format_tool_call(
-            name, tool_call["function"]["arguments"]), self.agent_type))
+        # 门控：stream_callback 为 None（非 CLI 调用方）时连 _format_tool_call 的
+        # json.loads 也不做——保持“无回调零开销空操作”不变式。
+        if self.stream_callback is not None:
+            self._emit(StreamEvent("tool", _format_tool_call(
+                name, tool_call["function"]["arguments"]), self.agent_type))
 
         # 1. 按工具名查找 Tool 实例（可能 None = 未知工具，LLM 幻觉/注入）
         tool = self.tools.get(name)

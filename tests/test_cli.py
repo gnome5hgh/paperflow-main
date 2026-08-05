@@ -269,6 +269,19 @@ class TestReplStreamer:
         s.reset()
         assert s.should_print("结果") == "结果"           # 残留被清 → 走现状
 
+    def test_no_double_newline_with_real_print_behavior(self):
+        """回归：真实 print 默认 end="\\n"，_print("\\n") 必须传 end="" 否则多出空行。"""
+        out = []
+        def _fn(*a, **k):
+            out.append(a[0] + k.get("end", "\n"))
+        s = _ReplStreamer(_fn, "supervisor")
+        s.on_event(StreamEvent("content", "答", "supervisor"))
+        s.on_event(StreamEvent("content", "推理", "search-paper"))   # root→child 段切换
+        s.on_event(StreamEvent("tool", "调用 search_arxiv(query=x)", "search-paper"))
+        joined = "".join(out)
+        assert "\n\n" not in joined
+        assert joined == "答\n推理\n调用 search_arxiv(query=x)\n"
+
 
 @pytest.mark.asyncio
 async def test_repl_streams_live_and_no_duplicate_final_print():

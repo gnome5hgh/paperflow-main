@@ -152,6 +152,25 @@ class TestExecTool:
         })
         assert "Unknown tool" in result.text
 
+    @pytest.mark.asyncio
+    async def test_no_stream_callback_skips_tool_event_formatting(self, monkeypatch):
+        """零开销不变式回归（final review）：stream_callback=None 时 _exec_tool 不得
+        求值 _format_tool_call（json.loads）——monkeypatch 为抛错来证明其未被调用。"""
+        from tests.conftest import MockEchoTool
+
+        def _boom(*a, **k):
+            raise AssertionError("_format_tool_call 不应在无回调时被求值")
+        monkeypatch.setattr("paperflow.core.agent._format_tool_call", _boom)
+        registry = make_mock_registry([MockEchoTool()])
+        llm = make_mock_llm([Message(role="assistant", content="Done.")])
+        agent = Agent(llm=llm, agent_registry=registry, agent_type="test")
+
+        result = await agent._exec_tool({
+            "id": "call_1",
+            "function": {"name": "echo", "arguments": '{"message": "hello"}'},
+        })
+        assert result.text == "Echo: hello"
+
 
 # ─── TestAgentRun：ReAct 循环层的单元测试 ──────────────────────────
 
@@ -541,6 +560,26 @@ class TestFormatToolCall:
         from paperflow.core.agent import _format_tool_call
         assert _format_tool_call("echo", "{}") == "调用 echo"
         assert _format_tool_call("echo", "") == "调用 echo"
+
+    def test_none_args_tolerated(self):
+        """回归（final review）：provider 返回 arguments=None 时不得 AttributeError
+        ——raw_args.strip() 前须 (raw_args or "") 兜底，退化显示工具名。"""
+        from paperflow.core.agent import _format_tool_call
+        assert _format_tool_call("echo", None) == "调用 echo"
+
+    def test_args_truncated_to_line_budget(self):
+        """回归（final review）：“整行 ≤80”须按“固定前缀后的剩余预算”截断 pairs——
+        工具名过长时若仍 pairs[:80] 会整行超 80。工具名自身超宽时退化为纯工具名。"""
+        from paperflow.core.agent import _format_tool_call
+        long_name = "spawn_sub_agent_with_quite_a_long_name_here_ok"
+        args = ('{"query": "' + "x" * 80 + '", "max_results": 5, '
+                '"sort": "relevance", "year": "2024", "extra": 1}')
+        line = _format_tool_call(long_name, args)
+        assert len(line) <= 80
+        assert line.startswith(f"调用 {long_name}(")
+        # 工具名长到剩余预算 ≤0 → 只显示工具名（宁可超宽也不截断名字）
+        mega = "tool_" + "x" * 100
+        assert _format_tool_call(mega, args).startswith("调用")
 
 
 class TestToolEvent:
