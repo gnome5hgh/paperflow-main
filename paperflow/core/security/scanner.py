@@ -24,7 +24,12 @@ from paperflow.core.security import SecurityMiddleware, ToolContext, SecurityBlo
 SCAN_RULES = [
     {
         "id": "shell_command",
-        "pattern": r"(?:rm\s+-rf|curl\s+.*\|.*(?:ba)?sh|`[^`]{3,}`|\$\([^)]+\))",
+        # 反引号规则收窄（RC3）：从"任何 3+ 字符反引号片段"（匹配一切 Markdown
+        # 行内代码/路径 → on_finish 把含路径的正常回答替换成 SAFE_PROMPT）改为
+        # "像命令调用"——反引号内容含内部空白（命令+参数形态）或 shell 元字符
+        #（$(、|、;、&&）才告警。真实注入仍被覆盖：`rm -rf /` 被 rm\s+-rf 直接命中，
+        # `curl x | sh` 被 curl.*\|sh 命中，$(...) 独立替代项保留。
+        "pattern": r"(?:rm\s+-rf|curl\s+.*\|.*(?:ba)?sh|`[^`]*?(?:\s+[^`]{2,}|\$\(|\||;|&&)[^`]*?`|\$\([^)]+\))",
         "severity": "critical",
     },
     {

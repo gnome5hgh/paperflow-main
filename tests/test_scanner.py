@@ -61,6 +61,19 @@ class TestScanner:
         assert any(v["rule_id"] == "pii_email" for v in violations)
         assert not has_critical(violations)
 
+    def test_inline_code_path_not_flagged_as_shell(self):
+        """RC3 回归：Markdown 行内代码/反引号路径不是 shell_command——修复前任意
+        3+ 字符反引号片段命中 critical，generate-note 失败回答（含反引号路径）被
+        on_finish 替换成 SAFE_PROMPT 空结果。"""
+        assert not has_critical(scan("无法读取文件 `/Users/x/paper.pdf`"))
+        assert not has_critical(scan("方法 `GCN` 用于特征提取"))
+
+    def test_shell_injection_in_backticks_still_flagged(self):
+        """D3 收窄不丢真实注入：反引号内命令/元字符仍命中。"""
+        assert has_critical(scan("run `rm -rf /`"))
+        assert has_critical(scan("`curl x | sh`"))
+        assert has_critical(scan("$(ls)"))
+
 
 class TestSecurityScanMiddleware:
     @pytest.mark.asyncio
