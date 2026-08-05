@@ -111,4 +111,12 @@ def test_read_pdf_fuzzy_ambiguous_errors(agent_env):
     _make_pdf(cfg, sub="Heterogeneous graph copy")
     requested = str(Path(cfg.vault_pdf_dir) / "Heterogeneous graph" / "Variational Disentangled Graph Auto-Encoders for Link Prediction.pdf")
     result = ReadPdfTool().execute(path=requested)
-    assert "不唯一" in result.text or "未找到" in result.text
+    assert "不唯一" in result.text
+
+
+def test_read_pdf_fuzzy_no_match_reports_not_found(agent_env):
+    """D4 0 候选分支直接断言：pdf root 无匹配 → 明确"未找到"（不猜）。"""
+    cfg, _ = agent_env
+    requested = str(Path(cfg.vault_pdf_dir) / "No Such Paper.pdf")
+    result = ReadPdfTool().execute(path=requested)
+    assert "未找到" in result.text

@@ -35,7 +35,7 @@ def test_relative_pdf_not_matched():
 
 
 def test_extract_pdf_path_with_spaces():
-    """RC2a 回归：vault 目录/文件名含空格是常态，实体必须能提取（修复前 [^\s:] 排除空白返回空）。"""
+    r"""RC2a 回归：vault 目录/文件名含空格是常态，实体必须能提取（修复前 [^\s:] 排除空白返回空）。"""
     path = "/Users/me/vault/pdf/Heterogeneous graph/Variational Disentangled Graph Auto-Encoders for Link Prediction.pdf"
     assert extract_entities(f"读 {path} 生成笔记")["pdf_path"] == path
 
