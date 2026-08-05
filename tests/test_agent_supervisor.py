@@ -48,3 +48,39 @@ def test_supervisor_dispatch_smoke(supervisor_registry):
     import asyncio
     text = asyncio.run(agent.run("搜索 circRNA 文献"))
     assert text == "已搜索"
+
+
+def test_subagent_result_cross_turn_visible(supervisor_registry):
+    """首轮 spawn 子 agent → 第二轮 messages 含首轮 spawn 的 tool 结果（子结果跨轮可见）。"""
+    import asyncio  # noqa: F401  （函数内 import，与本文件 test_supervisor_dispatch_smoke 同风格）
+    from unittest.mock import MagicMock
+    from paperflow.core.memory.context_compressor import ContextCompressor
+    from paperflow.core.memory.context_config import ContextConfig
+    from tests.test_agent import make_capture_llm
+
+    tool_call = Message(role="assistant", content=None, tool_calls=[{
+        "id": "c1", "type": "function",
+        "function": {"name": "spawn_sub_agent", "arguments":
+                     '{"agent_type": "search-paper", "task": "搜索 circRNA"}'},
+    }])
+    structured = MagicMock()
+    async def extract(prompt, schema, fallback=None):
+        return fallback()
+    structured.extract = extract
+    comp = ContextCompressor(ContextConfig(), MagicMock(context_window=65536), structured)
+    capture = []
+    # run1 消费 3 条（supervisor spawn → child → supervisor 汇总）；run2 消费 1 条
+    llm = make_capture_llm([
+        tool_call,
+        Message(role="assistant", content="子任务已执行"),
+        Message(role="assistant", content="已搜索"),
+        Message(role="assistant", content="第二轮回答"),
+    ], capture)
+    agent = Agent(llm=llm, agent_registry=supervisor_registry, agent_type="supervisor",
+                  confirm_callback=lambda cr: True, compressor=comp)
+    asyncio.run(agent.run("搜索 circRNA 文献"))
+    asyncio.run(agent.run("这些论文有什么共同点"))
+    contents = [m.content for m in capture[3]]                # run2 的 LLM 调用
+    # 子串命中（非精确 in）：spawn 的 tool 结果是 SubAgentResult 的 JSON 序列化
+    # （"summary" 字段含"子任务已执行"），裸文本精确匹配会误判——验证跨轮回放即可。
+    assert any(c and "子任务已执行" in c for c in contents)    # run1 spawn 的 tool 结果被回放

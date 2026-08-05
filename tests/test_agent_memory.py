@@ -86,14 +86,15 @@ class TestMemoryInjection:
     async def test_checks_compression_per_turn(self, tmp_path):
         compressor = MagicMock()
         compressor.summary = None
-        # 第一轮压缩触发，第二轮不触发（否则压缩会重建回 2 条消息，
+        # 空 history：压缩重建 messages = head + history + conv 后仍保持短消息，
+        # responder 第一轮看到 len<3 → tool_call，第二轮（不压缩）看到 tool → final
+        compressor.history = []
+        # 第一轮压缩触发，第二轮不触发（否则每轮都压缩重建回短消息，
         # responder 永远看到 len<3 → tool_call 死循环直到 MaxTurnsExceeded）
         compressor.should_compress.side_effect = [True, False]
-        # 真实 ContextCompressor.compress 是 async，MagicMock 不可 await → AsyncMock
-        compressor.compress = AsyncMock(return_value=[
-            Message(role="system", content="SKILL_PROMPT"),
-            Message(role="user", content="q"),
-        ])
+        # Task 4：压缩点改为 await compress_history()（原地改写 history，结果不进 messages
+        # 参数）→ AsyncMock。旧 compressor.compress 已退役（Task 5 删除）。
+        compressor.compress_history = AsyncMock()
         # LLM 第一轮返回 tool_call，第二轮返回最终回答（确保至少两轮，压缩检查在每轮发生）
         def responder(messages):
             if len(messages) < 3:

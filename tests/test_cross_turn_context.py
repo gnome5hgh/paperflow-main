@@ -85,3 +85,50 @@ def test_clarification_early_return_not_accumulated():
     assert result == "你要搜索哪类论文？"
     assert comp.history == []        # 澄清早退不累积
     assert capture == []             # LLM 未被调用
+
+
+def test_compress_rebuild_preserves_current_turn():
+    capture = []
+    # 小 context + 低触发阈值：history 预置超阈值 → 首轮 model call 前必触发压缩
+    config = ContextConfig(context_size=400, trigger_ratio=0.5, reserve_ratio=0.2)
+    comp = ContextCompressor(config, MagicMock(context_window=65536),
+                             make_structured(full_summary()))
+    comp.history = [Message(role="user", content=f"问题{i}") for i in range(30)]
+    llm = make_capture_llm([Message(role="assistant", content="回答")], capture)
+    agent = Agent(llm=llm, agent_registry=make_mock_registry([]), agent_type="test",
+                  compressor=comp)
+    asyncio.run(agent.run("当前问题"))
+    sent = capture[0]
+    contents = [m.content for m in sent]
+    assert "当前问题" in contents                              # 当前轮 user 保留
+    sys_texts = [m.content for m in sent if m.role == "system"]
+    assert any(t != "test prompt" for t in sys_texts)          # 摘要消息已生成（非 SKILL）
+    assert len(sent) < 32                                      # 旧 history 被压缩掉（30 条→tail）
+
+
+def test_compressed_summary_persists_next_run():
+    """Task 3 review 强制：压缩产物（history[0] 摘要消息）必须跨轮持久。
+
+    旧 compress() 只写 self.summary 不进 history → 压缩产物跨轮不持久（run2 回放
+    不到摘要）。Task 4 换 compress_history（原地改写 history）后必须验证：
+    run1 压缩把摘要写进 history[0]，run2 回放 messages 仍含该摘要消息。
+    """
+    capture = []
+    config = ContextConfig(context_size=400, trigger_ratio=0.5, reserve_ratio=0.2)
+    comp = ContextCompressor(config, MagicMock(context_window=65536),
+                             make_structured(full_summary()))
+    # 预置超阈值历史 → run1 首轮 model call 前触发压缩 → history[0] 摘要消息
+    comp.history = [Message(role="user", content=f"问题{i}") for i in range(30)]
+    llm = make_capture_llm([
+        Message(role="assistant", content="回答1"),   # run1 压缩后的响应
+        Message(role="assistant", content="回答2"),   # run2
+    ], capture)
+    agent = Agent(llm=llm, agent_registry=make_mock_registry([]), agent_type="test",
+                  compressor=comp)
+    asyncio.run(agent.run("当前问题"))
+    # run1 结束：compress_history 已把摘要写进 history[0]
+    assert comp.history[0].role == "system"
+    assert comp.history[0].content.startswith("[对话摘要]")
+    # run2 回放 messages 含该摘要消息（压缩产物跨轮持久）
+    asyncio.run(agent.run("后续问题"))
+    assert any(m.role == "system" and m.content.startswith("[对话摘要]") for m in capture[1])

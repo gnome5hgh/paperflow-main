@@ -358,9 +358,15 @@ class Agent:
         messages.append(conv[0])
 
         for _ in range(self.max_turns):
-            # 每次 model call 前检查压缩（压缩后 messages 被重建）
+            # 每次 model call 前检查压缩：messages 已含回放 history，超阈值即触发。
+            # compress_history 原地改写 compressor.history（摘要写进 history[0]——
+            # 压缩产物跨轮持久），再重建 messages：head（本 run 构建的 system 块）+
+            # 新 history + conv（本轮残留，含已执行的 tool 往返）。与旧 compress(messages)
+            # 的区别：旧版只重建传入的 messages 不动 history → 摘要跨轮丢失（Task 3
+            # review 发现）；新版以 history 为唯一压缩状态。旧 compress 在此退役（Task 5 删）。
             if self.compressor and self.compressor.should_compress(messages):
-                messages = await self.compressor.compress(messages)
+                await self.compressor.compress_history()
+                messages = list(head) + list(self.compressor.history) + conv
 
             # 流式门控：挂了 stream_callback 才走 chat_stream（否则保持 chat()）。
             # mock LLM 只有 chat 方法，无条件换 chat_stream 会让 MagicMock 不可
