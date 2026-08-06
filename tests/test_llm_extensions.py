@@ -32,6 +32,8 @@ class TestChatJsonMode:
         kwargs = client.client.chat.completions.create.call_args.kwargs
         assert kwargs["response_format"] == {"type": "json_object"}
         assert msg.content == '{"ok": 1}'
+        # fake_response 未设 finish_reason（MagicMock ≠ "length"）→ 默认不截断
+        assert msg.truncated is False
 
     @pytest.mark.asyncio
     async def test_passes_extra_body_and_temperature(self):
@@ -84,6 +86,19 @@ class TestChatJsonMode:
         )
         assert msg.content == "ok"
 
+    @pytest.mark.asyncio
+    async def test_chat_marks_truncated_on_length(self):
+        client = make_client()
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.role = "assistant"
+        resp.choices[0].message.content = "半截"
+        resp.choices[0].message.tool_calls = None
+        resp.choices[0].finish_reason = "length"
+        client.client.chat.completions.create.return_value = resp
+        msg = await client.chat([Message(role="user", content="q")])
+        assert msg.truncated is True
+
 
 from types import SimpleNamespace
 
@@ -101,11 +116,13 @@ class TestAccumulateStreamChunks:
             _chunk(SimpleNamespace(role="assistant", content="你好", tool_calls=None)),
             _chunk(SimpleNamespace(role=None, content="世界", tool_calls=None)),
         ]
-        content, tool_calls, role = _accumulate_stream_chunks(chunks, deltas.append)
+        content, tool_calls, role, finish_reason = _accumulate_stream_chunks(chunks, deltas.append)
         assert content == "你好世界"
         assert role == "assistant"
         assert tool_calls is None
         assert deltas == ["你好", "世界"]
+        # finish_reason 无则 None
+        assert finish_reason is None
 
     def test_accumulates_tool_calls_by_index(self):
         from paperflow.core.llm import _accumulate_stream_chunks
@@ -119,7 +136,7 @@ class TestAccumulateStreamChunks:
             _chunk(SimpleNamespace(role="assistant", content=None, tool_calls=[tc1_first])),
             _chunk(SimpleNamespace(role=None, content=None, tool_calls=[tc1_second, tc2])),
         ]
-        content, tool_calls, role = _accumulate_stream_chunks(chunks, None)
+        content, tool_calls, role, finish_reason = _accumulate_stream_chunks(chunks, None)
         assert content == ""
         assert tool_calls == [
             {"id": "call_1", "type": "function",
@@ -127,6 +144,8 @@ class TestAccumulateStreamChunks:
             {"id": "call_2", "type": "function",
              "function": {"name": "read_file", "arguments": '{"path": "a"}'}},
         ]
+        # finish_reason 无则 None
+        assert finish_reason is None
 
     def test_skips_empty_choices_and_none_content(self):
         from paperflow.core.llm import _accumulate_stream_chunks
@@ -136,9 +155,23 @@ class TestAccumulateStreamChunks:
             _chunk(None, choices=[]),          # 空 choices chunk
             _chunk(SimpleNamespace(role=None, content=None, tool_calls=None)),  # None content
         ]
-        content, _, _ = _accumulate_stream_chunks(chunks, deltas.append)
+        content, _, _, finish_reason = _accumulate_stream_chunks(chunks, deltas.append)
         assert content == "a"
         assert deltas == ["a"]                 # None content 不回调
+        # finish_reason 无则 None
+        assert finish_reason is None
+
+    def test_captures_finish_reason_length(self):
+        from paperflow.core.llm import _accumulate_stream_chunks
+
+        def chunk(content=None, finish_reason=None):
+            delta = SimpleNamespace(role="assistant", content=content, tool_calls=None)
+            return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)])
+
+        chunks = [chunk("部分"), chunk("内容", finish_reason="length")]
+        content, tool_calls, role, finish_reason = _accumulate_stream_chunks(chunks, None)
+        assert content == "部分内容"
+        assert finish_reason == "length"
 
 
 class TestChatStream:
@@ -149,6 +182,11 @@ class TestChatStream:
         chunks = [
             _chunk(SimpleNamespace(role="assistant", content="hi", tool_calls=None)),
             _chunk(SimpleNamespace(role=None, content="!", tool_calls=None)),
+            # 尾部收尾 chunk 带 finish_reason="length"（max_tokens 截断信号）
+            _chunk(SimpleNamespace(role=None, content=None, tool_calls=None),
+                   choices=[SimpleNamespace(
+                       delta=SimpleNamespace(role=None, content=None, tool_calls=None),
+                       finish_reason="length")]),
         ]
         client.client.chat.completions.create.return_value = iter(chunks)
         msg = await client.chat_stream(
@@ -159,6 +197,8 @@ class TestChatStream:
         assert msg.content == "hi!"
         assert msg.tool_calls is None
         assert deltas == ["hi", "!"]
+        # 尾 chunk finish_reason="length" → 标记截断
+        assert msg.truncated is True
 
     @pytest.mark.asyncio
     async def test_returns_tool_calls_message(self):

@@ -57,6 +57,10 @@ class Message:
     #: 关联的工具调用 ID，仅 tool 角色消息有值，用于将 tool result 关联到对应的 tool_call
     tool_call_id: str | None = None
 
+    #: 响应因 max_tokens 被截断（finish_reason=="length"）。Agent 据此续写而非
+    #: 把半截内容当最终回答（2026-08-06 修复：generate-note 草稿静默截断是 P5 触发点）。
+    truncated: bool = False
+
 
 class LLMClient:
     """
@@ -169,10 +173,12 @@ class LLMClient:
             ]
 
         # content 可能是 None（OpenAI 2.x 行为：纯 tool-call 响应不含 content）
+        # truncated：finish_reason=="length" 表示输出被 max_tokens 截断，调用方须续写
         return Message(
             role=choice.role,
             content=choice.content or "",
             tool_calls=tool_calls,
+            truncated=(response.choices[0].finish_reason == "length"),
         )
 
     async def chat_stream(self, messages, tools=None, tool_choice="auto",
@@ -199,25 +205,34 @@ class LLMClient:
             # httpx 读取上；不能把 Stream 交回事件循环再迭代（否则阻塞 loop，
             # 杀死 parallel_spawn 并发）。
             stream = self.client.chat.completions.create(**kwargs)
-            content, tool_calls, role = _accumulate_stream_chunks(stream, on_delta)
-            return Message(role=role, content=content, tool_calls=tool_calls)
+            content, tool_calls, role, finish_reason = _accumulate_stream_chunks(stream, on_delta)
+            return Message(role=role, content=content, tool_calls=tool_calls,
+                           truncated=(finish_reason == "length"))
 
         return await asyncio.to_thread(_do_stream)
 
 
 def _accumulate_stream_chunks(chunks, on_delta):
-    """把 OpenAI 流式 chunks 累加为 (content, tool_calls, role)。
+    """把 OpenAI 流式 chunks 累加为 (content, tool_calls, role, finish_reason)。
 
     on_delta 每收到一段 content 片段即同步回调（跑在流线程内，须线程安全）。
     tool_calls 按 delta.tool_calls[].index 分片累加，arguments 分片拼接。
+    finish_reason 取最后一个带值的 chunk 的（多为尾部收尾 chunk）。
     """
     content_parts: list[str] = []
     tool_acc: dict[int, dict] = {}
     role = "assistant"
+    finish_reason = None
     for chunk in chunks:
         # 某些端点（如 OpenAI）尾部会发一个空 choices 的 chunk，跳过避免取下标崩溃
         if not chunk.choices:
             continue
+        # finish_reason 在最后一个有 choices 的 chunk 上（内容结束后带空 delta 的收尾 chunk），
+        # 用"最后非 None 覆盖"而不是"只在首 chunk 读"——保证拿到的是结束信号而非中途值。
+        # getattr 兜底：简化版 fake chunk 可能不设该字段（真实 SDK Choice 恒有，默认 None）
+        fr = getattr(chunk.choices[0], "finish_reason", None)
+        if fr:
+            finish_reason = fr
         delta = chunk.choices[0].delta
         if delta.role:
             role = delta.role
@@ -249,7 +264,7 @@ def _accumulate_stream_chunks(chunks, on_delta):
                           "arguments": "".join(tool_acc[i]["args"])}}
             for i in sorted(tool_acc)
         ]
-    return "".join(content_parts), tool_calls, role
+    return "".join(content_parts), tool_calls, role, finish_reason
 
 
 _UNSUPPORTED_PARAM_PATTERNS = [
