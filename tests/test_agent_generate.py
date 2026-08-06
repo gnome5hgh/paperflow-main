@@ -10,41 +10,41 @@ from tests.conftest import make_mock_llm, _tc, make_agent
 
 
 @pytest.mark.asyncio
-async def test_review_draft_runs_child_and_cleans_scratch(agent_env, agent_registry):
+async def test_review_draft_runs_child(agent_env, agent_registry):
+    """A-ii：execute(draft_path, pdf_path)，草稿在最终路径（vault note），无 scratch 落盘。"""
     cfg, _ = agent_env
     pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
     pdf.write_bytes(b"dummy")
-    # mock LLM：子 review-note 首轮即回最终意见（不调工具）——最简验证桥接与清理
-    llm = make_mock_llm([
-        Message(role="assistant", content="审稿意见：结构完整"),
-    ])
+    # A-ii：草稿先由 write_file 落盘到最终路径（vault note），execute 的存在校验才通过
+    draft = Path(cfg.vault_note_dir) / "paper.md"
+    draft.write_text("# 标题\n## 概述\n## 方法\n", encoding="utf-8")
+    llm = make_mock_llm([Message(role="assistant", content="审稿意见：结构完整")])
     agent = make_agent(agent_registry, "generate-note", llm, cfg)
     tool = agent.tools["review_draft"]
     assert tool.needs_parent is True
 
     # 模拟生产：execute 经 asyncio.to_thread 跑在 worker 线程（无 running loop）
-    result = await asyncio.to_thread(
-        tool.execute,
-        draft_text="# 标题\n## 概述\n## 方法\n",
-        pdf_path=str(pdf),
-    )
+    result = await asyncio.to_thread(tool.execute, draft_path=str(draft), pdf_path=str(pdf))
     assert "审稿意见" in result.text          # 子 agent 跑过（文本来自 mock 的 child 轮）
-    # scratch 清理：workspace/tmp 下无残留
-    scratch = Path(cfg.workspace) / "tmp"
-    assert not list(scratch.glob("review_*.md"))
+    # 不再写 scratch：workspace/tmp 下无临时审稿文件（恒真但保留作回归）
+    assert not list((Path(cfg.workspace) / "tmp").glob("review_*.md"))
 
 
 @pytest.mark.asyncio
 async def test_review_draft_max_turns_cleans_scratch(agent_env, agent_registry, monkeypatch):
-    """ReviewDraftTool 超轮分支：子 agent 抛 MaxTurnsExceeded → 错误文本 + scratch 清理。
+    """ReviewDraftTool 超轮分支：子 agent 抛 MaxTurnsExceeded → 错误文本给父 LLM。
 
     驱动方式：monkeypatch Agent.run 让子 agent 立即抛 MaxTurnsExceeded——
     比驱动 mock LLM 死循环 20 轮更快，且同样是安全阀触发的真实异常路径。
-    execute 的 except MaxTurnsExceeded 分支应把超轮转成错误文本给父 LLM
-    （而非向上抛），finally 仍须清理 draft 落盘的 scratch 文件。"""
+    A-ii 下 execute 不再落盘 scratch（草稿在最终路径），scratch 断言恒真但保留
+    作回归（防止将来回归到 scratch 落盘）。草稿需先落盘到 vault note，
+    execute 的存在校验才能通过。"""
     cfg, _ = agent_env
     pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
     pdf.write_bytes(b"dummy")
+    # A-ii：execute 校验草稿存在，先落盘到最终路径（vault note）
+    draft = Path(cfg.vault_note_dir) / "paper.md"
+    draft.write_text("# 标题", encoding="utf-8")
 
     async def _run_boom(self, task):
         raise MaxTurnsExceeded("boom")
@@ -57,12 +57,12 @@ async def test_review_draft_max_turns_cleans_scratch(agent_env, agent_registry, 
 
     result = await asyncio.to_thread(
         tool.execute,
-        draft_text="# 标题",
+        draft_path=str(draft),
         pdf_path=str(pdf),
     )
     assert "超轮" in result.text              # MaxTurnsExceeded → 错误文本给父 LLM
     scratch = Path(cfg.workspace) / "tmp"
-    assert not list(scratch.glob("review_*.md"))   # 超轮路径同样清理 scratch
+    assert not list(scratch.glob("review_*.md"))   # 恒真（无 scratch 落盘）但保留作回归
 
 
 def test_generate_note_tools_metadata(agent_env, agent_registry):
@@ -80,13 +80,14 @@ def test_generate_note_tools_metadata(agent_env, agent_registry):
 
 @pytest.mark.asyncio
 async def test_generate_note_single_round(agent_env, agent_registry):
-    """单轮 happy path：读模板 → 读 PDF → 审稿（一次即通过）→ write_file 定稿落盘。
+    """单轮 happy path（A-ii）：读模板 → 读 PDF → write_file 落盘草稿 v1 → 审稿通过 → 定稿返回路径。
 
-    mock 序列与真实 ReAct 对齐：审稿子 agent（review-note）首轮即回最终意见
-    （"通过"），父 generate-note 不再循环直接定稿。make_agent 接真实安全链，
-    write_file requires_confirm=True → confirm_callback 自动接受（spec §4.1
-    定稿是用户门，此处测试侧代为通过），落盘触发 index_document（patch 的
-    svc + FakeEmbedder，不建真实 RAG 栈）。"""
+    mock 序列与真实 ReAct 对齐：草稿 v1 直接 write_file 到最终路径（vault note），
+    再 review_draft 传 draft_path（不再把整篇草稿塞进工具参数）；审稿子 agent
+    （review-note）首轮即回最终意见（"通过"），父 generate-note 不再循环直接定稿。
+    make_agent 接真实安全链，write_file requires_confirm=True → confirm_callback
+    自动接受（spec §4.1 定稿是用户门，此处测试侧代为通过），落盘触发
+    index_document（patch 的 svc + FakeEmbedder，不建真实 RAG 栈）。"""
     cfg, _ = agent_env
     pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
     pdf.write_bytes(b"dummy")
@@ -98,9 +99,9 @@ async def test_generate_note_single_round(agent_env, agent_registry):
     llm = make_mock_llm([
         _tc("read_file", {"path": str(template)}),
         _tc("read_pdf", {"path": str(pdf)}),
-        _tc("review_draft", {"draft_text": "# 标题\n## 概述\n## 方法\n", "pdf_path": str(pdf)}),
+        _tc("write_file", {"path": str(note_out), "content": "# 标题\n## 概述\n## 方法\n"}),   # 草稿 v1 → 最终路径
+        _tc("review_draft", {"draft_path": str(note_out), "pdf_path": str(pdf)}),
         Message(role="assistant", content="审稿意见：结构完整，通过"),   # 子 agent 最终意见
-        _tc("write_file", {"path": str(note_out), "content": "# 标题\n## 概述\n## 方法\n"}),
         Message(role="assistant", content="笔记已生成"),
     ])
     agent = make_agent(agent_registry, "generate-note", llm, cfg)
@@ -117,8 +118,9 @@ from tests.conftest import make_agent, _tc  # LoopMockLLM 本文件自定义
 class LoopMockLLM:
     """e2e 专用 mock：预设响应序列；callable 项接收 messages 动态构造。
 
-    子 agent 的 read_file 轮次需要 draft_path（uuid 文件名测试无法预知），
-    只能从子 agent 的 user 任务文本（"审阅草稿文件 <draft>，对照原文 <pdf>"）解析。"""
+    子 agent 的 read_file 轮次需要 draft_path（A-ii 下固定为 note_out，但父测试
+    仍从子 agent 的 user 任务文本"审阅草稿文件 <draft>，对照原文 <pdf>"动态解析，
+    与生产行为一致）。"""
 
     def __init__(self):
         self.responses = []
@@ -153,6 +155,11 @@ def child_read(messages):
 
 @pytest.mark.asyncio
 async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
+    """两轮审稿循环（A-ii）：write_file 草稿 v1 → review → edit_file 修订 → review → 定稿。
+
+    A-ii 下草稿自始至终在最终路径（vault note）：write_file 落 v1，修订走 edit_file
+    覆盖写回同一路径（不再 in-context 修订 + 另起 scratch），review_draft 两次传
+    draft_path=note_out。"""
     cfg, _ = agent_env
     pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
     pdf.write_bytes(b"dummy")
@@ -165,16 +172,19 @@ async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
     # generate-note 轮次（静态）
     mock.add(_tc("read_file", {"path": str(template)}))
     mock.add(_tc("read_pdf", {"path": str(pdf)}))
-    mock.add(_tc("review_draft", {"draft_text": "# 标题\n## 概述\n## 方法\n", "pdf_path": str(pdf)}))
-    # 审稿循环 第 1 轮：子 agent 读草稿 → 意见"缺实验结果"（驱动 in-context 修订）
+    mock.add(_tc("write_file", {"path": str(note_out), "content": "# 标题\n## 概述\n## 方法\n"}))   # 草稿 v1
+    mock.add(_tc("review_draft", {"draft_path": str(note_out), "pdf_path": str(pdf)}))
+    # 审稿循环 第 1 轮：子 agent 读草稿 → 意见"缺实验结果"（驱动 edit_file 修订）
     mock.add(child_read)
     mock.add(Message(role="assistant", content="草稿缺实验结果，请补充"))
-    # 第 2 轮：修订后草稿 → 子 agent 读草稿 → 意见"通过"
-    mock.add(_tc("review_draft", {"draft_text": "# 标题\n## 概述\n## 方法\n## 实验结果\n", "pdf_path": str(pdf)}))
+    # 修订：edit_file 覆盖写回同一最终路径（A-ii：修订不再另起 scratch）
+    mock.add(_tc("edit_file", {"path": str(note_out),
+                               "content": "# 标题\n## 概述\n## 方法\n## 实验结果\n"}))
+    # 第 2 轮：修订后 → 子 agent 读草稿 → 意见"通过"
+    mock.add(_tc("review_draft", {"draft_path": str(note_out), "pdf_path": str(pdf)}))
     mock.add(child_read)
     mock.add(Message(role="assistant", content="结构完整，通过"))
     # 定稿
-    mock.add(_tc("write_file", {"path": str(note_out), "content": "# 标题\n## 概述\n## 方法\n## 实验结果\n"}))
     mock.add(Message(role="assistant", content="笔记已生成"))
 
     # make_agent：真实安全链 + confirm_callback 自动接受（write_file 定稿是用户门）
@@ -182,27 +192,30 @@ async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
     result = await agent.run(f"为 {pdf} 生成笔记")
     assert "笔记已生成" in result
     assert mock.callable_hits == 2                 # 子 agent 跑了两轮（审稿两次）
-    # 父→子桥接 load-bearing：应恰好 spawn 过 2 个"审阅草稿文件"子任务。
+    # 父→子桥接 load-bearing：A-ii 下 draft_path 固定为 note_out（两轮同路径），
+    # 无法再用"唯一任务文本数"断言 spawn 次数（set 去重后只剩 1）。
     # 注意 mock 按"每次 LLM 调用"追加 user 消息：同一子 run 的 task 文本会被追加两次
-    # （首轮工具调用 + 次轮最终回答），故用"不同任务文本数"断言两次 spawn 而非 sum 计数；
-    # 两次 task 各含唯一 uuid draft 路径，天然可区分。
-    child_tasks = {t for t in mock.seen_tasks if "审阅草稿文件" in t}
-    assert len(child_tasks) == 2
+    # （首轮工具调用 + 次轮最终回答），故 sum ≥ 2 即证明两次 spawn 都发生。
+    assert sum(1 for t in mock.seen_tasks if "审阅草稿文件" in t) >= 2
     assert note_out.exists()                       # 定稿落盘
     assert note_out.read_text(encoding="utf-8").startswith("# 标题")
-    # scratch 清理：两轮审稿后 workspace/tmp 无残留
+    # scratch 清理：两轮审稿后 workspace/tmp 无残留（恒真但保留作回归）
     assert not list((Path(cfg.workspace) / "tmp").glob("review_*.md"))
 
 
 @pytest.mark.asyncio
 async def test_review_draft_timeout_returns_message(agent_env, agent_registry, monkeypatch):
-    """单轮审稿硬超时（D3）：子 agent 挂起 > review_timeout → 返回超时消息，草稿不落盘。
+    """单轮审稿硬超时（D3）：子 agent 挂起 > review_timeout → 返回超时消息，草稿保持现状。
 
     驱动方式：monkeypatch Agent.run 让子 agent 无限挂起 + 实例覆盖 review_timeout 为
-    极小值（0.05s，不真等 120s）——与 test_review_draft_max_turns 同款快速驱动。"""
+    极小值（0.05s，不真等 120s）——与 test_review_draft_max_turns 同款快速驱动。
+    A-ii 下草稿在最终路径（vault note），超时后保持现状；scratch 断言恒真但保留作回归。"""
     cfg, _ = agent_env
     pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
     pdf.write_bytes(b"dummy")
+    # A-ii：execute 校验草稿存在，先落盘到最终路径（vault note）
+    draft = Path(cfg.vault_note_dir) / "paper.md"
+    draft.write_text("# 标题", encoding="utf-8")
 
     async def _run_hang(self, task):
         await asyncio.sleep(10)          # 挂起 > 0.05s → wait_for 触发 TimeoutError
@@ -215,9 +228,9 @@ async def test_review_draft_timeout_returns_message(agent_env, agent_registry, m
     tool.review_timeout = 0.05           # 实例覆盖类默认 120s（测试不真等）
     result = await asyncio.to_thread(
         tool.execute,
-        draft_text="# 标题",
+        draft_path=str(draft),
         pdf_path=str(pdf),
     )
     assert "超时" in result.text         # wait_for 触发 → 超时消息给父 LLM
     scratch = Path(cfg.workspace) / "tmp"
-    assert not list(scratch.glob("review_*.md"))   # 超时路径同样清理 scratch
+    assert not list(scratch.glob("review_*.md"))   # 恒真（无 scratch 落盘）但保留作回归
