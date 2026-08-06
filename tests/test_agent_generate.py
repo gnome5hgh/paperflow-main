@@ -66,14 +66,17 @@ async def test_review_draft_max_turns_cleans_scratch(agent_env, agent_registry, 
 
 
 def test_generate_note_tools_metadata(agent_env, agent_registry):
-    """generate-note 完整装配：6 工具齐备，ReviewDraftTool 声明 needs_parent。
+    """generate-note 完整装配：8 工具齐备（6 原有 + glob/grep 定位），ReviewDraftTool 声明 needs_parent。
 
     review_draft 是唯一需要 parent 注入的工具（嵌套 spawn 子 agent），
-    其余原子工具（read/write/pdf）不需要——权限最小化。"""
+    其余原子工具（read/write/pdf）不需要——权限最小化。
+    Task 4：加 glob/grep——按名定位模板/草稿/PDF（P2 路径风暴根因），
+    grep 确认 edit_file search-replace 的锚点文本。"""
     config = agent_registry.get_config("generate-note")
     names = [t.name for t in config.tools]
     assert "review_draft" in names
     assert "read_file" in names and "write_file" in names
+    assert "glob" in names and "grep" in names      # Task 4：文件名定位 + 文本锚点
     review = next(t for t in config.tools if t.name == "review_draft")
     assert review.needs_parent is True
 

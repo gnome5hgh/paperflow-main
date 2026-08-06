@@ -41,3 +41,14 @@ def test_suggest_edit_allows_scratch(agent_env):
     cfg, _ = agent_env
     tool = make_tools(cfg, [SuggestEditTool])[0]
     assert str(Path(cfg.workspace) / "tmp") in tool.allowed_paths
+
+
+def test_review_note_has_glob_grep(agent_registry):
+    """Task 4：review-note 装配 glob/grep——事实核对时在 vault 内搜索对照。
+
+    review-note 审稿要核对草稿断言与原文/其他笔记是否一致（grep 搜文本锚点）、
+    定位相关文件（glob）；不再依赖"路径由任务文本给出"的单一通道（P2 路径风暴
+    根因的审稿侧治理）。只读工具 risk=low，无确认门——名单断言防回归。"""
+    config = agent_registry.get_config("review-note")
+    names = {t.name for t in config.tools}
+    assert {"glob", "grep"} <= names

@@ -6,9 +6,9 @@
 """
 from paperflow.config import PaperFlowConfig
 from paperflow.tools.factory import make_tools
-from paperflow.tools import ReadFileTool, ReadPdfTool, MarkReadTool
+from paperflow.tools import ReadFileTool, ReadPdfTool, MarkReadTool, GlobTool, GrepTool
 from paperflow.rag.retriever import RagRetrieveTool
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
-    RagRetrieveTool, ReadPdfTool, ReadFileTool, MarkReadTool,
+    RagRetrieveTool, ReadPdfTool, ReadFileTool, MarkReadTool, GlobTool, GrepTool,
 ])

@@ -1,4 +1,4 @@
-# agents/generate-note/tools.py（6 工具完整装配：5 原子工具 + ReviewDraftTool）
+# agents/generate-note/tools.py（8 工具完整装配：5 原子工具 + ReviewDraftTool + glob/grep）
 """generate-note 的工具装配。
 
 5 个原子工具（read_file/read_pdf/write_file/edit_file/mark_read）复用
@@ -15,7 +15,10 @@ from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.tools.factory import make_tools
-from paperflow.tools import ReadFileTool, ReadPdfTool, WriteFileTool, EditFileTool, MarkReadTool
+from paperflow.tools import (
+    ReadFileTool, ReadPdfTool, WriteFileTool, EditFileTool, MarkReadTool,
+    GlobTool, GrepTool,
+)
 
 
 class ReviewDraftTool(Tool):
@@ -94,10 +97,13 @@ class ReviewDraftTool(Tool):
         # 无 finally：A-ii 不再落盘 scratch（草稿在最终路径），无临时文件需清理
 
 
-# 完整 6 工具：审稿桥（review_draft）+ 5 原子工具。
+# 完整 8 工具：审稿桥（review_draft）+ 5 原子工具 + glob/grep（Task 4 定位）。
 # review_draft 必须显式在列表内：Task 5 测试的 agent.tools["review_draft"] 依赖此列表，
 # 缺失则 KeyError: review_draft。SKILL.md 的审稿循环用 review_draft 传 draft_path 提交草稿，
 # edit_file 进循环做修订（A-ii：覆盖写回同一最终路径），同时留给"修改既有笔记"类任务。
+# glob/grep：按名定位模板/草稿/PDF（不再盲猜精确路径，P2 路径风暴根因），grep 确认
+# edit_file search-replace 的锚点文本。
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
-    ReadPdfTool, ReadFileTool, WriteFileTool, EditFileTool, MarkReadTool, ReviewDraftTool,
+    ReadPdfTool, ReadFileTool, WriteFileTool, EditFileTool, MarkReadTool,
+    ReviewDraftTool, GlobTool, GrepTool,
 ])

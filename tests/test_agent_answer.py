@@ -61,3 +61,14 @@ def test_answer_question_excludes_format_answer(agent_env, agent_registry):
     cfg, _ = agent_env
     agent = make_agent(agent_registry, "answer-question", make_mock_llm([]), cfg)
     assert "format_answer" not in agent.tools
+
+
+def test_answer_question_has_glob_grep(agent_registry):
+    """Task 4：answer-question 装配 glob/grep——按模式定位笔记/论文再读。
+
+    三 mode（读 PDF/查笔记/RAG）都涉及按名称定位文件（论文 PDF、旧笔记），
+    不再盲猜精确路径（P2 路径风暴根因）：glob 枚举 + grep 核对内容锚点。
+    只读工具 risk=low，无确认门——装配名单断言防回归。"""
+    config = agent_registry.get_config("answer-question")
+    names = {t.name for t in config.tools}
+    assert {"glob", "grep"} <= names

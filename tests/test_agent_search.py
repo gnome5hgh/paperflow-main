@@ -81,3 +81,14 @@ async def test_search_paper_single_source_failure(agent_env, agent_registry):
     agent.tools["openalex_search"]._client = OpenAlexSearchTool._make_client(transport=_otransport(), ssrf_check=lambda u: None)
     result = await agent.run("搜索 x")
     assert "无结果" in result
+
+
+def test_search_paper_has_glob_grep(agent_registry):
+    """Task 4：search-paper 装配 glob/grep——枚举已下载 PDF、下载前去重、内容校验。
+
+    search-paper 不再盲猜论文精确路径（P2 路径风暴根因）：glob 按模式枚举
+    vault 内已下载 PDF（决定要不要重新下载），grep 校验下载后内容锚点。
+    只读工具 risk=low，无确认门——装配不进安全边界即可，名单断言防回归。"""
+    config = agent_registry.get_config("search-paper")
+    names = {t.name for t in config.tools}
+    assert {"glob", "grep"} <= names
