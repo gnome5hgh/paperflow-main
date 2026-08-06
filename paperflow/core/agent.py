@@ -371,6 +371,11 @@ class Agent:
             # 的区别：旧版只重建传入的 messages 不动 history → 摘要跨轮丢失（Task 3
             # review 发现）；新版以 history 为唯一压缩状态。旧 compress 在此退役（Task 5 删）。
             if self.compressor and self.compressor.should_compress(messages):
+                # 截断续写×压缩重建互斥：截断分支把"半截+续写提示"append 进 messages 但
+                # 不进 conv（见 conv 注释），重建 `messages = head + history + conv` 会丢弃
+                # 它们，而 accumulated 仍持有半截 → 续写因无参照从零重答，返回 半截+重复
+                # 污染 conv/history。弃掉半截（clear），续写无参照即完整重答，不拼接重复。
+                accumulated.clear()
                 await self.compressor.compress_history()
                 messages = list(head) + list(self.compressor.history) + conv
 

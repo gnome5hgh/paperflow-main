@@ -47,7 +47,7 @@ class ReviewDraftTool(Tool):
     #: 超时 → 返回超时消息，generate-note 依现有草稿继续（降级不中断，D10 哲学）。
     #: 类属性（实例可覆盖，测试用极小值）；config 注入留后续。
     review_timeout = 120
-    requires_confirm = False               # 审稿循环最多 3 轮，最终 WriteFileTool 才是用户门
+    requires_confirm = False               # A-ii：write_file(草稿 v1 落盘，审稿前) 与 edit_file(循环内修订) 才是用户门
     side_effects = ["write_file"]          # 审稿间接触发写（草稿 write_file / 修订 edit_file）
     allowed_roots = ["pdf", "note"]        # pdf_path 走 pdf 根、draft_path 走 note 根
     needs_parent = True                    # 触发 Agent.__init__ opt-in 注入

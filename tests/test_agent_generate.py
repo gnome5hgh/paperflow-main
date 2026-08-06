@@ -161,6 +161,10 @@ async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
     覆盖写回同一路径（不再 in-context 修订 + 另起 scratch），review_draft 两次传
     draft_path=note_out。"""
     cfg, _ = agent_env
+    # 修订 edit_file 是 risk_level="high"，默认 max_risk="medium" 会被 PolicyEngine
+    # 直接 policy_denied（工具根本不执行，修订不落盘）→ 抬到 high 让修订路径真实走通，
+    # 强断言（"## 实验结果" 出现）才能证明 edit_file 真正改写 note_out。确认门仍是用户门。
+    cfg.max_risk = "high"
     pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
     pdf.write_bytes(b"dummy")
     note_out = Path(cfg.vault_note_dir) / "paper.md"
@@ -198,7 +202,9 @@ async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
     # （首轮工具调用 + 次轮最终回答），故 sum ≥ 2 即证明两次 spawn 都发生。
     assert sum(1 for t in mock.seen_tasks if "审阅草稿文件" in t) >= 2
     assert note_out.exists()                       # 定稿落盘
-    assert note_out.read_text(encoding="utf-8").startswith("# 标题")
+    # 修订已生效：v1 无"实验结果"节，edit_file 覆盖写回后才有——startswith("# 标题")
+    # 在 v1 也成立，无法证明修订真正改写 note_out，故用更强断言。
+    assert "## 实验结果" in note_out.read_text(encoding="utf-8")
     # scratch 清理：两轮审稿后 workspace/tmp 无残留（恒真但保留作回归）
     assert not list((Path(cfg.workspace) / "tmp").glob("review_*.md"))
 
