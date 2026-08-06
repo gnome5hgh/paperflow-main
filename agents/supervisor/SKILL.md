@@ -31,7 +31,8 @@ allowed_spawns: []   # supervisor 硬编码放行所有 SubAgent（_check_spawn_
 |------|---------|-----------|
 | search_paper | search-paper | 搜索/下载/筛选论文，返回论文列表 |
 | generate_note | generate-note | 端到端流程（读→起草→落盘→审稿→修订），一次 spawn 完成；
-                              返回含笔记绝对路径即成功，不要重复派发续写/落盘任务 |
+                              返回含笔记绝对路径即成功，不要重复派发续写/落盘任务。
+                              若 spawn 超时但笔记文件已存在，先检查产物再决定，不盲目重试 |
 | ask_question | answer-question | 问答 / 阅读 / RAG 检索（具体 mode 由子 agent 判断） |
 | manage_memory | answer-question | mode=memory：查 MEMORY.md 索引 / 阅读记录 |
 
