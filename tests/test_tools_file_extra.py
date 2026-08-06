@@ -1,6 +1,8 @@
 # tests/test_tools_file_extra.py
 from pathlib import Path
 
+import pytest
+
 from paperflow.tools import ReadPdfTool, MarkReadTool, FormatAnswerTool, FormatCheckTool, SuggestEditTool
 
 
@@ -105,18 +107,20 @@ def test_read_pdf_fuzzy_matches_single_space_to_double_space(agent_env):
 
 
 def test_read_pdf_fuzzy_ambiguous_errors(agent_env):
-    """D4 安全语义：归一化后多候选 → 明确错误（不猜），0 候选同样报错。"""
+    """G：多候选 → raise（原返回"不唯一"错误文本——审计 success 误导，见分析 P4）。"""
     cfg, _ = agent_env
     _make_pdf(cfg, sub="Heterogeneous graph")
     _make_pdf(cfg, sub="Heterogeneous graph copy")
     requested = str(Path(cfg.vault_pdf_dir) / "Heterogeneous graph" / "Variational Disentangled Graph Auto-Encoders for Link Prediction.pdf")
-    result = ReadPdfTool().execute(path=requested)
-    assert "不唯一" in result.text
+    with pytest.raises(Exception) as ei:
+        ReadPdfTool().execute(path=requested)
+    assert "不唯一" in str(ei.value)
 
 
 def test_read_pdf_fuzzy_no_match_reports_not_found(agent_env):
-    """D4 0 候选分支直接断言：pdf root 无匹配 → 明确"未找到"（不猜）。"""
+    """G：0 候选 → raise（原返回"未找到"错误文本）。"""
     cfg, _ = agent_env
     requested = str(Path(cfg.vault_pdf_dir) / "No Such Paper.pdf")
-    result = ReadPdfTool().execute(path=requested)
-    assert "未找到" in result.text
+    with pytest.raises(Exception) as ei:
+        ReadPdfTool().execute(path=requested)
+    assert "未找到" in str(ei.value)

@@ -40,11 +40,12 @@ class ReadPdfTool(Tool):
             try:
                 doc = self._resolve_fuzzy(path)
             except (FileNotFoundError, ValueError) as e:
-                # 容错分支自身失败（0 候选"未找到" / 多候选"不唯一"）→ 错误文本直接
-                # 回给 LLM 澄清，不猜（D4 安全语义）。不向外抛异常：Agent._exec_tool
-                # 虽会把异常转 ToolResult，但 execute 返回含错误文本的 ToolResult 语义
-                # 更明确，测试契约也钉死"返回可读错误文本"。
-                return ToolResult(text=str(e))
+                # G（2026-08-06）：对齐 read_file——0/多候选 raise，_exec_tool 捕获转
+                # ToolResult("Tool error: ...") + success=False。旧行为返回含错误文本的
+                # ToolResult，审计 success=True 误导（agent 分不清读成功还是读到错误，
+                # 放大 generate-note 的路径猜测风暴 P2）。LLM 仍看到可读错误文本
+                #（经 _exec_tool 的 "Tool error:" 包装）。
+                raise e
         text = "\n\n".join(f"## {h}\n{t}" for h, t in doc.sections)
         return ToolResult(text=text or "（PDF 未能解析出文本）")
 
