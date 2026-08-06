@@ -41,15 +41,17 @@ class LLMConfig:
     #: 模型名称，传给 API 的 model 参数
     model: str = "deepseek-v4-flash"
 
-    #: 单次请求最大输出 token 数
-    max_tokens: int = 4096
+    #: 单次响应输出上限——deepseek-v4-flash 官方最大输出 384K（max_tokens 合法范围 1-393216）。
+    #: 2026-08-06 修复：4096 → 393216。长笔记草稿/大参数 write_file 不再被静默截断
+    #:（generate-note 流程失败的 P8 根因之一）。
+    max_tokens: int = 393216
 
     #: 采样温度，0.0 表示确定性输出（适合工具调用场景）
     temperature: float = 0.0
 
-    #: 模型上下文窗口大小（token 数），压缩时用于自动推导上下文尺寸；
-    #: 默认 65536 对应 DeepSeek 64K 上下文
-    context_window: int = 65536
+    #: 模型上下文窗口——deepseek-v4-flash 官方 1M。ContextCompressor.resolve_context_size
+    #: 取半窗口 = 500K → 压缩阈值 400K、reserve 50K，正常对话永不压缩（1M 上下文的预期）。
+    context_window: int = 1000000
 
 
 @dataclass

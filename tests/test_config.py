@@ -73,3 +73,11 @@ def test_make_tools_roots_absolute_no_double_prefix(tmp_path):
     assert "data/data" not in roots["templates"]
     template = Path(roots["templates"]) / "paper_note.md"
     assert WorkspacePolicy.check_path(str(template), [roots["templates"]])
+
+
+def test_llm_config_official_limits():
+    """deepseek-v4-flash 官方最大值：上下文 1M、输出 384K（max_tokens 合法范围 1-393216）。"""
+    from paperflow.config import LLMConfig
+    cfg = LLMConfig()
+    assert cfg.context_window == 1000000
+    assert cfg.max_tokens == 393216
