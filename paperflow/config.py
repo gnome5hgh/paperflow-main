@@ -98,10 +98,10 @@ class PaperFlowConfig:
     #: 重排模型（Cross-encoder）
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
 
-    #: 子 agent 超时（秒）按 agent_type 覆盖；空 = 全部用 SpawnSubAgentTool.timeout 默认（120）。
-    #: 只有 generate-note 吃紧（长论文），全局调大会让 stuck search-paper 白等。
-    #: 仅 config.yaml 顶层配置（dict 无自然 env 形态，不设 PAPERFLOW_* 变量）。
-    agent_timeouts: dict[str, int] = field(default_factory=dict)
+    #: 子 agent 超时覆盖表（D2）：generate-note 默认 600s——端到端（读+起草+写盘+
+    #: ≤2 轮审稿每轮 ≤120s）远超默认 120s，旧值下必然超时→supervisor 反复重试
+    #:（2026-08-06 实测）。YAML 顶层 agent_timeouts 可覆盖；dict 无 env 形态。
+    agent_timeouts: dict[str, int] = field(default_factory=lambda: {"generate-note": 600})
 
     @property
     def chroma_dir(self) -> str:

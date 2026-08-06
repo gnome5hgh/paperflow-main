@@ -81,3 +81,11 @@ def test_llm_config_official_limits():
     cfg = LLMConfig()
     assert cfg.context_window == 1000000
     assert cfg.max_tokens == 393216
+
+
+def test_agent_timeouts_default_generate_note():
+    """generate-note 默认 600s：端到端（起草+写盘+≤2 轮审稿每轮≤120s）远超旧默认 120s，
+    否则 supervisor spawn 必然超时→反复重试（2026-08-06 实测死循环）。"""
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig()
+    assert cfg.agent_timeouts.get("generate-note") == 600
