@@ -44,7 +44,11 @@ class GrepTool(Tool):
                 continue    # 非文本/权限问题跳过，不阻断整体搜索
             for i, line in enumerate(lines, 1):
                 if regex.search(line):
-                    results.append(f"{f}:{i}: {line.strip()[:200]}")
+                    # 返回原始行（不 strip、不截断）：grep 命中会被当作 edit_file 的
+                    # old_text 锚点，锚点必须与文件逐字节一致（缩进/超长行也不例外），
+                    # strip/截断会让模型复制过去的 old_text 匹配失败（Important 4）。
+                    # 行可能很长，但作为锚点需要原样；用 30 条封顶控制量。
+                    results.append(f"{f}:{i}: {line}")
                     if len(results) >= 30:                       # 封顶 30 条
                         return ToolResult(text="\n".join(results))
         return ToolResult(text="\n".join(results) if results else "无匹配")

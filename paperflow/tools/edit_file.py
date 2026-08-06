@@ -31,6 +31,10 @@ class EditFileTool(Tool):
     side_effects = ["write_file"]
 
     def execute(self, path: str, old_text: str, new_text: str) -> ToolResult:
+        # 空 old_text 守卫：str.count("") 恒等于 len+1 > 1，会误入"多命中"分支，
+        # 返回的报错让模型困惑（Minor 10）。直接明示参数错误。
+        if not old_text:
+            return ToolResult(text="old_text 不能为空，请提供要替换的原文")
         p = Path(path)
         if not p.exists():
             return ToolResult(text=f"文件不存在: {path}")

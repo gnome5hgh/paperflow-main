@@ -16,8 +16,8 @@ allowed_spawns: [review-note]
 5. **审稿循环（最多 2 轮）**：
    - 提交：`review_draft(pdf_path=主论文路径, draft_path=笔记路径)` 交 review-note 审稿。
    - 意见可执行：
-     - **小范围**（补一节 / 改一句）→ 先 `grep` 确认锚点 → `edit_file(笔记路径, old_text=原文, new_text=新文)` 定向替换。
-     - **大范围**（整篇重写）→ `write_file(笔记路径, 修订版)` 覆盖（确认后）。
+     - **小范围**（补一节 / 改一句）→ 先 `grep` 确认锚点 → `edit_file(笔记路径, old_text=原文, new_text=新文)` 定向替换 → **重新 review_draft**（审稿循环必须回到提交，直到通过或 2 轮用尽）。
+     - **大范围**（整篇重写）→ `write_file(笔记路径, 修订版)` 覆盖（确认后）→ **重新 review_draft**。
    - 意见通过 → 结束循环，进入第 6 步。
    - 定位文件用 `glob`（如 `**/*.pdf`、`**/*标题*.pdf`）。
 6. **定稿**：确认笔记绝对路径存在，返回路径。

@@ -115,3 +115,21 @@ class TestPolicyEngine:
             await mw.before(ctx)
         exc.value.confirm()  # 用户确认
         await mw.before(ctx)  # 不应再抛（_confirmed 生效）
+
+    @pytest.mark.asyncio
+    async def test_confirm_scoped_per_path(self):
+        # Important 2：write_file 覆盖若只按工具名确认一次，后续任意 note/memory 路径
+        # 会被静默写（含误覆盖用户手写笔记）。确认键 = (工具, 路径)——
+        # 同工具不同路径仍需单独确认；同路径重试仍只确认一次。
+        mw = PolicyEngineMiddleware()
+        tool = ConfirmTool()
+        ctx_a = make_ctx(tool)
+        ctx_a.args = {"path": "/vault/note/a.md"}
+        ctx_b = make_ctx(tool)
+        ctx_b.args = {"path": "/vault/note/b.md"}
+        with pytest.raises(ConfirmRequired) as exc:
+            await mw.before(ctx_a)
+        exc.value.confirm()                   # 用户确认 a 路径
+        await mw.before(ctx_a)                # 同路径重试不再询问
+        with pytest.raises(ConfirmRequired):  # 不同路径（b）仍需单独确认
+            await mw.before(ctx_b)

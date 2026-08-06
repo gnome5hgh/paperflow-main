@@ -29,9 +29,23 @@ class GlobTool(Tool):
         # 通过 _config 取默认根（make_tools 注入）；root 显式传入则覆盖默认。
         # 保持 config 读取为防御式 getattr——测试与裸构造时可能没有 _config。
         cfg = getattr(self, "_config", None)
-        base = Path(root) if root else Path(cfg.vault_note_dir)
+        base = Path(root) if root else Path(cfg.vault_note_dir if cfg else ".")
         try:
-            hits = [str(p) for p in base.glob(pattern)][:50]   # 封顶防爆炸
-        except ValueError as e:                                # 非法模式（空等）
+            # 越界防护（Important 1）：glob 不约束 pattern 到 base，`../../**/*` 能命中
+            # base 外路径（只读泄露，违反 allowed_roots 边界）。逐个过滤命中：
+            # 逃逸（resolve 后不在 base 内）→ 跳过。
+            # 注意必须用 resolve() 比较——`p.relative_to(base)` 是纯词法比较，把 `..`
+            # 当作普通路径段，`base/../../outside/f` 不会触发 ValueError，根本拦不住逃逸。
+            base_resolved = base.resolve()
+            hits: list[str] = []
+            for p in base.glob(pattern):
+                try:
+                    p.resolve().relative_to(base_resolved)  # 逃逸(base 外)→ 跳过
+                except ValueError:
+                    continue
+                hits.append(str(p))
+                if len(hits) >= 50:                          # 封顶防爆炸
+                    break                                    # 遍历即截断，替代先物化后切片
+        except ValueError as e:                              # 非法模式（空等）
             return ToolResult(text=f"glob 模式无效: {e}")
         return ToolResult(text="\n".join(hits) if hits else "无匹配")

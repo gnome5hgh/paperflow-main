@@ -157,6 +157,38 @@ def test_glob_no_match(tmp_path):
     assert "无匹配" in tool.execute(pattern="**/*.pdf").text
 
 
+def test_glob_blocks_path_escape(tmp_path):
+    # Important 1 回归：glob 不约束 pattern 到 base，`../../**/*.txt` 能命中 base 外
+    # 路径（只读泄露，违反 allowed_roots 边界）。修复：逃逸命中（resolve 后不在 base
+    # 内）逐个跳过——`p.relative_to(base)` 是纯词法比较，把 `..` 当普通路径段，拦不住。
+    from paperflow.tools.glob import GlobTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note").mkdir(parents=True)
+    (tmp_path / "outside").mkdir(parents=True)
+    (tmp_path / "note" / "inside.txt").write_text("in")
+    (tmp_path / "outside" / "secret.txt").write_text("secret")
+    tool = GlobTool(); tool._config = cfg
+    result = tool.execute(pattern="../../**/*.txt")
+    assert "secret.txt" not in result.text    # base 外路径被跳过
+    assert "inside.txt" in result.text        # base 内文件正常返回
+
+
+def test_glob_caps_at_50(tmp_path):
+    # 封顶回归：命中 60 条时只返回 50 条（遍历即 break，不物化全部）。
+    from paperflow.tools.glob import GlobTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note").mkdir(parents=True)
+    for i in range(60):
+        (tmp_path / "note" / f"f{i:02d}.md").write_text("x")
+    tool = GlobTool(); tool._config = cfg
+    result = tool.execute(pattern="**/*.md")
+    assert len(result.text.splitlines()) == 50
+
+
 def test_grep_finds_lines(tmp_path):
     from paperflow.tools.grep import GrepTool
     from paperflow.config import PaperFlowConfig
@@ -180,6 +212,37 @@ def test_grep_miss_and_bad_regex(tmp_path):
     tool = GrepTool(); tool._config = cfg
     assert "无匹配" in tool.execute(pattern="zzz", path=str(tmp_path / "note")).text
     assert "正则无效" in tool.execute(pattern="[", path=str(tmp_path / "note")).text
+
+
+def test_grep_returns_raw_line_for_anchor(tmp_path):
+    # Important 4 回归：grep 命中行被当作 edit_file 的 old_text 锚点，必须原样返回
+    # （不 strip、不截断）——缩进/超长行若被裁剪，模型复制过去就 miss，又变试错。
+    from paperflow.tools.grep import GrepTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note").mkdir(parents=True)
+    indented = "    ## 方法\n"          # 前导缩进
+    long_line = "## 摘要 " + "x" * 300 + "\n"  # 超长行
+    (tmp_path / "note" / "a.md").write_text(indented + long_line, encoding="utf-8")
+    tool = GrepTool(); tool._config = cfg
+    r1 = tool.execute(pattern="## 方法", path=str(tmp_path / "note"))
+    assert "    ## 方法" in r1.text      # 缩进原样保留
+    r2 = tool.execute(pattern="x{300}", path=str(tmp_path / "note"))
+    assert ("x" * 300) in r2.text        # 超长行不截断
+
+
+def test_grep_caps_at_30(tmp_path):
+    # 封顶回归：40 条命中只返回 30 条（原样行 + 封顶控制量）。
+    from paperflow.tools.grep import GrepTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note").mkdir(parents=True)
+    (tmp_path / "note" / "a.md").write_text("match\n" * 40, encoding="utf-8")
+    tool = GrepTool(); tool._config = cfg
+    result = tool.execute(pattern="match", path=str(tmp_path / "note"))
+    assert len(result.text.splitlines()) == 30
 
 
 # ---- Write/Edit 语义（Task 3）：write=新建+覆盖，edit=定向 search-replace ----
@@ -240,3 +303,19 @@ def test_edit_file_missing_file(tmp_path):
     tool = EditFileTool(); tool._config = cfg
     assert "文件不存在" in tool.execute(
         path=str(tmp_path / "note" / "nope.md"), old_text="a", new_text="b").text
+
+
+def test_edit_file_empty_old_text(tmp_path):
+    # Minor 10 回归：空 old_text 会走 str.count("") 的"多命中"分支（困惑的报错）。
+    # 守卫直接明示参数错误，且文件不被改动。
+    from paperflow.tools.edit_file import EditFileTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note").mkdir(parents=True)
+    f = tmp_path / "note" / "a.md"
+    f.write_text("abc", encoding="utf-8")
+    tool = EditFileTool(); tool._config = cfg
+    r = tool.execute(path=str(f), old_text="", new_text="x")
+    assert "old_text 不能为空" in r.text
+    assert f.read_text(encoding="utf-8") == "abc"   # 未改动
