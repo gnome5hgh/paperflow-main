@@ -124,3 +124,59 @@ def test_read_pdf_fuzzy_no_match_reports_not_found(agent_env):
     with pytest.raises(Exception) as ei:
         ReadPdfTool().execute(path=requested)
     assert "未找到" in str(ei.value)
+
+
+# ---- GlobTool / GrepTool：只读搜索工具（Task 2）----
+# 定位/去重/锚点确认依赖 glob 命中与 grep 行级命中，治 P2 路径风暴。
+
+
+def test_glob_finds_files(tmp_path):
+    from paperflow.tools.glob import GlobTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note" / "sub").mkdir(parents=True)
+    (tmp_path / "note" / "a.md").write_text("x")
+    (tmp_path / "note" / "sub" / "b.md").write_text("y")
+    tool = GlobTool()
+    tool._config = cfg
+    result = tool.execute(pattern="**/*.md")
+    assert "a.md" in result.text and "b.md" in result.text
+    result2 = tool.execute(pattern="*.md")     # 非递归
+    assert "a.md" in result2.text and "sub" not in result2.text
+    assert tool.risk_level == "low" and tool.allowed_roots == ["note", "pdf", "memory"]
+
+
+def test_glob_no_match(tmp_path):
+    from paperflow.tools.glob import GlobTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note").mkdir(parents=True)
+    tool = GlobTool(); tool._config = cfg
+    assert "无匹配" in tool.execute(pattern="**/*.pdf").text
+
+
+def test_grep_finds_lines(tmp_path):
+    from paperflow.tools.grep import GrepTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note").mkdir(parents=True)
+    (tmp_path / "note" / "a.md").write_text("line1\nDPNS method\nline3", encoding="utf-8")
+    tool = GrepTool(); tool._config = cfg
+    result = tool.execute(pattern="DPNS", path=str(tmp_path / "note"))
+    assert "a.md:2:" in result.text and "DPNS" in result.text
+    assert tool.risk_level == "low"
+
+
+def test_grep_miss_and_bad_regex(tmp_path):
+    from paperflow.tools.grep import GrepTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note").mkdir(parents=True)
+    (tmp_path / "note" / "a.md").write_text("hello", encoding="utf-8")
+    tool = GrepTool(); tool._config = cfg
+    assert "无匹配" in tool.execute(pattern="zzz", path=str(tmp_path / "note")).text
+    assert "正则无效" in tool.execute(pattern="[", path=str(tmp_path / "note")).text
