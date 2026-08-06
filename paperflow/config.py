@@ -99,7 +99,7 @@ class PaperFlowConfig:
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
 
     #: 子 agent 超时覆盖表（D2）：generate-note 默认 600s——端到端（读+起草+写盘+
-    #: ≤2 轮审稿每轮 ≤120s）远超默认 120s，旧值下必然超时→supervisor 反复重试
+    #: ≤3 轮审稿每轮 ≤120s）远超默认 120s，旧值下必然超时→supervisor 反复重试
     #:（2026-08-06 实测）。YAML 顶层 agent_timeouts 可覆盖；dict 无 env 形态。
     agent_timeouts: dict[str, int] = field(default_factory=lambda: {"generate-note": 600})
 
