@@ -56,6 +56,18 @@ routes:
         assert names == {"search_paper", "generate_note", "ask_question",
                          "manage_memory", "general"}
 
+    def test_ask_question_covers_read_intent(self):
+        """回归：ask_question 必须有"阅读论文"例句（否则"阅读…论文"误路由到 generate_note）。
+
+        2026-08-06 实测：ask_question 原本零阅读例句，用户输入
+        "阅读 <pdf 路径> 这篇论文" 被 HybridRouter 按 argmax 判为 generate_note（0.676），
+        supervisor 据此 spawn 了 generate-note 而非 answer-question。补阅读例句后
+        该查询正确路由到 ask_question（0.713）。此测试守护数据形状，防例句被误删。
+        """
+        routes = load_routes(Path("data/intents/routes.yaml"))
+        ask = next(r for r in routes if r.name == "ask_question")
+        assert any("阅读" in u or u.startswith("读") for u in ask.utterances)
+
 
 def test_save_thresholds_round_trip(tmp_path):
     """标定写回 → load 读回：per-route 阈值不丢、utterances 不丢。"""

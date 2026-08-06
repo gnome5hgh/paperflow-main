@@ -187,6 +187,14 @@ eval:
     intent: ask_question
   - query: 这个模型的过拟合问题怎么解决
     intent: ask_question
+  - query: 帮我把这份 PDF 的内容讲一下
+    intent: ask_question
+  - query: 读读这篇论文的关键发现
+    intent: ask_question
+  - query: 帮我阅读这份文献资料
+    intent: ask_question
+  - query: 通读一下这篇论文
+    intent: ask_question
   # manage_memory —— 记忆/阅读记录/收藏/历史查询的多种表述
   - query: 我标记过哪些论文已读
     intent: manage_memory
