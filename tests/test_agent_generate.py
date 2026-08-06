@@ -180,17 +180,17 @@ async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
     mock.add(_tc("read_pdf", {"path": str(pdf)}))
     mock.add(_tc("write_file", {"path": str(note_out), "content": "# 标题\n## 概述\n## 方法\n"}))   # 草稿 v1
     mock.add(_tc("review_draft", {"draft_path": str(note_out), "pdf_path": str(pdf)}))
-    # 审稿循环 第 1 轮：子 agent 读草稿 → 意见"缺实验结果"（驱动 edit_file 修订）
+    # 第 1 轮：子 agent 读草稿 → 裁决 fail（blocking: 缺实验结果）
     mock.add(child_read)
-    mock.add(Message(role="assistant", content="草稿缺实验结果，请补充"))
-    # 修订：edit_file 定向 search-replace 插入"实验结果"节（A-ii：修订不再另起 scratch）
+    mock.add(Message(role="assistant", content="审查裁决：fail\n- [BLOCKING] structure | 实验结果 | 补充实验结果章节"))
+    # 修订：edit_file 定向插入"实验结果"节
     mock.add(_tc("edit_file", {"path": str(note_out),
                                "old_text": "## 方法\n",
                                "new_text": "## 方法\n## 实验结果\n"}))
-    # 第 2 轮：修订后 → 子 agent 读草稿 → 意见"通过"
+    # 第 2 轮：修订后 → 子 agent 读草稿 → 裁决 pass
     mock.add(_tc("review_draft", {"draft_path": str(note_out), "pdf_path": str(pdf)}))
     mock.add(child_read)
-    mock.add(Message(role="assistant", content="结构完整，通过"))
+    mock.add(Message(role="assistant", content="审查裁决：pass"))
     # 定稿
     mock.add(Message(role="assistant", content="笔记已生成"))
 
@@ -243,3 +243,82 @@ async def test_review_draft_timeout_returns_message(agent_env, agent_registry, m
     assert "超时" in result.text         # wait_for 触发 → 超时消息给父 LLM
     scratch = Path(cfg.workspace) / "tmp"
     assert not list(scratch.glob("review_*.md"))   # 恒真（无 scratch 落盘）但保留作回归
+
+
+@pytest.mark.asyncio
+async def test_review_draft_passes_requirements(agent_env, agent_registry, monkeypatch):
+    """requirements 参数 → 子任务文本含"用户要求"子句（要求传递链的桥）。"""
+    cfg, _ = agent_env
+    pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
+    pdf.write_bytes(b"dummy")
+    draft = Path(cfg.vault_note_dir) / "paper.md"
+    draft.write_text("# 标题", encoding="utf-8")
+    captured = {}
+    async def _run_capture(self, task):
+        captured["task"] = task
+        return "审查完成"
+    monkeypatch.setattr(Agent, "run", _run_capture)
+    llm = make_mock_llm([])
+    agent = make_agent(agent_registry, "generate-note", llm, cfg)
+    tool = agent.tools["review_draft"]
+    await asyncio.to_thread(
+        tool.execute, draft_path=str(draft), pdf_path=str(pdf),
+        requirements="重点讲方法，500字以内")
+    assert "用户要求：重点讲方法，500字以内" in captured["task"]
+
+
+@pytest.mark.asyncio
+async def test_review_draft_without_requirements_omits_clause(agent_env, agent_registry, monkeypatch):
+    """向后兼容：不传 requirements → 子任务不含"用户要求"子句，审查跳过要求维度。"""
+    cfg, _ = agent_env
+    pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
+    pdf.write_bytes(b"dummy")
+    draft = Path(cfg.vault_note_dir) / "paper.md"
+    draft.write_text("# 标题", encoding="utf-8")
+    captured = {}
+    async def _run_capture(self, task):
+        captured["task"] = task
+        return "审查完成"
+    monkeypatch.setattr(Agent, "run", _run_capture)
+    llm = make_mock_llm([])
+    agent = make_agent(agent_registry, "generate-note", llm, cfg)
+    tool = agent.tools["review_draft"]
+    await asyncio.to_thread(tool.execute, draft_path=str(draft), pdf_path=str(pdf))
+    assert "用户要求" not in captured["task"]
+
+
+@pytest.mark.asyncio
+async def test_generate_note_gives_up_after_three_rounds(agent_env, agent_registry):
+    """blocking 3 轮未清零 → 停止循环（不再有第 4 次提交），返回路径 + 明示未达标。
+
+    驱动：3 轮全部返回同一 blocking（缺实验结果），generate-note 每轮 edit_file
+    尝试修订但裁决始终 fail；第 3 轮后 generate-note 应停止并明示未达标。
+    callable_hits == 3 精确证明恰好 3 次 child spawn（= 3 次 review_draft 提交）。
+    """
+    cfg, _ = agent_env
+    pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
+    pdf.write_bytes(b"dummy")
+    note_out = Path(cfg.vault_note_dir) / "paper.md"
+    template = Path(cfg.workspace) / "templates" / "paper_note.md"
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text("# 标题\n## 概述\n## 方法\n", encoding="utf-8")
+
+    mock = LoopMockLLM()
+    mock.add(_tc("read_file", {"path": str(template)}))
+    mock.add(_tc("read_pdf", {"path": str(pdf)}))
+    mock.add(_tc("write_file", {"path": str(note_out), "content": "# 标题\n## 概述\n## 方法\n"}))
+    for _ in range(3):
+        mock.add(_tc("review_draft", {"draft_path": str(note_out), "pdf_path": str(pdf)}))
+        mock.add(child_read)
+        mock.add(Message(role="assistant", content="审查裁决：fail\n- [BLOCKING] structure | 实验结果 | 补充实验结果章节"))
+        mock.add(_tc("edit_file", {"path": str(note_out),
+                                   "old_text": "## 方法\n",
+                                   "new_text": "## 方法\n## 实验结果\n"}))
+    # 第 3 轮 fail 后：停止循环，返回路径 + 明示未达标
+    mock.add(Message(role="assistant", content="笔记已生成，仍有 blocking 意见未解决"))
+
+    agent = make_agent(agent_registry, "generate-note", mock, cfg)
+    result = await agent.run(f"为 {pdf} 生成笔记")
+    assert "未解决" in result
+    assert mock.callable_hits == 3          # 恰好 3 次提交，无第 4 次（若尝试第 4 次 mock pop 空 → IndexError）
+    assert note_out.exists()

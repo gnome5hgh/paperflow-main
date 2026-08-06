@@ -42,6 +42,9 @@ class ReviewDraftTool(Tool):
                            "description": "笔记文件绝对路径（草稿 v1，write_file 已落盘）"},
             "pdf_path": {"type": "string", "format": "path",
                          "description": "主论文 PDF 绝对路径（供对照原文）"},
+            "requirements": {"type": "string",
+                             "description": "用户对笔记的自由文本要求（篇幅/语言/侧重/深度等）；"
+                                            "无要求则不传，审查跳过要求符合度维度"},
         },
         "required": ["draft_path", "pdf_path"],
     }
@@ -55,7 +58,7 @@ class ReviewDraftTool(Tool):
     allowed_roots = ["pdf", "note"]        # pdf_path 走 pdf 根、draft_path 走 note 根
     needs_parent = True                    # 触发 Agent.__init__ opt-in 注入
 
-    def execute(self, draft_path: str, pdf_path: str) -> ToolResult:
+    def execute(self, draft_path: str, pdf_path: str, requirements: str = "") -> ToolResult:
         parent = getattr(self, "_parent", None)
         if parent is None:
             # 不用 assert：python -O 下断言被剥离，而 parent 缺失是安全敏感路径
@@ -81,6 +84,10 @@ class ReviewDraftTool(Tool):
                       security_middleware=parent.security_middleware,
                       session_id=parent.session_id)
         task = f"审阅草稿文件 {draft_path}，对照原文 {pdf_path}"
+        if requirements:
+            # 用户要求 → 拼进子任务文本：Task 3 的 review-note 从任务文本读取用户要求
+            # 并以 requirements 维度审查笔记是否符合。无要求则不拼——向后兼容且跳过该维度。
+            task += f"。用户要求：{requirements}"
         try:
             # execute 跑在 to_thread worker 线程（无 running loop）→ asyncio.run 安全新建 loop
             # 嵌套审稿加 wait_for：单轮审稿有时间盒，不会无限挂起拖垮整个
