@@ -12,7 +12,6 @@ from tests.conftest import make_mock_llm, _tc, make_agent
 @pytest.mark.asyncio
 async def test_review_note_happy_path(agent_env, agent_registry):
     cfg, _ = agent_env
-    # 草稿（scratch 位置，任务文本给出）+ 原文 PDF（假解析器不读内容，文件需存在）
     scratch = Path(cfg.workspace) / "tmp"
     scratch.mkdir(parents=True, exist_ok=True)
     draft = scratch / "review_test.md"
@@ -52,3 +51,51 @@ def test_review_note_has_glob_grep(agent_registry):
     config = agent_registry.get_config("review-note")
     names = {t.name for t in config.tools}
     assert {"glob", "grep"} <= names
+
+
+@pytest.mark.asyncio
+async def test_review_note_submits_fail_verdict(agent_env, agent_registry):
+    """fail 路径：submit_review 带 blocking issue（结构缺章节）。"""
+    cfg, _ = agent_env
+    scratch = Path(cfg.workspace) / "tmp"
+    scratch.mkdir(parents=True, exist_ok=True)
+    draft = scratch / "review_test.md"
+    draft.write_text("# 标题\n## 概述\n## 方法\n", encoding="utf-8")
+    pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
+    pdf.write_bytes(b"dummy")
+    issues = [{"severity": "blocking", "dimension": "structure",
+               "location": "实验结果", "action": "补充实验结果章节"}]
+    llm = make_mock_llm([
+        _tc("read_file", {"path": str(draft)}),
+        _tc("read_pdf", {"path": str(pdf)}),
+        _tc("format_check", {"path": str(draft)}),
+        _tc("submit_review", {"path": str(draft), "verdict": "fail", "issues": issues}),
+        Message(role="assistant", content="审查裁决：fail"),
+    ])
+    agent = make_agent(agent_registry, "review-note", llm, cfg)
+    result = await agent.run(f"审阅草稿文件 {draft}，对照原文 {pdf}")
+    assert "审查裁决：fail" in result
+
+
+@pytest.mark.asyncio
+async def test_review_note_checks_requirements_from_task(agent_env, agent_registry):
+    """要求符合度：任务文本含「用户要求」→ review-note 产出 requirements 维度 blocking。"""
+    cfg, _ = agent_env
+    scratch = Path(cfg.workspace) / "tmp"
+    scratch.mkdir(parents=True, exist_ok=True)
+    draft = scratch / "review_test.md"
+    draft.write_text("# 标题\n## 概述\n## 方法\n", encoding="utf-8")
+    pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
+    pdf.write_bytes(b"dummy")
+    issues = [{"severity": "blocking", "dimension": "requirements",
+               "location": "概述", "action": "压缩到 500 字以内"}]
+    llm = make_mock_llm([
+        _tc("read_file", {"path": str(draft)}),
+        _tc("read_pdf", {"path": str(pdf)}),
+        _tc("format_check", {"path": str(draft)}),
+        _tc("submit_review", {"path": str(draft), "verdict": "fail", "issues": issues}),
+        Message(role="assistant", content="审查裁决：fail"),
+    ])
+    agent = make_agent(agent_registry, "review-note", llm, cfg)
+    result = await agent.run(f"审阅草稿文件 {draft}，对照原文 {pdf}。用户要求：500字以内")
+    assert "审查裁决：fail" in result
