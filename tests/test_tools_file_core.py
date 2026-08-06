@@ -79,11 +79,14 @@ async def test_workspace_boundary_enforced(tmp_path):
         await mw.before(ctx)
 
 
-def test_write_rejects_existing(tmp_path):
+def test_write_overwrites_existing(tmp_path):
+    # 2026-08-06 死锁修复后语义：write_file 新建+覆盖（不再"仅新建"拒绝已存在文件——
+    # 旧守卫让已存在文件只能走 edit_file，而 edit_file 曾因 high>medium 被拒 → 死锁）。
+    # 本测试走 make_tools 装配路径（_config + allowed_paths 注入），补 factory 集成视角。
     tools, _ = _tools(tmp_path)
     write_tool = next(t for t in tools if isinstance(t, WriteFileTool))
     target = tmp_path / "note" / "x.md"
     target.write_text("old", encoding="utf-8")
     result = write_tool.execute(path=str(target), content="new")
-    assert "已存在" in result.text            # 返回拒绝
-    assert target.read_text(encoding="utf-8") == "old"   # 内容不变（未写入）
+    assert "已写入" in result.text            # 覆盖成功（不再拒绝）
+    assert target.read_text(encoding="utf-8") == "new"   # 旧内容被整篇替换

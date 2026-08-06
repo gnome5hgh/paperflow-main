@@ -180,3 +180,63 @@ def test_grep_miss_and_bad_regex(tmp_path):
     tool = GrepTool(); tool._config = cfg
     assert "无匹配" in tool.execute(pattern="zzz", path=str(tmp_path / "note")).text
     assert "正则无效" in tool.execute(pattern="[", path=str(tmp_path / "note")).text
+
+
+# ---- Write/Edit 语义（Task 3）：write=新建+覆盖，edit=定向 search-replace ----
+# 2026-08-06 死锁修复：write_file 曾"仅新建"，已存在文件必须走 edit_file，但 edit_file
+# 又因 high>medium 被默认拒绝 → 已存在文件无任何可写工具。现两者同 medium：write 整篇
+# 写/重写，edit 定向替换。
+
+
+def test_write_file_overwrites_existing(tmp_path):
+    from paperflow.tools.write_file import WriteFileTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note").mkdir(parents=True)
+    f = tmp_path / "note" / "a.md"
+    f.write_text("旧内容", encoding="utf-8")
+    tool = WriteFileTool(); tool._config = cfg
+    result = tool.execute(path=str(f), content="新内容")
+    assert f.read_text(encoding="utf-8") == "新内容"     # 覆盖成功
+    assert "已写入" in result.text
+
+
+def test_edit_file_search_replace(tmp_path):
+    from paperflow.tools.edit_file import EditFileTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note").mkdir(parents=True)
+    f = tmp_path / "note" / "a.md"
+    f.write_text("# 标题\n## 方法\n", encoding="utf-8")
+    tool = EditFileTool(); tool._config = cfg
+    result = tool.execute(path=str(f), old_text="## 方法\n", new_text="## 方法\n## 实验结果\n")
+    assert "## 实验结果" in f.read_text(encoding="utf-8")
+    assert "已编辑" in result.text
+    assert tool.risk_level == "medium"     # 不再 high → 默认会话可确认
+
+
+def test_edit_file_miss_and_multi(tmp_path):
+    from paperflow.tools.edit_file import EditFileTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note").mkdir(parents=True)
+    f = tmp_path / "note" / "a.md"
+    f.write_text("abc", encoding="utf-8")
+    tool = EditFileTool(); tool._config = cfg
+    assert "未找到" in tool.execute(path=str(f), old_text="zzz", new_text="x").text
+    f.write_text("abcabc", encoding="utf-8")
+    assert "次" in tool.execute(path=str(f), old_text="abc", new_text="x").text  # 多命中
+
+
+def test_edit_file_missing_file(tmp_path):
+    from paperflow.tools.edit_file import EditFileTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path / "note"))
+    (tmp_path / "note").mkdir(parents=True)
+    tool = EditFileTool(); tool._config = cfg
+    assert "文件不存在" in tool.execute(
+        path=str(tmp_path / "note" / "nope.md"), old_text="a", new_text="b").text

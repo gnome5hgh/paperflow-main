@@ -158,13 +158,12 @@ async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
     """两轮审稿循环（A-ii）：write_file 草稿 v1 → review → edit_file 修订 → review → 定稿。
 
     A-ii 下草稿自始至终在最终路径（vault note）：write_file 落 v1，修订走 edit_file
-    覆盖写回同一路径（不再 in-context 修订 + 另起 scratch），review_draft 两次传
-    draft_path=note_out。"""
+    定向 search-replace 写回同一路径（不再 in-context 修订 + 另起 scratch），
+    review_draft 两次传 draft_path=note_out。"""
     cfg, _ = agent_env
-    # 修订 edit_file 是 risk_level="high"，默认 max_risk="medium" 会被 PolicyEngine
-    # 直接 policy_denied（工具根本不执行，修订不落盘）→ 抬到 high 让修订路径真实走通，
-    # 强断言（"## 实验结果" 出现）才能证明 edit_file 真正改写 note_out。确认门仍是用户门。
-    cfg.max_risk = "high"
+    # edit_file 现为 risk_level="medium"（与 write_file 对齐，2026-08-06），默认
+    # max_risk="medium" 即可通过 PolicyEngine 风险检查 → 无需再抬 max_risk。
+    # 确认门仍是用户门（requires_confirm + confirm_callback 代为接受）。
     pdf = Path(cfg.vault_pdf_dir) / "paper.pdf"
     pdf.write_bytes(b"dummy")
     note_out = Path(cfg.vault_note_dir) / "paper.md"
@@ -181,9 +180,10 @@ async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
     # 审稿循环 第 1 轮：子 agent 读草稿 → 意见"缺实验结果"（驱动 edit_file 修订）
     mock.add(child_read)
     mock.add(Message(role="assistant", content="草稿缺实验结果，请补充"))
-    # 修订：edit_file 覆盖写回同一最终路径（A-ii：修订不再另起 scratch）
+    # 修订：edit_file 定向 search-replace 插入"实验结果"节（A-ii：修订不再另起 scratch）
     mock.add(_tc("edit_file", {"path": str(note_out),
-                               "content": "# 标题\n## 概述\n## 方法\n## 实验结果\n"}))
+                               "old_text": "## 方法\n",
+                               "new_text": "## 方法\n## 实验结果\n"}))
     # 第 2 轮：修订后 → 子 agent 读草稿 → 意见"通过"
     mock.add(_tc("review_draft", {"draft_path": str(note_out), "pdf_path": str(pdf)}))
     mock.add(child_read)
@@ -202,8 +202,8 @@ async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
     # （首轮工具调用 + 次轮最终回答），故 sum ≥ 2 即证明两次 spawn 都发生。
     assert sum(1 for t in mock.seen_tasks if "审阅草稿文件" in t) >= 2
     assert note_out.exists()                       # 定稿落盘
-    # 修订已生效：v1 无"实验结果"节，edit_file 覆盖写回后才有——startswith("# 标题")
-    # 在 v1 也成立，无法证明修订真正改写 note_out，故用更强断言。
+    # 修订已生效：v1 无"实验结果"节，edit_file 定向 search-replace 插入后才出现——
+    # startswith("# 标题") 在 v1 也成立，无法证明修订真正改写 note_out，故用更强断言。
     assert "## 实验结果" in note_out.read_text(encoding="utf-8")
     # scratch 清理：两轮审稿后 workspace/tmp 无残留（恒真但保留作回归）
     assert not list((Path(cfg.workspace) / "tmp").glob("review_*.md"))
