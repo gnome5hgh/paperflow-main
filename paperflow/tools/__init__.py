@@ -13,7 +13,7 @@ from paperflow.tools.read_pdf import ReadPdfTool
 from paperflow.tools.mark_read import MarkReadTool
 from paperflow.tools.format_answer import FormatAnswerTool
 from paperflow.tools.format_check import FormatCheckTool
-from paperflow.tools.suggest_edit import SuggestEditTool
+from paperflow.tools.submit_review import SubmitReviewTool
 from paperflow.tools.arxiv_search import ArxivSearchTool
 from paperflow.tools.openalex_search import OpenAlexSearchTool
 from paperflow.tools.dedup_papers import DedupPapersTool
@@ -22,6 +22,6 @@ from paperflow.tools.filter_papers import FilterPapersTool
 __all__ = [
     "GlobTool", "GrepTool", "ReadFileTool", "WriteFileTool", "EditFileTool",
     "ReadPdfTool", "MarkReadTool", "FormatAnswerTool", "FormatCheckTool",
-    "SuggestEditTool", "ArxivSearchTool", "OpenAlexSearchTool", "DedupPapersTool",
+    "SubmitReviewTool", "ArxivSearchTool", "OpenAlexSearchTool", "DedupPapersTool",
     "FilterPapersTool",
 ]

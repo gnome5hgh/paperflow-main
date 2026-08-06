@@ -16,7 +16,7 @@ allowed_spawns: []
    - 研究问题 / 核心方法 / 主要结论 是否与原文一致；
    - 实验数据 / 数字 是否与原文一致（无编造）；
    - 是否遗漏关键信息。
-5. `suggest_edit` 汇总修改建议。
+5. `submit_review` 汇总审查裁决（verdict + issues）。
 
 ## 工具用法
 

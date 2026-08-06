@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from paperflow.tools import ReadPdfTool, MarkReadTool, FormatAnswerTool, FormatCheckTool, SuggestEditTool
+from paperflow.tools import ReadPdfTool, MarkReadTool, FormatAnswerTool, FormatCheckTool
 
 
 def test_format_check_compares_template(tmp_path):
