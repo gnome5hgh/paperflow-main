@@ -11,10 +11,12 @@ ContextCompressor —— 对话上下文压缩器。
    tiktoken 对 DeepSeek 等模型的估算偏差，避免低估时实际超窗口。
 3. **跨轮累积**：``accumulate`` 每轮 run 结束把对话消息追加进 history
    （唯一写入口，不 append system）——history 是压缩器唯一跨轮状态。
-4. **压缩改写**（``compress_history``）：history 超出预算时增量压缩——
+4. **压缩改写**（``compress_history``）：history 超出 reserve 预算时增量压缩——
    旧摘要（history[0] 若是 system 摘要消息则取之）作输入，LLM 提取
    SummarySchema 后新摘要消息写入 history[0]，``_split_tail`` 保留近
-   对话作下轮回放素材（reserve_ratio）。失败降级：保留原始 history
+   对话作下轮回放素材（reserve_ratio）。history 已 ≤ reserve 预算时
+   直接返回不调 LLM——压缩产物收缩到 ~reserve，压了只会产生无意义
+   摘要（无净收益防护，review Important 1）。失败降级：保留原始 history
    不压缩——安全侧宁可多带 token 也不丢对话。
    ``_split_tail`` 有成对约束：assistant(tool_calls) 与其 tool 结果
    必须成对保留或整对丢弃，绝不允许孤立 role="tool" 消息。
@@ -100,6 +102,17 @@ class ContextCompressor:
         """
         from paperflow.core.llm import Message    # 惰性导入（llm → memory 循环依赖）
 
+        # 无净收益防护（review Important 1）：history 已 ≤ reserve 预算时直接返回，
+        # 不调 LLM、不改 history。压缩产物（摘要 + tail）设计上收缩到 ~reserve，
+        # history 已 ≤ reserve 时压了只会产生无意义摘要。尤其单轮 conv 巨大（大 tool
+        # 结果/多轮迭代）会让 should_compress 对 head+history+conv 反复报 true、而 history
+        # 本就很小：每次迭代白跑一次 LLM structured-extract，并把噪音摘要写进 history[0]
+        # 污染下轮输入。reserve 预算 = context_size × reserve_ratio（默认 32K × 0.1 ≈ 3276）。
+        reserve = int(self.config.resolve_context_size(self.llm.context_window)
+                      * self.config.reserve_ratio)
+        if self._estimate_tokens(self.history) <= reserve:
+            return
+
         old_summary = self._summary_text()
         prompt = self._build_compression_prompt(self.history, old_summary)
         try:
@@ -134,7 +147,10 @@ class ContextCompressor:
         for m in messages:
             if m.role == "system":
                 continue
-            parts.append(f"{m.role}: {m.content[:2000]}")
+            # content 可能为 None（assistant(tool_calls) 消息）——直接切片会抛 TypeError。
+            # 本方法在 compress_history 的 try 块外调用（review Important 2），异常会
+            # 逃逸崩溃整个 Agent.run：取空串兜底，保证压缩路径永远可构造 prompt。
+            parts.append(f"{m.role}: {(m.content or '')[:2000]}")
         return "\n".join(parts)
 
     def _split_tail(self, messages: list[Message], ratio: float) -> list[Message]:

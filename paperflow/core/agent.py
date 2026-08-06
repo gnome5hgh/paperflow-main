@@ -295,8 +295,8 @@ class Agent:
                → ②b INTENT 块（intent_enabled 且管线成功时））→ 跨轮回放 history
                （若有）→ user_task（消息顺序固定）。每轮 run 结束把本轮对话累积进
                compressor.history，供下轮回放（短对话跨轮上下文闭合）
-            3. 调用 LLM 前检查压缩（compressor.should_compress → compress
-               重建 messages），随后调用 LLM → 获取 response
+            3. 调用 LLM 前检查压缩（compressor.should_compress → compress_history
+               原地改写 history 并重建 messages），随后调用 LLM → 获取 response
             4. 如果无 tool_calls → 顺序执行各中间件的 on_finish 钩子，
                返回改写后的 content（LLM 判定任务完成）
             5. 如果有 tool_calls → 逐个执行，将 ToolResult 附加到消息列表
@@ -418,7 +418,11 @@ class Agent:
                 messages.append(tool_msg)
                 conv.append(tool_msg)
 
-        # 安全阀触发：LLM 陷入了无法在限定轮数内退出的循环
+        # 安全阀触发：LLM 陷入了无法在限定轮数内退出的循环。
+        # 刻意不累积（review Minor 8）：raise 路径不调 accumulate——本轮半截对话
+        # （conv）不写回 history。MaxTurnsExceeded 是"任务失败"信号，半截推理不该
+        # 回放给下轮 LLM：下轮从干净 context 重来，而非带着失败残渣。只有成功
+        # return 路径才累积（上方 accumulate 调用）。
         raise MaxTurnsExceeded(
             f"ReAct loop did not finish within {self.max_turns} turns"
         )

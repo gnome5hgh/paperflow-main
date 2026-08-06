@@ -80,6 +80,9 @@ def test_subagent_result_cross_turn_visible(supervisor_registry):
                   confirm_callback=lambda cr: True, compressor=comp)
     asyncio.run(agent.run("搜索 circRNA 文献"))
     asyncio.run(agent.run("这些论文有什么共同点"))
+    # 防护（review Minor 5）：capture[3] 假设 run1 恰好 3 次 LLM 调用——装配/触发条件
+    # 变化会让索引静默指错调用；先断言条数，跑偏时 loud fail 而非 silently check wrong call
+    assert len(capture) >= 4
     contents = [m.content for m in capture[3]]                # run2 的 LLM 调用
     # 子串命中（非精确 in）：spawn 的 tool 结果是 SubAgentResult 的 JSON 序列化
     # （"summary" 字段含"子任务已执行"），裸文本精确匹配会误判——验证跨轮回放即可。
