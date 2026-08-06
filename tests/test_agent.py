@@ -633,3 +633,31 @@ class TestToolEvent:
         assert len(tool_events) == 1
         assert tool_events[0].text == "调用 echo(message=hi)"
         assert tool_events[0].agent_type == "test"
+
+
+# ─── 截断续写（generate-note-fix Task 3）：半截回答不当作最终结果 ─────
+
+
+def test_truncated_response_continues_and_merges():
+    capture = []
+    # 第一个响应截断(truncated=True)→ 触发续写；第二个完整 → 合并返回
+    llm = make_capture_llm([
+        Message(role="assistant", content="前半", truncated=True),
+        Message(role="assistant", content="后半"),
+    ], capture)
+    agent = Agent(llm=llm, agent_registry=make_mock_registry([]), agent_type="test")
+    result = asyncio.run(agent.run("问题"))
+    assert result == "前半后半"          # 半截+续写合并
+    assert len(capture) == 2             # LLM 被调用两次（截断→续写）
+    # 续写请求携带"继续"提示
+    cont = [m for m in capture[1] if m.role == "user"]
+    assert any("截断" in (m.content or "") for m in cont)
+
+
+def test_non_truncated_returns_directly():
+    capture = []
+    llm = make_capture_llm([Message(role="assistant", content="回答")], capture)
+    agent = Agent(llm=llm, agent_registry=make_mock_registry([]), agent_type="test")
+    result = asyncio.run(agent.run("问题"))
+    assert result == "回答"
+    assert len(capture) == 1

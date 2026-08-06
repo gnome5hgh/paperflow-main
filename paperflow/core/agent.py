@@ -354,8 +354,14 @@ class Agent:
         #: conv = 本轮对话残留（旁路列表）。兼两职：(a) 压缩重建时拼回 messages（Task 4）；
         #: (b) run 结束时作为 accumulate 输入。与 messages 始终同步 append，不用索引
         #: 定位——压缩重建会改变 head+history 长度，固定索引会错位。
+        #: 唯一例外：截断续写分支（truncated）只 append 到 messages 不进 conv——
+        #: 半截内容不出现在最终累积里，conv 只收合并后的完整 assistant。
         conv: list[Message] = [Message(role="user", content=task)]
         messages.append(conv[0])
+
+        #: 截断续写累积器：半截回答在此暂存，完整回答返回前合并。
+        #: 只在截断→续写场景使用；非截断路径保持空列表，零额外行为。
+        accumulated: list[str] = []
 
         for _ in range(self.max_turns):
             # 每次 model call 前检查压缩：messages 已含回放 history，超阈值即触发。
@@ -383,7 +389,18 @@ class Agent:
 
             # LLM 判定任务完成：返回无 tool_calls 的纯文本消息
             if not response.tool_calls:
-                content = response.content
+                if response.truncated:
+                    # 内容被截断 → 不当作最终回答返回（静默半截是 P5 触发点）。
+                    # 暂存半截、把已生成部分+续写提示进上下文，继续循环。
+                    # max_turns 天然封顶续写次数，不会死循环。
+                    accumulated.append(response.content or "")
+                    messages.append(response)
+                    messages.append(Message(
+                        role="user",
+                        content="上一条回答因输出长度上限被截断，请直接从断点继续输出，不要重复已输出的内容。"))
+                    continue
+                content = "".join(accumulated) + (response.content or "")
+                accumulated.clear()
                 # on_finish 钩子：顺序执行，可逐级改写最终回答
                 # （如追加来源引用、注入安全声明等）
                 for mw in self.security_middleware:
