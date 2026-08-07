@@ -31,3 +31,15 @@ def test_verdict_consistency():
     tool = SubmitDownloadReviewTool()
     r = tool.execute(verdict="pass", items=[_item(decision="fail")])
     assert "一致" in r.text
+
+def test_verdict_fail_with_pass_item_rejected():
+    # 对称方向：verdict=fail 却含 pass 条目 → 输出"审查裁决：fail"却带 [PASS] 行，自相矛盾，必须拦截
+    tool = SubmitDownloadReviewTool()
+    r = tool.execute(verdict="fail", items=[_item(decision="pass")])
+    assert "一致" in r.text
+
+def test_verdict_fail_empty_items_valid():
+    # fail = 无任何合格项，空清单正是其极端情况，必须保持合法（不拦截、正常格式化）
+    tool = SubmitDownloadReviewTool()
+    r = tool.execute(verdict="fail", items=[])
+    assert "审查裁决：fail" in r.text

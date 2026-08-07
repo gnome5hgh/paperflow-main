@@ -13,7 +13,7 @@ DECISIONS = ("pass", "fail")
 class SubmitDownloadReviewTool(Tool):
     name = "submit_download_review"
     description = ("汇总对候选论文清单的下载审查裁决（reviewer 下载审查模式返回）。"
-                   "verdict=pass 当且仅当所有条目 pass 或无 blocking；"
+                   "pass = 存在可下载/推荐项；fail = 无任何合格项。"
                    "每条 fail 必须带 reasons[]（未通过原因，可含等级/年份/相关性/可下载性）。")
     parameters = {
         "type": "object",
@@ -49,11 +49,18 @@ class SubmitDownloadReviewTool(Tool):
             missing = [k for k in ("title", "source_link") if not item.get(k)]
             if missing:
                 return ToolResult(text=f"条目缺少字段: {', '.join(missing)}")
-        # ③ verdict 与 items 一致性：pass 语义=所有条目合格，出现 fail 条目则自相矛盾。
-        #    给可行动指引而非静默放行（防止 reviewer 把明显不合格的论文打包成 pass）。
+        # ③ verdict 与 items 一致性（对称双向）：
+        #    - verdict=pass 时任一 fail 条目 → 自相矛盾（pass 语义=存在可下载/推荐项，
+        #      把不合格论文打包成 pass 属过宽放行）。
+        #    - verdict=fail 时任一 pass 条目 → 自相矛盾（fail 语义=无任何合格项，
+        #      输出"审查裁决：fail"却带 [PASS] 行会误导后续门禁）。
+        #    注意：verdict=fail + 空 items 必须保持合法（fail = 无合格项，空清单正是
+        #    "无任何合格项"的极端情况），any() 对空列表天然返回 False，不拦截。
         has_fail = any(i.get("decision") == "fail" for i in items)
         if verdict == "pass" and has_fail:
             return ToolResult(text="verdict=pass 但存在 fail 条目——verdict 与 items 不一致")
+        if verdict == "fail" and any(i.get("decision") == "pass" for i in items):
+            return ToolResult(text="verdict=fail 但存在 pass 条目——verdict 与 items 不一致（fail = 无任何合格项）")
         # ④ 格式化：verdict 行 + 每条目 PASS/FAIL 标签 + 原因 + 来源链接（generate-note 确定性可读）
         lines = [f"审查裁决：{verdict}"]
         for item in items:
