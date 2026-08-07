@@ -2,7 +2,9 @@
 import pytest
 from pathlib import Path
 from paperflow.core.security import ToolContext, SecurityBlocked
-from paperflow.core.security.workspace import WorkspacePolicy, WorkspacePolicyMiddleware
+from paperflow.core.security.workspace import (
+    WorkspacePolicy, WorkspacePolicyMiddleware, is_denied_path,
+)
 from paperflow.core.tool import Tool, ToolResult
 
 
@@ -117,3 +119,60 @@ class TestWorkspacePolicyMiddleware:
         mw = WorkspacePolicyMiddleware(workspace=str(tmp_path))
         ctx = make_ctx(NoPathTool(), {"query": "circRNA"})
         await mw.before(ctx)  # 不应抛
+
+
+class TestDeniedPath:
+    def test_denies_workspace_audit(self, tmp_path):
+        assert is_denied_path(tmp_path / "audit" / "a.jsonl", str(tmp_path)) is True
+        assert is_denied_path(tmp_path / "audit", str(tmp_path)) is True
+
+    def test_denies_workspace_chroma(self, tmp_path):
+        assert is_denied_path(tmp_path / "chroma" / "x", str(tmp_path)) is True
+
+    def test_denies_git_and_claude_segments(self, tmp_path):
+        assert is_denied_path(tmp_path / ".git" / "config", str(tmp_path)) is True
+        assert is_denied_path(tmp_path / ".claude" / "settings.json", str(tmp_path)) is True
+
+    def test_denies_secret_filenames(self, tmp_path):
+        assert is_denied_path(tmp_path / "config.yaml", str(tmp_path)) is True
+        assert is_denied_path(tmp_path / ".env", str(tmp_path)) is True
+        assert is_denied_path(tmp_path / ".env.local", str(tmp_path)) is True
+
+    def test_allows_intended_roots(self, tmp_path):
+        # memory/templates 是允许根（记忆/模板功能）；vault 正常路径、同名 audit 文件夹不误伤
+        assert is_denied_path(tmp_path / "memory" / "MEMORY.md", str(tmp_path)) is False
+        assert is_denied_path(tmp_path / "templates" / "paper_note.md", str(tmp_path)) is False
+        assert is_denied_path(tmp_path / "note" / "a.md", str(tmp_path)) is False
+        # vault 里同名 "audit" 文件夹（不在 workspace/audit）不误伤
+        assert is_denied_path(tmp_path / "vault" / "audit" / "notes.md", str(tmp_path)) is False
+
+
+class TestMiddlewareDeniedPath:
+    @pytest.mark.asyncio
+    async def test_blocks_denied_even_if_allowed_root_overlaps(self, tmp_path):
+        """白名单会放行（allowed root 含 audit 父目录），但 deny-list 硬拦——防配置错位。"""
+        mw = WorkspacePolicyMiddleware(workspace=str(tmp_path))
+        (tmp_path / "audit").mkdir(parents=True, exist_ok=True)
+        tool = FileTool()
+        tool.allowed_paths = [str(tmp_path)]   # 模拟错位：allowed root 覆盖整个 workspace
+        ctx = make_ctx(tool, {"path": str(tmp_path / "audit" / "audit_x.jsonl")})
+        with pytest.raises(SecurityBlocked) as exc:
+            await mw.before(ctx)
+        assert exc.value.violations[0]["rule"] == "denied_path"
+
+    @pytest.mark.asyncio
+    async def test_blocks_env_filename(self, tmp_path):
+        mw = WorkspacePolicyMiddleware(workspace=str(tmp_path))
+        tool = FileTool(); tool.allowed_paths = [str(tmp_path)]
+        ctx = make_ctx(tool, {"path": str(tmp_path / ".env")})
+        with pytest.raises(SecurityBlocked) as exc:
+            await mw.before(ctx)
+        assert exc.value.violations[0]["rule"] == "denied_path"
+
+    @pytest.mark.asyncio
+    async def test_allows_memory_root(self, tmp_path):
+        mw = WorkspacePolicyMiddleware(workspace=str(tmp_path))
+        tool = FileTool(); tool.allowed_paths = [str(tmp_path)]
+        (tmp_path / "memory").mkdir(parents=True, exist_ok=True)
+        ctx = make_ctx(tool, {"path": str(tmp_path / "memory" / "MEMORY.md")})
+        await mw.before(ctx)   # 不应抛（memory 是允许根）

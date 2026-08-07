@@ -6,6 +6,7 @@ agent 不再盲猜精确路径（P2 路径风暴根因）。只读 → low、无
 """
 from pathlib import Path
 
+from paperflow.core.security.workspace import is_denied_path
 from paperflow.core.tool import Tool, ToolResult
 
 
@@ -42,6 +43,9 @@ class GlobTool(Tool):
                 try:
                     p.resolve().relative_to(base_resolved)  # 逃逸(base 外)→ 跳过
                 except ValueError:
+                    continue
+                # 敏感路径黑名单：base 内含 workspace/audit 等 → 跳过（防通配符枚举）
+                if cfg is not None and is_denied_path(p.resolve(), cfg.workspace):
                     continue
                 hits.append(str(p))
                 if len(hits) >= 50:                          # 封顶防爆炸

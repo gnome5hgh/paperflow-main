@@ -6,6 +6,9 @@ WorkspacePolicyMiddleware —— 工作区路径边界检查中间件。
 将调用方传入的路径解析为绝对路径，并检查其是否落在工具的
 ``allowed_paths`` 白名单（相对于工作区解析）内；越界即抛
 ``SecurityBlocked``（violations 规则名为 ``workspace_boundary``）。
+2026-08-07 起在 resolve 之后、白名单检查之前插入敏感路径黑名单
+（``is_denied_path``）：审计/chroma/.git/密钥文件名命中即拒绝，
+violations 规则名为 ``denied_path``——防 allowed root 错位放行敏感文件。
 
 设计要点：
 - **相对路径直接拒绝**（Layer 2 起）：vault 为外部绝对路径，相对路径
@@ -23,6 +26,33 @@ import os
 from pathlib import Path
 
 from paperflow.core.security import SecurityMiddleware, ToolContext, SecurityBlocked
+
+
+def is_denied_path(resolved: Path, workspace: str) -> bool:
+    """敏感路径黑名单（2026-08-07）：白名单之前的硬拦截——命中即拒绝，无视 allowed_paths。
+
+    三段：
+    ① 系统运行时数据：workspace/audit（审计日志防篡改）、workspace/chroma（向量库防绕过/
+       防写坏）——精确绝对路径，vault 里同名文件夹（如笔记"audit"）不误伤。
+       约定：审计目录 = workspace/audit（AuditMiddleware 默认 data/audit）；若将来配自定义
+       audit_dir，此派生须同步。
+    ② 仓库内部段（任何位置）：.git / .claude（settings 可能含 API key）。
+    ③ 密钥文件名（任何位置）：config.yaml / .env / .env.local。
+
+    防配置错位：vault 根与系统目录重叠时，白名单 relative_to(vault) 会放行审计日志——
+    黑名单在此兜底。
+    """
+    resolved = Path(resolved).resolve()
+    ws = Path(workspace).resolve()
+    if resolved.is_relative_to(ws / "audit"):
+        return True
+    if resolved.is_relative_to(ws / "chroma"):
+        return True
+    if set(resolved.parts) & {".git", ".claude"}:
+        return True
+    if resolved.name in {"config.yaml", ".env", ".env.local"}:
+        return True
+    return False
 
 
 class WorkspacePolicy:
@@ -83,6 +113,15 @@ class WorkspacePolicyMiddleware(SecurityMiddleware):
                 })
                 continue
             resolved = WorkspacePolicy.resolve_path(path, self.workspace)
+            # 敏感路径黑名单：白名单之前的硬拦（防 allowed root 错位放行审计/密钥）
+            if is_denied_path(resolved, self.workspace):
+                violations.append({
+                    "rule": "denied_path",
+                    "param": name,
+                    "path": path,
+                    "reason": "敏感路径受保护",
+                })
+                continue
             if not WorkspacePolicy.check_path(str(resolved), allowed):
                 violations.append({
                     "rule": "workspace_boundary",
@@ -92,7 +131,9 @@ class WorkspacePolicyMiddleware(SecurityMiddleware):
                 })
 
         if violations:
-            raise SecurityBlocked(
-                reason=f"路径越界: {', '.join(v['path'] for v in violations)}",
-                violations=violations,
-            )
+            denied = [v for v in violations if v["rule"] == "denied_path"]
+            if denied:
+                reason = f"敏感路径受保护: {', '.join(v['path'] for v in denied)}"
+            else:
+                reason = f"路径越界: {', '.join(v['path'] for v in violations)}"
+            raise SecurityBlocked(reason=reason, violations=violations)

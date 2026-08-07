@@ -7,6 +7,7 @@ edit_file 的 search-replace 锚点确认、review-note 事实核对、search-pa
 import re
 from pathlib import Path
 
+from paperflow.core.security.workspace import is_denied_path
 from paperflow.core.tool import Tool, ToolResult
 
 _TEXT_SUFFIXES = (".md", ".txt", ".py", ".jsonl")
@@ -34,8 +35,14 @@ class GrepTool(Tool):
         except re.error as e:
             return ToolResult(text=f"正则无效: {e}")
         p = Path(path)
-        files = [p] if p.is_file() else [f for f in p.rglob("*")
-                                         if f.suffix.lower() in _TEXT_SUFFIXES]
+        # 敏感路径黑名单：目录递归时跳过 workspace/audit 等 deny 目录（防通配符摸审计日志/密钥）。
+        # cfg 防御式读取——测试与裸构造时可能没有 _config（与 glob 一致）。
+        cfg = getattr(self, "_config", None)
+        files = [p] if p.is_file() else [
+            f for f in p.rglob("*")
+            if f.suffix.lower() in _TEXT_SUFFIXES
+            and (cfg is None or not is_denied_path(f.resolve(), cfg.workspace))
+        ]
         results: list[str] = []
         for f in files:
             try:

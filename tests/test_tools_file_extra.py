@@ -319,3 +319,41 @@ def test_edit_file_empty_old_text(tmp_path):
     r = tool.execute(path=str(f), old_text="", new_text="x")
     assert "old_text 不能为空" in r.text
     assert f.read_text(encoding="utf-8") == "abc"   # 未改动
+
+
+def test_glob_skips_denied_audit_files(tmp_path):
+    """错位场景：note 根 = 含 workspace/audit 的目录 → glob 遍历跳过审计文件（deny-list）。"""
+    from paperflow.tools.glob import GlobTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path))   # note 根 = workspace 父级（错位）
+    audit = tmp_path / "ws" / "audit"
+    audit.mkdir(parents=True)
+    audit_json = audit / "audit_20260807.jsonl"
+    audit_json.write_text("secret")
+    (tmp_path / "note.md").write_text("x")
+    tool = GlobTool(); tool._config = cfg
+    result = tool.execute(pattern="**/*.jsonl")
+    # 审计文件被跳过（jsonl 只有审计文件，应为"无匹配"）。
+    # 用完整路径断言：pytest 的 tmp dir 名含测试函数名 "audit"，子串匹配会误伤。
+    assert str(audit_json) not in result.text
+    # 非敏感文件正常返回
+    result2 = tool.execute(pattern="**/*.md")
+    assert "note.md" in result2.text
+    assert str(audit) not in result2.text     # 审计目录不出现在结果里
+
+
+def test_grep_skips_denied_audit_files(tmp_path):
+    """GrepTool 目录递归跳过审计目录（deny-list 防通配符摸敏感文件）。"""
+    from paperflow.tools.grep import GrepTool
+    from paperflow.config import PaperFlowConfig
+    cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
+                          vault_note_dir=str(tmp_path))
+    audit = tmp_path / "ws" / "audit"
+    audit.mkdir(parents=True)
+    (audit / "a.jsonl").write_text("secret-token-xyz", encoding="utf-8")
+    (tmp_path / "note.md").write_text("hello-token-xyz", encoding="utf-8")
+    tool = GrepTool(); tool._config = cfg
+    result = tool.execute(pattern="token-xyz", path=str(tmp_path))
+    assert "a.jsonl" not in result.text      # 审计文件未被搜到
+    assert "note.md" in result.text
