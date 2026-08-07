@@ -661,3 +661,56 @@ def test_non_truncated_returns_directly():
     result = asyncio.run(agent.run("问题"))
     assert result == "回答"
     assert len(capture) == 1
+
+
+# ─── B1 并发 tool_calls（Task 9）：同一 message 的多个 tool_call 并发执行 ──
+
+
+def test_multiple_tool_calls_executed_in_parallel():
+    """B1：同一 message 的两个 tool_call 并发执行。
+
+    用墙钟区分：串行 = 2×0.05s sleep ≈ 0.10s+；并行 = max ≈ 0.05s。
+    给 0.08s 余量（0.05+两轮调度开销 < 0.08 < 0.10+）。"""
+    import json
+    import time
+    from pathlib import Path
+
+    from paperflow.core.agent import Agent
+    from paperflow.core.agent_registry import AgentRegistry
+    from paperflow.core.llm import Message
+    from paperflow.core.tool import Tool, ToolResult
+    from tests.conftest import make_mock_llm
+
+    class SlowEchoTool(Tool):
+        name = "slow_echo"
+        description = "sleep 后回显"
+        parameters = {"type": "object",
+                      "properties": {"msg": {"type": "string"}},
+                      "required": ["msg"]}
+
+        def execute(self, msg):
+            time.sleep(0.05)
+            return ToolResult(text=f"Echo: {msg}")
+
+    # 绝对路径定位 agents/ 目录（tests/ 的父级），与 conftest.py 的 agents_dir
+    # 解析方式一致，避免依赖 pytest 的 CWD。demo agent 目录名 = _demo。
+    reg = AgentRegistry(str(Path(__file__).resolve().parents[1] / "agents"))
+    agent = Agent(llm=make_mock_llm([]), agent_registry=reg, agent_type="_demo")
+    agent.tools = {"slow_echo": SlowEchoTool()}   # mock LLM 直接驱动 tool_call，schema 无关
+
+    calls = [Message(role="assistant", content=None, tool_calls=[
+        {"id": "c1", "type": "function",
+         "function": {"name": "slow_echo", "arguments": json.dumps({"msg": "a"})}},
+        {"id": "c2", "type": "function",
+         "function": {"name": "slow_echo", "arguments": json.dumps({"msg": "b"})}},
+    ])]
+    # ReAct 两轮：轮1 返回双 tool_call → Agent 并发执行并把两条 tool 结果附进对话；
+    # 轮2 返回最终回答。tool 结果由 Agent 自己 append，mock 只需提供两轮 LLM 响应。
+    resp = [calls[0], Message(role="assistant", content="done")]
+    agent.llm = make_mock_llm(resp)
+
+    t0 = time.monotonic()
+    out = asyncio.run(agent.run("go"))
+    dt = time.monotonic() - t0
+    assert out == "done"
+    assert dt < 0.08, f"tool_calls 疑似串行执行: {dt:.3f}s（应 ≈0.05s）"

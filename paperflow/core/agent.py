@@ -23,7 +23,8 @@ ReAct 循环流程::
     1. 构建初始 messages = [system_prompt, user_task]
     2. LLM 调用 → response
     3. 如果 response 无 tool_calls → 经 on_finish 钩子后返回 content（结束）
-    4. 如果 response 有 tool_calls → 逐个经中间件管道执行
+    4. 如果 response 有 tool_calls → 并发经中间件管道执行
+      （B1：gather 并行 + 信号量上限 4 + confirm 锁串行，结果按调用顺序返回）
     5. 将 tool 结果附加到 messages → 回到步骤 2
     6. 超过 max_turns → 抛出 MaxTurnsExceeded
 
@@ -299,7 +300,8 @@ class Agent:
                原地改写 history 并重建 messages），随后调用 LLM → 获取 response
             4. 如果无 tool_calls → 顺序执行各中间件的 on_finish 钩子，
                返回改写后的 content（LLM 判定任务完成）
-            5. 如果有 tool_calls → 逐个执行，将 ToolResult 附加到消息列表
+            5. 如果有 tool_calls → 并发执行（gather，结果按调用顺序返回），
+               将 ToolResult 附加到消息列表
             6. 回到步骤 3，LLM 根据工具执行结果继续推理
             7. 若超过 max_turns → 抛出 MaxTurnsExceeded（安全阀）
         """
@@ -426,12 +428,25 @@ class Agent:
             messages.append(response)
             conv.append(response)          # conv 与 messages 同步追加（见 conv 定义注释）
 
-            # 逐个执行 LLM 请求的工具调用（经过中间件管道）
-            for tc in response.tool_calls:
-                result = await self._exec_tool(tc)
+            # 并发执行 LLM 请求的工具调用（B1）：
+            # 同一 message 的多个 tool_call 用 gather 并行（工具已在 to_thread 线程池，
+            # 见 _exec_tool 第 7 步——真实并发不阻塞事件循环）。
+            # gather 按输入顺序返回 → tool_msg 顺序与 tool_call_id 映射不变（zip 拼接），
+            # LLM 关联 tool result 到对应 tool_call 的顺序语义不因并发而改变。
+            # 并发上限 4（信号量）防一次性打爆网络源（搜索类工具同时打多源 API）；
+            # confirm 用锁串行（CLI stdin 并发读会竞态，见 _exec_tool ConfirmRequired 分支）。
+            sem = asyncio.Semaphore(4)
+            confirm_lock = asyncio.Lock()
 
-                # 将工具执行结果以 tool 角色消息加入对话
-                # tool_call_id 将这条结果关联到 LLM 请求的对应 tool_call
+            async def _run_one(tc: dict) -> ToolResult:
+                async with sem:
+                    return await self._exec_tool(tc, _confirm_lock=confirm_lock)
+
+            results = await asyncio.gather(*(_run_one(tc) for tc in response.tool_calls))
+
+            # 将工具执行结果以 tool 角色消息加入对话
+            # tool_call_id 将这条结果关联到 LLM 请求的对应 tool_call
+            for tc, result in zip(response.tool_calls, results):
                 tool_msg = Message(
                     role="tool",
                     content=result.text,
@@ -449,7 +464,9 @@ class Agent:
             f"ReAct loop did not finish within {self.max_turns} turns"
         )
 
-    async def _exec_tool(self, tool_call: dict) -> ToolResult:
+    async def _exec_tool(
+        self, tool_call: dict, _confirm_lock: asyncio.Lock | None = None
+    ) -> ToolResult:
         """
         执行单个 LLM 请求的工具调用，内部处理所有异常。
 
@@ -481,6 +498,10 @@ class Agent:
         :param tool_call: LLM 返回的工具调用字典
             {"id": str, "function": {"name": str, "arguments": str}}
             其中 arguments 为 JSON 字符串，此方法负责 json.loads 解析
+        :param _confirm_lock: B1 并发 confirm 串行锁（asyncio.Lock | None）。
+            同一 message 的多个 tool_call 并发执行时由 run() 传入同一个锁，
+            把 ConfirmRequired 的 confirm_callback 调用串行化（CLI stdin 并发读竞态）；
+            None = 非并发路径，confirm 行为与现状一致
         :returns: ToolResult，始终返回（不抛异常）
         """
         name = tool_call["function"]["name"]
@@ -534,8 +555,19 @@ class Agent:
             try:
                 await mw.before(ctx)
             except ConfirmRequired as cr:
-                # 高风险操作：交由 confirm_callback 决策
-                confirmed = await self.confirm_callback(cr)
+                # 高风险操作：交由 confirm_callback 决策。
+                # B1 并发时多个 tool_call 的 confirm_callback 都跑在事件循环线程上
+                # （to_thread 只包 tool.execute，中间件/回调不离开事件循环），但 gather
+                # 让它们在 await 点交错——CLI stdin 并发读会竞态（两个回调同时抢 input()）。
+                # _confirm_lock 把 confirm 决策串行化：一个 confirm 未决时其余等待；
+                # 非并发路径（_confirm_lock=None，单工具调用）行为与现状完全一致。
+                async def _decide() -> bool:
+                    return await self.confirm_callback(cr)
+                if _confirm_lock is not None:
+                    async with _confirm_lock:
+                        confirmed = await _decide()
+                else:
+                    confirmed = await _decide()
                 if not confirmed:
                     # 用户拒绝 → 记录错误并走 after 钩子，反馈给 LLM
                     ctx.error = cr
