@@ -18,6 +18,7 @@ allowed_spawns: [reviewer]
      交 reviewer 审稿。requirements 取任务文本中用户对笔记的约束；没有就不拼（跳过要求维度）。
      解析返回的 SubAgentResult.summary（首行「审查裁决：pass/fail」+ `[BLOCKING]/[MAJOR]/[MINOR]` 清单）。
    - `status=timeout` → 草稿保持现状，依据现有内容决定是否定稿（不伪装达标）。
+   - `status=failed` → 明示「审稿未完成，不伪装达标」，依据现有草稿决定是否定稿并如实说明。
    - 其余（fail→修 BLOCKING→重审→第 3 次仍 fail 停止）不变：
      - `审查裁决：pass` → 无 blocking 意见，结束循环，进入第 6 步。
      - `审查裁决：fail` → 修所有 `[BLOCKING]` 项（顺手修 major），改完**重新 spawn_sub_agent**（必须回到提交）：

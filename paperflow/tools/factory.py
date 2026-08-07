@@ -24,7 +24,7 @@ def _root_map(config: PaperFlowConfig) -> dict[str, str]:
     }
 
 
-def make_tools(config: PaperFlowConfig, tool_items: list) -> list[Tool]:
+def make_tools(config: PaperFlowConfig, tool_items: list[type[Tool] | Tool]) -> list[Tool]:
     """装配工具列表，兼容"类"与"已实例化工具"两种传参。
 
     类（ReadFileTool 等无参原子工具）经 cls() 实例化；已实例化工具（如
@@ -34,10 +34,11 @@ def make_tools(config: PaperFlowConfig, tool_items: list) -> list[Tool]:
     roots = _root_map(config)
     tools = []
     for item in tool_items:
+        # 类走无参实例化；现成实例直接复用——两分支共用后续注入逻辑
         tool = item() if isinstance(item, type) else item
         # 赋新列表而非 in-place 变异（allowed_paths 是共享类属性，变异会污染所有子类）
         tool.allowed_paths = [roots[r] for r in tool.allowed_roots if r in roots]
-        # 注入 config：依赖配置派生路径的工具（如 ReviewDraftTool scratch）用它，
+        # 注入 config：依赖配置派生路径的工具用它，
         # 避免经 get_rag_service().config 间接取（agent 专属模块的命名空间无法 monkeypatch）
         tool._config = config
         # 路径发现：把解析后的绝对路径追加进 description，LLM 经 function schema 可见。
