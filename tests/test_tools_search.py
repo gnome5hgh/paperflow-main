@@ -16,6 +16,22 @@ def _no_real_redirect(monkeypatch):
     """
     monkeypatch.setattr("paperflow.tools._search_common.resolve_url_target", lambda u: u)
 
+
+@pytest.fixture(autouse=True)
+def _reset_global_search_state():
+    """复位模块级 query 缓存/熔断（A4/A5 是跨测试共享的全局态）。
+
+    Task 3 引入 A4 缓存后，搜索类测试互相污染：前一个测试把某 query 缓存了，
+    后一个测试同一 query（含 clamp 后同 max_results）会命中缓存 → 跳过下载/入池
+    等副作用。例如 test_arxiv_search_parses 缓存了 ("arxiv","link prediction",...,
+    3)，test_download_resolves_redirect_and_indexes 同 query 会缓存命中而不再下载。
+    每个测试前清空私有全局态，保证测试顺序无关（私有符号仅测试复位用）。
+    """
+    from paperflow.core import search_state as ss
+    ss._QUERY_CACHE.clear()
+    ss._SOURCE_BREAKER.clear()
+    yield
+
 _ATOM = """<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <entry>
@@ -160,3 +176,64 @@ def test_download_blocks_private_redirect(tmp_path, monkeypatch):
     assert "下载失败" in result.text or "SSRF" in result.text
     assert not dest.exists()                              # 无文件落盘
     assert fake.indexed == []                             # 不触发索引
+
+
+# ── Task 3：A1 年份结构化过滤 / B2 钳制 / A3 池 append / A4 缓存 / A5 熔断 ──
+
+def test_arxiv_year_range_in_query():
+    # A1：年份用原生 submittedDate 区间过滤，绝不拼进自由文本 query——
+    # 断言 URL 含 submittedDate 字段与 [lo TO hi] 区间边界（2026-01-01 ~ 2026-12-31）
+    from paperflow.tools.arxiv_search import ArxivClient
+    seen = {}
+    def handler(req):
+        seen["q"] = str(req.url)
+        return httpx.Response(200, content=_ATOM.encode(), request=req)
+    client = ArxivClient(transport=httpx.MockTransport(handler), ssrf_check=lambda u: None)
+    client.search("heterogeneous graph", max_results=3, year_from=2026, year_to=2026)
+    assert "submittedDate" in seen["q"] and "20260101" in seen["q"] and "20261231" in seen["q"]
+
+
+def test_max_results_clamped():
+    # B2：低于下限 3 → execute 钳到 3（mock 返回固定 1 篇，走通即可；
+    # schema minimum=3 是模型端的第一道闸，execute clamp 是兜底第二道）
+    tool = ArxivSearchTool()
+    tool._client = ArxivSearchTool._make_client(transport=_atransport(), ssrf_check=lambda u: None)
+    r = tool.execute(query="x", max_results=1)   # 低于下限 3 → 钳到 3
+    assert "Graph Neural Networks" in r.text
+
+
+def test_search_appends_to_pool_and_dedups():
+    # A3：结果入 per-run 自动去重池；同 arXiv ID 只留一条。第二次调用命中 A4 缓存
+    # 不重复入池——"池去重 + 缓存去重"两条路径合起来保证池内唯一。
+    from paperflow.core.search_state import SearchRunState
+    tool = ArxivSearchTool()
+    tool._client = ArxivSearchTool._make_client(transport=_atransport(), ssrf_check=lambda u: None)
+    st = SearchRunState()
+    tool.execute(query="link prediction", max_results=1, _run_state=st)
+    tool.execute(query="link prediction", max_results=1, _run_state=st)
+    assert len(st.as_candidates()) == 1          # 同 arXiv ID 只留一条
+
+
+def test_query_cache_hit_returns_marker():
+    # A4：缓存命中返回"（缓存）"标记 + 旧结果。缓存键含源前缀 "arxiv"
+    # （与 execute 内 ckey 一致：(源, query, year_from, year_to, max_results)）
+    from paperflow.core.search_state import SearchRunState, query_cache_get, query_cache_put
+    key = ("arxiv", "heterogeneous graph", None, None, 5)
+    query_cache_put(key, "旧结果")
+    tool = ArxivSearchTool()
+    tool._client = ArxivSearchTool._make_client(transport=_atransport(), ssrf_check=lambda u: None)
+    r = tool.execute(query="heterogeneous graph", max_results=5, _run_state=SearchRunState())
+    assert "（缓存）" in r.text and "旧结果" in r.text
+
+
+def test_breaker_open_short_circuits():
+    # A5：源连续失败 ≥2 次 → 熔断短路，execute 在打网络前返回提示（fixture 已清状态）
+    from paperflow.core.search_state import breaker_register_failure, breaker_register_success, breaker_is_open
+    breaker_register_success("arxiv")                      # 复位
+    breaker_register_failure("arxiv"); breaker_register_failure("arxiv")
+    assert breaker_is_open("arxiv")
+    tool = ArxivSearchTool()
+    tool._client = ArxivSearchTool._make_client(transport=_atransport(), ssrf_check=lambda u: None)
+    r = tool.execute(query="x", max_results=3)
+    assert "熔断" in r.text
+    breaker_register_success("arxiv")                      # 清理，防泄漏
