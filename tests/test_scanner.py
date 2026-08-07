@@ -99,6 +99,21 @@ class TestScanner:
         assert has_critical(scan("`dd if=/dev/zero of=/dev/sda` 危险"))
         assert has_critical(scan("`ls -la` 列目录"))
 
+    def test_real_academic_math_not_flagged(self):
+        """2026-08-07 回归：真实学术数学记号（带 |/;/$( ）不再是 shell_command——
+        旧元字符分支 `[^`]*(?:\$\(|\||;|&&)` 把概率/似然/LaTeX 误判 critical，
+        DPNS 笔记首稿实测被拦。白名单后：数学公式不以危险命令词开头 → 豁免。"""
+        assert not has_critical(scan("概率 `P(x|y)` 表示条件概率"))
+        assert not has_critical(scan("似然函数 `f(x; \\theta)` 的参数"))
+        assert not has_critical(scan("边缘化 `$(x+y)$` 表达式"))
+        assert not has_critical(scan("缩放因子 `\\delta = 1/3`"))
+
+    def test_dollar_paren_command_substitution_still_flagged(self):
+        """$() 内要求危险命令词：`$(ls)`/`$(find / -name x)` 命中，`$(x+y)` 数学豁免。"""
+        assert has_critical(scan("执行 `$(ls)`"))
+        assert has_critical(scan("`$(find / -name x)` 危险"))
+        assert not has_critical(scan("公式 `$(x+y)` 展开"))
+
 
 class TestSecurityScanMiddleware:
     @pytest.mark.asyncio

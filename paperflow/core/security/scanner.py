@@ -21,25 +21,48 @@ import re
 from paperflow.core.security import SecurityMiddleware, ToolContext, SecurityBlocked
 
 
+#: 危险命令白名单（2026-08-07 重构）：只有这些词在"命令位"出现才判 critical。
+#: 替代旧"任意命令形态 + 反引号元字符"判定——元字符分支（`[^`]*(?:\$\(|\||;|&&)`）
+#: 把 P(x|y)/f(x;θ)/$(x+y)$ 等数学记号误判为 shell（实测 DPNS 笔记首稿被拦）。
+#: 数学公式不以危险命令词开头，白名单天然豁免；LLM 生成的恶意命令都是标准 shell 词，
+#: 白名单覆盖且不丢真实威胁。cat/ls 保留以维持既有"cat /etc/passwd / ls -la 仍命中"
+#: 测试覆盖。
+_DANGEROUS_COMMANDS = [
+    # 破坏性/系统级
+    "rm", "dd", "mkfs", "fdisk", "mount", "umount", "chmod", "chown",
+    "kill", "pkill", "systemctl", "service", "docker", "podman", "crontab",
+    # find：-exec/-delete 可执行/删除，brief 测试要求 $(find / -name x) 命中
+    "find",
+    # 执行器
+    "sh", "bash", "zsh", "python", "python3", "sudo", "eval", "exec", "tee",
+    # 远程/数据外带
+    "curl", "wget", "nc", "ncat", "telnet", "ssh", "scp", "openssl", "base64",
+    # 包管理（可装恶意软件）
+    "apt", "apt-get", "yum", "dnf", "pip", "pip3", "npm", "nohup",
+    # 保留既有测试要求的命令
+    "cat", "ls",
+]
+
+#: 命令词 alternation（长词优先——apt-get 先于 apt，避免 \bapt\b 匹配 apt-get 前缀）
+_CMDS = "|".join(sorted(_DANGEROUS_COMMANDS, key=len, reverse=True))
+
+#: shell_command 规则（白名单）：
+#: ① 反引号内：危险命令 + 空白参数 / ;|& 分隔 → `` `cat /etc/passwd` ``、`` `rm -rf /` ``
+#: ② 裸 rm -rf（无反引号也拦）
+#: ③ 裸 curl ... | sh
+#: ④ $() 命令替换（要求危险命令词）：$(ls)、$(find / -name x)；$(x+y) 豁免
+SHELL_COMMAND_RE = re.compile(
+    rf"`[^`]*\b(?:{_CMDS})\b(?:\s+[^`\n]*|\s*[;|&])[^`]*`"
+    rf"|\b(?:rm)\s+-rf"
+    rf"|\b(?:curl)\b[^`\n;]*\|[^`\n]*(?:ba)?sh\b"
+    rf"|\$\((?:\b(?:{_CMDS})\b(?:\s+[^)]*)?)\)"
+)
+
+
 SCAN_RULES = [
     {
         "id": "shell_command",
-        # 反引号规则收窄（RC3 → D3 → 2026-08-05 三修）：
-        # - RC3：从"任何 3+ 字符反引号片段"（匹配一切 Markdown 行内代码/路径 →
-        #   on_finish 把含路径的正常回答替换成 SAFE_PROMPT）收窄为"像命令调用"。
-        # - D3/final review：以 / 开头内容豁免"空白即命令"（vault 路径全含空格，
-        #   generate-note 给出绝对路径时不会误命中）。
-        # - 2026-08-05：命令首 token 必须是小写命令词形态 `[a-z][a-z0-9_.-]*` + 空白，
-        #   并排除 `x = 5` 这类赋值（`(?!\s*=)`）。原因：answer-question 的学术回答
-        #   大量用反引号包数学公式（`G = (V, E, x_V)`、`DDE = q × ...`、
-        #   `F(c(i), d(j))`），旧"非 / 开头 + 含空白"判定把它们误判为 critical →
-        #   on_finish 把整个回答替换成 SAFE_PROMPT（真实冒烟 2026-08-05 复现）。
-        #   数学公式首 token 大写或以 ( 开头，自然豁免；真实命令（cat /etc/passwd、
-        #   dd if=...、ls -la）首 token 小写且非赋值，仍命中。
-        # 真实注入仍全覆盖：`rm -rf /` 被 rm\s+-rf 直接命中，`curl x | sh` 被
-        # curl.*\|sh 命中，$(...) 独立替代项保留，`cd /tmp; rm x` 因含 ; 走元字符
-        # 分支命中。
-        "pattern": r"(?:rm\s+-rf|curl\s+.*\|.*(?:ba)?sh|`(?:(?:[a-z][a-z0-9_.-]*(?!\s*=)\s+[^`]*?)|[^`]*(?:\$\(|\||;|&&))[^`]*?`|\$\([^)]+\))",
+        "pattern": SHELL_COMMAND_RE.pattern,
         "severity": "critical",
     },
     {
