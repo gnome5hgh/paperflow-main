@@ -16,7 +16,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, model_validator
 
-from paperflow.core.text_util import sanitize_surrogates
+from paperflow.core.security.text import sanitize_surrogates
 
 
 class IntentType(str, Enum):
@@ -78,7 +78,7 @@ class IntentOutput(BaseModel):
         """清洗未配对 surrogate（PDF 提取 / LLM 兜底输出可能携带）——否则
         `_intent_block` 的 model_dump_json 抛 PydanticSerializationError
         （真实冒烟 2026-08-05：'将上面内容总结为笔记' 触发 '\\udce5' 报错）。
-        与 text_util 的信任边界清洗哲学一致：IntentOutput 是跨管线消费的契约，
+        与 security.text 的信任边界清洗哲学一致：IntentOutput 是跨管线消费的契约，
         构造时兜住脏文本，上游无需逐个 sanitize。"""
         self.rewritten_query = sanitize_surrogates(self.rewritten_query)
         if self.clarification:

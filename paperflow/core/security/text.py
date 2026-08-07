@@ -1,7 +1,8 @@
-# paperflow/core/text_util.py
-"""文本清洗工具。
+# paperflow/core/security/text.py
+"""信任边界文本清洗工具。
 
-目前唯一职责：清洗未配对 surrogate 字符（U+D800-U+DFFF）。
+与内容扫描（scanner.py）同属"信任边界输入清洗"——2026-08-07 从 core/text_util.py 并入
+安全模块，把编码清洗与威胁扫描归置一处。目前唯一职责：清洗未配对 surrogate。
 
 为什么需要：PDF 提取（GROBID TEI / PyMuPDF 回退）或外部文本可能携带未配对的
 surrogate（孤立的高/低代理位），它们不是合法 Unicode 标量值，会在两处爆炸：
@@ -13,7 +14,6 @@ surrogate（孤立的高/低代理位），它们不是合法 Unicode 标量值�
 在信任边界（embed 输入 / LLM 消息出站）统一清洗，保证任何来源的脏文本都被
 兜住；用 U+FFFD 替换而不是删除，保留字符位置语义。
 """
-
 import re
 
 #: 未配对 surrogate 区间（UTF-16 代理对专用，合法标量值不含此区间）

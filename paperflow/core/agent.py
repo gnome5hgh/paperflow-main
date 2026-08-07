@@ -56,7 +56,7 @@ from paperflow.core.security import (
     ToolContext, ConfirmRequired, SecurityError, SecurityMiddleware,
 )
 from paperflow.core.tool import ToolResult
-from paperflow.core.text_util import sanitize_surrogates
+from paperflow.core.security.text import sanitize_surrogates
 
 #: 模块级 logger（§4.2 管线失败降级用；本项目 core 现无 logger，需初始化）。
 #: 管线 Stage 3 网络异常/解析失败降级时在此留痕，供运维排查而不是静默吞掉。
@@ -307,7 +307,7 @@ class Agent:
         self._trace_id = f"trace_{uuid.uuid4().hex[:12]}"
 
         # 信任边界：清洗用户输入里的未配对 surrogate（外部粘贴/合成文本可能携带，
-        # 见 text_util.py）——否则下游意图管线/实体提取在脏字符上工作，且
+        # 见 core/security/text.py）——否则下游意图管线/实体提取在脏字符上工作，且
         # session.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 

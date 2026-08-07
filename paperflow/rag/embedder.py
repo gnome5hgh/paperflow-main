@@ -113,7 +113,7 @@ class BgeEmbedder:
         if self._model is None:
             self._load()
         # 清洗未配对 surrogate（PDF/外部文本可能携带）——否则 tokenizer 抛
-        # TextEncodeInput TypeError，意图路由整条降级（见 core/text_util.py）。
-        from paperflow.core.text_util import sanitize_surrogates
+        # TextEncodeInput TypeError，意图路由整条降级（见 core/security/text.py）。
+        from paperflow.core.security.text import sanitize_surrogates
         texts = [sanitize_surrogates(t) for t in texts]
         return self._model.encode(texts, normalize_embeddings=True)

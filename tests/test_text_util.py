@@ -1,6 +1,6 @@
 # tests/test_text_util.py
 """未配对 surrogate 清洗测试（Layer 4 实测暴露：PDF 提取脏文本 → embed/LLM 崩溃）。"""
-from paperflow.core.text_util import sanitize_surrogates
+from paperflow.core.security.text import sanitize_surrogates
 from paperflow.core.llm import Message, _message_to_openai
 
 
