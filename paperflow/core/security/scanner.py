@@ -36,7 +36,11 @@ _DANGEROUS_COMMANDS = [
     # 执行器
     "sh", "bash", "zsh", "python", "python3", "sudo", "eval", "exec", "tee",
     # 远程/数据外带
-    "curl", "wget", "nc", "ncat", "telnet", "ssh", "scp", "openssl", "base64",
+    # curl 刻意不在通用清单（2026-08-07 final review）：curl 是向量微积分算子（∇×F），
+    # "计算 `curl F` 的点积"等数学公式会误判 shell_command——正是本计划要修的数学误报
+    # 同类问题。危险形态（下载后执行 curl ... | sh）由 SHELL_COMMAND_RE 的专用分支
+    # \bcurl\b...|...(ba)?sh\b 兜住，不依赖通用清单。
+    "wget", "nc", "ncat", "telnet", "ssh", "scp", "openssl", "base64",
     # 包管理（可装恶意软件）
     "apt", "apt-get", "yum", "dnf", "pip", "pip3", "npm", "nohup",
     # 保留既有测试要求的命令

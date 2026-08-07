@@ -138,6 +138,14 @@ class TestDeniedPath:
         assert is_denied_path(tmp_path / ".env", str(tmp_path)) is True
         assert is_denied_path(tmp_path / ".env.local", str(tmp_path)) is True
 
+    def test_denies_case_variants(self, tmp_path):
+        """2026-08-07 final review：macOS 默认大小写不敏感 APFS 上，.ENV/Config.yaml/.GIT
+        与 .env/config.yaml/.git 是同一文件——大小写敏感匹配是密钥/审计防护的真实绕过。
+        is_denied_path 必须按大小写不敏感处理。"""
+        assert is_denied_path(tmp_path / ".ENV", str(tmp_path)) is True
+        assert is_denied_path(tmp_path / "Config.yaml", str(tmp_path)) is True
+        assert is_denied_path(tmp_path / ".GIT" / "config", str(tmp_path)) is True
+
     def test_allows_intended_roots(self, tmp_path):
         # memory/templates 是允许根（记忆/模板功能）；vault 正常路径、同名 audit 文件夹不误伤
         assert is_denied_path(tmp_path / "memory" / "MEMORY.md", str(tmp_path)) is False

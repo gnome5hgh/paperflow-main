@@ -48,9 +48,12 @@ def is_denied_path(resolved: Path, workspace: str) -> bool:
         return True
     if resolved.is_relative_to(ws / "chroma"):
         return True
-    if set(resolved.parts) & {".git", ".claude"}:
+    # ②③ 段按大小写不敏感匹配（2026-08-07 final review）：macOS 默认大小写不敏感
+    # APFS 上，ws/.ENV、ws/Config.yaml、ws/.GIT/config 与 .env/config.yaml/.git 是
+    # 同一文件——大小写敏感比对是密钥/审计防护的真实绕过（审稿人本机实证）。
+    if {p.lower() for p in resolved.parts} & {".git", ".claude"}:
         return True
-    if resolved.name in {"config.yaml", ".env", ".env.local"}:
+    if resolved.name.lower() in {"config.yaml", ".env", ".env.local"}:
         return True
     return False
 
