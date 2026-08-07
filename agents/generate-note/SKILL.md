@@ -13,11 +13,14 @@ allowed_spawns: [reviewer]
 2. **读论文**：`read_pdf` 读主论文全文。
 3. **起草**：按模板结构在上下文中起草笔记（**草稿即 v1**）。
 4. **落盘**：`write_file` 写入笔记绝对路径（工具描述 [目录] note=... 下的 `<论文slug>.md`）——草稿 v1。
-5. **审稿循环（最多 3 轮 = 3 次 review_draft 提交）**：
-   - 提交：`review_draft(pdf_path=主论文路径, draft_path=笔记路径, requirements=用户要求)` 交 reviewer 审稿。requirements 取任务文本中用户对笔记的约束/要求（篇幅/语言/侧重/深度等）；任务里没有这类约束就不传（审查跳过要求维度）。
-   - 解析返回的审查裁决（首行 `审查裁决：pass/fail`，后接 `[BLOCKING]/[MAJOR]/[MINOR] dimension | location | action` 清单）：
+5. **审稿循环（最多 3 轮 = 3 次 spawn_sub_agent 提交）**：
+   - 提交：`spawn_sub_agent(agent_type=reviewer, task="审阅草稿文件 <draft_path>，对照原文 <pdf_path>。"[用户要求：<requirements>])`
+     交 reviewer 审稿。requirements 取任务文本中用户对笔记的约束；没有就不拼（跳过要求维度）。
+     解析返回的 SubAgentResult.summary（首行「审查裁决：pass/fail」+ `[BLOCKING]/[MAJOR]/[MINOR]` 清单）。
+   - `status=timeout` → 草稿保持现状，依据现有内容决定是否定稿（不伪装达标）。
+   - 其余（fail→修 BLOCKING→重审→第 3 次仍 fail 停止）不变：
      - `审查裁决：pass` → 无 blocking 意见，结束循环，进入第 6 步。
-     - `审查裁决：fail` → 修所有 `[BLOCKING]` 项（顺手修 major），改完**重新 review_draft**（必须回到提交）：
+     - `审查裁决：fail` → 修所有 `[BLOCKING]` 项（顺手修 major），改完**重新 spawn_sub_agent**（必须回到提交）：
        - **小范围**（补一节 / 改一句）→ 先 `grep` 确认锚点 → `edit_file(笔记路径, old_text=原文, new_text=新文)` 定向替换。
        - **大范围**（整篇重写）→ `write_file(笔记路径, 修订版)` 覆盖（确认后）。
      - 第 3 次提交仍 fail → 停止循环，返回笔记路径并**明示"仍有 blocking 意见未解决"**——不伪装达标。

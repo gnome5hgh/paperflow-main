@@ -24,11 +24,17 @@ def _root_map(config: PaperFlowConfig) -> dict[str, str]:
     }
 
 
-def make_tools(config: PaperFlowConfig, tool_classes: list[type[Tool]]) -> list[Tool]:
+def make_tools(config: PaperFlowConfig, tool_items: list) -> list[Tool]:
+    """装配工具列表，兼容"类"与"已实例化工具"两种传参。
+
+    类（ReadFileTool 等无参原子工具）经 cls() 实例化；已实例化工具（如
+    SpawnSubAgentTool(agent_timeouts=...)——需要构造参数，无参 cls() 会
+    TypeError）直接复用同一实例（Task 7：generate-note 审稿装配走此分支）。
+    isinstance(item, type) 判定类是"可实例化"，否则视为现成实例。"""
     roots = _root_map(config)
     tools = []
-    for cls in tool_classes:
-        tool = cls()
+    for item in tool_items:
+        tool = item() if isinstance(item, type) else item
         # 赋新列表而非 in-place 变异（allowed_paths 是共享类属性，变异会污染所有子类）
         tool.allowed_paths = [roots[r] for r in tool.allowed_roots if r in roots]
         # 注入 config：依赖配置派生路径的工具（如 ReviewDraftTool scratch）用它，
