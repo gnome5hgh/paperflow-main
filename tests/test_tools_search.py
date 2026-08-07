@@ -194,12 +194,18 @@ def test_arxiv_year_range_in_query():
 
 
 def test_max_results_clamped():
-    # B2：低于下限 3 → execute 钳到 3（mock 返回固定 1 篇，走通即可；
-    # schema minimum=3 是模型端的第一道闸，execute clamp 是兜底第二道）
+    # B2：低于下限 3 → execute 钳到 3——用 URL 捕获验证 max_results 被钳为 3
+    # （review finding 3：mock 恒返回固定 1 篇，单靠文本断言无法证明钳制生效）
+    from paperflow.tools.arxiv_search import ArxivClient
+    seen = {}
+    def handler(req):
+        seen["q"] = str(req.url)
+        return httpx.Response(200, content=_ATOM.encode(), request=req)
     tool = ArxivSearchTool()
-    tool._client = ArxivSearchTool._make_client(transport=_atransport(), ssrf_check=lambda u: None)
+    tool._client = ArxivSearchTool._make_client(transport=httpx.MockTransport(handler), ssrf_check=lambda u: None)
     r = tool.execute(query="x", max_results=1)   # 低于下限 3 → 钳到 3
     assert "Graph Neural Networks" in r.text
+    assert "max_results=3" in seen["q"]          # 请求 URL 里 max_results 已被钳为 3
 
 
 def test_search_appends_to_pool_and_dedups():
@@ -237,3 +243,49 @@ def test_breaker_open_short_circuits():
     r = tool.execute(query="x", max_results=3)
     assert "熔断" in r.text
     breaker_register_success("arxiv")                      # 清理，防泄漏
+
+
+# ── Task 3 review 修复的回归测试（finding 1 / finding 4）──
+
+def test_download_bypasses_cache(tmp_path, monkeypatch):
+    # review finding 1（C1）：带 download_to 的调用即使缓存命中也要走网络+下载。
+    # 下游下载流程是「先搜索→门禁→同 query 复调 download_to」——若缓存短路，
+    # PDF 永不落盘。预置同 query 缓存后断言仍触发下载+索引。
+    from paperflow.core.search_state import SearchRunState, query_cache_put
+    query_cache_put(("arxiv", "link prediction", None, None, 3), "旧缓存结果")
+
+    class FakeSvc:
+        def __init__(self):
+            self.indexed = []
+        def index_document(self, p):
+            self.indexed.append(p)
+    fake = FakeSvc()
+    monkeypatch.setattr("paperflow.tools.arxiv_search.get_rag_service", lambda: fake)
+
+    def handler(req):
+        if "/api/query" in str(req.url):
+            return httpx.Response(200, content=_ATOM.encode(), request=req)
+        return httpx.Response(200, content=b"%PDF-1.4 fake", request=req)
+
+    dest = tmp_path / "out.pdf"
+    tool = ArxivSearchTool()
+    tool._client = ArxivSearchTool._make_client(transport=httpx.MockTransport(handler), ssrf_check=lambda u: None)
+    r = tool.execute(query="link prediction", max_results=1,
+                     download_to=str(dest), _run_state=SearchRunState())
+    assert "已下载" in r.text                 # 带下载意图 → 忽略缓存，走网络+下载
+    assert dest.read_bytes().startswith(b"%PDF")
+    assert fake.indexed == [str(dest)]
+
+
+def test_empty_result_not_cached():
+    # review finding 4：空结果不入缓存——重复 query 仍返回「无搜索结果」，
+    # 而不是命中缓存返回「（缓存）…」（空缓存条目会让语义不一致）。
+    empty_atom = ('<?xml version="1.0" encoding="UTF-8"?>'
+                  '<feed xmlns="http://www.w3.org/2005/Atom"></feed>')
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, content=empty_atom.encode(), request=req))
+    tool = ArxivSearchTool()
+    tool._client = ArxivSearchTool._make_client(transport=transport, ssrf_check=lambda u: None)
+    r1 = tool.execute(query="nothing", max_results=3)
+    assert r1.text == "无搜索结果"
+    r2 = tool.execute(query="nothing", max_results=3)   # 未入缓存 → 再次真实搜索
+    assert r2.text == "无搜索结果"                        # 而非「（缓存）…」

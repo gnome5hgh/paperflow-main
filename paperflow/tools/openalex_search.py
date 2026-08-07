@@ -108,7 +108,9 @@ class OpenAlexSearchTool(Tool):
         # 不同源，键前缀分开，避免同 query 跨源误命中。
         ckey = ("openalex", query, year_from, year_to, max_results)
         cached = query_cache_get(ckey)
-        if cached is not None:
+        # review finding 1：缓存命中短路只对纯搜索生效（理由同 arxiv_search——
+        # 带 download_to 的 C1 下载流程绝不能被缓存短路）。
+        if cached is not None and download_to is None:
             return ToolResult(text=f"（缓存）该 query 已搜索过，结果同上；如需不同结果请调整检索词。\n{cached}")
         # A5：源熔断在缓存后、网络前——openalex 连续失败时短路，提示改 arxiv。
         if breaker_is_open("openalex"):
@@ -126,7 +128,9 @@ class OpenAlexSearchTool(Tool):
         if _run_state is not None:
             _run_state.add(papers)                   # A3：自动去重入池（同 arxiv 注释）
         lines = [f"- [{p['title']}] ({p['year']}) venue={p['venue']} issn={p['issn']} pdf={p['pdf_url'] or 'no OA'} 来源=openalex" for p in papers]
-        query_cache_put(ckey, "\n".join(lines))      # A4：缓存本次结果
+        # review finding 4：仅非空结果入缓存（理由同 arxiv_search）
+        if papers:
+            query_cache_put(ckey, "\n".join(lines))      # A4：缓存本次结果
         if download_to and papers and papers[0].get("pdf_url"):
             # 只有有 OA 地址才尝试下载（downloadable 判定）；其余静默跳过
             dest = Path(download_to)

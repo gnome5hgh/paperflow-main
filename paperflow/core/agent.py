@@ -562,10 +562,16 @@ class Agent:
             # opt-in 注入 per-run 搜索状态：声明 wants_run_state 的搜索类工具
             # 拿同一个 SearchRunState（按 trace_id 键控）——跨多次 tool_call
             # 共享自动去重池（A3）；非声明工具零开销（不构造状态）。
+            # 注入方式：作为 to_thread 的独立 kwarg 直接传 execute，**不写进
+            # ctx.args**——ctx.args 会被 after 钩子/审计读并 json.dumps，而
+            # SearchRunState 不可序列化，写进去会让该调用的审计行整体丢失
+            # （review finding 2）。
             if getattr(tool, "wants_run_state", False):
                 from paperflow.core.search_state import get_run_state
-                ctx.args = {**ctx.args, "_run_state": get_run_state(self._trace_id)}
-            raw = await asyncio.to_thread(tool.execute, **ctx.args)
+                raw = await asyncio.to_thread(
+                    tool.execute, **ctx.args, _run_state=get_run_state(self._trace_id))
+            else:
+                raw = await asyncio.to_thread(tool.execute, **ctx.args)
             ctx.result = raw if isinstance(raw, ToolResult) else ToolResult(text=str(raw))
         except Exception as e:
             # 工具执行失败（网络超时、文件不存在等）→ 反馈给 LLM

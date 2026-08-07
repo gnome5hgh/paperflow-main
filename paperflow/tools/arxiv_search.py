@@ -121,7 +121,11 @@ class ArxivSearchTool(Tool):
         # 命中同一份缓存。
         ckey = ("arxiv", query, year_from, year_to, max_results)
         cached = query_cache_get(ckey)
-        if cached is not None:
+        # review finding 1：缓存命中短路只对纯搜索生效。带 download_to 的调用即使
+        # 缓存命中也要走网络+下载——下游 C1 下载流程是「先搜索→门禁→同 query 复调
+        # download_to」，第二次调用若被缓存短路，PDF 永远不会落盘。入池路径照旧只在
+        # 真实网络调用后 add（缓存命中路径不触池）。
+        if cached is not None and download_to is None:
             return ToolResult(text=f"（缓存）该 query 已搜索过，结果同上；如需不同结果请调整检索词。\n{cached}")
         # A5：源熔断在缓存后、网络前——连续失败 ≥2 次时 5 分钟内不再打 arXiv API。
         # 工具不能自己换源，只能把"改用 openalex"的提示交给 LLM 决策。
@@ -141,12 +145,14 @@ class ArxivSearchTool(Tool):
             return ToolResult(text=f"Tool error: {e}")
         if _run_state is not None:
             # A3：结果入 per-run 自动去重池（SearchRunState.add 内部按
-            # DOI→arXiv ID→规范化标题 四级键去重合并）。_run_state 是注入的保留
-            # kwarg，绝不存进任何会被序列化的字段（审计 ctx.args 会带它，若审计
-            # 报错是 after 钩子的优雅降级路径，不是本工具缺陷）。
+            # DOI→arXiv ID→规范化标题 四级键去重合并）。_run_state 由 _exec_tool
+            # 作为独立 kwarg 直传 execute（不写进 ctx.args，避免审计序列化污染）。
             _run_state.add(papers)
         lines = [f"- [{p['title']}] ({p['year']}) venue={p['venue']} issn={p['issn']} pdf={p['pdf_url']} 来源=arxiv" for p in papers]
-        query_cache_put(ckey, "\n".join(lines))      # A4：缓存本次结果供重复 query 复用
+        # review finding 4：仅非空结果入缓存——空结果若缓存，重复 query 会命中返回
+        # 「（缓存）…」而非「无搜索结果」，语义不一致。
+        if papers:
+            query_cache_put(ckey, "\n".join(lines))      # A4：缓存本次结果供重复 query 复用
         if download_to and papers:
             dest = Path(download_to)
             dest.parent.mkdir(parents=True, exist_ok=True)
