@@ -559,6 +559,12 @@ class Agent:
         try:
             # CPU/网络密集型工具在线程池执行，避免阻塞事件循环
             # （影响 Layer 4 parallel_spawn 并行与 Dream 后台任务）
+            # opt-in 注入 per-run 搜索状态：声明 wants_run_state 的搜索类工具
+            # 拿同一个 SearchRunState（按 trace_id 键控）——跨多次 tool_call
+            # 共享自动去重池（A3）；非声明工具零开销（不构造状态）。
+            if getattr(tool, "wants_run_state", False):
+                from paperflow.core.search_state import get_run_state
+                ctx.args = {**ctx.args, "_run_state": get_run_state(self._trace_id)}
             raw = await asyncio.to_thread(tool.execute, **ctx.args)
             ctx.result = raw if isinstance(raw, ToolResult) else ToolResult(text=str(raw))
         except Exception as e:

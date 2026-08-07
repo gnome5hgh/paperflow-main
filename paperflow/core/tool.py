@@ -96,6 +96,9 @@ class Tool(ABC):
     #: 需要父 Agent 引用（如嵌套子 agent 的工具）。默认 False——原子工具不声明。
     needs_parent: bool = False
 
+    #: 需要 _exec_tool 注入 per-run 搜索状态（搜索类工具 opt-in；默认 False）
+    wants_run_state: bool = False
+
     @abstractmethod
     def execute(self, **kwargs) -> ToolResult:
         """
