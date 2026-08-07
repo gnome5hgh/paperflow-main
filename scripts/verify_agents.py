@@ -10,7 +10,7 @@
 - search-paper 会真打 arXiv/OpenAlex 公开 API
 - answer-question 的 RAG 检索会加载真实 bge 模型（首次下载权重 ~30MB）
 - generate-note 会真写一篇笔记到配置的 vault note 目录（供检查）
-- review-note 读草稿（argv[2]，可复用 generate-note 写出的笔记）对照原文（argv[1]）
+- reviewer 读草稿（argv[2]，可复用 generate-note 写出的笔记）对照原文（argv[1]）
 """
 import asyncio
 import sys
@@ -66,9 +66,9 @@ async def main(pdf: str, draft: str | None) -> int:
     print(await _make_agent(registry, "generate-note", config).run(
         f"为 {pdf} 生成笔记"))
 
-    print("== 4. review-note（审稿 generate-note 产出的笔记）==")
+    print("== 4. reviewer（审稿 generate-note 产出的笔记）==")
     if draft:
-        print(await _make_agent(registry, "review-note", config).run(
+        print(await _make_agent(registry, "reviewer", config).run(
             f"审阅草稿文件 {draft}，对照原文 {pdf}"))
     else:
         print("跳过：未提供草稿路径（argv[2]）")

@@ -87,7 +87,7 @@ async def test_generate_note_single_round(agent_env, agent_registry):
 
     mock 序列与真实 ReAct 对齐：草稿 v1 直接 write_file 到最终路径（vault note），
     再 review_draft 传 draft_path（不再把整篇草稿塞进工具参数）；审稿子 agent
-    （review-note）首轮即回最终意见（"通过"），父 generate-note 不再循环直接定稿。
+    （reviewer）首轮即回最终意见（"通过"），父 generate-note 不再循环直接定稿。
     make_agent 接真实安全链，write_file requires_confirm=True → confirm_callback
     自动接受（spec §4.1 定稿是用户门，此处测试侧代为通过），落盘触发
     index_document（patch 的 svc + FakeEmbedder，不建真实 RAG 栈）。"""
@@ -122,8 +122,8 @@ class LoopMockLLM:
     """e2e 专用 mock：预设响应序列；callable 项接收 messages 动态构造。
 
     子 agent 的 read_file 轮次需要 draft_path（A-ii 下固定为 note_out，但父测试
-    仍从子 agent 的 user 任务文本"审阅草稿文件 <draft>，对照原文 <pdf>"动态解析，
-    与生产行为一致）。"""
+    仍从子 agent（reviewer 笔记审查模式）的 user 任务文本"审阅草稿文件 <draft>，
+    对照原文 <pdf>"动态解析，与生产行为一致）。"""
 
     def __init__(self):
         self.responses = []

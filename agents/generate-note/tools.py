@@ -22,16 +22,16 @@ from paperflow.tools import (
 
 
 class ReviewDraftTool(Tool):
-    """generate-note 内部审稿：校验草稿在最终路径存在，嵌套运行 review-note 子 agent。
+    """generate-note 内部审稿：校验草稿在最终路径存在，嵌套运行 reviewer 子 agent。
 
-    单目标硬编码 review-note（权限最小化：被攻陷也只能跑这一个目标，无通用递归）。
+    单目标硬编码 reviewer（权限最小化：被攻陷也只能跑这一个目标，无通用递归）。
     A-ii（2026-08-06 修复）：草稿由 write_file 直接落盘到最终路径（vault note），
     本工具只传 draft_path——不再把整篇草稿塞进工具参数（巨参 draft_text 是 LLM
     跳过审稿的触发点 P5），也不再落盘 scratch 临时文件。
     """
 
     name = "review_draft"
-    description = ("提交笔记草稿给 review-note 审稿，返回审稿意见。"
+    description = ("提交笔记草稿给 reviewer 审稿，返回审稿意见。"
                    "草稿已由 write_file 落盘到最终路径（vault note），此处传 draft_path 路径。")
     parameters = {
         "type": "object",
@@ -76,16 +76,16 @@ class ReviewDraftTool(Tool):
         # 子 agent：继承父的 llm/registry/security_middleware/session_id
         # （审计链延续：子有自己的 trace_id，靠共享 session_id 与父聚合）
         # 刻意不传 confirm_callback：子默认 fail-safe 的 _default_confirm（始终拒绝）。
-        # review-note 当前无 requires_confirm 工具，不会触发确认；将来若有高风险工具，
+        # reviewer 笔记审查模式无 requires_confirm 工具，不会触发确认；将来若有高风险工具，
         # 子侧拒绝而非继承父的自动确认才是正确语义——确认是用户与最外层入口之间的门，
         # 不应被嵌套 agent 透传（spec §4.2）。
         child = Agent(llm=parent.llm, agent_registry=parent.agent_registry,
-                      agent_type="review-note",
+                      agent_type="reviewer",
                       security_middleware=parent.security_middleware,
                       session_id=parent.session_id)
         task = f"审阅草稿文件 {draft_path}，对照原文 {pdf_path}"
         if requirements:
-            # 用户要求 → 拼进子任务文本：Task 3 的 review-note 从任务文本读取用户要求
+            # 用户要求 → 拼进子任务文本：reviewer 笔记审查模式从任务文本读取用户要求
             # 并以 requirements 维度审查笔记是否符合。无要求则不拼——向后兼容且跳过该维度。
             task += f"。用户要求：{requirements}"
         try:

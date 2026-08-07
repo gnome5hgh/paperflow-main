@@ -26,8 +26,8 @@ class RAGService:
         self._retriever = None
         self.chunker = AcademicChunker()    # 纯逻辑，构造无副作用
         # GROBID 解析缓存：key = (绝对路径, mtime_ns, size)。
-        # 【实测瓶颈修复】review-note 每轮审稿都 read_pdf → 3 轮审稿 4 次解析；
-        # 进程内存缓存让 generate-note 与 review-note（同一 RAGService 单例）
+        # 【实测瓶颈修复】reviewer 每轮审稿都 read_pdf → 3 轮审稿 4 次解析；
+        # 进程内存缓存让 generate-note 与 reviewer（同一 RAGService 单例）
         # 共享一份全文，4×→1×。PDF 替换时 mtime+size 变化自动失效，零维护。
         # 实例属性而非类属性：测试每例独立实例，避免跨测试污染。
         self._parse_cache: dict[tuple[str, int, int], "ParsedDoc"] = {}

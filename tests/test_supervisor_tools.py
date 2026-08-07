@@ -88,7 +88,7 @@ class TestSpawnSubAgentTool:
         registry = make_mock_registry([tool])     # allowed_spawns 缺省 []
         agent = Agent(llm=make_mock_llm([], ), agent_registry=registry,
                       agent_type="generate-note")
-        result = tool.execute(agent_type="review-note", task="审稿")
+        result = tool.execute(agent_type="reviewer", task="审稿")
         parsed = json.loads(result.text)
         assert parsed["status"] == "denied"
         assert "不能 spawn" in parsed["summary"]

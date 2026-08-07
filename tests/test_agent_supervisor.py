@@ -30,7 +30,7 @@ def test_supervisor_has_no_glob_grep(supervisor_registry):
     """Task 4：supervisor 不含 glob/grep——只调度不碰文件。
 
     文件访问（读/写/搜索）全部下放到文件型 agent（search-paper/generate-note/
-    answer-question/review-note）；supervisor 仅 4 个调度工具，权限最小化。
+    answer-question/reviewer）；supervisor 仅 4 个调度工具，权限最小化。
     此断言防将来向 supervisor 误加文件工具（它有 spawn 权限，绝不能有文件路径暴露）。"""
     config = supervisor_registry.get_config("supervisor")
     names = {t.name for t in config.tools}

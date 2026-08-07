@@ -1,12 +1,12 @@
 # paperflow/tools/submit_review.py
-"""SubmitReviewTool：汇总对一篇笔记的审查裁决（review-note 返回）。
+"""SubmitReviewTool：汇总对一篇笔记的审查裁决（reviewer 笔记审查模式返回）。
 
-从 SuggestEditTool 升级（2026-08-06 review-note rework）：无类型建议列表 →
-结构化裁决（verdict + issues[]，枚举校验）。execute 不读文件内容（只把提交的
-字段格式化），放开 scratch 根零安全影响——安全边界与 suggest_edit 一致。
+从 SuggestEditTool 升级（2026-08-06 review-note rework，后改名 reviewer）：无类型
+建议列表 → 结构化裁决（verdict + issues[]，枚举校验）。execute 不读文件内容（只把
+提交的字段格式化），放开 scratch 根零安全影响——安全边界与 suggest_edit 一致。
 
 校验哲学对齐 edit_file 的 miss/multi 报错：非法输入返回可行动报错文本，
-不静默吞（让 review-note 的 LLM 修正后重试）。
+不静默吞（让 reviewer 的 LLM 修正后重试）。
 """
 from paperflow.core.tool import Tool, ToolResult
 
@@ -18,7 +18,7 @@ DIMENSIONS = ("requirements", "faithfulness", "consistency", "completeness", "st
 
 class SubmitReviewTool(Tool):
     name = "submit_review"
-    description = ("汇总对一篇笔记的审查裁决（review-note 返回）。"
+    description = ("汇总对一篇笔记的审查裁决（reviewer 笔记审查模式返回）。"
                    "verdict=pass 当且仅当无 blocking 意见；每条 issue 必须可执行（location + action）。")
     parameters = {
         "type": "object",

@@ -1,4 +1,4 @@
-"""FormatCheckTool：笔记 Markdown 标题树 vs 模板对比（review-note 用，确定性代码）。
+"""FormatCheckTool：笔记 Markdown 标题树 vs 模板对比（reviewer 用，确定性代码）。
 
 模板是工具内部常量路径（非 LLM 可指定的 path 参数），不进 allowed_roots 映射；
 缺失时落盘最小骨架（spec §1/§14，IMPORTANT-4：不抛错）。
@@ -10,7 +10,7 @@ from paperflow.rag.service import get_rag_service
 
 
 class FormatCheckTool(Tool):
-    """笔记 Markdown 标题树 vs 模板对比（确定性代码，供 review-note 用）。"""
+    """笔记 Markdown 标题树 vs 模板对比（确定性代码，供 reviewer 用）。"""
 
     name = "format_check"
     description = "检查笔记结构是否符合模板（对比 Markdown 标题树）"
@@ -44,7 +44,7 @@ class FormatCheckTool(Tool):
 
         IMPORTANT-4 修复：spec §1 承诺"缺失时建最小骨架"，原 _load_template
         直接 read_text 会在默认 workspace="data" 且模板未生成时 FileNotFoundError
-        中断 review-note 流程。先确保模板存在（生产路径不再抛错），再提取标题。"""
+        中断 reviewer 流程。先确保模板存在（生产路径不再抛错），再提取标题。"""
         cfg = get_rag_service().config
         # cfg.workspace 是 str（config.py:67），需先包 Path 才能用 / 拼接；
         # 模板是内部常量路径，不进 allowed_roots 映射（WorkspacePolicy 不校验）

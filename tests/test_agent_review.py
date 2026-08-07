@@ -1,4 +1,8 @@
-"""review-note 审稿 agent 测试：mock LLM 驱动 ReAct，工具经真实安全链执行。"""
+"""reviewer 笔记审查模式 agent 测试：mock LLM 驱动 ReAct，工具经真实安全链执行。
+
+review-note 改造为 reviewer 后（Task 6），原 review-note 的笔记审查测试保留在
+本文件，agent_type 全部改指 "reviewer"（任务前缀「审阅草稿文件…」触发笔记审查模式）。
+"""
 from pathlib import Path
 
 import pytest
@@ -10,7 +14,7 @@ from tests.conftest import make_mock_llm, _tc, make_agent
 
 
 @pytest.mark.asyncio
-async def test_review_note_happy_path(agent_env, agent_registry):
+async def test_reviewer_happy_path(agent_env, agent_registry):
     cfg, _ = agent_env
     scratch = Path(cfg.workspace) / "tmp"
     scratch.mkdir(parents=True, exist_ok=True)
@@ -26,7 +30,7 @@ async def test_review_note_happy_path(agent_env, agent_registry):
         _tc("submit_review", {"path": str(draft), "verdict": "pass", "issues": []}),
         Message(role="assistant", content="审查裁决：pass"),
     ])
-    agent = make_agent(agent_registry, "review-note", llm, cfg)
+    agent = make_agent(agent_registry, "reviewer", llm, cfg)
     result = await agent.run(f"审阅草稿文件 {draft}，对照原文 {pdf}")
     assert "审查裁决" in result
 
@@ -42,19 +46,19 @@ def test_submit_review_allows_scratch(agent_env):
     assert str(Path(cfg.workspace) / "tmp") in tool.allowed_paths
 
 
-def test_review_note_has_glob_grep(agent_registry):
-    """Task 4：review-note 装配 glob/grep——事实核对时在 vault 内搜索对照。
+def test_reviewer_has_glob_grep(agent_registry):
+    """Task 4：reviewer 装配 glob/grep——事实核对时在 vault 内搜索对照。
 
-    review-note 审稿要核对草稿断言与原文/其他笔记是否一致（grep 搜文本锚点）、
+    reviewer 审稿要核对草稿断言与原文/其他笔记是否一致（grep 搜文本锚点）、
     定位相关文件（glob）；不再依赖"路径由任务文本给出"的单一通道（P2 路径风暴
     根因的审稿侧治理）。只读工具 risk=low，无确认门——名单断言防回归。"""
-    config = agent_registry.get_config("review-note")
+    config = agent_registry.get_config("reviewer")
     names = {t.name for t in config.tools}
     assert {"glob", "grep"} <= names
 
 
 @pytest.mark.asyncio
-async def test_review_note_submits_fail_verdict(agent_env, agent_registry):
+async def test_reviewer_submits_fail_verdict(agent_env, agent_registry):
     """fail 路径：submit_review 带 blocking issue（结构缺章节）。"""
     cfg, _ = agent_env
     scratch = Path(cfg.workspace) / "tmp"
@@ -72,14 +76,14 @@ async def test_review_note_submits_fail_verdict(agent_env, agent_registry):
         _tc("submit_review", {"path": str(draft), "verdict": "fail", "issues": issues}),
         Message(role="assistant", content="审查裁决：fail"),
     ])
-    agent = make_agent(agent_registry, "review-note", llm, cfg)
+    agent = make_agent(agent_registry, "reviewer", llm, cfg)
     result = await agent.run(f"审阅草稿文件 {draft}，对照原文 {pdf}")
     assert "审查裁决：fail" in result
 
 
 @pytest.mark.asyncio
-async def test_review_note_checks_requirements_from_task(agent_env, agent_registry):
-    """要求符合度：任务文本含「用户要求」→ review-note 产出 requirements 维度 blocking。"""
+async def test_reviewer_checks_requirements_from_task(agent_env, agent_registry):
+    """要求符合度：任务文本含「用户要求」→ reviewer 产出 requirements 维度 blocking。"""
     cfg, _ = agent_env
     scratch = Path(cfg.workspace) / "tmp"
     scratch.mkdir(parents=True, exist_ok=True)
@@ -96,6 +100,6 @@ async def test_review_note_checks_requirements_from_task(agent_env, agent_regist
         _tc("submit_review", {"path": str(draft), "verdict": "fail", "issues": issues}),
         Message(role="assistant", content="审查裁决：fail"),
     ])
-    agent = make_agent(agent_registry, "review-note", llm, cfg)
+    agent = make_agent(agent_registry, "reviewer", llm, cfg)
     result = await agent.run(f"审阅草稿文件 {draft}，对照原文 {pdf}。用户要求：500字以内")
     assert "审查裁决：fail" in result

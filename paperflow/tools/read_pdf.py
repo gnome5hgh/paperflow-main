@@ -31,7 +31,7 @@ class ReadPdfTool(Tool):
 
     def execute(self, path: str) -> ToolResult:
         try:
-            # 精确路径优先（缓存入口，review-note 每轮复用——见 2026-08-04
+            # 精确路径优先（缓存入口，reviewer 每轮复用——见 2026-08-04
             # generate-note-timeout-fix）。exact 成功零行为变化（D4 承诺）。
             doc = get_rag_service().parse_pdf_cached(path)
         except (FileNotFoundError, OSError):

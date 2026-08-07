@@ -1,7 +1,7 @@
 # paperflow/tools/grep.py
 """GrepTool：在文件/目录内按正则搜文本（只读）。
 
-edit_file 的 search-replace 锚点确认、review-note 事实核对、search-paper 下载校验。
+edit_file 的 search-replace 锚点确认、reviewer 事实核对、search-paper 下载校验。
 只读 → low、无确认。目录递归只搜文本文件（md/txt/py/jsonl），跳过二进制/pdf。
 """
 import re

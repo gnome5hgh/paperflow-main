@@ -24,7 +24,7 @@ def test_format_check_compares_template(tmp_path):
 def test_format_check_creates_skeleton_when_template_missing(tmp_path):
     # IMPORTANT-4 回归：spec §1 承诺"模板缺失时建最小骨架"。模板文件不存在时
     # execute 必须创建最小骨架再对比（生产默认 workspace="data" 无模板时不再
-    # FileNotFoundError 中断 review-note 流程）。
+    # FileNotFoundError 中断 reviewer 流程）。
     tpl = tmp_path / "ws" / "templates" / "paper_note.md"   # 故意不存在
     note = tmp_path / "note" / "n.md"
     note.parent.mkdir(parents=True)
