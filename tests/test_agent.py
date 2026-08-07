@@ -714,3 +714,83 @@ def test_multiple_tool_calls_executed_in_parallel():
     dt = time.monotonic() - t0
     assert out == "done"
     assert dt < 0.08, f"tool_calls 疑似串行执行: {dt:.3f}s（应 ≈0.05s）"
+
+
+def test_confirm_calls_serialized_under_concurrent_tools():
+    """B1 回归：并发 tool_call 触发 ConfirmRequired 时 confirm_callback 被串行化。
+
+    两个 tool_call 同时触发 ConfirmRequired → gather 让两个 confirm 决策在事件循环
+    上交错。_confirm_lock 保证一个 confirm 未决时另一个在锁外等待——用 max_active
+    断言 confirm_callback 从不被并发调用（若锁失效，第二个 confirm 会在第一个
+    await asyncio.sleep 期间并发进入，max_active=2）。"""
+    import asyncio
+    import json
+    import time
+    from pathlib import Path
+
+    from paperflow.core.agent import Agent
+    from paperflow.core.agent_registry import AgentRegistry
+    from paperflow.core.llm import Message
+    from paperflow.core.security import ConfirmRequired, SecurityMiddleware
+    from paperflow.core.tool import Tool, ToolResult
+    from tests.conftest import make_mock_llm
+
+    seen: list[str] = []
+
+    class FastEchoTool(Tool):
+        name = "fast_echo"
+        description = "快速回显（confirm 通过后执行）"
+        parameters = {"type": "object",
+                      "properties": {"msg": {"type": "string"}},
+                      "required": ["msg"]}
+
+        def execute(self, msg):
+            seen.append(msg)
+            return ToolResult(text=f"Echo: {msg}")
+
+    class ConfirmMW(SecurityMiddleware):
+        """before 阶段无条件抛 ConfirmRequired → 每个 tool_call 都进 confirm 分支。"""
+
+        async def before(self, ctx):
+            raise ConfirmRequired("fast_echo", {}, "medium", ["write_file"])
+
+    # confirm 并发探针：记录同时 in-flight 的最大数量 + 总调用次数。
+    # confirm_callback 用 await asyncio.sleep（而非 time.sleep）——time.sleep 是同步
+    # 阻塞，会卡死整个事件循环，两个协程根本无法交错，测试会假绿；asyncio.sleep
+    # 让出控制权，无锁时第二个 confirm 并发进入（max_active=2），有锁时被挡在
+    # _confirm_lock 外（max_active=1）。
+    state = {"active": 0, "max_active": 0, "calls": 0}
+
+    async def confirm_cb(cr):
+        state["calls"] += 1
+        state["active"] += 1
+        state["max_active"] = max(state["max_active"], state["active"])
+        await asyncio.sleep(0.05)
+        state["active"] -= 1
+        return True
+
+    reg = AgentRegistry(str(Path(__file__).resolve().parents[1] / "agents"))
+    agent = Agent(llm=make_mock_llm([]), agent_registry=reg, agent_type="_demo",
+                  security_middleware=[ConfirmMW()], confirm_callback=confirm_cb)
+    agent.tools = {"fast_echo": FastEchoTool()}
+
+    calls = [Message(role="assistant", content=None, tool_calls=[
+        {"id": "c1", "type": "function",
+         "function": {"name": "fast_echo", "arguments": json.dumps({"msg": "a"})}},
+        {"id": "c2", "type": "function",
+         "function": {"name": "fast_echo", "arguments": json.dumps({"msg": "b"})}},
+    ])]
+    resp = [calls[0], Message(role="assistant", content="done")]
+    agent.llm = make_mock_llm(resp)
+
+    t0 = time.monotonic()
+    out = asyncio.run(agent.run("go"))
+    dt = time.monotonic() - t0
+    assert out == "done"
+    assert sorted(seen) == ["a", "b"]          # 两个工具都经 confirm 通过后执行
+    assert state["calls"] == 2                  # confirm_callback 被调 2 次
+    # 串行化：两次 confirm 各 0.05s → 总墙钟 ≈ 0.10s；若并发 ≈ 0.05s。
+    assert dt > 0.08, f"confirm 疑似并发执行: {dt:.3f}s（串行应 ≈0.10s）"
+    assert state["max_active"] == 1, (
+        f"confirm_callback 被并发调用（max_active={state['max_active']}）——"
+        "_confirm_lock 未生效")
