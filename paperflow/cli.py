@@ -40,17 +40,30 @@ async def _stdin_confirm(cr) -> bool:
     """yes/no 确认回调（PolicyEngine requires_confirm）。fail-safe：EOF/空 → False。
 
     async 契约：Agent._exec_tool 以 `await self.confirm_callback(cr)` 调用（agent.py），
-    confirm_callback 必须是可 await 的——若此处保持 sync，`await True` 会抛 TypeError，
-    generate-note 的写盘工具（requires_confirm=True）在真实 CLI 里永远写不出笔记
-    （final review C1，merge blocker）。body 仍是同步的 input()（线程安全用 _stdin_lock），
-    仅把函数签名改为 async 以满足 await 契约。
+    confirm_callback 必须是可 await 的（C1 merge blocker 保留）。
+
+    input() 放线程执行（2026-08-07）：确认等待是用户交互，不应冻结共享事件循环——
+    parallel_spawn 的所有子 agent 共享同一 gather loop，同步 input() 会全部卡死。
+    无限等待：写操作一直等用户确认，不取消（确认时间由 supervisor 的 _run_child_with_
+    budget 排除在子 agent 超时预算外，不会因确认等待而误触发超时）。无超时 → 无被遗弃
+    的等待线程 → 不会吞掉用户后续输入。
     """
+    answer = await asyncio.to_thread(_read_stdin_locked, cr)
+    return answer.strip().lower() in {"y", "yes", "是", "确定"}
+
+
+def _read_stdin_locked(cr) -> str:
+    """持 _stdin_lock 读一行 stdin（在线程内调用）。
+
+    并发确认（parallel 多子 agent 同时要确认）经锁串行化、提示不交错；锁只在读行期间
+    持有（用户输入到达即释放），不阻塞任何事件循环。EOF（Ctrl-D）→ ""（fail-safe 拒绝
+    语义，spec §6.3 承诺）。"""
     with _stdin_lock:
+        print(f"[需要确认] {cr.tool_name} 是否继续？(y/N) ", end="", flush=True)
         try:
-            answer = input(f"[需要确认] {cr.tool_name} 是否继续？(y/N) ").strip().lower()
+            return input()
         except EOFError:
-            return False          # Ctrl-D：fail-safe 拒绝（spec §6.3 承诺的 EOF 语义）
-        return answer in {"y", "yes", "是", "确定"}
+            return ""
 
 
 def _stdin_ask(question: str) -> str:

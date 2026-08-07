@@ -1,16 +1,21 @@
 """Supervisor 4 个调度工具测试（mock child，无真实 LLM）。"""
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from paperflow.core.agent import Agent, MaxTurnsExceeded, StreamEvent
-from paperflow.core.tool import ToolResult
+from paperflow.core.llm import Message
+from paperflow.core.security import PolicyEngineMiddleware
+from paperflow.core.tool import Tool, ToolResult
+from tests.conftest import _tc
 from tests.test_agent import make_mock_llm, make_mock_registry
 
 from agents.supervisor.tools import (
     SpawnSubAgentTool, ParallelSpawnTool, AggregateResultsTool, AskUserTool,
+    _UserWaitClock, _wrap_confirm_callback, _run_child_with_budget,
 )
 
 
@@ -226,3 +231,90 @@ class TestStreamCallbackPropagation:
         assert received == []
         child_cb(StreamEvent("tool", "调用 search_arxiv(query=x)", "a"))  # tool 加前缀透传
         assert received == [StreamEvent("tool", "[a] 调用 search_arxiv(query=x)", "a")]
+
+
+# ─── 确认等待排除在超时外（2026-08-07 用户决策）───────────────────────
+# 用户确认是交互等待，不应计入子 agent 的执行预算：预算 = 基础 timeout + 累积用户等待。
+# 三件套：_UserWaitClock（begin/end 记录进行中等待）/ _wrap_confirm_callback（外包计时）/
+# _run_child_with_budget（把累积等待加回剩余预算，确认期间超时暂停）。
+
+
+class _ConfirmWriteTool(Tool):
+    """requires_confirm=True 的写盘工具：触发 PolicyEngine ConfirmRequired → confirm_callback。
+
+    与 test_cli.py 的 ConfirmWriteTool 同形态（本地定义，避免测试文件间耦合）。"""
+    name = "confirm_write"
+    description = "写盘，需确认"
+    parameters = {"type": "object", "properties": {}}
+    requires_confirm = True
+
+    def execute(self) -> ToolResult:
+        return ToolResult(text="written")
+
+
+class TestUserWaitBudget:
+    @pytest.mark.asyncio
+    async def test_budget_excludes_user_wait(self):
+        """0.1s 预算下：0.3s 确认等待（clock.begin/end 记录）+ 0.05s 执行 → 完成不超时。"""
+        clock = _UserWaitClock()
+        async def coro():
+            clock.begin()                      # 等价 confirm wrapper：确认开始
+            await asyncio.sleep(0.3)           # 模拟等待用户确认
+            clock.end()                        # 等价 wrapper finally：确认结束
+            await asyncio.sleep(0.05)          # 确认后的执行
+            return "done"
+        result = await _run_child_with_budget(coro(), timeout=0.1, clock=clock)
+        assert result == "done"
+
+    @pytest.mark.asyncio
+    async def test_budget_times_out_without_user_wait(self):
+        """纯执行超时仍触发：0.1s 预算下 0.5s 执行（无确认）→ TimeoutError（防误放行回归）。"""
+        clock = _UserWaitClock()
+        async def coro():
+            await asyncio.sleep(0.5)
+        with pytest.raises(asyncio.TimeoutError):
+            await _run_child_with_budget(coro(), timeout=0.1, clock=clock)
+
+    @pytest.mark.asyncio
+    async def test_wrap_confirm_records_wait(self):
+        """confirm wrapper 把等待时长记入 clock（进行中 + 结束时 total 都反映等待）。"""
+        clock = _UserWaitClock()
+        async def orig(cr):
+            await asyncio.sleep(0.1)
+            return True
+        wrapped = _wrap_confirm_callback(orig, clock)
+        assert await wrapped(None) is True
+        assert clock.total() >= 0.1
+
+
+class TestSpawnConfirmBudget:
+    def test_confirm_wait_excluded_from_timeout(self):
+        """集成：子 agent 写盘需确认（确认等待 0.2s > 预算 0.1s），确认后 success。
+
+        回归锁死 2026-08-07 修复：若确认等待计入预算（旧 wait_for 纯墙钟），0.1s 预算下
+        子 agent 在确认中途被误杀为 timeout；排除后预算延长，确认完成 → 正常 success。
+        真实子 agent（真实 PolicyEngineMiddleware + confirm_callback 慢确认）经真实
+        SpawnSubAgentTool._run_child 走完整链路。"""
+        child_llm = make_mock_llm([
+            _tc("confirm_write", {}),
+            Message(role="assistant", content="写好了"),
+        ])
+        async def slow_confirm(cr):
+            await asyncio.sleep(0.2)
+            return True
+        old = SpawnSubAgentTool.timeout
+        SpawnSubAgentTool.timeout = 0.1
+        try:
+            agent = _supervisor(
+                [SpawnSubAgentTool(), _ConfirmWriteTool()],
+                llm=child_llm,
+                security_middleware=[PolicyEngineMiddleware()],
+                confirm_callback=slow_confirm,
+            )
+            result = agent.tools["spawn_sub_agent"].execute(
+                agent_type="search-paper", task="写笔记")
+        finally:
+            SpawnSubAgentTool.timeout = old
+        parsed = json.loads(result.text)
+        assert parsed["status"] == "success"
+        assert "写好了" in parsed["summary"]

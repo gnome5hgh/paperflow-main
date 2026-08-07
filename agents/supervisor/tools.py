@@ -6,6 +6,8 @@ Supervisor 是唯一拥有 spawn 工具的 agent（权限最小化：SubAgent �
 """
 import asyncio
 import json
+import threading
+import time
 
 from pydantic import BaseModel
 
@@ -42,6 +44,88 @@ def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
     if agent_type not in cfg.allowed_spawns:
         return f"{parent.agent_type} 不能 spawn {agent_type}"
     return None
+
+
+class _UserWaitClock:
+    """用户确认等待计时器：confirm_callback 等待期间累积，供子 agent 超时预算扣除。
+
+    语义（2026-08-07 用户决策"确认时间排除在超时外"）：用户确认是交互等待，不应计入
+    子 agent 的执行预算。预算 = 基础 timeout + 已累积的用户等待——子 agent 卡在确认上
+    时预算持续延长（一直等用户），纯执行超时仍正常触发。
+
+    begin/end 而非"结束才记"：预算循环要看到**进行中**的等待（只记结束时，确认进行中
+    total 为 0，预算会误以为没在等用户而误杀）。total() 返回已完成 + 进行中的和。
+    线程安全：confirm wrapper 与预算循环在同一事件循环线程（parallel 共享 gather loop、
+    single 是 spawn worker loop），防御性加锁防未来多线程变化。"""
+    def __init__(self) -> None:
+        self._completed = 0.0
+        self._active_start: float | None = None   # 确认进行中的 monotonic 起点
+        self._lock = threading.Lock()
+
+    def begin(self) -> None:
+        """确认等待开始（wrapper 进入 orig 前调用）。"""
+        with self._lock:
+            if self._active_start is None:
+                self._active_start = time.monotonic()
+
+    def end(self) -> None:
+        """确认等待结束（wrapper finally 调用）——把进行中时长并入已完成。"""
+        with self._lock:
+            if self._active_start is not None:
+                self._completed += time.monotonic() - self._active_start
+                self._active_start = None
+
+    def total(self) -> float:
+        """当前总用户等待 = 已完成 + 进行中（预算循环每轮据此重算剩余预算）。"""
+        with self._lock:
+            active = (time.monotonic() - self._active_start
+                      if self._active_start is not None else 0.0)
+            return self._completed + active
+
+
+def _wrap_confirm_callback(orig, clock: _UserWaitClock):
+    """包装 confirm_callback：外包计时，把等待时长记入 clock（预算据此延长）。
+
+    原回调（如 CLI 的 _stdin_confirm）语义不变——只加 begin/end 计时。finally 保证
+    无论确认/拒绝/异常都停止计时（不把用户等待泄漏到后续工具的执行预算）。"""
+    async def wrapped(cr):
+        clock.begin()
+        try:
+            return await orig(cr)
+        finally:
+            clock.end()
+    return wrapped
+
+
+async def _run_child_with_budget(coro, timeout: float, clock: _UserWaitClock):
+    """运行子 agent coro，预算 = timeout + 用户确认等待累积（确认期间超时暂停）。
+
+    替代 asyncio.wait_for(coro, timeout)：wait_for 是纯墙钟，确认等待会吃掉预算导致
+    "用户忘确认→任务超时误杀"（2026-08-07 根因）。本函数每轮重算剩余 =
+    (基础 deadline + 累积用户等待) - now；≤0 才取消并抛 asyncio.TimeoutError
+    （与既有 except asyncio.TimeoutError 分支对齐）。子 agent 卡在确认上时 clock.total()
+    持续增长 → 剩余预算为正 → 一直等用户，不误杀；纯执行超时（无等待兜底）仍触发。
+
+    实现用 asyncio.wait({task}, timeout) 轮询：超时一轮只是本轮 wait 到期，task 继续
+    运行未取消；下一轮重算剩余（累积等待即时反映进预算）再等。task 完成则返回其结果
+    （异常原样上抛，如 MaxTurnsExceeded → 既有 except Exception 映射 failed）。"""
+    loop = asyncio.get_running_loop()
+    task = asyncio.ensure_future(coro)
+    base_deadline = loop.time() + timeout
+    while not task.done():
+        remaining = (base_deadline + clock.total()) - loop.time()
+        if remaining <= 0:
+            # 纯执行超时（无用户等待兜底）→ 取消子 agent，抛 TimeoutError
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+            raise asyncio.TimeoutError()
+        done, _ = await asyncio.wait({task}, timeout=remaining)
+        if done:
+            return task.result()
+    return task.result()
 
 
 class SpawnSubAgentTool(Tool):
@@ -107,8 +191,14 @@ class SpawnSubAgentTool(Tool):
         必须 asyncio.run 新建事件循环（Layer 3 spec §4.3 钉死，嵌套会抛 RuntimeError）。
         """
         timeout = self._resolve_timeout(agent_type)
+        # 用户确认等待不计入执行预算（2026-08-07）：包装 child.confirm_callback 记录等待
+        # 时长，_run_child_with_budget 把累积等待加回剩余预算——确认期间子 agent 不被
+        # 超时误杀（写盘等用户确认时一直等）。纯执行超时仍正常触发。child 的 confirm
+        # 回调是构造时继承的（confirm_callback=parent.confirm_callback），此处只外包计时。
+        clock = _UserWaitClock()
+        child.confirm_callback = _wrap_confirm_callback(child.confirm_callback, clock)
         try:
-            text = asyncio.run(asyncio.wait_for(child.run(task), timeout=timeout))
+            text = asyncio.run(_run_child_with_budget(child.run(task), timeout, clock))
             result = SubAgentResult(status="success", summary=text)
         except asyncio.TimeoutError:
             result = SubAgentResult(status="timeout", summary="子任务执行超时",
@@ -188,8 +278,13 @@ class ParallelSpawnTool(Tool):
                 stream_callback=child_cb,
             )
             timeout = self._resolve_timeout(agent_type)
+            # 同 _run_child：确认等待排除在超时预算外（2026-08-07）。并行场景下
+            # confirm_callback（如 CLI 的 _stdin_confirm）跑在后台线程不冻结共享
+            # gather loop——一个子 agent 等确认不影响其他子 agent 继续执行。
+            clock = _UserWaitClock()
+            child.confirm_callback = _wrap_confirm_callback(child.confirm_callback, clock)
             try:
-                text = await asyncio.wait_for(child.run(task), timeout=timeout)
+                text = await _run_child_with_budget(child.run(task), timeout, clock)
                 return SubAgentResult(status="success", summary=text)
             except asyncio.TimeoutError:
                 return SubAgentResult(status="timeout", summary="子任务执行超时",
