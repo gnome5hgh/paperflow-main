@@ -13,10 +13,11 @@ from paperflow.core.tool import Tool, ToolResult
 from tests.conftest import _tc
 from tests.test_agent import make_mock_llm, make_mock_registry
 
-from agents.supervisor.tools import (
-    SpawnSubAgentTool, ParallelSpawnTool, AggregateResultsTool, AskUserTool,
+from paperflow.tools.spawn import (
+    SpawnSubAgentTool, ParallelSpawnTool, SubAgentResult,
     _UserWaitClock, _wrap_confirm_callback, _run_child_with_budget,
 )
+from agents.supervisor.tools import AggregateResultsTool, AskUserTool
 
 
 def _supervisor(tools, **kwargs):
@@ -36,7 +37,7 @@ class TestSpawnSubAgentTool:
 
     def test_confirm_callback_passed_to_child(self):
         """D6 关键断言：child 构造必须继承父 confirm_callback（generate-note 写盘靠它）。"""
-        with patch("agents.supervisor.tools.Agent") as MockAgent:
+        with patch("paperflow.tools.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(return_value="done")
             cb = lambda cr: True
             agent = _supervisor([SpawnSubAgentTool()], confirm_callback=cb)
@@ -55,7 +56,7 @@ class TestSpawnSubAgentTool:
         old = SpawnSubAgentTool.timeout
         SpawnSubAgentTool.timeout = 0.05       # 覆盖 120s 默认（类属性，测试后还原防泄漏）
         try:
-            with patch("agents.supervisor.tools.Agent") as MockAgent:
+            with patch("paperflow.tools.spawn.Agent") as MockAgent:
                 async def hang(*a, **k):
                     await asyncio.sleep(5)
                 MockAgent.return_value.run = hang
@@ -72,7 +73,7 @@ class TestSpawnSubAgentTool:
         assert parsed["error_detail"] == expected
 
     def test_max_turns_maps_to_failed(self):
-        with patch("agents.supervisor.tools.Agent") as MockAgent:
+        with patch("paperflow.tools.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(side_effect=MaxTurnsExceeded("boom"))
             agent = _supervisor([SpawnSubAgentTool()])
             result = agent.tools["spawn_sub_agent"].execute(
@@ -100,7 +101,7 @@ class TestSpawnSubAgentTool:
 
     def test_timeout_uses_agent_timeouts_map(self):
         """config 命中时 error_detail 插值用 map 值而非类默认（防漂移）。"""
-        with patch("agents.supervisor.tools.Agent") as MockAgent:
+        with patch("paperflow.tools.spawn.Agent") as MockAgent:
             async def hang(*a, **k):
                 await asyncio.sleep(5)
             MockAgent.return_value.run = hang
@@ -116,7 +117,7 @@ class TestSpawnSubAgentTool:
 class TestParallelSpawnTool:
     def test_per_child_isolation(self):
         """一个 child 失败只映射自身，不拖垮其他（spec 🟠3）。"""
-        with patch("agents.supervisor.tools.Agent") as MockAgent:
+        with patch("paperflow.tools.spawn.Agent") as MockAgent:
             async def run_mixed(task):
                 if "fail" in task:
                     raise MaxTurnsExceeded("boom")
@@ -133,7 +134,7 @@ class TestParallelSpawnTool:
         assert by_status == {"success", "failed"}
 
     def test_parallel_success_all(self):
-        with patch("agents.supervisor.tools.Agent") as MockAgent:
+        with patch("paperflow.tools.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(side_effect=lambda task: f"r:{task}")
             agent = _supervisor([ParallelSpawnTool()])
             result = agent.tools["parallel_spawn"].execute(spawns=[
@@ -150,7 +151,7 @@ class TestParallelSpawnTool:
         的 _run_one 却无条件构造 child——两工具不对称。此用例钉死：非 supervisor
         parent 的越界 spawn 必须 denied，且不构造 child（MockAgent 不被调用）。"""
         tool = ParallelSpawnTool()
-        with patch("agents.supervisor.tools.Agent") as MockAgent:
+        with patch("paperflow.tools.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(return_value="ok")
             registry = make_mock_registry([tool])     # allowed_spawns 缺省 []
             agent = Agent(llm=make_mock_llm([]), agent_registry=registry,
@@ -207,7 +208,7 @@ class TestStreamCallbackPropagation:
     def test_spawn_passes_stream_callback_to_child(self):
         """子 agent 继承父 stream_callback：单 spawn 全量流式的基础。"""
         cb = lambda ev: None
-        with patch("agents.supervisor.tools.Agent") as MockAgent:
+        with patch("paperflow.tools.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(return_value="done")
             agent = _supervisor([SpawnSubAgentTool()], stream_callback=cb)
             result = agent.tools["spawn_sub_agent"].execute(
@@ -220,7 +221,7 @@ class TestStreamCallbackPropagation:
         """并行包装回调：content 丢弃、tool 加 [agent_type] 前缀（防多路 token 串字）。"""
         received = []
         parent_cb = received.append
-        with patch("agents.supervisor.tools.Agent") as MockAgent:
+        with patch("paperflow.tools.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(return_value="ok")
             agent = _supervisor([ParallelSpawnTool()], stream_callback=parent_cb)
             agent.tools["parallel_spawn"].execute(spawns=[

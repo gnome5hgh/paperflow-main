@@ -5,7 +5,7 @@
 paperflow/tools/ 的集中式安全边界（WorkspacePolicy 白名单、风险语义）；
 ReviewDraftTool 是"集中式原子工具"约定的刻意例外——定义在 agent 目录而非
 paperflow/tools/：单消费者（仅 generate-note）、需 parent 注入（needs_parent）。
-它还是 Layer 4 spawn 的种子：届时 SpawnSubAgentTool 同样落 agents/supervisor/tools.py，
+它还是 Layer 4 spawn 的种子：届时 SpawnSubAgentTool 同样落 paperflow/tools/spawn.py，
 内部"实例化子 agent → run"原样保留，只换 wrapper（SubAgentResult + 参数化 agent 名 + allowed_spawns）。
 """
 import asyncio
