@@ -289,11 +289,11 @@ class TestReplStreamer:
             out.append(a[0] + k.get("end", "\n"))
         s = _ReplStreamer(_fn, "supervisor")
         s.on_event(StreamEvent("tool", "调用 search_arxiv(query=a)", "supervisor"))
-        s.on_event(StreamEvent("tool", "调用 filter_papers(...)", "supervisor"))
+        s.on_event(StreamEvent("tool", "调用 spawn_sub_agent(...)", "supervisor"))
         s.on_event(StreamEvent("content", "最终答案", "supervisor"))
         joined = "".join(out)
         assert "\n\n" not in joined
-        assert joined == "调用 search_arxiv(query=a)\n调用 filter_papers(...)\n最终答案"
+        assert joined == "调用 search_arxiv(query=a)\n调用 spawn_sub_agent(...)\n最终答案"
 
 
 @pytest.mark.asyncio

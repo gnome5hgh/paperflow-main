@@ -29,7 +29,9 @@ allowed_spawns: []   # supervisor 硬编码放行所有 SubAgent（_check_spawn_
 
 | 意图 | SubAgent | 子任务要点 |
 |------|---------|-----------|
-| search_paper | search-paper | 搜索/下载/筛选论文，返回论文列表 |
+| search_paper | search-paper | 搜索/下载/筛选论文，返回论文列表。
+                              **原样拼入『下载』动词与全部约束（年份/等级/主题），不省略**——search-paper
+                              依据它决定是否走下载与门禁参数（C1 下载保真：用户说下载就必须尝试） |
 | generate_note | generate-note | 端到端流程（读→起草→落盘→审稿→修订），一次 spawn 完成；
                               返回含笔记绝对路径即成功，不要重复派发续写/落盘任务。
                               若 spawn 超时但笔记文件已存在，派发 answer-question 读取产物或询问用户确认，不盲目重试 |
