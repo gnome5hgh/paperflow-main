@@ -6,7 +6,10 @@ _make_supervisor_tools——Supervisor 是唯一装配 spawn 工具的 agent（�
 SubAgent 无递归调度）。需 parent 注入（needs_parent），见 Tool 约定。
 """
 import asyncio
+import hashlib
 import json
+import os
+import re
 import threading
 import time
 
@@ -45,6 +48,66 @@ def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
     if agent_type not in cfg.allowed_spawns:
         return f"{parent.agent_type} 不能 spawn {agent_type}"
     return None
+
+
+#: spawn 去重注册表：session_id -> {task指纹: {"state": "running"|"done", "result": ToolResult|None, "started_at": float}}
+#: B3 去重的机械安全网——同 session 同任务防重复派发。键为 session_id：去重只在同一
+#: 会话内生效，跨会话互不影响（并行 supervisor 各自独立会话互不干扰）。指纹是
+#: 世界感知的（含任务中所有绝对路径的当前内容快照）：同文本但世界已变（如 generate-
+#: note 再审前 edit_file 改了草稿）→ 指纹变 → done 缓存 miss → 真重跑；同文本且世界
+#: 未变 → 指纹同 → done 缓存命中（防真正的"重复派发"重复烧 token）。
+_SPAWN_REGISTRY: dict[str, dict[str, dict]] = {}
+#: 注册表并发锁：execute 跑在 to_thread worker 线程，并行 spawn 同时读写注册表
+#: → 所有访问持这把锁（单次 dict.get/set 虽原子，"检查命中-注册 running"两步
+#: 必须整体原子，否则两线程同时注册各自派发一次——去重失效）。
+_SPAWN_LOCK = threading.Lock()
+#: done 结果可复用的时间窗（秒）：5 分钟内同指纹（世界未变）spawn 直接复用缓存结果，
+#: 超窗重跑——避免过期结果无限复用（世界变化后旧结果不该被当作新结果交付）。
+_SPAWN_REUSE_WINDOW_S = 300
+#: 内容快照上限（字节）：超过则不读内容只记大小哨兵，避免每次 spawn 全量读大 PDF。
+_SNAPSHOT_MAX_BYTES = 20 * 1024 * 1024
+
+#: 任务文本中绝对路径的启发式正则（world-aware 指纹用）：抓 "/..." 开头、不含空白/
+#: 中文标点/逗号/冒号/括号/引号的最长串。误抓非文件路径无害——_file_snapshot 落
+#: <missing> 哨兵，同一文本每次抓到同一集合，指纹稳定。
+_PATH_RE = re.compile(r"(?<!\S)/[^\s，,;:。（）()\"']+")
+
+
+def _file_snapshot(path: str) -> str:
+    """路径当前内容快照（world-aware 指纹的原料）。
+
+    文件不存在 → "<missing>"；>20MB → "<large:size>"（不读内容，避免每次 spawn 全量
+    读大 PDF）；读失败（OSError）→ "<unreadable>"；正常 → sha256(read_bytes())[:16]。
+    世界感知的核心：快照随文件内容变化——generate-note 再审（edit_file 改草稿后同任务
+    文本重 spawn）快照不同 → 指纹不同 → 缓存 miss → 真重读；同文本同内容才命中缓存。
+    """
+    if not os.path.exists(path):
+        return "<missing>"
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return "<unreadable>"
+    if size > _SNAPSHOT_MAX_BYTES:
+        return f"<large:{size}>"
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return "<unreadable>"
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+def _task_fingerprint(task: str) -> str:
+    """世界感知指纹：规范化任务文本 + 任务中所有绝对路径的当前内容快照。
+
+    snap = "|".join(f"{path}:{_file_snapshot(path)}" for path in sorted(set(paths))),
+    再 sha256((norm + "||" + snap).encode("utf-8")).hexdigest()[:16]。同文本但文件内容变 →
+    指纹变 → 缓存 miss → 真重跑；同文本且世界未变 → 指纹同 → done 缓存命中（防重复派发）。
+    """
+    norm = " ".join(task.split())
+    paths = sorted(set(_PATH_RE.findall(task)))
+    snap = "|".join(f"{p}:{_file_snapshot(p)}" for p in paths)
+    return hashlib.sha256((norm + "||" + snap).encode("utf-8")).hexdigest()[:16]
 
 
 class _UserWaitClock:
@@ -169,21 +232,51 @@ class SpawnSubAgentTool(Tool):
             result = SubAgentResult(status="denied", summary=denied)
             return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
-        # ② 构造 child：继承 security_middleware + session_id（同一审计链）+ confirm_callback
-        #    （D6 关键：generate-note 的写盘工具 requires_confirm=True，不传则 _default_confirm
-        #    始终拒绝，spawn 出的 generate-note 永远写不出笔记）。
-        #    不传 intent_pipeline/session → child 的 intent_enabled=False（D3）。
-        child = Agent(
-            llm=parent.llm, agent_registry=parent.agent_registry,
-            agent_type=agent_type, security_middleware=parent.security_middleware,
-            session_id=parent.session_id, confirm_callback=parent.confirm_callback,
-            # 流式透传：单 spawn 子 agent 继承父 stream_callback，其推理 token
-            # 带自己的 agent_type 实时流式（CLI 渲染为 child 分段）。
-            # getattr（而非 parent.stream_callback）让 mock / 真实 Agent 都可用。
-            stream_callback=getattr(parent, "stream_callback", None),
-        )
-        # 传解析后的超时：_run_child 用实际生效值（config > 类默认）
-        return self._run_child(child, agent_type, task)
+        # ② B3：同一 session 同指纹去重——running（in-flight）命中 → 提示等待；
+        #    done 且 <5 分钟（世界未变）→ 复用缓存 result。主防线是 SKILL「同一意图
+        #    不重复 spawn」，此处是机械安全网。execute 跑在 to_thread worker 线程，
+        #    并行 spawn 并发访问注册表 → 检查+注册须持锁整体原子。
+        fp = _task_fingerprint(task)
+        with _SPAWN_LOCK:
+            reg = _SPAWN_REGISTRY.setdefault(parent.session_id, {})
+            hit = reg.get(fp)
+            now = time.monotonic()
+            if hit and hit["state"] == "running":
+                return ToolResult(text="同任务正在执行中，请等待其结果（已去重，勿重复派发）")
+            if hit and hit["state"] == "done" and now - hit["started_at"] < _SPAWN_REUSE_WINDOW_S:
+                return hit["result"]
+            reg[fp] = {"state": "running", "result": None, "started_at": now}
+
+        result = None
+        try:
+            # ③ 构造 child：继承 security_middleware + session_id（同一审计链）+ confirm_callback
+            #    （D6 关键：generate-note 的写盘工具 requires_confirm=True，不传则 _default_confirm
+            #    始终拒绝，spawn 出的 generate-note 永远写不出笔记）。
+            #    不传 intent_pipeline/session → child 的 intent_enabled=False（D3）。
+            child = Agent(
+                llm=parent.llm, agent_registry=parent.agent_registry,
+                agent_type=agent_type, security_middleware=parent.security_middleware,
+                session_id=parent.session_id, confirm_callback=parent.confirm_callback,
+                # 流式透传：单 spawn 子 agent 继承父 stream_callback，其推理 token
+                # 带自己的 agent_type 实时流式（CLI 渲染为 child 分段）。
+                # getattr（而非 parent.stream_callback）让 mock / 真实 Agent 都可用。
+                stream_callback=getattr(parent, "stream_callback", None),
+            )
+            # 传解析后的超时：_run_child 用实际生效值（config > 类默认）
+            result = self._run_child(child, agent_type, task)
+        finally:
+            # 完成即写 done（B3 缓存复用）：同 session 同指纹、世界未变的重 spawn 在复用
+            # 窗内命中缓存直接返回。_run_child 内全捕获总返回 ToolResult；若构造/执行
+            # 意外抛异常 result 为 None → 不缓存（清除条目，后续重跑），防 None 入缓存
+            # 污染后续复用。fp 是 execute 内作用域变量，注册表读写全在 _SPAWN_LOCK 内。
+            with _SPAWN_LOCK:
+                reg = _SPAWN_REGISTRY.setdefault(parent.session_id, {})
+                if result is None:
+                    reg.pop(fp, None)
+                else:
+                    reg[fp] = {"state": "done", "result": result,
+                               "started_at": time.monotonic()}
+        return result
 
     def _run_child(self, child: Agent, agent_type: str, task: str) -> ToolResult:
         """执行 child.run 并映射为 SubAgentResult（success/timeout/denied/failed）。

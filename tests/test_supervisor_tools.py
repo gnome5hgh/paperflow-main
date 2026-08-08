@@ -16,6 +16,7 @@ from tests.test_agent import make_mock_llm, make_mock_registry
 from paperflow.tools.spawn import (
     SpawnSubAgentTool, ParallelSpawnTool, SubAgentResult,
     _UserWaitClock, _wrap_confirm_callback, _run_child_with_budget,
+    _task_fingerprint, _SPAWN_REGISTRY,
 )
 from agents.supervisor.tools import AggregateResultsTool, AskUserTool
 
@@ -27,6 +28,89 @@ def _supervisor(tools, **kwargs):
     llm = kwargs.pop("llm", None) or make_mock_llm([])
     return Agent(llm=llm, agent_registry=make_mock_registry(tools),
                  agent_type="supervisor", **kwargs)
+
+
+# ─── B3 同 session 同指纹去重（Task 10，世界感知指纹）─────────────────
+# 主防线是 SKILL「同一意图不重复 spawn」；_SPAWN_REGISTRY 是机械安全网。指纹 = 规范化
+# 任务文本 + 任务中所有绝对路径的当前内容快照：同文本但世界已变（generate-note 再审前
+# edit_file 改了草稿）→ 指纹变 → done 缓存 miss → 真重跑；同文本且世界未变 → 指纹同 →
+# done 缓存命中（防重复派发）。running（in-flight）命中 → 提示等待。注册表键为 session_id，
+# 去重只作用于同一会话内（并行 supervisor 各自独立会话互不干扰）。
+
+
+def test_task_fingerprint_normalizes_whitespace():
+    """空白/换行差异的任务文本应映射同一指纹（去重的前提是规范化）。"""
+    assert _task_fingerprint("  a\n b  ") == _task_fingerprint("a b")
+
+
+def test_fingerprint_tracks_file_content(tmp_path):
+    """世界感知：同文本 + 文件内容不变 → 指纹同；改文件内容 → 指纹变（tmp 文件）。"""
+    p = tmp_path / "draft.md"
+    p.write_text("v1", encoding="utf-8")
+    task = f"审阅草稿文件 {p}，对照原文 {tmp_path / 'paper.pdf'}"
+    f1 = _task_fingerprint(task)
+    assert _task_fingerprint(task) == f1            # 世界未变 → 指纹同
+    p.write_text("v2", encoding="utf-8")            # edit_file 改草稿 → 世界变
+    assert _task_fingerprint(task) != f1            # 指纹变 → 缓存 miss
+
+
+def test_spawn_dedup_reuses_completed(tmp_path):
+    """B3 done 缓存复用：同 session 同指纹（世界未变）第二次 spawn 返回缓存，子 agent 不重构造。
+
+    第一次 spawn（mock child 返回 success）→ 注册表落 done；第二次同指纹（任务文本与文件
+    内容都未变）命中缓存 → 返回同一 ToolResult。MockAgent.call_count==1 证明第二次未重新
+    构造子 agent（若去重失效，第二次会再构造 → call_count==2）。"""
+    p = tmp_path / "draft.md"
+    p.write_text("v1", encoding="utf-8")
+    task = f"审阅草稿文件 {p}"
+    with patch("paperflow.tools.spawn.Agent") as MockAgent:
+        MockAgent.return_value.run = AsyncMock(return_value="done")
+        agent = _supervisor([SpawnSubAgentTool()])
+        tool = agent.tools["spawn_sub_agent"]
+        first = tool.execute(agent_type="reviewer", task=task)
+        second = tool.execute(agent_type="reviewer", task=task)
+    assert MockAgent.call_count == 1                # 缓存命中 → 第二次不重构造
+    assert first.text == second.text
+    assert json.loads(first.text)["status"] == "success"
+    assert json.loads(first.text)["summary"] == "done"
+
+
+def test_spawn_dedup_reruns_when_world_changed(tmp_path):
+    """世界感知回归（generate-note 再审锁）：同文本但文件内容变 → 指纹变 → 缓存 miss → 真重跑。
+
+    再审同任务文本（edit_file 修订后世界已变）必须拿到新 child 的输出（pass），而非第一次的
+    fail 缓存。MockAgent.call_count==2 证明第二次真重构造 child。"""
+    p = tmp_path / "draft.md"
+    p.write_text("v1", encoding="utf-8")
+    task = f"审阅草稿文件 {p}，对照原文 {tmp_path / 'paper.pdf'}"
+    with patch("paperflow.tools.spawn.Agent") as MockAgent:
+        MockAgent.return_value.run = AsyncMock(side_effect=["fail", "pass"])
+        agent = _supervisor([SpawnSubAgentTool()])
+        tool = agent.tools["spawn_sub_agent"]
+        first = tool.execute(agent_type="reviewer", task=task)
+        p.write_text("v2", encoding="utf-8")        # edit_file 修订草稿 → 世界变
+        second = tool.execute(agent_type="reviewer", task=task)
+    assert MockAgent.call_count == 2                # 缓存 miss → 第二次真重构造 child
+    assert json.loads(first.text)["summary"] == "fail"
+    assert json.loads(second.text)["summary"] == "pass"
+
+
+def test_spawn_dedup_running_hint():
+    """B3 running 去重：注册表已有 running 记录 → 提示等待，不构造 child。
+
+    running 状态无法在单线程同步调用里自然构造（execute 同步跑完才返回），故直接
+    seed 一条 running 记录到注册表，验证读路径返回等待提示而非重复派发。"""
+    with patch("paperflow.tools.spawn.Agent") as MockAgent:
+        MockAgent.return_value.run = AsyncMock(return_value="done")
+        agent = _supervisor([SpawnSubAgentTool()])
+        tool = agent.tools["spawn_sub_agent"]
+        fp = _task_fingerprint("搜索 x")
+        _SPAWN_REGISTRY.setdefault(agent.session_id, {})[fp] = {
+            "state": "running", "result": None, "started_at": time.monotonic(),
+        }
+        result = tool.execute(agent_type="search-paper", task="搜索 x")
+    assert "正在执行中" in result.text
+    MockAgent.assert_not_called()
 
 
 class TestSpawnSubAgentTool:
