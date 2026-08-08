@@ -250,6 +250,13 @@ class TestChatStream:
         assert captured["prompt_tokens"] == 10
         assert captured["completion_tokens"] == 5
         assert captured["total_tokens"] == 15
+        # 流式回调键集与 chat() 一致：元数据 only，含 duration_ms + started_at
+        assert set(captured) == {
+            "model", "prompt_tokens", "completion_tokens", "total_tokens",
+            "duration_ms", "started_at", "finish_reason",
+        }
+        assert captured["duration_ms"] >= 0
+        assert captured["started_at"]
 
     @pytest.mark.asyncio
     async def test_degrades_when_stream_options_unsupported(self):
@@ -306,7 +313,17 @@ def test_chat_calls_telemetry_callback():
         await client.chat([], telemetry_callback=lambda d: captured.update(d))
 
     import asyncio; asyncio.run(go())
+    # 精确锁定 telemetry 键集：元数据 only（绝不含 content），与 audit.py
+    # record_llm_call 的形参一一对应（Agent 以 **fields 转发）
+    assert set(captured) == {
+        "model", "prompt_tokens", "completion_tokens", "total_tokens",
+        "duration_ms", "started_at", "finish_reason",
+    }
     assert captured["model"] == client.model
     assert captured["total_tokens"] == 18
-    assert captured["latency_ms"] >= 0
+    assert captured["duration_ms"] >= 0            # monotonic 实测耗时
+    # started_at 是调用起点墙钟 ISO，audit.py 靠它推算 ended_at → 必须可解析
+    assert captured["started_at"]
+    from datetime import datetime
+    datetime.fromisoformat(captured["started_at"])
     assert captured["finish_reason"] == "stop"

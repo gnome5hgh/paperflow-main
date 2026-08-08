@@ -26,6 +26,7 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 from openai import OpenAI
 
@@ -125,14 +126,15 @@ class LLMClient:
         :param extra_body: 附加请求体参数（如 DeepSeek 的 enable_thinking），
             端点为不支持时自动降级重试一次
         :param telemetry_callback: 调用结束后同步回调元数据 dict
-            （model/prompt_tokens/completion_tokens/total_tokens/latency_ms/
-            finish_reason），供审计 replay 使用；不含消息正文。None 时零开销跳过
+            （model/prompt_tokens/completion_tokens/total_tokens/duration_ms/
+            started_at/finish_reason），供审计 replay 使用；不含消息正文。None 时零开销跳过
         :returns: 封装后的 assistant Message
         :raises: SDK 异常直接向上抛，由 Agent 自行决定是否 recover
         """
-        # 计时起点：latency_ms 覆盖从入参到返回的完整调用耗时（含降级重试），
-        # 供审计 replay 评估各环节耗时
+        # 计时起点：duration_ms 覆盖从入参到返回的完整调用耗时（含降级重试），
+        # started_at 记调用起点墙钟，供审计 replay 推算 ended_at（mtime 不可写审计）
         _started = time.monotonic()
+        _started_wall = datetime.now().isoformat()
 
         # 构建 API 请求参数
         kwargs = dict(
@@ -196,8 +198,9 @@ class LLMClient:
             truncated=(response.choices[0].finish_reason == "length"),
         )
 
-        # telemetry：只回传元数据（usage/latency/finish_reason），绝不包含消息正文。
-        # usage 某些端点可能缺失（getattr 兜底 None）；回调不存在时是零开销 no-op
+        # telemetry：只回传元数据（usage/duration_ms/started_at/finish_reason），
+        # 绝不包含消息正文。usage 某些端点可能缺失（getattr 兜底 None）；
+        # 回调不存在时是零开销 no-op
         if telemetry_callback is not None:
             usage = getattr(response, "usage", None) or {}
             telemetry_callback({
@@ -205,7 +208,8 @@ class LLMClient:
                 "prompt_tokens": getattr(usage, "prompt_tokens", None),
                 "completion_tokens": getattr(usage, "completion_tokens", None),
                 "total_tokens": getattr(usage, "total_tokens", None),
-                "latency_ms": int((time.monotonic() - _started) * 1000),
+                "duration_ms": int((time.monotonic() - _started) * 1000),
+                "started_at": _started_wall,
                 "finish_reason": response.choices[0].finish_reason,
             })
         return msg
@@ -222,8 +226,9 @@ class LLMClient:
             流式 token 归因依赖 stream_options={"include_usage": True}（OpenAI 兼容
             端点默认不返回流式 usage）；老端点不支持该参数时自动降级重试一次
         """
-        # 计时起点：latency_ms 覆盖整个流式接收过程
+        # 计时起点：duration_ms 覆盖整个流式接收过程；started_at 记调用起点墙钟
         _started = time.monotonic()
+        _started_wall = datetime.now().isoformat()
 
         kwargs = dict(
             model=self.model,
@@ -261,7 +266,8 @@ class LLMClient:
                     "prompt_tokens": getattr(usage, "prompt_tokens", None),
                     "completion_tokens": getattr(usage, "completion_tokens", None),
                     "total_tokens": getattr(usage, "total_tokens", None),
-                    "latency_ms": int((time.monotonic() - _started) * 1000),
+                    "duration_ms": int((time.monotonic() - _started) * 1000),
+                    "started_at": _started_wall,
                     "finish_reason": finish_reason,
                 })
             return Message(role=role, content=content, tool_calls=tool_calls,
