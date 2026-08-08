@@ -69,3 +69,19 @@ def test_verdict_pass_empty_items_rejected():
     tool = SubmitDownloadReviewTool()
     r = tool.execute(verdict="pass", items=[])
     assert "空" in r.text
+
+def test_pass_item_without_venue_rank():
+    """无等级约束场景：pass 项不带 venue_rank（预印本）→ 校验通过、格式化不渲染等级。
+
+    等级门禁条件化后，用户未要求等级时 reviewer 交的 pass 项没有 venue_rank；
+    schema 中 venue_rank 本就是可选字段，此用例锁住该兼容性（防止被误加进必填）。"""
+    tool = SubmitDownloadReviewTool()
+    r = tool.execute(verdict="pass", items=[{
+        "title": "Quantum negative sampling for KGE",
+        "decision": "pass",
+        "reasons": ["年份≥2025", "主题相关", "预印本无等级要求"],
+        "source_link": "https://arxiv.org/pdf/2502.17973",
+    }])
+    assert "审查裁决：pass" in r.text
+    assert "[PASS] Quantum negative sampling for KGE" in r.text
+    assert "venue_rank" not in r.text      # 格式化不渲染等级信息
