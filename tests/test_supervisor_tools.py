@@ -105,17 +105,29 @@ def test_spawn_dedup_running_hint():
 
 
 def test_task_has_path_boolean():
-    r"""_task_has_path 布尔判据：含路径 → True；纯文本 → False；散文 "/" 假阳性 → True（保守）。
+    r"""_task_has_path 布尔判据：含路径 → True；纯文本 → False；散文 "/" 假阳性 → 保守 True。
 
     route 3 门控依赖此布尔判断区分「有路径任务（只 running 去重）」与「无路径任务（可 done
     缓存）」。安全方向：散文里的 "/"（如 "/5 评分"）误判为路径（假阳性）→ 跳过 done 缓存 →
-    安全重跑；真路径漏判风险低（模板路径跟在空格后，命中 (?<!\S)）。"""
+    安全重跑。lookbehind 放宽为「前接非英文单词字符」（review Important 修复）：LLM 拼装的
+    任务文本可能省略空格，路径前是标点（全角冒号/左括号/反引号）或中文时也能识别；而
+    `Q1/Q2`/`8/10` 等散文斜杠（前接 word char）仍忽略。"""
     assert _task_has_path("/Users/x/draft.md")                     # 裸绝对路径
     assert _task_has_path("审阅草稿文件 /tmp/x/draft.md")           # 模板：路径跟在空格后
     assert _task_has_path("对照 /tmp/x/paper(v2).pdf 审查")         # 半角括号路径仍被识别
+    # review Important 修复：旧 (?<!\S) 守卫要求路径前是空白，LLM 拼装省略空格时这些紧邻
+    # 路径全被判 False → 真路径被当无路径 → done 缓存启用（route 3 要躲的 bug 复活）
+    assert _task_has_path("审阅草稿文件：/tmp/x/draft.md")           # 全角冒号紧邻
+    assert _task_has_path("(/tmp/x/draft.md)")                     # 左括号紧邻
+    assert _task_has_path("`/tmp/x/draft.md`")                     # 反引号紧邻
+    assert _task_has_path("审阅/tmp/x")                            # 中文紧邻 → 假阳性保守 True
+    # 散文斜杠（前接英文单词字符）仍忽略
+    assert not _task_has_path("Q1/Q2")
+    assert not _task_has_path("今天是 8/10 号")
+    assert not _task_has_path("a/b 是比例")
     assert not _task_has_path("搜索关于强化学习的论文")              # 纯文本无 "/" → False
     assert not _task_has_path("请给出 5 分评价")                    # 无 "/" → False
-    assert _task_has_path("请给出 /5 分评价")                       # 散文 "/" 假阳性 → 保守 True
+    assert _task_has_path("请给出 /5 分评价")                       # 散文 "/"（空格前）→ 保守 True
 
 
 def test_path_bearing_task_never_caches_done(tmp_path):
