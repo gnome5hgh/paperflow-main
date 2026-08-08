@@ -50,3 +50,28 @@ async def test_reviewer_download_mode_submits_verdict(agent_env, agent_registry)
         "审查以下候选论文：HGT(WWW 2020)。要求：年份≥2026，等级≥Q2，主题=异构图特征提取"
     )
     assert "审查裁决：pass" in out
+
+
+@pytest.mark.asyncio
+async def test_reviewer_download_mode_no_rank_constraint(agent_env, agent_registry):
+    """无等级约束场景：任务文本不含等级 → reviewer 不调 lookup_venue_rank，预印本项 pass。
+
+    等级门禁条件化（2026-08-08）后，用户未要求等级时 reviewer 跳过等级维度，
+    直接对预印本项交 submit_download_review（items 无 venue_rank）。mock LLM 序列
+    不出现 lookup_venue_rank，锁住该流程形态；SKILL 实际提示效果由 smoke 验证。"""
+    cfg, _ = agent_env
+    responses = [
+        _tc("submit_download_review", {"verdict": "pass", "items": [{
+            "title": "Quantum negative sampling for KGE",
+            "decision": "pass",
+            "reasons": ["年份≥2025", "主题相关", "预印本无等级要求"],
+            "source_link": "https://arxiv.org/pdf/2502.17973",
+        }]}),
+        Message(role="assistant", content="审查裁决：pass\n预印本：Quantum negative sampling for KGE"),
+    ]
+    llm = make_mock_llm(responses)
+    agent = make_agent(agent_registry, "reviewer", llm, cfg)
+    out = await agent.run(
+        "审查以下候选论文：Quantum negative sampling(arXiv, 2025)。用户约束：年份≥2025、主题=负采样算法"
+    )
+    assert "审查裁决：pass" in out
