@@ -41,8 +41,16 @@ class PolicyEngineMiddleware(SecurityMiddleware):
         if ctx.tool is None:
             return        # 未知工具交给 after 钩子做审计
         tool = ctx.tool
+        # 记录本次评估的策略配置输入（供审计 replay：这条调用当时在什么配置下被评估）
+        ctx.policy_context = {
+            "max_risk": self.max_risk,
+            "tool_risk": tool.risk_level,
+            "blocked_by_default": bool(tool.blocked_by_default),
+            "requires_confirm": bool(tool.requires_confirm),
+        }
 
         if tool.blocked_by_default:
+            ctx.policy_fired = "blocked_by_default"
             raise PolicyDenied(
                 reason=f"'{tool.name}' 被标记为默认禁止，需手动覆盖才可执行"
             )
@@ -50,6 +58,7 @@ class PolicyEngineMiddleware(SecurityMiddleware):
         tool_risk = RISK_ORDER.get(tool.risk_level, 3)  # 未知 → critical
         threshold = RISK_ORDER[self.max_risk]
         if tool_risk > threshold:
+            ctx.policy_fired = "risk_threshold"
             raise PolicyDenied(
                 reason=f"风险等级 {tool.risk_level} 超过会话阈值 {self.max_risk}"
             )
@@ -59,6 +68,7 @@ class PolicyEngineMiddleware(SecurityMiddleware):
             # 从其中读取 path 即可得本次写入目标。
             confirm_key = (tool.name, ctx.args.get("path"))
             if confirm_key not in self._confirmed:
+                ctx.policy_fired = "requires_confirm"
                 raise ConfirmRequired(
                     tool_name=tool.name,
                     params=ctx.args,

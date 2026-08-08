@@ -133,3 +133,15 @@ class TestPolicyEngine:
         await mw.before(ctx_a)                # 同路径重试不再询问
         with pytest.raises(ConfirmRequired):  # 不同路径（b）仍需单独确认
             await mw.before(ctx_b)
+
+    @pytest.mark.asyncio
+    async def test_before_stamps_policy_context_and_fired(self):
+        # 每次策略评估都标注当时的配置输入，供审计 replay：即使 tool_risk 超阈值
+        # 被拦截，ctx 上也要留下这次评估的 policy_context 与命中的规则名。
+        mw = PolicyEngineMiddleware(max_risk="medium")
+        ctx = make_ctx(HighTool())  # risk_level="high" > max_risk="medium"
+        with pytest.raises(PolicyDenied):
+            await mw.before(ctx)
+        assert ctx.policy_context["tool_risk"] == "high"
+        assert ctx.policy_context["max_risk"] == "medium"
+        assert ctx.policy_fired == "risk_threshold"
