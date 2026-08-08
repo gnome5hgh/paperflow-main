@@ -84,3 +84,26 @@ class TestExceptions:
     def test_confirm_required_without_callback(self):
         cr = ConfirmRequired("t", {}, "low", [])
         cr.confirm()  # 不应抛
+
+
+def test_tool_context_has_audit_tree_fields():
+    ctx = ToolContext(trace_id="t", session_id="s", agent_type="a")
+    assert ctx.turn == 0
+    assert ctx.span_id is None
+    assert ctx.parent_id is None
+    assert ctx.depth == 0
+    assert ctx.policy_context is None
+    assert ctx.policy_fired is None
+    assert ctx.approval_outcome is None
+
+
+class _ProbeMiddleware(SecurityMiddleware):
+    async def on_approval(self, ctx, phase, outcome=None):
+        self.seen = (ctx, phase, outcome)
+
+
+@pytest.mark.asyncio
+async def test_on_approval_hook_defaults_to_noop():
+    ctx = ToolContext(trace_id="t", session_id="s", agent_type="a")
+    mw = SecurityMiddleware()
+    assert await mw.on_approval(ctx, "requested") is None   # 默认不抛、不返回

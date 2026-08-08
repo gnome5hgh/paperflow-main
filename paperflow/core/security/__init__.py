@@ -32,6 +32,17 @@ class ToolContext:
     result: ToolResult | None = None
     error: Exception | None = None
     user_confirmed: bool = False
+    # 审计树（Layer 1 审计增强）：turn = ReAct 轮次；span_id/parent_id/depth 由
+    # AuditMiddleware.before 通过 contextvar 填充；policy_context/policy_fired 由
+    # PolicyEngineMiddleware 填充；approval_* 由 Agent 在确认流程里填充。
+    turn: int = 0
+    span_id: str | None = None
+    parent_id: str | None = None
+    depth: int = 0
+    policy_context: dict | None = None
+    policy_fired: str | None = None
+    approval_outcome: str | None = None
+    approval_decided_span_id: str | None = None
 
 
 class SecurityMiddleware(ABC):
@@ -48,6 +59,11 @@ class SecurityMiddleware(ABC):
     async def on_finish(self, agent, content: str) -> str:
         """整轮对话收尾时的钩子：可在最终回复落定前改写内容。默认原样返回。"""
         return content
+
+    async def on_approval(self, ctx: ToolContext, phase: str, outcome: str | None = None) -> None:
+        # 审批生命周期钩子：phase ∈ {"requested", "decided"}，仅 AuditMiddleware
+        # 实现；其余中间件默认 no-op（洋葱模型外的可选横切关注点）。
+        return
 
 
 class SecurityError(Exception):
