@@ -591,6 +591,7 @@ class TestFormatToolCall:
         line = _format_tool_call(long_name, args)
         assert len(line) <= 80
         assert line.startswith(f"调用 {long_name}(")
+        assert "…" in line                       # D1：行宽截断处有 "…" 标记
         # 工具名长到剩余预算 ≤0 → 只显示工具名（宁可超宽也不截断名字）
         mega = "tool_" + "x" * 100
         assert _format_tool_call(mega, args).startswith("调用")
@@ -605,6 +606,24 @@ class TestFormatToolCall:
         assert path in line            # 完整路径在行内
         assert "..." not in line       # 未被截断
         assert line.startswith("调用 read_pdf(path=")
+
+    def test_marks_truncation(self):
+        """D1：截断处补 "…" 标记。两处截断都应有标记——_compact 值级截断
+        （>40 字符参数值）与 pairs 行宽截断（超出预算）。用户从状态行能看出
+        "内容被截断"，而不是误以为显示的就是完整值。"""
+        import json
+        from paperflow.core.agent import _format_tool_call
+
+        # _compact 值级截断：100 字符 query → 37 内容 + "…"
+        long_query = "q" * 100
+        line = _format_tool_call("arxiv_search", json.dumps(
+            {"query": long_query, "max_results": 10}))
+        assert "…" in line                       # 截断处有标记
+        assert "调用 arxiv_search(query=" in line
+
+        # 短值不截断 → 无标记
+        short = _format_tool_call("echo", json.dumps({"message": "hi"}))
+        assert "hi" in short and "…" not in short
 
 
 class TestToolEvent:

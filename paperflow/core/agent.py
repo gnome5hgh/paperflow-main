@@ -100,7 +100,9 @@ def _compact(v) -> str:
     s = str(v).replace("\n", " ")
     if s.lstrip().startswith("/"):
         return s
-    return s if len(s) <= 40 else s[:37] + "..."
+    # D1：截断处用 "…" 单字符标记（原 "..." 三个点语义不清——用户在状态行看不出
+    # 内容被截断，以为完整值就是这么多字符）。保留 40 字符语义（37 内容 + 1 标记）。
+    return s if len(s) <= 40 else s[:37] + "…"
 
 
 def _format_tool_call(name: str, raw_args: str) -> str:
@@ -124,7 +126,11 @@ def _format_tool_call(name: str, raw_args: str) -> str:
     budget = max(0, 80 - len(f"调用 {name}()"))
     if budget <= 0:
         return f"调用 {name}()"
-    return f"调用 {name}({pairs[:budget]})"
+    # D1：行宽截断处补 "…" 标记（原来直接 pairs[:budget] 硬切，截断无提示）。
+    # 留 1 字符给标记：截断后 pairs = 预算内内容 + "…"，整行仍 ≤80。
+    if len(pairs) > budget:
+        pairs = pairs[:max(0, budget - 1)] + "…"
+    return f"调用 {name}({pairs})"
 
 
 class Agent:
