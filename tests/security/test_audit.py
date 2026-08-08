@@ -77,16 +77,21 @@ class TestAuditMiddleware:
         files = list(tmp_path.glob("audit_*.jsonl"))
         assert len(files) == 1
         lines = files[0].read_text().strip().splitlines()
-        assert len(lines) == 1
-        entry = json.loads(lines[0])
-        assert entry["trace_id"] == "trace_x"
-        assert entry["tool_name"] == "audit_tool"
-        assert entry["risk_level"] == "medium"
-        assert entry["policy_decision"] == "auto_allowed"
-        assert entry["result_status"] == "success"
-        assert entry["timestamp"] == "2026-07-31T10:00:00"
-        assert entry["event_type"] == "tool_invoked"
-        assert entry["span_id"].startswith("span_")
+        assert len(lines) == 2
+        started, ended = (json.loads(l) for l in lines)
+        # 一次调用 = 两个事件：before 写 start，after 写 end，同 span
+        assert started["event_type"] == "tool_started"
+        assert started["span_id"] == ended["span_id"]
+        assert ended["event_type"] == "tool_ended"
+        assert ended["trace_id"] == "trace_x"
+        assert ended["tool_name"] == "audit_tool"
+        assert ended["risk_level"] == "medium"
+        assert ended["policy_decision"] == "auto_allowed"
+        assert ended["result_status"] == "success"
+        assert ended["started_at"] == "2026-07-31T10:00:00"
+        assert ended["ended_at"]
+        assert ended["duration_ms"] >= 0
+        assert ended["span_id"].startswith("span_")
 
     @pytest.mark.asyncio
     async def test_writes_blocked_entry(self, tmp_path):
@@ -96,9 +101,13 @@ class TestAuditMiddleware:
         await mw.after(ctx)
 
         files = list(tmp_path.glob("audit_*.jsonl"))
-        entry = json.loads(files[0].read_text().strip())
-        assert entry["result_status"] == "policy_blocked"
-        assert entry["policy_decision"] == "policy_denied"
+        lines = files[0].read_text().strip().splitlines()
+        assert len(lines) == 2
+        started, ended = (json.loads(l) for l in lines)
+        assert started["event_type"] == "tool_started"
+        assert ended["event_type"] == "tool_ended"
+        assert ended["result_status"] == "policy_blocked"
+        assert ended["policy_decision"] == "policy_denied"
 
 
 class TestAuditTreeFields:
@@ -111,21 +120,39 @@ class TestAuditTreeFields:
         assert ctx.parent_id is None          # 根调用无父
         assert ctx.depth == 0
         await mw.after(ctx)
-        entry = json.loads(next(tmp_path.glob("audit_*.jsonl")).read_text())
-        assert entry["event_type"] == "tool_invoked"
-        assert entry["span_id"] == ctx.span_id
-        assert entry["parent_id"] is None
-        assert entry["depth"] == 0
+        lines = [json.loads(l) for l in next(tmp_path.glob("audit_*.jsonl")).read_text().strip().splitlines()]
+        assert len(lines) == 2
+        started, ended = lines
+        # before() 写 tool_started：span 建点 + 入参快照（started_at = 调用时间戳）
+        assert started["event_type"] == "tool_started"
+        assert started["span_id"] == ctx.span_id
+        assert started["parent_id"] is None
+        assert started["depth"] == 0
+        assert started["started_at"] == "2026-07-31T10:00:00"
+        assert started["params"] == {}
+        # after() 写 tool_ended：同 span 收口 + 耗时/结果
+        assert ended["event_type"] == "tool_ended"
+        assert ended["span_id"] == ctx.span_id
+        assert ended["parent_id"] is None
+        assert ended["depth"] == 0
+        assert ended["started_at"] == "2026-07-31T10:00:00"
+        assert ended["ended_at"]
+        assert ended["duration_ms"] >= 0
+        assert ended["result_status"] == "success"
 
     @pytest.mark.asyncio
     async def test_after_without_before_is_defensive(self, tmp_path):
-        # I2 早退路径只走 after：应补 span_id、不炸
+        # I2 早退路径只走 after：应补 span_id + 补写 tool_started，不炸、不弹栈
         mw = AuditMiddleware(audit_dir=str(tmp_path))
         ctx = make_ctx()
         await mw.after(ctx)
-        entry = json.loads(next(tmp_path.glob("audit_*.jsonl")).read_text())
-        assert entry["span_id"].startswith("span_")
-        assert entry["event_type"] == "tool_invoked"
+        lines = [json.loads(l) for l in next(tmp_path.glob("audit_*.jsonl")).read_text().strip().splitlines()]
+        assert len(lines) == 2
+        started, ended = lines
+        assert started["event_type"] == "tool_started"
+        assert started["span_id"].startswith("span_")
+        assert started["span_id"] == ended["span_id"]   # 补写的 start 与 end 同 span
+        assert ended["event_type"] == "tool_ended"
 
     @pytest.mark.asyncio
     async def test_error_and_result_and_policy_rules(self, tmp_path):
@@ -136,10 +163,12 @@ class TestAuditTreeFields:
                        policy_fired="risk_threshold",
                        result=None)
         await mw.before(ctx); await mw.after(ctx)
-        entry = json.loads(next(tmp_path.glob("audit_*.jsonl")).read_text())
-        assert entry["error"].startswith("PolicyDenied")
-        assert entry["policy_rules"]["fired"] == "risk_threshold"
-        assert entry["policy_rules"]["policy_context"]["max_risk"] == "medium"
+        # 决策/错误/策略依据只在 tool_ended（第二个事件）上
+        ended = json.loads(next(tmp_path.glob("audit_*.jsonl")).read_text().strip().splitlines()[1])
+        assert ended["event_type"] == "tool_ended"
+        assert ended["error"].startswith("PolicyDenied")
+        assert ended["policy_rules"]["fired"] == "risk_threshold"
+        assert ended["policy_rules"]["policy_context"]["max_risk"] == "medium"
 
 
 class TestApprovalEvents:
@@ -147,19 +176,21 @@ class TestApprovalEvents:
     async def test_requested_then_decided_with_causation(self, tmp_path):
         mw = AuditMiddleware(audit_dir=str(tmp_path))
         ctx = make_ctx(args={"path": "/tmp/x.md"})
-        await mw.before(ctx)                       # 工具 span 压栈
+        await mw.before(ctx)                       # 工具 span 压栈（先写 tool_started）
         await mw.on_approval(ctx, "requested")
         await mw.on_approval(ctx, "decided", outcome="user_denied")
         await mw.after(ctx)
         lines = [json.loads(l) for l in next(tmp_path.glob("audit_*.jsonl")).read_text().strip().splitlines()]
-        assert len(lines) == 3
-        req, dec, inv = lines
+        assert len(lines) == 4
+        started, req, dec, ended = lines
+        assert started["event_type"] == "tool_started"
         assert req["event_type"] == "approval_requested"
         assert dec["event_type"] == "approval_decided"
         assert dec["causation_id"] == req["span_id"]     # decided 因果链到 requested
-        assert dec["outcome"] == "user_denied"
-        assert inv["approval_outcome"] == "user_denied"  # ctx 上由 Agent 填，此处为 None 则省略
-        assert inv["parent_id"] == ctx.parent_id         # tool_invoked 父 = 外层 span
+        assert dec["approval_outcome"] == "user_denied"
+        assert ended["event_type"] == "tool_ended"
+        assert ended["approval_outcome"] == "user_denied"
+        assert ended["parent_id"] == ctx.parent_id       # tool_ended 父 = 外层 span
 
 
 class TestLlmCall:
@@ -169,8 +200,12 @@ class TestLlmCall:
         mw.record_llm_call(
             trace_id="trace_x", session_id="s", agent_type="test", turn=1,
             model="deepseek-chat", prompt_tokens=10, completion_tokens=5,
-            total_tokens=15, latency_ms=1234, finish_reason="tool_calls")
+            total_tokens=15, started_at="2026-07-31T10:00:00", duration_ms=1234,
+            finish_reason="tool_calls")
         entry = json.loads(next(tmp_path.glob("audit_*.jsonl")).read_text())
         assert entry["event_type"] == "llm_call"
         assert entry["model"] == "deepseek-chat"
         assert entry["total_tokens"] == 15
+        assert entry["started_at"] == "2026-07-31T10:00:00"
+        assert entry["duration_ms"] == 1234
+        assert entry["ended_at"] == "2026-07-31T10:00:01.234000"

@@ -75,10 +75,11 @@ class TestApprovalFlowFromAgent:
         assert result.summary["decision"] == "user_denied"
         events = read_entries(tmp_path)
         types = [e["event_type"] for e in events]
-        assert types == ["approval_requested", "approval_decided", "tool_invoked"]
+        # 审批流每工具 4 事件：start → request → decide → end
+        assert types == ["tool_started", "approval_requested", "approval_decided", "tool_ended"]
         dec = [e for e in events if e["event_type"] == "approval_decided"][0]
-        assert dec["outcome"] == "user_denied"
-        inv = [e for e in events if e["event_type"] == "tool_invoked"][0]
+        assert dec["approval_outcome"] == "user_denied"
+        inv = [e for e in events if e["event_type"] == "tool_ended"][0]
         assert inv["approval_outcome"] == "user_denied"
         assert inv["causation_id"] == dec["span_id"]
 
@@ -88,7 +89,7 @@ class TestApprovalFlowFromAgent:
                            [ConfirmTool()], confirm_callback=None)   # 默认 fail-safe
         await agent._exec_tool(tool_call("confirm_tool"))
         dec = [e for e in read_entries(tmp_path) if e["event_type"] == "approval_decided"][0]
-        assert dec["outcome"] == "auto_denied"
+        assert dec["approval_outcome"] == "auto_denied"
 
     @pytest.mark.asyncio
     async def test_confirmed_path_sets_approval_outcome(self, tmp_path):
@@ -97,7 +98,7 @@ class TestApprovalFlowFromAgent:
         agent = make_agent([AuditMiddleware(audit_dir=str(tmp_path)), ConfirmMW()],
                            [ConfirmTool()], yes)
         await agent._exec_tool(tool_call("confirm_tool"))
-        inv = [e for e in read_entries(tmp_path) if e["event_type"] == "tool_invoked"][0]
+        inv = [e for e in read_entries(tmp_path) if e["event_type"] == "tool_ended"][0]
         assert inv["approval_outcome"] == "user_confirmed"
 
 

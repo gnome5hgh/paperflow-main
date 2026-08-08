@@ -55,7 +55,7 @@ async def test_child_events_nest_under_parent_spawn(tmp_path):
     def fake_get_config(agent_type):
         return child_cfg["cfg"] if agent_type == "child" else parent_cfg
 
-    # 子 agent 首轮 mock 要求调 echo（产生一条子 tool_invoked），第二轮起返回文本结束
+    # 子 agent 首轮 mock 要求调 echo（产生一对子 tool_started/tool_ended），第二轮起返回文本结束
     def build_child():
         child_cfg["cfg"] = AgentConfig(
             name="child", system_prompt="p", tools=[MockEchoTool()])
@@ -79,10 +79,10 @@ async def test_child_events_nest_under_parent_spawn(tmp_path):
     by_type = {}
     for e in events:
         by_type.setdefault(e["event_type"], []).append(e)
-    # 子事件在父 after 弹栈**之前**写盘（child 跑在 execute 内），故按工具名挑事件，
-    # 不依赖写盘顺序
-    spawn = [e for e in by_type["tool_invoked"] if e["tool_name"] == "child_tool"][0]
-    child_echo = [e for e in by_type["tool_invoked"] if e["tool_name"] == "echo"][0]
+    # 子事件在父 after 弹栈**之前**写盘（child 跑在 execute 内），故按工具名挑
+    # tool_ended 事件（span 收口带完整父链），不依赖写盘顺序
+    spawn = [e for e in by_type["tool_ended"] if e["tool_name"] == "child_tool"][0]
+    child_echo = [e for e in by_type["tool_ended"] if e["tool_name"] == "echo"][0]
     assert child_echo["parent_id"] == spawn["span_id"]    # 子事件挂在 spawn 下
     assert child_echo["depth"] == spawn["depth"] + 1
 

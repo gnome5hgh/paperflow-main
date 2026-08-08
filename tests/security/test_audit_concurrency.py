@@ -53,7 +53,8 @@ def test_audit_concurrent_append_lines_intact(tmp_path):
     # 断言时按当日文件名读取（写入与读取间隔极小，跨午夜概率可忽略）
     expected_name = f"audit_{datetime.now():%Y%m%d}.jsonl"
     lines = (tmp_path / expected_name).read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 16
+    # 每次 after 直接调用（未走 before）写 2 行：补写 tool_started + tool_ended
+    assert len(lines) == 32
     for line in lines:
         entry = json.loads(line)          # 每行合法 JSON = 无交叉
         assert entry["tool_name"] == "noop"

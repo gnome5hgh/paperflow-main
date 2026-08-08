@@ -88,9 +88,13 @@ class TestJsonParseErrorGoesThroughAfterChain:
         assert isinstance(result, ToolResult)
         assert result.text.startswith("Tool argument parse error")
 
-        entry = read_audit_entries(tmp_path)[0]
-        assert entry["tool_name"] == "echo"          # 真实工具名，非空
-        assert entry["result_status"] == "error"
+        # 早退路径只走 after：after 补写 tool_started + tool_ended（每调用 2 事件）
+        started, ended = read_audit_entries(tmp_path)
+        assert started["event_type"] == "tool_started"
+        assert started["tool_name"] == "echo"          # 真实工具名，非空
+        assert ended["event_type"] == "tool_ended"
+        assert ended["tool_name"] == "echo"
+        assert ended["result_status"] == "error"
 
 
 class TestUnknownToolGoesThroughAfterChain:
@@ -106,9 +110,11 @@ class TestUnknownToolGoesThroughAfterChain:
         assert isinstance(result, ToolResult)
         assert result.text.startswith("Unknown tool: nonexistent_tool")
 
-        entry = read_audit_entries(tmp_path)[0]
-        assert entry["tool_name"] == "nonexistent_tool"   # 幻觉名原样记录
-        assert entry["risk_level"] == "unknown"           # tool=None 时容忍
+        started, ended = read_audit_entries(tmp_path)
+        assert started["event_type"] == "tool_started"
+        assert ended["event_type"] == "tool_ended"
+        assert ended["tool_name"] == "nonexistent_tool"   # 幻觉名原样记录
+        assert ended["risk_level"] == "unknown"           # tool=None 时容忍
 
 
 class TestUnknownToolWithFullChain:
@@ -129,9 +135,10 @@ class TestUnknownToolWithFullChain:
         assert isinstance(result, ToolResult)
         assert result.text.startswith("Unknown tool: nonexistent_tool")
 
-        entry = read_audit_entries(tmp_path / "audit")[0]
-        assert entry["tool_name"] == "nonexistent_tool"
-        assert entry["risk_level"] == "unknown"
+        ended = read_audit_entries(tmp_path / "audit")[-1]
+        assert ended["event_type"] == "tool_ended"
+        assert ended["tool_name"] == "nonexistent_tool"
+        assert ended["risk_level"] == "unknown"
 
 
 class TestNonDictArgsAudited:
@@ -147,5 +154,8 @@ class TestNonDictArgsAudited:
 
         assert isinstance(result, ToolResult)   # 不崩溃
 
-        entry = read_audit_entries(tmp_path)[0]
-        assert entry["params"] == {}            # 非 dict 参数归一化后为空
+        started, ended = read_audit_entries(tmp_path)
+        assert started["event_type"] == "tool_started"
+        assert started["params"] == {}            # 非 dict 参数归一化后为空
+        assert ended["event_type"] == "tool_ended"
+        assert ended["params"] == {}

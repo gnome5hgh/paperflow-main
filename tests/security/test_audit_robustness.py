@@ -100,10 +100,12 @@ class TestToolExceptionDoesNotCrashAudit:
         )
         await agent._exec_tool(tool_call("boom", "{}"))
 
-        entry = read_audit_entries(tmp_path)[0]
-        assert entry["tool_name"] == "boom"
-        assert entry["result_status"] == "error"
-        assert entry["policy_decision"] == "error"
+        started, ended = read_audit_entries(tmp_path)
+        assert started["event_type"] == "tool_started"
+        assert ended["event_type"] == "tool_ended"
+        assert ended["tool_name"] == "boom"
+        assert ended["result_status"] == "error"
+        assert ended["policy_decision"] == "error"
 
 
 class TestNonDictArgsDoNotCrashSanitize:
@@ -128,8 +130,11 @@ class TestNonDictArgsDoNotCrashSanitize:
         )
         await agent._exec_tool(tool_call("kwargstool", '["hello"]'))
 
-        entry = read_audit_entries(tmp_path)[0]
-        assert entry["params"] == {}  # 非 dict 参数被 _sanitize 安全降级
+        started, ended = read_audit_entries(tmp_path)
+        assert started["event_type"] == "tool_started"
+        assert started["params"] == {}  # 非 dict 参数被 _sanitize 安全降级
+        assert ended["event_type"] == "tool_ended"
+        assert ended["params"] == {}
 
 
 class TestAfterHookFailureIsolated:

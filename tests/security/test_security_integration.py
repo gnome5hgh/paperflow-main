@@ -83,11 +83,11 @@ class TestFullPipeline:
         assert accepted == ["write_note"]
 
         # 审计记录了 user_confirmed（新事件模型:approval_requested/decided 在
-        # tool_invoked 之前写入,按 event_type 定位 tool_invoked 条目）
+        # tool_ended 之前写入,按 event_type 定位 tool_ended 条目）
         entries = []
         for f in Path(audit_dir).glob("audit_*.jsonl"):
             entries.extend(json.loads(line) for line in f.read_text().strip().splitlines())
-        inv = [e for e in entries if e["event_type"] == "tool_invoked"][0]
+        inv = [e for e in entries if e["event_type"] == "tool_ended"][0]
         assert inv["policy_decision"] == "user_confirmed"
         assert inv["result_status"] == "success"
 
@@ -117,8 +117,10 @@ class TestFullPipeline:
         entries = []
         for f in Path(audit_dir).glob("audit_*.jsonl"):
             entries.extend(json.loads(line) for line in f.read_text().strip().splitlines())
-        assert entries[0]["result_status"] == "security_blocked"
-        assert entries[0]["security_scan"] is not None
+        # 结果状态/违规明细只在 tool_ended（span 收口）上
+        ended = [e for e in entries if e["event_type"] == "tool_ended"][0]
+        assert ended["result_status"] == "security_blocked"
+        assert ended["security_scan"] is not None
 
     @pytest.mark.asyncio
     async def test_dangerous_content_blocked_before_confirm(self, tmp_path):
