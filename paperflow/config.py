@@ -100,8 +100,11 @@ class PaperFlowConfig:
 
     #: 子 agent 超时覆盖表（D2）：generate-note 默认 600s——端到端（读+起草+写盘+
     #: ≤3 轮审稿每轮 ≤120s）远超默认 120s，旧值下必然超时→supervisor 反复重试
-    #:（2026-08-06 实测）。YAML 顶层 agent_timeouts 可覆盖；dict 无 env 形态。
-    agent_timeouts: dict[str, int] = field(default_factory=lambda: {"generate-note": 600})
+    #:（2026-08-06 实测）。search-paper 300s / reviewer 180s：完整门禁链路（搜索→
+    #: 等级查询→审查裁决→下载）在多候选下远超类默认 120s，短超时把整条 reviewer
+    #: 链路误判 timeout（2026-08-08 冒烟实测）。YAML 顶层 agent_timeouts 可覆盖；
+    #: dict 无 env 形态。
+    agent_timeouts: dict[str, int] = field(default_factory=lambda: {"generate-note": 600, "search-paper": 300, "reviewer": 180})
 
     @property
     def chroma_dir(self) -> str:

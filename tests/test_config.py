@@ -84,8 +84,11 @@ def test_llm_config_official_limits():
 
 
 def test_agent_timeouts_default_generate_note():
-    """generate-note 默认 600s：端到端（起草+写盘+≤3 轮审稿每轮≤120s）远超旧默认 120s，
-    否则 supervisor spawn 必然超时→反复重试（2026-08-06 实测死循环）。"""
+    """generate-note 默认 600s；search-paper 300s / reviewer 180s——完整门禁链路
+    （搜索→等级→审查→下载）远超类默认 120s，短超时把 reviewer 链路误判 timeout
+    （2026-08-08 冒烟实测，见 config.py 注释）。"""
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig()
     assert cfg.agent_timeouts.get("generate-note") == 600
+    assert cfg.agent_timeouts.get("search-paper") == 300
+    assert cfg.agent_timeouts.get("reviewer") == 180
