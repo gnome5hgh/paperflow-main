@@ -49,20 +49,22 @@ class SubmitDownloadReviewTool(Tool):
             missing = [k for k in ("title", "source_link") if not item.get(k)]
             if missing:
                 return ToolResult(text=f"条目缺少字段: {', '.join(missing)}")
-        # ③ verdict 与 items 一致性（对称双向）：
-        #    - verdict=pass 时任一 fail 条目 → 自相矛盾（pass 语义=存在可下载/推荐项，
-        #      把不合格论文打包成 pass 属过宽放行）。
-        #    - verdict=fail 时任一 pass 条目 → 自相矛盾（fail 语义=无任何合格项，
+        # ③ verdict 与 items 一致性——按「pass 项存在性」判定（而非旧语义的「fail 项」）：
+        #    - verdict=pass 但无任何 pass 条目 → 自相矛盾：pass 语义=存在可下载/推荐项，
+        #      一个 pass 都没有却报 pass，属过宽放行（LLM 把"没有合格项"误报成 pass）。
+        #    - verdict=fail 但存在 pass 条目 → 自相矛盾（fail 语义=无任何合格项，
         #      输出"审查裁决：fail"却带 [PASS] 行会误导后续门禁）。
-        #    - verdict=pass + 空 items → 同样自相矛盾：pass 语义是"存在可下载/推荐项"，
-        #      空清单却无任何项可推荐，属过宽放行（LLM 把"没有合格项"误报成 pass）。
+        #    - verdict=pass + 混合列表（如 2 pass + 7 fail）→ **合法**：pass 语义只要求
+        #      存在可下载/推荐项，剩余 fail 项只是"不值得下载的候选"。旧校验按 fail 项
+        #      拦截导致真实审查产出被误拒、逼 reviewer 试错（2026-08-08 冒烟实测）。
+        #    - verdict=pass + 空 items → 上面单独拦截（更明确的报错文案，比"无 pass 条目"
+        #      更直接）。
         #    注意：verdict=fail + 空 items 必须保持合法（fail = 无合格项，空清单正是
         #    "无任何合格项"的极端情况），any() 对空列表天然返回 False，不拦截。
         if verdict == "pass" and not items:
             return ToolResult(text="verdict=pass 但 items 为空——pass 语义是存在可下载/推荐项，空清单应报 fail")
-        has_fail = any(i.get("decision") == "fail" for i in items)
-        if verdict == "pass" and has_fail:
-            return ToolResult(text="verdict=pass 但存在 fail 条目——verdict 与 items 不一致")
+        if verdict == "pass" and not any(i.get("decision") == "pass" for i in items):
+            return ToolResult(text="verdict=pass 但无任何 pass 条目——pass 语义是存在可下载/推荐项，应至少有一个 pass（verdict 与 items 不一致）")
         if verdict == "fail" and any(i.get("decision") == "pass" for i in items):
             return ToolResult(text="verdict=fail 但存在 pass 条目——verdict 与 items 不一致（fail = 无任何合格项）")
         # ④ 格式化：verdict 行 + 每条目 PASS/FAIL 标签 + 原因 + 来源链接（generate-note 确定性可读）

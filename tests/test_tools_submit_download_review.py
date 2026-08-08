@@ -28,9 +28,28 @@ def test_fail_item_requires_reasons():
     assert "reasons" in r.text
 
 def test_verdict_consistency():
+    """pass 语义=存在可下载/推荐项：verdict=pass 但无任何 pass 条目 → 自相矛盾，必须拦截。
+
+    Fix 2 后按「pass 项存在性」判定（旧语义按 fail 项拦截，误拒了 pass+混合 的合法形态）。
+    单个 fail 条目 = 无 pass 条目 → 仍拒绝；判定词"不一致"在报错文案里。"""
     tool = SubmitDownloadReviewTool()
     r = tool.execute(verdict="pass", items=[_item(decision="fail")])
-    assert "一致" in r.text
+    assert "不一致" in r.text
+
+def test_verdict_pass_allows_mixed_items():
+    """Fix 2 根因回归：pass + 混合列表合法（2 pass + 1 fail + verdict=pass → 通过）。
+
+    真实审查产出「2 pass + 7 fail + verdict=pass」被旧校验（verdict=pass 且存在 fail 项
+    即拒）逼着试错——pass 语义只要求存在可下载/推荐项，剩余 fail 项只是不值得下载的
+    候选。断言正常格式化且 PASS/FAIL 标签数量正确。"""
+    tool = SubmitDownloadReviewTool()
+    r = tool.execute(verdict="pass", items=[
+        _item(title="Paper A"),
+        _item(title="Paper B"),
+        _item(title="Paper C", decision="fail", reasons=["等级不够"]),
+    ])
+    assert "审查裁决：pass" in r.text
+    assert r.text.count("[PASS]") == 2 and r.text.count("[FAIL]") == 1
 
 def test_verdict_fail_with_pass_item_rejected():
     # 对称方向：verdict=fail 却含 pass 条目 → 输出"审查裁决：fail"却带 [PASS] 行，自相矛盾，必须拦截
