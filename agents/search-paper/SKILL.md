@@ -31,5 +31,5 @@ allowed_spawns: [reviewer]
 - 双源都失败 → 如实告知，不编造结果。
 
 ## 输出质量标准
-1. 每条结果：标题 + 来源链接 + 等级依据（lookup_venue_rank 证据）。
+1. 每条结果：标题 + 来源链接 + 等级依据（reviewer 审查返回的 lookup_venue_rank 证据）。
 2. 无结果时明确说「未找到」，绝不编造。

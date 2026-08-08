@@ -17,6 +17,7 @@ from paperflow.tools.spawn import (
     SpawnSubAgentTool, ParallelSpawnTool, SubAgentResult,
     _UserWaitClock, _wrap_confirm_callback, _run_child_with_budget,
     _task_fingerprint, _SPAWN_REGISTRY,
+    _evict_stale_spawn_entries, _SPAWN_REUSE_WINDOW_S,
 )
 from agents.supervisor.tools import AskUserTool
 
@@ -490,3 +491,22 @@ def test_extract_digest_invalid_json_falls_back_empty():
     llm = _digest_llm("不是 JSON")
     d = asyncio.run(_extract_digest(llm, "search-paper", "文本"))
     assert d == {}
+
+
+def test_evict_stale_spawn_entries_removes_only_expired_done():
+    """注册表内存卫生（review finding）：超窗 done 条目剔除、新鲜 done 与 running 保留。
+
+    done 条目永不清洗会导致长会话按指纹数无限累积 ToolResult；但 running 条目
+    （可能正被另一 worker 线程执行）绝不可删——删了并发去重原子性失效。"""
+    now = time.monotonic()
+    reg = {
+        "old-done": {"state": "done", "result": "旧结果",
+                     "started_at": now - _SPAWN_REUSE_WINDOW_S - 1},   # 超窗 → 应剔除
+        "fresh-done": {"state": "done", "result": "新结果",
+                       "started_at": now},                              # 窗内 → 保留
+        "running": {"state": "running", "result": None, "started_at": now - 9999},  # 超窗仍保留
+    }
+    _evict_stale_spawn_entries(reg, now)
+    assert "old-done" not in reg
+    assert "fresh-done" in reg
+    assert "running" in reg

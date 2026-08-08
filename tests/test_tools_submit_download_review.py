@@ -43,3 +43,10 @@ def test_verdict_fail_empty_items_valid():
     tool = SubmitDownloadReviewTool()
     r = tool.execute(verdict="fail", items=[])
     assert "审查裁决：fail" in r.text
+
+def test_verdict_pass_empty_items_rejected():
+    # pass 语义 = 存在可下载/推荐项，空清单自相矛盾（过宽放行）——必须拦截，
+    # 与 fail+空 的合法极端形成对称。LLM 把"没有合格项"误报成 pass 时此处兜住。
+    tool = SubmitDownloadReviewTool()
+    r = tool.execute(verdict="pass", items=[])
+    assert "空" in r.text

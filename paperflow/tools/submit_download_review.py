@@ -54,8 +54,12 @@ class SubmitDownloadReviewTool(Tool):
         #      把不合格论文打包成 pass 属过宽放行）。
         #    - verdict=fail 时任一 pass 条目 → 自相矛盾（fail 语义=无任何合格项，
         #      输出"审查裁决：fail"却带 [PASS] 行会误导后续门禁）。
+        #    - verdict=pass + 空 items → 同样自相矛盾：pass 语义是"存在可下载/推荐项"，
+        #      空清单却无任何项可推荐，属过宽放行（LLM 把"没有合格项"误报成 pass）。
         #    注意：verdict=fail + 空 items 必须保持合法（fail = 无合格项，空清单正是
         #    "无任何合格项"的极端情况），any() 对空列表天然返回 False，不拦截。
+        if verdict == "pass" and not items:
+            return ToolResult(text="verdict=pass 但 items 为空——pass 语义是存在可下载/推荐项，空清单应报 fail")
         has_fail = any(i.get("decision") == "fail" for i in items)
         if verdict == "pass" and has_fail:
             return ToolResult(text="verdict=pass 但存在 fail 条目——verdict 与 items 不一致")

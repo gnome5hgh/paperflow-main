@@ -41,6 +41,38 @@ def _parse_letpub(html: str) -> dict | None:
     return found if found else None
 
 
+#: SJR 结果页里期刊名之后允许出现档位的窗口（字符）。SJR 搜索页是候选期刊
+#: 列表，同一结果行的档位徽章紧跟期刊名之后；窗口限定在名称后一小段内，
+#: 防止跨到列表里下一本期刊的档位（歧义误判的根源，见 _parse_sjr 注释）。
+_SJR_WINDOW_CHARS = 500
+
+
+def _parse_sjr(html: str, venue: str) -> dict | None:
+    """从 SJR 搜索页提取目标期刊的 JCR 档位（Q1–Q4）；失败返回 None。
+
+    为什么限定窗口而非整页扫描：SJR 搜索页（journalsearch.php?q=<venue>）返回的是
+    候选期刊列表，整页 re.search 首个 Q[1-4] 会命中列表里无关期刊的档位——venue
+    歧义（多本期刊含同名关键词）时误判「通过」，违反 spec「等级未知 → 不默认通过」。
+    修复：先定位规范化 venue 名在页内首次出现的位置，只在其后 ~500 字符窗口内找
+    Q[1-4]；找不到 → None（走「未找到等级」，让 reviewer 人工核验，绝不默认通过）。
+    归一化（小写 + 去非字母数字）让标题与页面文本都去掉标签/大小写干扰后对齐。
+    """
+    norm_page = re.sub(r"[^a-z0-9]", "", (html or "").lower())
+    norm_venue = re.sub(r"[^a-z0-9]", "", (venue or "").lower())
+    if not norm_venue:
+        return None
+    idx = norm_page.find(norm_venue)
+    if idx < 0:
+        return None
+    # 只取名称起点的窗口：结果行档位徽章在标题之后；先到名称自身末尾再往后看 500 字符。
+    # 窗口是归一化（小写）文本，Q 档正则须用小写 q 匹配（大写 Q 在归一化后恒失配）。
+    window = norm_page[idx: idx + len(norm_venue) + _SJR_WINDOW_CHARS]
+    m = re.search(r"q([1-4])", window)
+    if not m:
+        return None
+    return {"ccf": None, "jcr": f"Q{m.group(1)}", "cas": None}
+
+
 class LookupVenueRankTool(Tool):
     name = "lookup_venue_rank"
     description = ("查询论文发表 venue（期刊/会议）的等级：本地 CCF/JCR/中科院映射 + "
@@ -112,13 +144,14 @@ class LookupVenueRankTool(Tool):
                 parsed.setdefault("ccf", None)   # 等级值三字段统一，缺省字段显式置 None
                 self._cache_put(ckey, parsed)
                 return ToolResult(text=self._rank_text(parsed, "LetPub", url))
-            # ④ SJR 兜底（按名称；SJR 只给 JCR 档位，无中科院分区）
+            # ④ SJR 兜底（按名称；SJR 只给 JCR 档位，无中科院分区）。
+            #    _parse_sjr 把 Q[1-4] 检索限定在 venue 名上下文内（歧义列表页
+            #    不取无关期刊档位）——见函数注释。
             sjr_url = "https://www.scimagojr.com/journalsearch.php?q=" + urllib.parse.quote(venue)
             rs = client._get(sjr_url)
             rs.raise_for_status()
-            m = re.search(r"Q([1-4])", rs.text)
-            if m:
-                rank = {"ccf": None, "jcr": f"Q{m.group(1)}", "cas": None}
+            rank = _parse_sjr(rs.text, venue)
+            if rank:
                 self._cache_put(ckey, rank)
                 return ToolResult(text=self._rank_text(rank, "SJR", sjr_url))
         except Exception as e:

@@ -218,6 +218,23 @@ def _task_fingerprint(task: str) -> str:
     return hashlib.sha256((norm + "||" + snap).encode("utf-8")).hexdigest()[:16]
 
 
+def _evict_stale_spawn_entries(reg: dict, now: float) -> None:
+    """剔除注册表里已过复用窗的 done 条目（内存卫生）。
+
+    长会话下 _SPAWN_REGISTRY 会按指纹数无限累积 done 条目（每条持有一个 ToolResult
+    常驻内存），而超窗的旧结果本就不可再复用——留着纯占内存。规则：now - started_at
+    > _SPAWN_REUSE_WINDOW_S 的 done 条目直接丢弃。**running 条目不删**：它可能正被
+    另一 to_thread worker 线程执行中，删掉会让并发去重的「检查+注册」原子性失效
+    （下一线程看不到 running 又派发一次）。调用方须在 _SPAWN_LOCK 内调用（读/写
+    注册表都走这里，访问即顺手清理，无需单独定时任务）。
+    """
+    stale = [fp for fp, e in reg.items()
+             if e.get("state") == "done"
+             and now - e.get("started_at", now) > _SPAWN_REUSE_WINDOW_S]
+    for fp in stale:
+        reg.pop(fp, None)
+
+
 class _UserWaitClock:
     """用户确认等待计时器：confirm_callback 等待期间累积，供子 agent 超时预算扣除。
 
@@ -348,6 +365,8 @@ class SpawnSubAgentTool(Tool):
         fp = _task_fingerprint(task)
         with _SPAWN_LOCK:
             reg = _SPAWN_REGISTRY.setdefault(parent.session_id, {})
+            # 访问注册表即顺手清理超窗 done 条目（长会话防无限累积，见 _evict_stale_spawn_entries）
+            _evict_stale_spawn_entries(reg, time.monotonic())
             hit = reg.get(fp)
             now = time.monotonic()
             if hit and hit["state"] == "running":
@@ -380,6 +399,8 @@ class SpawnSubAgentTool(Tool):
             # 污染后续复用。fp 是 execute 内作用域变量，注册表读写全在 _SPAWN_LOCK 内。
             with _SPAWN_LOCK:
                 reg = _SPAWN_REGISTRY.setdefault(parent.session_id, {})
+                # 完成写盘同样先清理超窗 done 条目（防长会话注册表无限膨胀）
+                _evict_stale_spawn_entries(reg, time.monotonic())
                 if result is None:
                     reg.pop(fp, None)
                 else:

@@ -60,7 +60,39 @@ def test_lookup_online_letpub_by_issn():
     tool._client = LookupVenueRankTool._make_client(
         transport=httpx.MockTransport(handler), ssrf_check=lambda u: None)
     r = tool.execute(venue="Example Journal", issn="example-issn")
-    assert "Q1" in r.text and "一区" in r.text and "letpub" in r.text
+    # 断言来源名（_rank_text 里是 "来源：LetPub" 大写形式），而非证据 URL 里的
+    # "letpub" 小写片段——后者只是证据链接，来源名才是语义断言
+    assert "Q1" in r.text and "一区" in r.text and "来源：LetPub" in r.text
+
+
+# SJR 搜索页歧义场景：页内列出多本期刊，每本都带档位徽章；整页扫首个 Q 档
+# 会命中列表第一本（无关）期刊的 Q4，窗口限定后必须取到目标期刊的 Q2。
+_SJR_AMBIGUOUS_HTML = """<html><body>
+  <div class="searchlist">
+    <table>
+      <tr><td class="journaltitle"><a href="/journalsearch.php?p=123">Other Research Journal</a></td>
+          <td class="quartile">Q4</td></tr>
+      <tr><td class="journaltitle"><a href="/journalsearch.php?p=456">Target Journal Name</a></td>
+          <td class="quartile">Q2</td></tr>
+    </table>
+  </div>
+</body></html>"""
+
+
+def test_lookup_sjr_ambiguous_picks_target_journal_band():
+    from paperflow.tools import lookup_venue_rank as mod
+    mod.RANK_CACHE.clear()
+    def handler(req):
+        if "scimagojr" in str(req.url):
+            return httpx.Response(200, text=_SJR_AMBIGUOUS_HTML)
+        # LetPub 返回无 JCR/CAS 标记的页 → 落到 SJR 兜底
+        return httpx.Response(200, text="<html>no letpub result</html>")
+    tool = LookupVenueRankTool()
+    tool._client = LookupVenueRankTool._make_client(
+        transport=httpx.MockTransport(handler), ssrf_check=lambda u: None)
+    r = tool.execute(venue="Target Journal Name", issn=None)
+    # 整页首个 Q 档是 Other Research Journal 的 Q4；窗口限定后取到目标期刊 Q2
+    assert "JCR-Q2" in r.text and "来源：SJR" in r.text
 
 
 def test_lookup_local_hit_skips_network():
