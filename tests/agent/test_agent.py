@@ -44,7 +44,7 @@ def make_mock_llm(responses: list[Message]):
     """
     mock = MagicMock()
 
-    async def chat(messages, tools=None, tool_choice="auto"):
+    async def chat(messages, tools=None, tool_choice="auto", telemetry_callback=None):
         # 每次调用消费预设序列的第一条消息
         return responses.pop(0)
 
@@ -387,7 +387,7 @@ class MockIntentPipeline:
 def make_capture_llm(responses, capture):
     """mock LLM：把每次收到的 messages 追加进 capture，便于断言 INTENT 块注入。"""
     mock = MagicMock()
-    async def chat(messages, tools=None, tool_choice="auto"):
+    async def chat(messages, tools=None, tool_choice="auto", telemetry_callback=None):
         capture.append(messages)
         return responses.pop(0)
     mock.chat = chat
@@ -541,7 +541,7 @@ class TestStreaming:
         events = []
         llm = MagicMock()
 
-        async def chat_stream(messages, tools=None, tool_choice="auto", on_delta=None):
+        async def chat_stream(messages, tools=None, tool_choice="auto", on_delta=None, telemetry_callback=None):
             on_delta("你好")
             on_delta("世界")
             return Message(role="assistant", content="你好世界")
@@ -640,7 +640,7 @@ class TestToolEvent:
         ]
         llm = MagicMock()
 
-        async def chat_stream(messages, tools=None, tool_choice="auto", on_delta=None):
+        async def chat_stream(messages, tools=None, tool_choice="auto", on_delta=None, telemetry_callback=None):
             return responses.pop(0)
 
         llm.chat_stream = chat_stream

@@ -234,6 +234,14 @@ class Agent:
         #: 用户确认回调；未提供时使用 fail-safe 的 _default_confirm
         self.confirm_callback = confirm_callback or self._default_confirm
 
+        #: 是否有真实人工确认回调（用于区分 auto_denied 与 user_denied）。
+        #: 用构造时标志而非回调身份判断：spawn 会包装 confirm_callback
+        #: （_wrap_confirm_callback），包装后身份失效，构造标志不受影响。
+        self._has_human_confirm = (
+            confirm_callback is not None
+            and confirm_callback is not self._default_confirm
+        )
+
         #: 会话标识：跨多轮 run 保持一致，供中间件审计日志聚合
         self.session_id = session_id or uuid.uuid4().hex[:8]
 
@@ -363,7 +371,7 @@ class Agent:
         #: 只在截断→续写场景使用；非截断路径保持空列表，零额外行为。
         accumulated: list[str] = []
 
-        for _ in range(self.max_turns):
+        for turn in range(self.max_turns):
             # 每次模型调用前检查压缩:messages 已含回放 history,超阈值即触发。
             # compress_history 原地改写 compressor.history(摘要写进 history[0],
             # 压缩产物跨轮持久),再重建 messages:head + 新 history + conv(本轮残留,
@@ -385,9 +393,12 @@ class Agent:
                     messages, tools=tools,
                     on_delta=lambda d: self._emit(
                         StreamEvent("content", d, self.agent_type)),
+                    telemetry_callback=self._make_llm_telemetry(turn),
                 )
             else:
-                response = await self.llm.chat(messages, tools=tools)
+                response = await self.llm.chat(
+                    messages, tools=tools,
+                    telemetry_callback=self._make_llm_telemetry(turn))
 
             # LLM 判定任务完成：返回无 tool_calls 的纯文本消息
             if not response.tool_calls:
@@ -433,7 +444,8 @@ class Agent:
 
             async def _run_one(tc: dict) -> ToolResult:
                 async with sem:
-                    return await self._exec_tool(tc, _confirm_lock=confirm_lock)
+                    return await self._exec_tool(
+                        tc, _confirm_lock=confirm_lock, turn=turn)
 
             results = await asyncio.gather(*(_run_one(tc) for tc in response.tool_calls))
 
@@ -457,8 +469,25 @@ class Agent:
             f"ReAct loop did not finish within {self.max_turns} turns"
         )
 
+    def _make_llm_telemetry(self, turn: int):
+        """构造 LLM 调用 telemetry 回调（sync，可能跑在线程池线程）。
+
+        每次调用传独立回调（而非共享属性）——parallel_spawn 下多个子 agent 共享
+        同一个 LLMClient，共享属性会互相覆盖导致归属错乱。
+        """
+        def _cb(data: dict) -> None:
+            fields = dict(data)
+            fields.update(trace_id=self._trace_id, session_id=self.session_id,
+                          agent_type=self.agent_type, turn=turn)
+            for mw in self.security_middleware:
+                record = getattr(mw, "record_llm_call", None)
+                if record is not None:
+                    record(**fields)
+        return _cb
+
     async def _exec_tool(
-        self, tool_call: dict, _confirm_lock: asyncio.Lock | None = None
+        self, tool_call: dict, _confirm_lock: asyncio.Lock | None = None,
+        turn: int = 0,
     ) -> ToolResult:
         """
         执行单个 LLM 请求的工具调用，内部处理所有异常。
@@ -491,6 +520,8 @@ class Agent:
         :param _confirm_lock: 并发确认串行锁(asyncio.Lock | None)。同一 message 的
             多个工具调用并发执行时由 run() 传入同一个锁,把确认回调调用串行化
             (CLI 标准输入并发读会竞态);None = 非并发路径,确认行为与现状一致
+        :param turn: ReAct 轮次,注入审计条目供跨轮回溯;run() 每轮透传,
+            直接调用 _exec_tool 时默认 0
         :returns: ToolResult，始终返回（不抛异常）
         """
         name = tool_call["function"]["name"]
@@ -517,6 +548,7 @@ class Agent:
             tool_name=name,
             timestamp=datetime.now().isoformat(),
             started_at=time.monotonic(),
+            turn=turn,
         )
 
         # 3. 解析 LLM 生成的 JSON 参数字符串
@@ -549,6 +581,9 @@ class Agent:
                 # gather 让它们在 await 点交错——CLI 标准输入并发读会竞态(两个回调同时
                 # 抢 input())。确认锁把确认决策串行化:一个确认未决时其余等待;非并发路径
                 # (锁为 None,单工具调用)行为与现状完全一致。
+                # 审批请求事件:发起确认前先落盘(请求≠决策,两条独立事件供合规回溯)。
+                for mw in self.security_middleware:
+                    await mw.on_approval(ctx, "requested")
                 async def _decide() -> bool:
                     return await self.confirm_callback(cr)
                 if _confirm_lock is not None:
@@ -556,6 +591,14 @@ class Agent:
                         confirmed = await _decide()
                 else:
                     confirmed = await _decide()
+                # 决策语义:确认通过 → user_confirmed;被拒时按是否有真实人工回调区分
+                # user_denied / auto_denied(fail-safe 默认拒绝,无人值守)。
+                outcome = (
+                    "user_confirmed" if confirmed else (
+                        "user_denied" if self._has_human_confirm else "auto_denied"))
+                ctx.approval_outcome = outcome
+                for mw in self.security_middleware:
+                    await mw.on_approval(ctx, "decided", outcome=outcome)
                 if not confirmed:
                     # 用户拒绝 → 记录错误并走 after 钩子，反馈给 LLM
                     ctx.error = cr

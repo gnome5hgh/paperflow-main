@@ -48,7 +48,7 @@ def make_agent(middleware, confirm_cb, tools=None, audit_dir=None):
         name="test", system_prompt="p", tools=tools,
     )
     llm = MagicMock()
-    async def chat(messages, tools=None, tool_choice="auto"):
+    async def chat(messages, tools=None, tool_choice="auto", telemetry_callback=None):
         return Message(role="assistant", content="done")
     llm.chat = chat
     return Agent(
@@ -82,12 +82,14 @@ class TestFullPipeline:
         assert result.text == f"wrote {abs_path}"
         assert accepted == ["write_note"]
 
-        # 审计记录了 user_confirmed
+        # 审计记录了 user_confirmed（新事件模型:approval_requested/decided 在
+        # tool_invoked 之前写入,按 event_type 定位 tool_invoked 条目）
         entries = []
         for f in Path(audit_dir).glob("audit_*.jsonl"):
             entries.extend(json.loads(line) for line in f.read_text().strip().splitlines())
-        assert entries[0]["policy_decision"] == "user_confirmed"
-        assert entries[0]["result_status"] == "success"
+        inv = [e for e in entries if e["event_type"] == "tool_invoked"][0]
+        assert inv["policy_decision"] == "user_confirmed"
+        assert inv["result_status"] == "success"
 
     @pytest.mark.asyncio
     async def test_path_escape_blocked_and_audited(self, tmp_path):

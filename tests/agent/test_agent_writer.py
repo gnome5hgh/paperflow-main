@@ -90,7 +90,7 @@ class LoopMockLLM:
     def add(self, resp):
         self.responses.append(resp)
 
-    async def chat(self, messages, tools=None, tool_choice="auto"):
+    async def chat(self, messages, tools=None, tool_choice="auto", telemetry_callback=None):
         for m in messages:
             if m.role == "user":
                 self.seen_tasks.append(m.content)

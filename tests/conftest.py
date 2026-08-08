@@ -57,7 +57,7 @@ def make_mock_llm(responses: list[Message]):
     from unittest.mock import MagicMock
     mock = MagicMock()
 
-    async def chat(messages, tools=None, tool_choice="auto"):
+    async def chat(messages, tools=None, tool_choice="auto", telemetry_callback=None):
         return responses.pop(0)
 
     mock.chat = chat

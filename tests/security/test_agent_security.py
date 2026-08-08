@@ -26,7 +26,7 @@ class CaptureTool(Tool):
 
 def make_llm(responder):
     mock = MagicMock()
-    async def chat(messages, tools=None, tool_choice="auto"):
+    async def chat(messages, tools=None, tool_choice="auto", telemetry_callback=None):
         return responder(messages)
     mock.chat = chat
     return mock
