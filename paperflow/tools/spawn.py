@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, StreamEvent
+from paperflow.core.structured import StructuredOutput
 from paperflow.core.tool import Tool, ToolResult
 
 
@@ -25,11 +26,93 @@ class SubAgentResult(BaseModel):
 
     status ∈ {success, failed, timeout, denied}；needs_attention 独立标志
     （denied + needs_attention=True 表示"被拒且需用户介入"，与 failed 可重试可区分）。
+    digest：C2 结构化摘要（StructuredOutput 从最终回答提取），supervisor 直接读它
+    组织最终回答（取代 aggregate_results）；提取失败/超时落 {}（回退读 summary）。
     """
     status: str
     summary: str
     error_detail: str = ""
     needs_attention: bool = False
+    digest: dict = {}
+
+
+class SearchPaperDigest(BaseModel):
+    """search-paper 结果摘要（C2）。
+
+    supervisor 读它组织回答：命中多少篇、有哪些论文、哪些已下载、哪些待确认。
+    pending_confirm / needs_attention 对应下载门禁的"待用户确认"路径——spawn 结果是
+    denied 之外的第二处用户介入点，supervisor 需照此提示确认。
+    """
+    count: int
+    papers: list[str]
+    downloaded: list[str] = []
+    pending_confirm: list[str] = []
+    needs_attention: bool = False
+
+
+class ReviewerDigest(BaseModel):
+    """reviewer 结果摘要（C2）。
+
+    verdict + pass/fail 计数让 supervisor 一眼判断裁决结论；download_list 承载
+    reviewer 建议下载的论文清单（C2 消费点）。
+    """
+    verdict: str
+    pass_count: int
+    fail_count: int
+    download_list: list[str] = []
+
+
+class GenerateNoteDigest(BaseModel):
+    """generate-note 结果摘要（C2）。
+
+    note_path 即产物绝对路径（C1 约定"返回含笔记绝对路径即成功"），status 描述写盘结果。
+    """
+    note_path: str
+    status: str
+
+
+class GenericDigest(BaseModel):
+    """未知 agent 类型的通用摘要（C2）。
+
+    兜底 schema：任何新 agent 类型未注册时也能抽出 summary_short / key_items，避免
+    supervisor 对未知类型无从下手；count 可空（非列表型 agent 无此维度）。
+    """
+    summary_short: str
+    key_items: list[str] = []
+    count: int | None = None
+
+
+def digest_schema_for(agent_type: str) -> type[BaseModel]:
+    """按 agent_type 映射 digest schema；未知类型落 GenericDigest（C2）。
+
+    与 intent→agent 对照同源：spawn 侧按 agent_type 挑 schema，supervisor 按 agent_type
+    解释 digest。新 agent 类型接入只需在此注册（如 answer-question 未注册走 GenericDigest）。
+    """
+    return {
+        "search-paper": SearchPaperDigest,
+        "reviewer": ReviewerDigest,
+        "generate-note": GenerateNoteDigest,
+    }.get(agent_type, GenericDigest)
+
+
+async def _extract_digest(llm, agent_type: str, text: str) -> dict:
+    """用 StructuredOutput 从子 agent 最终回答提取结构化摘要（C2）。
+
+    复用 StructuredOutput 三层防御（json_mode + pydantic 校验 + 重试）；独立超时 30s
+    （与子 agent 执行超时解耦——digest 提取是"锦上添花"，卡死不能拖垮 spawn 主流程）；
+    失败/超时返回 {} 兜底（supervisor 回退读 summary，与未接入 digest 前行为一致）。
+    截取 text[-2000:] 控制 prompt 长度——子 agent 最终回答可能很长（如 generate-note
+    的整篇笔记内容），结构化摘要只需要结论性尾部。
+    """
+    try:
+        digest = await asyncio.wait_for(
+            StructuredOutput(llm).extract(
+                prompt=f"从以下子 agent 最终回答提取结构化摘要：\n{text[-2000:]}",
+                schema=digest_schema_for(agent_type)),
+            timeout=30)
+        return digest.model_dump()
+    except Exception:
+        return {}
 
 
 def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
@@ -304,10 +387,13 @@ class SpawnSubAgentTool(Tool):
         return result
 
     def _run_child(self, child: Agent, agent_type: str, task: str) -> ToolResult:
-        """执行 child.run 并映射为 SubAgentResult（success/timeout/denied/failed）。
+        """执行 child.run + 提取 digest，映射为 SubAgentResult（C2）。
 
         asyncio.run 桥接：execute 跑在 to_thread worker 线程（无 running loop），
         必须 asyncio.run 新建事件循环（Layer 3 spec §4.3 钉死，嵌套会抛 RuntimeError）。
+        child.run 拿到最终文本后，同一事件循环内 _extract_digest 提取结构化摘要——
+        不另开循环：再走一遍 asyncio.run 会丢失本循环状态，且 _run_child_with_budget
+        的确认时钟只在本次循环内有效。
         """
         timeout = self._resolve_timeout(agent_type)
         # 用户确认等待不计入执行预算（2026-08-07）：包装 child.confirm_callback 记录等待
@@ -316,9 +402,17 @@ class SpawnSubAgentTool(Tool):
         # 回调是构造时继承的（confirm_callback=parent.confirm_callback），此处只外包计时。
         clock = _UserWaitClock()
         child.confirm_callback = _wrap_confirm_callback(child.confirm_callback, clock)
+
+        async def _run_and_extract():
+            # 先跑子 agent（带预算），再对最终文本提取 digest——两段串在同一个
+            # asyncio.run 里，digest 提取不消耗 child 的执行预算（独立 30s 超时）。
+            text = await _run_child_with_budget(child.run(task), timeout, clock)
+            digest = await _extract_digest(self._parent.llm, agent_type, text)
+            return text, digest
+
         try:
-            text = asyncio.run(_run_child_with_budget(child.run(task), timeout, clock))
-            result = SubAgentResult(status="success", summary=text)
+            text, digest = asyncio.run(_run_and_extract())
+            result = SubAgentResult(status="success", summary=text, digest=digest)
         except asyncio.TimeoutError:
             result = SubAgentResult(status="timeout", summary="子任务执行超时",
                                     # M3：插值解析后的 timeout（config 命中时非类默认）
@@ -402,9 +496,17 @@ class ParallelSpawnTool(Tool):
             # gather loop——一个子 agent 等确认不影响其他子 agent 继续执行。
             clock = _UserWaitClock()
             child.confirm_callback = _wrap_confirm_callback(child.confirm_callback, clock)
-            try:
+
+            async def _run_and_extract():
+                # 与 SpawnSubAgentTool._run_child 同款：child.run + digest 提取串在同一
+                # 协程里（此处已在 gather loop 中，直接 await 而非 asyncio.run）。
                 text = await _run_child_with_budget(child.run(task), timeout, clock)
-                return SubAgentResult(status="success", summary=text)
+                digest = await _extract_digest(parent.llm, agent_type, text)
+                return text, digest
+
+            try:
+                text, digest = await _run_and_extract()
+                return SubAgentResult(status="success", summary=text, digest=digest)
             except asyncio.TimeoutError:
                 return SubAgentResult(status="timeout", summary="子任务执行超时",
                                       error_detail=f"SubAgent 在 {timeout}s 内未完成")

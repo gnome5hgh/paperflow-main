@@ -1,38 +1,14 @@
-"""Supervisor 调度工具（spec §3）——保留 AggregateResultsTool / AskUserTool。
+"""Supervisor 调度工具（spec §3）——Spawn / Parallel / AskUser。
 
 SpawnSubAgentTool / ParallelSpawnTool 已抽到共享层 paperflow/tools/spawn.py
 （Task 1 纯搬移重构，行为不变）；本文件从共享层 import 后经 _make_supervisor_tools
 装配。Supervisor 是唯一装配 spawn 工具的 agent（权限最小化：SubAgent 无递归调度）。
+C2：aggregate_results 已删除——spawn 结果自带 digest（结构化摘要），supervisor 直接读
+各 SubAgentResult 的 digest + needs_attention 组织最终回答，无需再走汇总工具。
 """
 from paperflow.config import PaperFlowConfig
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.tools.spawn import SpawnSubAgentTool, ParallelSpawnTool
-
-
-class AggregateResultsTool(Tool):
-    """汇总 SubAgentResult 列表；needs_attention 标记呈现（规则 6）。纯文本不做决策。"""
-
-    name = "aggregate_results"
-    description = "汇总多个 SubAgentResult 为清晰列表；带 ⚠️ 标记的项需最终呈现给用户。"
-    parameters = {
-        "type": "object",
-        "properties": {
-            "results": {"type": "array", "items": {"type": "object"}},
-        },
-        "required": ["results"],
-    }
-    # 纯文本汇总，无需 parent 引用
-    risk_level = "low"
-
-    def execute(self, results: list[dict]) -> ToolResult:
-        lines = []
-        for r in results:
-            status = r.get("status", "?")
-            needs = r.get("needs_attention", False)
-            mark = " ⚠️" if needs else ""
-            lines.append(f"- [{status}{mark}] {r.get('summary', '')}")
-        text = "\n".join(lines) if lines else "(无结果)"
-        return ToolResult(text=text)
 
 
 class AskUserTool(Tool):
@@ -63,13 +39,12 @@ class AskUserTool(Tool):
 
 
 def _make_supervisor_tools() -> list:
-    """装配 4 个调度工具。config 在 import 时构造（每进程静态，对齐 make_tools 惯例）；
-    agent_timeouts 经 config.yaml 顶层注入 spawn 工具按 agent 解析超时。"""
+    """装配 3 个调度工具（C2 删 aggregate_results）。config 在 import 时构造（每进程静态，
+    对齐 make_tools 惯例）；agent_timeouts 经 config.yaml 顶层注入 spawn 工具按 agent 解析超时。"""
     cfg = PaperFlowConfig.from_env()
     return [
         SpawnSubAgentTool(agent_timeouts=cfg.agent_timeouts),
         ParallelSpawnTool(agent_timeouts=cfg.agent_timeouts),
-        AggregateResultsTool(),
         AskUserTool(),
     ]
 

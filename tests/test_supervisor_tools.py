@@ -18,7 +18,7 @@ from paperflow.tools.spawn import (
     _UserWaitClock, _wrap_confirm_callback, _run_child_with_budget,
     _task_fingerprint, _SPAWN_REGISTRY,
 )
-from agents.supervisor.tools import AggregateResultsTool, AskUserTool
+from agents.supervisor.tools import AskUserTool
 
 
 def _supervisor(tools, **kwargs):
@@ -279,18 +279,6 @@ class TestParallelSpawnTool:
         assert tool._resolve_timeout("other") == 120
 
 
-class TestAggregateResultsTool:
-    def test_marks_needs_attention(self):
-        tool = AggregateResultsTool()
-        result = tool.execute(results=[
-            {"status": "success", "summary": "完成", "needs_attention": False},
-            {"status": "denied", "summary": "写盘需确认", "needs_attention": True},
-        ])
-        assert "完成" in result.text
-        assert "⚠️" in result.text
-        assert "写盘需确认" in result.text
-
-
 class TestAskUserTool:
     def test_callback_answer_becomes_result(self):
         tool = AskUserTool()
@@ -425,3 +413,35 @@ class TestSpawnConfirmBudget:
         parsed = json.loads(result.text)
         assert parsed["status"] == "success"
         assert "写好了" in parsed["summary"]
+
+
+# ─── C2 结构化摘要聚合（Task 11）────────────────────────────────────
+# digest = StructuredOutput 从子 agent 最终回答提取的结构化摘要（如 search-paper 的
+# count/papers/downloaded），supervisor 直接读 digest 组织最终回答，取代 aggregate_results。
+# 失败/超时落 {}（supervisor 回退读 summary）。mock llm 的 chat 不接受 json_mode/
+# temperature/extra_body → 真实提取在测试里 TypeError 静默降级为 {}，不破坏既有 spawn 用例。
+
+
+def test_subagent_result_has_digest_field():
+    from paperflow.tools.spawn import SubAgentResult
+    r = SubAgentResult(status="success", summary="x")
+    assert r.digest == {}
+
+
+def test_digest_schema_for_maps_types():
+    from paperflow.tools.spawn import digest_schema_for
+    from paperflow.tools.spawn import (
+        SearchPaperDigest, ReviewerDigest, GenerateNoteDigest, GenericDigest,
+    )
+    assert digest_schema_for("search-paper") is SearchPaperDigest
+    assert digest_schema_for("reviewer") is ReviewerDigest
+    assert digest_schema_for("generate-note") is GenerateNoteDigest
+    assert digest_schema_for("unknown-x") is GenericDigest
+
+
+def test_aggregate_tool_removed():
+    """C2：aggregate_results 工具已删除——supervisor 直接读各 spawn 结果的 digest。"""
+    import agents.supervisor.tools as st
+    assert not hasattr(st, "AggregateResultsTool")
+    from paperflow.tools.spawn import SpawnSubAgentTool
+    assert True
