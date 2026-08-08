@@ -218,7 +218,9 @@ class LLMClient:
         :param on_delta: 每段 content 片段同步回调（跑在 to_thread 流线程内——
             非主事件循环线程，回调只能做追加/打印，别碰事件循环）
         :param telemetry_callback: 与 chat() 同语义的元数据回调，token 数来自
-            最后一个带 usage 的 chunk；端点不支持流式 usage 时 tokens 记 None
+            最后一个带 usage 的 chunk；端点不支持流式 usage 时 tokens 记 None。
+            流式 token 归因依赖 stream_options={"include_usage": True}（OpenAI 兼容
+            端点默认不返回流式 usage）；老端点不支持该参数时自动降级重试一次
         """
         # 计时起点：latency_ms 覆盖整个流式接收过程
         _started = time.monotonic()
@@ -228,7 +230,9 @@ class LLMClient:
             messages=[_message_to_openai(m) for m in messages],
             max_tokens=self.max_tokens,
             temperature=self.temperature,
-            stream=True,                    # 与 chat() 的唯一区别：开流式
+            stream=True,
+            # 流式 token 归因依赖 include_usage：OpenAI 兼容端点默认不返回流式 usage
+            stream_options={"include_usage": True},
         )
         if tools:
             kwargs["tools"] = tools
@@ -238,7 +242,16 @@ class LLMClient:
             # create 与 iterate 必须同线程：Stream 是同步迭代器，逐 chunk 阻塞在
             # httpx 读取上；不能把 Stream 交回事件循环再迭代（否则阻塞 loop，
             # 杀死 parallel_spawn 并发）。
-            stream = self.client.chat.completions.create(**kwargs)
+            # 老兼容端点不支持 stream_options → 去掉该参数降级重试一次，
+            # 与 chat() 的 response_format/extra_body 降级模式一致。
+            try:
+                stream = self.client.chat.completions.create(**kwargs)
+            except Exception as e:
+                if _looks_like_unsupported_param(e):
+                    kwargs.pop("stream_options", None)
+                    stream = self.client.chat.completions.create(**kwargs)
+                else:
+                    raise
             content, tool_calls, role, finish_reason, usage = _accumulate_stream_chunks(stream, on_delta)
             if telemetry_callback is not None:
                 # 流式 usage 仅部分端点提供（多在收尾 chunk 上）；缺失时元数据
@@ -322,6 +335,7 @@ def _accumulate_stream_chunks(chunks, on_delta):
 _UNSUPPORTED_PARAM_PATTERNS = [
     re.compile(r"response_format", re.IGNORECASE),
     re.compile(r"extra_body", re.IGNORECASE),
+    re.compile(r"stream_options", re.IGNORECASE),
     re.compile(r"enable_thinking", re.IGNORECASE),
     re.compile(r"unknown parameter", re.IGNORECASE),
     re.compile(r"unexpected parameter", re.IGNORECASE),

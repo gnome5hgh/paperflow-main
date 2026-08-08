@@ -216,6 +216,67 @@ class TestChatStream:
             "function": {"name": "echo", "arguments": '{"m": "x"}'},
         }]
 
+    @pytest.mark.asyncio
+    async def test_passes_stream_options_include_usage(self):
+        # 流式 token 归因依赖 include_usage：OpenAI 兼容端点默认不返回流式 usage
+        client = make_client()
+        chunks = [_chunk(SimpleNamespace(role="assistant", content="hi", tool_calls=None))]
+        client.client.chat.completions.create.return_value = iter(chunks)
+        await client.chat_stream([Message(role="user", content="x")])
+        kwargs = client.client.chat.completions.create.call_args.kwargs
+        assert kwargs["stream_options"] == {"include_usage": True}
+
+    @pytest.mark.asyncio
+    async def test_usage_tail_chunk_reaches_telemetry(self):
+        # 尾部「空 choices + usage」chunk：_accumulate_stream_chunks 在跳过空 choices
+        # 前先收集 usage，最后带值者胜出 → 回调应拿到 token 数
+        client = make_client()
+        chunks = [
+            _chunk(SimpleNamespace(role="assistant", content="hi", tool_calls=None)),
+            _chunk(SimpleNamespace(role=None, content="!", tool_calls=None)),
+            _chunk(SimpleNamespace(role=None, content=None, tool_calls=None),
+                   choices=[SimpleNamespace(
+                       delta=SimpleNamespace(role=None, content=None, tool_calls=None),
+                       finish_reason="stop")]),
+            SimpleNamespace(choices=[], usage=SimpleNamespace(
+                prompt_tokens=10, completion_tokens=5, total_tokens=15)),
+        ]
+        client.client.chat.completions.create.return_value = iter(chunks)
+        captured = {}
+        msg = await client.chat_stream(
+            [Message(role="user", content="x")],
+            telemetry_callback=lambda d: captured.update(d))
+        assert msg.content == "hi!"
+        assert captured["prompt_tokens"] == 10
+        assert captured["completion_tokens"] == 5
+        assert captured["total_tokens"] == 15
+
+    @pytest.mark.asyncio
+    async def test_degrades_when_stream_options_unsupported(self):
+        # 端点不支持 stream_options（老兼容端点）→ 去掉该参数降级重试一次，
+        # 重试成功后回调照常触发（token 缺失记 None，不中断流）
+        client = make_client()
+        chunks = [
+            _chunk(SimpleNamespace(role="assistant", content="hi", tool_calls=None)),
+            _chunk(SimpleNamespace(role=None, content=None, tool_calls=None),
+                   choices=[SimpleNamespace(
+                       delta=SimpleNamespace(role=None, content=None, tool_calls=None),
+                       finish_reason="stop")]),
+        ]
+        client.client.chat.completions.create.side_effect = [
+            Exception("stream_options: Extra inputs are not permitted"),
+            iter(chunks),
+        ]
+        captured = {}
+        msg = await client.chat_stream(
+            [Message(role="user", content="x")],
+            telemetry_callback=lambda d: captured.update(d))
+        calls = client.client.chat.completions.create.call_args_list
+        assert "stream_options" in calls[0].kwargs
+        assert "stream_options" not in calls[1].kwargs     # 重试不带该参数
+        assert msg.content == "hi"
+        assert captured["total_tokens"] is None            # 无 usage → token 留空
+
 
 class _FakeResp:
     class _Choice:

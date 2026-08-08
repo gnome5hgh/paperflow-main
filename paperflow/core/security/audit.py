@@ -29,6 +29,7 @@ context 副本，互不串扰。每天一个文件、追加写入，写盘时按
 import contextvars
 import json
 import re
+import sys
 import threading
 import time
 import uuid
@@ -188,11 +189,18 @@ class AuditMiddleware(SecurityMiddleware):
         return Path(self.audit_dir) / f"audit_{datetime.now():%Y%m%d}.jsonl"
 
     def _write_event(self, entry: AuditEntry) -> None:
-        self._current_path().parent.mkdir(parents=True, exist_ok=True)
-        # 加锁写盘：整段「open + write」在锁内，保证 JSONL 行不会被并发线程分段交叉
-        with self._lock:
-            with open(self._current_path(), "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry.__dict__, ensure_ascii=False) + "\n")
+        # 跨日滚动：mkdir 与 open 共用同一次路径解析，避免跨零点时两者解析出不同文件名
+        path = self._current_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # 加锁写盘：整段「open + write」在锁内，保证 JSONL 行不会被并发线程分段交叉
+            with self._lock:
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry.__dict__, ensure_ascii=False) + "\n")
+        except Exception as e:
+            # 写盘失败（磁盘满/权限）不得中断工具结果返回：打印告警后降级跳过，
+            # 与 _run_after_hooks 的哲学一致——审计是横切关注点，失败不该毁掉主流程
+            print(f"[audit] write failed: {e}", file=sys.stderr)
 
     async def before(self, ctx: ToolContext) -> None:
         # 压栈：生成当前 span_id，读栈顶作父链，写入 ctx 供 after 写 tool_invoked
@@ -239,6 +247,9 @@ class AuditMiddleware(SecurityMiddleware):
     async def on_approval(self, ctx: ToolContext, phase: str, outcome: str | None = None) -> None:
         # 审批生命周期：requested（发起确认时）与 decided（决策后）是两条独立事件，
         # decided 通过 causation_id 回溯 requested（合规要求：请求≠决策）。
+        # 守卫：phase 只允许两值，拦截笔误（如 "reuested"）写入日志，避免污染审计。
+        if phase not in {"requested", "decided"}:
+            raise ValueError(f"invalid approval phase: {phase}")
         span = _span_ctx.get()
         entry = AuditEntry(
             event_type=f"approval_{phase}",

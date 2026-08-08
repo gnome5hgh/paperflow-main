@@ -600,12 +600,14 @@ class Agent:
                 for mw in self.security_middleware:
                     await mw.on_approval(ctx, "decided", outcome=outcome)
                 if not confirmed:
-                    # 用户拒绝 → 记录错误并走 after 钩子，反馈给 LLM
+                    # 拒绝 → 记录错误并走 after 钩子，反馈给 LLM
+                    # summary.decision 用已计算的 outcome（user_denied/auto_denied），
+                    # 与 ctx.approval_outcome 保持一致——拒绝路径带决策依据回放给 LLM
                     ctx.error = cr
                     await self._run_after_hooks(ctx)
                     return ToolResult(
                         text=f"User denied: {cr.tool_name}",
-                        summary={"decision": "user_denied", "tool": cr.tool_name},
+                        summary={"decision": outcome, "tool": cr.tool_name},
                     )
                 cr.confirm()
                 ctx.user_confirmed = True

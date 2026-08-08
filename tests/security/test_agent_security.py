@@ -85,7 +85,8 @@ class TestAgentMiddleware:
             "id": "c1", "function": {"name": "capture", "arguments": '{"content": "x"}'},
         })
         assert "User denied" in result.text
-        assert result.summary["decision"] == "user_denied"
+        # 默认 fail-safe 拒绝（无人工回调）→ auto_denied，与 ctx.approval_outcome 一致
+        assert result.summary["decision"] == "auto_denied"
 
     @pytest.mark.asyncio
     async def test_confirm_accepted_executes_tool(self):
