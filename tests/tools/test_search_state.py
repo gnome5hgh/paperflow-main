@@ -1,5 +1,5 @@
 import time
-from paperflow.core.search_state import (
+from paperflow.tools.search._common import (
     SearchRunState, get_run_state, query_cache_get, query_cache_put,
     breaker_is_open, breaker_register_failure, breaker_register_success,
     QUERY_CACHE_MAX,

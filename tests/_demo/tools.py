@@ -1,4 +1,4 @@
-# agents/_demo/tools.py
+# tests/_demo/tools.py
 """Demo Agent 的工具定义(链路验证用)。
 
 _demo agent 只有一个 echo 工具,用于验证整条链路:AgentRegistry 扫描 →

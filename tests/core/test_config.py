@@ -12,9 +12,11 @@ from paperflow.config import PaperFlowConfig
 
 
 def test_vault_dirs_default():
+    """vault 目录默认空——个人绝对路径经 .env(PAPERFLOW_VAULT_*)或 config.yaml 提供,
+    不硬编码进代码(env 覆盖路径见 test_rag_keys_env_override)。"""
     c = PaperFlowConfig()
-    assert c.vault_note_dir == "/Users/gnomeshgh/Documents/Obsidian Vault/paper/note"
-    assert c.vault_pdf_dir == "/Users/gnomeshgh/Documents/Obsidian Vault/paper/pdf"
+    assert c.vault_note_dir == ""
+    assert c.vault_pdf_dir == ""
 
 
 def test_chroma_dir_derives_from_workspace():

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from paperflow.core.agent import Agent
 from paperflow.core.agent_registry import AgentRegistry
 from paperflow.core.llm import Message
-from tests.test_agent import make_mock_llm
+from tests.agent.test_agent import make_mock_llm
 
 
 @pytest.fixture
@@ -15,7 +15,7 @@ def supervisor_registry(tmp_path, monkeypatch):
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"))
     monkeypatch.setattr(PaperFlowConfig, "from_env",
                         classmethod(lambda cls, config_path=None: cfg))
-    agents_dir = str(__import__("pathlib").Path(__file__).resolve().parents[1] / "agents")
+    agents_dir = str(__import__("pathlib").Path(__file__).resolve().parents[2] / "agents")
     return AgentRegistry(agents_dir)
 
 
@@ -54,7 +54,7 @@ def test_supervisor_dispatch_smoke(supervisor_registry):
     ])
     agent = Agent(llm=llm, agent_registry=supervisor_registry, agent_type="supervisor",
                   confirm_callback=lambda cr: True)
-    # supervisor 前置钩子缺省关闭（未传 intent_pipeline/session）；spawn 的 child 是
+    # supervisor 前置钩子缺省关闭（未传 intent_pipeline/conversation）；spawn 的 child 是
     # 真实 searcher 装配但吃同一 mock llm → 返回"子任务已执行"，无网络。
     import asyncio
     text = asyncio.run(agent.run("搜索 circRNA 文献"))
@@ -67,7 +67,7 @@ def test_subagent_result_cross_turn_visible(supervisor_registry):
     from unittest.mock import MagicMock
     from paperflow.core.memory.context_compressor import ContextCompressor
     from paperflow.core.memory.context_config import ContextConfig
-    from tests.test_agent import make_capture_llm
+    from tests.agent.test_agent import make_capture_llm
 
     tool_call = Message(role="assistant", content=None, tool_calls=[{
         "id": "c1", "type": "function",

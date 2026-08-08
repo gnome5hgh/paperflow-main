@@ -66,7 +66,7 @@ def _intent_block(intent) -> str:
     """把 IntentOutput 格式化为 INTENT 块（ReAct context 的强提示，非命令）。
 
     排除 clarification 与 prev_intent：澄清只走 CLI 层（跨轮 pending），不暴露给
-    Supervisor（避免其用 AskUserTool 双问）；prev_intent 是 session 内部状态。
+    Supervisor（避免其用 AskUserTool 双问）；prev_intent 是 conversation 内部状态。
     """
     return "INTENT: " + intent.model_dump_json(exclude={"clarification", "prev_intent"})
 
@@ -166,7 +166,7 @@ class Agent:
         confirm_callback: Callable[[ConfirmRequired], bool] | None = None,
         intent_enabled: bool = False,
         intent_pipeline=None,      # IntentPipeline | None
-        session=None,              # Session | None
+        conversation=None,              # ConversationState | None
         ask_user_callback=None,    # Callable[[str], str] | None
         session_id: str | None = None,
         memory_index=None,          # MemoryIndex | None
@@ -186,7 +186,7 @@ class Agent:
             spawn 工具构造的子 agent 不传管线/会话 → 门控关闭
         :param intent_pipeline: 意图识别管线实例(IntentPipeline | None),
             run() 前置钩子消费;None 时跳过
-        :param session: 会话状态容器(Session | None),提供跨轮 prev_intent/
+        :param conversation: 会话状态容器(ConversationState | None),提供跨轮 prev_intent/
             prev_user_input 并在 run 结束后回写
         :param ask_user_callback: 向用户提问的回调(Callable[[str], str] | None),
             供 ask_user 工具消费;None 时该工具不可用
@@ -251,7 +251,7 @@ class Agent:
         # 且白花 LLM 调用)
         self.intent_enabled = intent_enabled
         self.intent_pipeline = intent_pipeline
-        self.session = session
+        self.conversation = conversation
         self.ask_user_callback = ask_user_callback
         #: 本轮 run 的 IntentOutput（CLI 读 clarification 判定 + 跨轮 prev_intent）
         self.last_intent = None
@@ -305,12 +305,12 @@ class Agent:
             6. 回到步骤 3，LLM 根据工具执行结果继续推理
             7. 若超过 max_turns → 抛出 MaxTurnsExceeded（安全阀）
         """
-        # 每次 run 独立追踪 ID：同一 session 的多次 run 由 trace_id 区分
+        # 每次 run 独立追踪 ID：同一 conversation 的多次 run 由 trace_id 区分
         self._trace_id = f"trace_{uuid.uuid4().hex[:12]}"
 
         # 信任边界：清洗用户输入里的未配对 surrogate（外部粘贴/合成文本可能携带，
         # 见 core/security/text.py）——否则下游意图管线/实体提取在脏字符上工作，且
-        # session.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
+        # conversation.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 
         # 构建初始对话上下文:head(system_prompt / MEMORY 索引 / INTENT 块,每轮重建
@@ -327,15 +327,15 @@ class Agent:
         # 意图识别前置钩子:intent_enabled 门控——只有 CLI 构造的 Supervisor 置 True。
         # 产出意图注入 INTENT 块作为 ReAct 的强提示(非命令,LLM 自行决定调度),追加到
         # head,不进累积。
-        if self.intent_enabled and self.intent_pipeline is not None and self.session is not None:
+        if self.intent_enabled and self.intent_pipeline is not None and self.conversation is not None:
             try:
                 intent = await self.intent_pipeline.run(
-                    task, prev_intent=self.session.prev_intent,
-                    prev_user_input=self.session.prev_user_input)
+                    task, prev_intent=self.conversation.prev_intent,
+                    prev_user_input=self.conversation.prev_user_input)
             except Exception:
                 # 管线失败降级:意图管线是 LLM 兜底,网络异常/解析失败会传播到这里——
                 # 不阻断本轮:记日志 + 跳过 INTENT 块 + 普通 ReAct 继续。last_intent
-                # 显式置 None:CLI 澄清检查跳过、session 的上一轮意图不更新。
+                # 显式置 None:CLI 澄清检查跳过、conversation 的上一轮意图不更新。
                 logger.warning("intent pipeline failed, degraded to plain ReAct", exc_info=True)
                 self.last_intent = None
                 intent = None
@@ -410,8 +410,8 @@ class Agent:
                 # 意图会话更新:本轮消费了 intent → 更新上一轮意图/输入供下轮追问使用
                 # (澄清早退或管线降级时 last_intent 为 None → 不更新)
                 if self.intent_enabled and self.last_intent is not None:
-                    self.session.prev_intent = self.last_intent.intent_type
-                    self.session.prev_user_input = task
+                    self.conversation.prev_intent = self.last_intent.intent_type
+                    self.conversation.prev_user_input = task
                 # 跨轮累积：最终 assistant（on_finish 改写后的 content——回放给 LLM 的
                 # 是"用户看到的事实"，SAFE_PROMPT 等安全声明跨轮保留）补进 conv 后入 history
                 if self.compressor:
@@ -585,7 +585,7 @@ class Agent:
             # ctx.args 会被 after 钩子/审计读取并序列化,而去重池不可序列化,写进去
             # 会让该调用的审计行整体丢失。
             if getattr(tool, "wants_run_state", False):
-                from paperflow.core.search_state import get_run_state
+                from paperflow.tools.search._common import get_run_state
                 raw = await asyncio.to_thread(
                     tool.execute, **ctx.args, _run_state=get_run_state(self._trace_id))
             else:

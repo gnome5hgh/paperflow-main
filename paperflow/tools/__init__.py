@@ -1,6 +1,6 @@
 """paperflow.tools —— 原子 Tool 公共导入面。
 
-一工具一文件（每个 Tool 类一个模块），此处再导出全部 13 个 Tool 供消费方
+一工具一文件（每个 Tool 类一个模块），此处再导出全部 14 个 Tool 供消费方
 `from paperflow.tools import ReadFileTool, ...` 统一导入——隐藏拆分细节。
 工具按领域分拣到 file/ search/ review/ rank/ 子包，本模块只更新内部 import
 路径，**导出符号名不变**（消费方零改动）。
@@ -18,12 +18,13 @@ from paperflow.tools.file.format_check import FormatCheckTool
 from paperflow.tools.review.submit_review import SubmitReviewTool
 from paperflow.tools.search.arxiv_search import ArxivSearchTool
 from paperflow.tools.search.openalex_search import OpenAlexSearchTool
+from paperflow.tools.search.fetch_pdf import FetchPdfTool
 from paperflow.tools.rank.lookup_venue_rank import LookupVenueRankTool
 from paperflow.tools.review.submit_download_review import SubmitDownloadReviewTool
 
 __all__ = [
     "GlobTool", "GrepTool", "ReadFileTool", "WriteFileTool", "EditFileTool",
     "ReadPdfTool", "MarkReadTool", "FormatCheckTool",
-    "SubmitReviewTool", "ArxivSearchTool", "OpenAlexSearchTool",
+    "SubmitReviewTool", "ArxivSearchTool", "OpenAlexSearchTool", "FetchPdfTool",
     "LookupVenueRankTool", "SubmitDownloadReviewTool",
 ]

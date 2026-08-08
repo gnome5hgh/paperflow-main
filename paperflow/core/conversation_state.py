@@ -1,8 +1,8 @@
-"""会话状态容器：跨轮意图上下文与澄清挂起(CLI 持有、传给 Supervisor)。
+"""跨轮会话状态容器:意图追问上下文与澄清挂起(CLI 持有、传给 Supervisor)。
 
 意图管线的追问检测消费 prev_intent / prev_user_input(上一轮意图与输入);跨轮澄清
 挂起消费 pending_intent(最多询问 2 轮)。跨轮上下文由上下文压缩器的历史累积承担
-(CLI 复用同一 Supervisor 实例,压缩器常驻),Session 不冗余保存摘要。
+(CLI 复用同一 Supervisor 实例,压缩器常驻),本状态不冗余保存摘要。
 """
 from dataclasses import dataclass
 
@@ -24,8 +24,8 @@ class PendingClarification:
 
 
 @dataclass
-class Session:
-    """会话状态容器。prev_* 由 run() 结束后更新；pending_intent 由 CLI 维护。"""
+class ConversationState:
+    """跨轮会话状态。prev_* 由 run() 结束后更新;pending_intent 由 CLI 维护。"""
     prev_intent: IntentType | None = None
     prev_user_input: str = ""
     pending_intent: PendingClarification | None = None

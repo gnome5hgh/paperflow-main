@@ -22,12 +22,12 @@ def _reset_global_search_state():
     """复位模块级 query 缓存/熔断（A4/A5 是跨测试共享的全局态）。
 
     Task 3 引入 A4 缓存后，搜索类测试互相污染：前一个测试把某 query 缓存了，
-    后一个测试同一 query（含 clamp 后同 max_results）会命中缓存 → 跳过下载/入池
+    后一个测试同一 query（含 clamp 后同 max_results）会命中缓存 → 跳过网络/入池
     等副作用。例如 test_arxiv_search_parses 缓存了 ("arxiv","link prediction",...,
-    3)，test_download_resolves_redirect_and_indexes 同 query 会缓存命中而不再下载。
+    3)，同 query 的后续测试会缓存命中而不再走真实网络。
     每个测试前清空私有全局态，保证测试顺序无关（私有符号仅测试复位用）。
     """
-    from paperflow.core import search_state as ss
+    from paperflow.tools.search import _common as ss
     ss._QUERY_CACHE.clear()
     ss._SOURCE_BREAKER.clear()
     yield
@@ -69,11 +69,16 @@ def test_search_tools_metadata():
     # 与 ReadFileTool/ReadPdfTool 一致（外部内容打"未经安全校验"横幅）。
     assert ArxivSearchTool.output_scan == "mark"
     assert OpenAlexSearchTool.output_scan == "mark"
-    # IMPORTANT-3：description / 参数描述与行为一致——缺省不下载
-    assert "缺省不下载" in ArxivSearchTool.description
-    assert "缺省不下载" in OpenAlexSearchTool.description
-    assert "缺省不下载" in ArxivSearchTool.parameters["properties"]["download_to"]["description"]
-    assert "缺省不下载" in OpenAlexSearchTool.parameters["properties"]["download_to"]["description"]
+    # 下载拆为独立 fetch_pdf 后，搜索工具是纯只读：low 风险、仅 network、无写目录
+    assert ArxivSearchTool.risk_level == "low"
+    assert OpenAlexSearchTool.risk_level == "low"
+    assert ArxivSearchTool.side_effects == ["network"]
+    assert OpenAlexSearchTool.side_effects == ["network"]
+    assert ArxivSearchTool.allowed_roots == []
+    assert OpenAlexSearchTool.allowed_roots == []
+    # 不再带 download_to 参数（下载走 fetch_pdf 工具）
+    assert "download_to" not in ArxivSearchTool.parameters["properties"]
+    assert "download_to" not in OpenAlexSearchTool.parameters["properties"]
 
 
 def test_arxiv_search_parses():
@@ -101,81 +106,6 @@ def test_ssrf_check_blocks_private():
     tool._client = ArxivSearchTool._make_client(transport=_atransport(), ssrf_check=blocking_check)
     result = tool.execute(query="x", max_results=1)
     assert "SSRF" in result.text
-
-
-def test_download_resolves_redirect_and_indexes(tmp_path, monkeypatch):
-    # 302 → 200 PDF 开心路径：解析后的最终 URL 被 GET、写盘字节正确、触发 index_document
-    from paperflow.tools import _http as search_mod
-
-    def fake_resolve(url):
-        # 模拟 HEAD 逐跳校验把 arxiv pdf 302 到最终地址的解析结果；
-        # 匹配 arxiv pdf_url（含 /pdf/），搜索 API 路径（/api/query）原样返回
-        return "http://test/real.pdf" if "/pdf/" in url else url
-    monkeypatch.setattr(search_mod, "resolve_url_target", fake_resolve)
-
-    got = []
-    def handler(req):
-        if "/api/query" in str(req.url):
-            return httpx.Response(200, content=_ATOM.encode(), request=req)
-        got.append(str(req.url))
-        return httpx.Response(200, content=b"%PDF-1.4 fake content", request=req)
-    transport = httpx.MockTransport(handler)
-    tool = ArxivSearchTool()
-    tool._client = ArxivSearchTool._make_client(transport=transport, ssrf_check=lambda u: None)
-
-    class FakeSvc:
-        def __init__(self):
-            self.lock = __import__("threading").RLock()
-            self.indexed = []
-        def index_document(self, p):
-            self.indexed.append(p)
-    fake = FakeSvc()
-    monkeypatch.setattr("paperflow.tools.search._base.get_rag_service", lambda: fake)
-
-    dest = tmp_path / "out.pdf"
-    result = tool.execute(query="link prediction", max_results=1, download_to=str(dest))
-    assert "已下载" in result.text
-    assert dest.read_bytes().startswith(b"%PDF")          # 写盘字节正确
-    assert fake.indexed == [str(dest)]                    # 触发 index_document
-    assert "http://test/real.pdf" in got                  # GET 的是解析后的最终 URL
-
-
-def test_download_blocks_private_redirect(tmp_path, monkeypatch):
-    # 302 → 私网 IP 被拒：下载报错、无文件落盘、不触发索引
-    from paperflow.core.security.network import SSRFError
-    from paperflow.tools import _http as search_mod
-
-    monkeypatch.setattr(search_mod, "resolve_url_target",
-                        lambda url: "http://169.254.169.254/latest/meta-data/" if "/pdf/" in url else url)
-
-    def handler(req):
-        if "/api/query" in str(req.url):
-            return httpx.Response(200, content=_ATOM.encode(), request=req)
-        return httpx.Response(200, content=b"%PDF", request=req)
-    transport = httpx.MockTransport(handler)
-    tool = ArxivSearchTool()
-    # ssrf_check 注入桩：只拒绝 metadata 私网 IP，搜索 URL 放行——若用真实
-    # validate_url_target，本沙箱 DNS 会把搜索域名解析到 198.18.0.0/15 私网段，
-    # 搜索阶段即被拒，测不到下载路径的重定向拒绝（无法确定性地覆盖修复点）。
-    def check(url):
-        if "169.254.169.254" in url:
-            raise SSRFError("blocked for test")
-    tool._client = ArxivSearchTool._make_client(transport=transport, ssrf_check=check)
-
-    class FakeSvc:
-        def __init__(self):
-            self.lock = __import__("threading").RLock()
-            self.indexed = []
-        def index_document(self, p):
-            self.indexed.append(p)
-    fake = FakeSvc()
-    monkeypatch.setattr("paperflow.tools.search._base.get_rag_service", lambda: fake)
-
-    dest = tmp_path / "evil.pdf"
-    result = tool.execute(query="link prediction", max_results=1, download_to=str(dest))
-    assert "下载失败" in result.text or "SSRF" in result.text
-    assert not dest.exists()                              # 无文件落盘
-    assert fake.indexed == []                             # 不触发索引
 
 
 # ── Task 3：A1 年份结构化过滤 / B2 钳制 / A3 池 append / A4 缓存 / A5 熔断 ──
@@ -215,7 +145,7 @@ def test_max_results_clamped():
 def test_search_appends_to_pool_and_dedups():
     # A3：结果入 per-run 自动去重池；同 arXiv ID 只留一条。第二次调用命中 A4 缓存
     # 不重复入池——"池去重 + 缓存去重"两条路径合起来保证池内唯一。
-    from paperflow.core.search_state import SearchRunState
+    from paperflow.tools.search._common import SearchRunState
     tool = ArxivSearchTool()
     tool._client = ArxivSearchTool._make_client(transport=_atransport(), ssrf_check=lambda u: None)
     st = SearchRunState()
@@ -227,7 +157,7 @@ def test_search_appends_to_pool_and_dedups():
 def test_query_cache_hit_returns_marker():
     # A4：缓存命中返回"（缓存）"标记 + 旧结果。缓存键含源前缀 "arxiv"
     # （与 execute 内 ckey 一致：(源, query, year_from, year_to, max_results)）
-    from paperflow.core.search_state import SearchRunState, query_cache_get, query_cache_put
+    from paperflow.tools.search._common import SearchRunState, query_cache_get, query_cache_put
     key = ("arxiv", "heterogeneous graph", None, None, 5)
     query_cache_put(key, "旧结果")
     tool = ArxivSearchTool()
@@ -238,7 +168,7 @@ def test_query_cache_hit_returns_marker():
 
 def test_breaker_open_short_circuits():
     # A5：源连续失败 ≥2 次 → 熔断短路，execute 在打网络前返回提示（fixture 已清状态）
-    from paperflow.core.search_state import breaker_register_failure, breaker_register_success, breaker_is_open
+    from paperflow.tools.search._common import breaker_register_failure, breaker_register_success, breaker_is_open
     breaker_register_success("arxiv")                      # 复位
     breaker_register_failure("arxiv"); breaker_register_failure("arxiv")
     assert breaker_is_open("arxiv")
@@ -249,37 +179,7 @@ def test_breaker_open_short_circuits():
     breaker_register_success("arxiv")                      # 清理，防泄漏
 
 
-# ── Task 3 review 修复的回归测试（finding 1 / finding 4）──
-
-def test_download_bypasses_cache(tmp_path, monkeypatch):
-    # review finding 1（C1）：带 download_to 的调用即使缓存命中也要走网络+下载。
-    # 下游下载流程是「先搜索→门禁→同 query 复调 download_to」——若缓存短路，
-    # PDF 永不落盘。预置同 query 缓存后断言仍触发下载+索引。
-    from paperflow.core.search_state import SearchRunState, query_cache_put
-    query_cache_put(("arxiv", "link prediction", None, None, 3), "旧缓存结果")
-
-    class FakeSvc:
-        def __init__(self):
-            self.indexed = []
-        def index_document(self, p):
-            self.indexed.append(p)
-    fake = FakeSvc()
-    monkeypatch.setattr("paperflow.tools.search._base.get_rag_service", lambda: fake)
-
-    def handler(req):
-        if "/api/query" in str(req.url):
-            return httpx.Response(200, content=_ATOM.encode(), request=req)
-        return httpx.Response(200, content=b"%PDF-1.4 fake", request=req)
-
-    dest = tmp_path / "out.pdf"
-    tool = ArxivSearchTool()
-    tool._client = ArxivSearchTool._make_client(transport=httpx.MockTransport(handler), ssrf_check=lambda u: None)
-    r = tool.execute(query="link prediction", max_results=1,
-                     download_to=str(dest), _run_state=SearchRunState())
-    assert "已下载" in r.text                 # 带下载意图 → 忽略缓存，走网络+下载
-    assert dest.read_bytes().startswith(b"%PDF")
-    assert fake.indexed == [str(dest)]
-
+# ── Task 3 review 修复的回归测试（finding 4）──
 
 def test_empty_result_not_cached():
     # review finding 4：空结果不入缓存——重复 query 仍返回「无搜索结果」，

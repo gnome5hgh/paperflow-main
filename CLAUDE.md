@@ -23,6 +23,8 @@ conda activate paperflow && python -m paperflow
 
 Always use `conda run -n paperflow` for 非交互命令（测试/脚本/安装）——never bare `python` or `pip`。**例外：交互式 REPL（`python -m paperflow`）不能经 `conda run`**——它不转发 stdin，REPL 一启动就 EOF 退出；需 `conda activate paperflow` 后直接 `python -m paperflow`。
 
+**API key 配置**：key 从 `.env`（gitignored，复制 `.env.example` 填 `PAPERFLOW_API_KEY`）或环境变量 `PAPERFLOW_API_KEY` 读取，**不硬编码在代码里**。未配置时启动即报「LLM API key 未配置」。
+
 ## 文档同步规则
 
 修改代码时，必须同步更新关联的设计文档：

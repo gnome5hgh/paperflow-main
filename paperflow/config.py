@@ -78,11 +78,13 @@ class PaperFlowConfig:
     #: 上下文压缩配置（触发比例、保留比例、压缩提示词等）
     context: ContextConfig = field(default_factory=ContextConfig)
 
-    #: Obsidian vault 笔记目录（数据源 note/），绝对路径
-    vault_note_dir: str = "/Users/gnomeshgh/Documents/Obsidian Vault/paper/note"
+    #: Obsidian vault 笔记目录(数据源 note/)——**个人绝对路径,不硬编码默认值**,
+    #: 经 .env(PAPERFLOW_VAULT_NOTE_DIR)或 config.yaml 提供;留空则文件类工具无可用根。
+    vault_note_dir: str = ""
 
-    #: Obsidian vault PDF 目录（数据源 pdf/），绝对路径
-    vault_pdf_dir: str = "/Users/gnomeshgh/Documents/Obsidian Vault/paper/pdf"
+    #: Obsidian vault PDF 目录(数据源 pdf/)——同 vault_note_dir,经 .env(PAPERFLOW_VAULT_PDF_DIR)
+    #: 或 config.yaml 提供。
+    vault_pdf_dir: str = ""
 
     #: GROBID Docker 服务地址（PDF 结构解析）
     grobid_url: str = "http://127.0.0.1:8070"

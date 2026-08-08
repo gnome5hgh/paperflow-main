@@ -9,10 +9,10 @@ from paperflow.cli import _repl, _stdin_confirm, _stdin_ask
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.security import PolicyEngineMiddleware
 from paperflow.core.llm import Message
-from paperflow.core.session import Session
+from paperflow.core.conversation_state import ConversationState
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.core.intent.intent_schema import IntentType, IntentOutput, IntentStep
-from tests.test_agent import make_mock_registry, make_capture_llm
+from tests.agent.test_agent import make_mock_registry, make_capture_llm
 
 
 class ConfirmWriteTool(Tool):
@@ -58,7 +58,7 @@ def _make_supervisor(intent_sequence):
 async def test_repl_prints_result_and_exits():
     sv = _make_supervisor([None])
     out = []
-    await _repl(sv, Session(), input_fn=_seq_input(["搜索 circRNA"]),
+    await _repl(sv, ConversationState(), input_fn=_seq_input(["搜索 circRNA"]),
                 print_fn=lambda *a: out.append(a[0]))
     assert sv._calls == [("搜索 circRNA", False)]
     # 注：out 元素是整行文本（banner 含前缀），用子串匹配而非列表成员判定
@@ -69,7 +69,7 @@ async def test_repl_prints_result_and_exits():
 @pytest.mark.asyncio
 async def test_repl_exit_only_no_run():
     sv = _make_supervisor([])
-    await _repl(sv, Session(), input_fn=_seq_input([]),
+    await _repl(sv, ConversationState(), input_fn=_seq_input([]),
                 print_fn=lambda *a: None)
     assert sv._calls == []
 
@@ -88,9 +88,9 @@ async def test_clarification_suspends_then_terminates():
                      source=IntentStep.LLM, clarification="仍不明确？"),
         None,                                        # 第三次：不再挂起，直接出结果
     ])
-    session = Session()
+    conversation = ConversationState()
     out = []
-    await _repl(sv, session, input_fn=_seq_input(["搜索", "文献", "再答"]),
+    await _repl(sv, conversation, input_fn=_seq_input(["搜索", "文献", "再答"]),
                 print_fn=lambda *a: out.append(a[0]))
     assert len(sv._calls) == 3
     assert sv._calls[0] == ("搜索", False)                    # T1 原输入
@@ -98,7 +98,7 @@ async def test_clarification_suspends_then_terminates():
     assert sv._calls[1][1] is False
     assert sv._calls[2][1] is True                            # T3 超轮 force_dispatch
     assert sv._calls[2][0] == "搜索（用户澄清：文献）"          # best-guess 用累积上下文
-    assert session.pending_intent is None                     # 超轮后清空
+    assert conversation.pending_intent is None                     # 超轮后清空
     assert "结果" in out
 
 
@@ -108,7 +108,7 @@ async def test_repl_ctrl_d_exits_gracefully():
     sv = _make_supervisor([])
     def _eof_input(prompt=""):
         raise EOFError
-    await _repl(sv, Session(), input_fn=_eof_input, print_fn=lambda *a: None)
+    await _repl(sv, ConversationState(), input_fn=_eof_input, print_fn=lambda *a: None)
     assert sv._calls == []
 
 
@@ -124,7 +124,7 @@ async def test_repl_run_guard_max_turns_exceeded():
     sv.run = run
     sv.last_intent = None
     out = []
-    await _repl(sv, Session(), input_fn=_seq_input(["搜索 x"]),
+    await _repl(sv, ConversationState(), input_fn=_seq_input(["搜索 x"]),
                 print_fn=lambda *a: out.append(a[0]))
     assert any("任务超过最大轮数" in s for s in out)
 
@@ -138,7 +138,7 @@ async def test_repl_run_guard_generic_exception():
     sv.run = run
     sv.last_intent = None
     out = []
-    await _repl(sv, Session(), input_fn=_seq_input(["搜索 x"]),
+    await _repl(sv, ConversationState(), input_fn=_seq_input(["搜索 x"]),
                 print_fn=lambda *a: out.append(a[0]))
     assert any("执行出错：LLM 网络超时" in s for s in out)
 
@@ -311,7 +311,7 @@ async def test_repl_streams_live_and_no_duplicate_final_print():
     sv.run = run
     sv.last_intent = None
     out = []
-    await _repl(sv, Session(), input_fn=_seq_input(["hi"]),
+    await _repl(sv, ConversationState(), input_fn=_seq_input(["hi"]),
                 print_fn=lambda *a, **k: out.append(a[0]))
     assert "答" in out and "案" in out          # 增量逐字捕获
     assert "" in out                            # should_print 返回 "" → 补换行

@@ -24,7 +24,7 @@ from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.agent_registry import AgentConfig, AgentRegistry
 from paperflow.core.intent.intent_schema import IntentType
 from paperflow.core.llm import Message
-from paperflow.core.session import Session
+from paperflow.core.conversation_state import ConversationState
 from paperflow.core.tool import Tool, ToolResult
 
 
@@ -418,11 +418,11 @@ class TestIntentGate:
         from paperflow.core.intent.intent_schema import IntentType
         capture = []
         pipeline = MockIntentPipeline(result=_intent(IntentType.SEARCH_PAPER))
-        session = Session()
+        conversation = ConversationState()
         llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
         agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
                       agent_type="test", intent_enabled=True,
-                      intent_pipeline=pipeline, session=session)
+                      intent_pipeline=pipeline, conversation=conversation)
         asyncio.run(agent.run("搜索 circRNA 文献"))
         assert pipeline.calls == [("搜索 circRNA 文献", None, "")]
         assert any("INTENT:" in m.content for m in capture[0])
@@ -431,11 +431,11 @@ class TestIntentGate:
     def test_pipeline_receives_prev_context(self):
         capture = []
         pipeline = MockIntentPipeline(result=_intent(IntentType.SEARCH_PAPER))
-        session = Session(prev_intent=IntentType.ASK_QUESTION, prev_user_input="上轮")
+        conversation = ConversationState(prev_intent=IntentType.ASK_QUESTION, prev_user_input="上轮")
         llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
         agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
                       agent_type="test", intent_enabled=True,
-                      intent_pipeline=pipeline, session=session)
+                      intent_pipeline=pipeline, conversation=conversation)
         asyncio.run(agent.run("那第三篇呢"))
         assert pipeline.calls == [("那第三篇呢", IntentType.ASK_QUESTION, "上轮")]
 
@@ -443,11 +443,11 @@ class TestIntentGate:
         capture = []
         pipeline = MockIntentPipeline(result=_intent(IntentType.ASK_QUESTION,
                                                      clarification="要搜索还是生成笔记？"))
-        session = Session()
+        conversation = ConversationState()
         llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
         agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
                       agent_type="test", intent_enabled=True,
-                      intent_pipeline=pipeline, session=session)
+                      intent_pipeline=pipeline, conversation=conversation)
         text = asyncio.run(agent.run("整理这篇"))
         assert text == "要搜索还是生成笔记？"
         assert capture == []                       # ReAct 未启动，LLM 未调用
@@ -457,17 +457,17 @@ class TestIntentGate:
         capture = []
         pipeline = MockIntentPipeline(result=_intent(IntentType.ASK_QUESTION,
                                                      clarification="要哪个？"))
-        session = Session()
+        conversation = ConversationState()
         llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
         agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
                       agent_type="test", intent_enabled=True,
-                      intent_pipeline=pipeline, session=session)
+                      intent_pipeline=pipeline, conversation=conversation)
         text = asyncio.run(agent.run("整理这篇", force_dispatch=True))
         assert text == "Done."                     # 超轮终止：ReAct 正常跑
         assert len(capture) == 1
         assert any("INTENT:" in m.content for m in capture[0])
         # M5：INTENT 块必须排除 clarification / prev_intent——澄清只走 CLI 层
-        # （避免与 AskUserTool 双问）；prev_intent 是 session 内部状态，不暴露给
+        # （避免与 AskUserTool 双问）；prev_intent 是 conversation 内部状态，不暴露给
         # Supervisor。force_dispatch 用例（澄清文本存在但被 force 跳过）正好可断言。
         intent_msg = next(m for m in capture[0] if "INTENT:" in m.content)
         assert "要哪个？" not in intent_msg.content     # clarification 被排除
@@ -476,11 +476,11 @@ class TestIntentGate:
     def test_pipeline_failure_degrades(self):
         capture = []
         pipeline = MockIntentPipeline(exc=RuntimeError("Stage 3 网络超时"))
-        session = Session()
+        conversation = ConversationState()
         llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
         agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
                       agent_type="test", intent_enabled=True,
-                      intent_pipeline=pipeline, session=session)
+                      intent_pipeline=pipeline, conversation=conversation)
         text = asyncio.run(agent.run("搜索 x"))
         assert text == "Done."                     # 降级：普通 ReAct 继续，不崩
         assert agent.last_intent is None
@@ -489,39 +489,39 @@ class TestIntentGate:
     def test_session_updated_after_run(self):
         capture = []
         pipeline = MockIntentPipeline(result=_intent(IntentType.SEARCH_PAPER))
-        session = Session()
+        conversation = ConversationState()
         llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
         agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
                       agent_type="test", intent_enabled=True,
-                      intent_pipeline=pipeline, session=session)
+                      intent_pipeline=pipeline, conversation=conversation)
         asyncio.run(agent.run("搜索 circRNA"))
-        assert session.prev_intent == IntentType.SEARCH_PAPER
-        assert session.prev_user_input == "搜索 circRNA"
+        assert conversation.prev_intent == IntentType.SEARCH_PAPER
+        assert conversation.prev_user_input == "搜索 circRNA"
 
     def test_pipeline_failure_does_not_update_session(self):
         capture = []
         pipeline = MockIntentPipeline(exc=RuntimeError("boom"))
-        session = Session()
+        conversation = ConversationState()
         llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
         agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
                       agent_type="test", intent_enabled=True,
-                      intent_pipeline=pipeline, session=session)
+                      intent_pipeline=pipeline, conversation=conversation)
         asyncio.run(agent.run("搜索 x"))
-        assert session.prev_intent is None          # 降级轮不更新 prev_intent
+        assert conversation.prev_intent is None          # 降级轮不更新 prev_intent
 
     def test_task_surrogates_sanitized_before_session(self):
         """2026-08-05 回归：run() 入口清洗未配对 surrogate（信任边界）——否则
-        session.prev_user_input 携带脏字符，下轮意图管线从它重提实体时再注入。
+        conversation.prev_user_input 携带脏字符，下轮意图管线从它重提实体时再注入。
         正常输入零开销（sanitize_surrogates 无匹配返回原串）。"""
         capture = []
         pipeline = MockIntentPipeline(result=_intent(IntentType.GENERATE_NOTE))
-        session = Session()
+        conversation = ConversationState()
         llm = make_capture_llm([Message(role="assistant", content="Done.")], capture)
         agent = Agent(llm=llm, agent_registry=make_mock_registry([]),
                       agent_type="test", intent_enabled=True,
-                      intent_pipeline=pipeline, session=session)
+                      intent_pipeline=pipeline, conversation=conversation)
         asyncio.run(agent.run("笔记\udce5脏字符"))
-        assert "\udce5" not in session.prev_user_input
+        assert "\udce5" not in conversation.prev_user_input
 
 
 # ─── 流式输出（Task 3）：StreamEvent + stream_callback 门控 ──────────
@@ -711,9 +711,10 @@ def test_multiple_tool_calls_executed_in_parallel():
             time.sleep(0.05)
             return ToolResult(text=f"Echo: {msg}")
 
-    # 绝对路径定位 agents/ 目录（tests/ 的父级），与 conftest.py 的 agents_dir
-    # 解析方式一致，避免依赖 pytest 的 CWD。demo agent 目录名 = _demo。
-    reg = AgentRegistry(str(Path(__file__).resolve().parents[1] / "agents"))
+    # 绝对路径定位 tests/ 目录（_demo 已随 demo agent 移入 tests/），与 conftest.py 的
+    # agents_dir 解析方式一致，避免依赖 pytest 的 CWD。demo agent 目录名 = _demo，
+    # AgentRegistry 扫描 tests/ 子目录时仅 _demo 含 SKILL.md 被注册。
+    reg = AgentRegistry(str(Path(__file__).resolve().parents[1]))
     agent = Agent(llm=make_mock_llm([]), agent_registry=reg, agent_type="_demo")
     agent.tools = {"slow_echo": SlowEchoTool()}   # mock LLM 直接驱动 tool_call，schema 无关
 
@@ -788,7 +789,7 @@ def test_confirm_calls_serialized_under_concurrent_tools():
         state["active"] -= 1
         return True
 
-    reg = AgentRegistry(str(Path(__file__).resolve().parents[1] / "agents"))
+    reg = AgentRegistry(str(Path(__file__).resolve().parents[1]))
     agent = Agent(llm=make_mock_llm([]), agent_registry=reg, agent_type="_demo",
                   security_middleware=[ConfirmMW()], confirm_callback=confirm_cb)
     agent.tools = {"fast_echo": FastEchoTool()}

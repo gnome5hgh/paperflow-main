@@ -1,17 +1,17 @@
-"""Session 状态容器测试（Layer 4 跨轮状态）。"""
-from paperflow.core.session import Session, PendingClarification
+"""ConversationState 状态容器测试（Layer 4 跨轮状态）。"""
+from paperflow.core.conversation_state import ConversationState, PendingClarification
 from paperflow.core.intent.intent_schema import IntentType
 
 
 def test_session_defaults():
-    s = Session()
+    s = ConversationState()
     assert s.prev_intent is None
     assert s.prev_user_input == ""
     assert s.pending_intent is None
 
 
 def test_session_fields_update():
-    s = Session()
+    s = ConversationState()
     s.prev_intent = IntentType.SEARCH_PAPER
     s.prev_user_input = "搜索 circRNA"
     assert s.prev_intent == IntentType.SEARCH_PAPER

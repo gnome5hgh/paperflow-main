@@ -46,7 +46,7 @@ async def test_search_paper_happy_path(agent_env, agent_registry):
         _tc("arxiv_search", {"query": "link prediction", "max_results": 3}),
         _tc("openalex_search", {"query": "link prediction", "max_results": 3}),
         # Task 8 门禁：候选收敛后 spawn reviewer 下载审查（取代 dedup_papers/filter_papers）——
-        # 去重已并入池插入逻辑（core/search_state.py），筛选并入 reviewer 逐篇核验。
+        # 去重已并入池插入逻辑（search/_common.py），筛选并入 reviewer 逐篇核验。
         _tc("spawn_sub_agent", {"agent_type": "reviewer",
                                 "task": "审查以下候选论文：[...] 用户约束：年份≥2020"}),
         Message(role="assistant", content="审查裁决：pass\n- [PASS] Graph Neural Networks | Q1 | 可下载"),
@@ -95,17 +95,18 @@ def test_search_paper_has_glob_grep(agent_registry):
 
 
 def test_search_paper_tools_without_dedup_filter(agent_registry, agent_env):
-    """Task 8 工具集变化：门禁管线工具 = 双源搜索 + glob/grep + spawn_sub_agent。
+    """Task 8 工具集变化：门禁管线工具 = 双源搜索 + fetch_pdf + glob/grep + spawn。
 
-    去重/筛选工具已删除——去重并入池插入逻辑（core/search_state.py），筛选并入
-    reviewer 下载审查门禁（agents/reviewer）。spawn_sub_agent 是门禁关键工具：
+    去重/筛选工具已删除——去重并入池插入逻辑（search/_common.py），筛选并入
+    reviewer 下载审查门禁（agents/reviewer）。下载自搜索拆为独立 fetch_pdf 工具
+    （audit 中写盘动作清晰归于下载工具）。spawn_sub_agent 是门禁关键工具：
     候选收敛后派发 reviewer 逐篇核验（allowed_spawns 声明 reviewer 才放行，
     _check_spawn_allowed 运行时校验）。"""
     cfg, _ = agent_env
     from tests.conftest import make_agent, make_mock_llm
     agent = make_agent(agent_registry, "searcher", make_mock_llm([]), cfg)
     names = set(agent.tools)
-    assert {"arxiv_search", "openalex_search", "glob", "grep", "spawn_sub_agent"} <= names
+    assert {"arxiv_search", "openalex_search", "fetch_pdf", "glob", "grep", "spawn_sub_agent"} <= names
     assert "dedup_papers" not in names and "filter_papers" not in names
     cfg2 = agent.agent_registry.get_config("searcher")
     assert cfg2.allowed_spawns == ["reviewer"]

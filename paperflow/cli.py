@@ -2,7 +2,7 @@
 
 每轮:读 stdin → 合并挂起的澄清(若有)→ supervisor.run(query, force_dispatch) →
 若产生澄清问题且未超轮 → 挂起打印问题;否则打印结果。
-跨轮状态由 Session 承载(prev_intent / pending_intent),复用同一 Supervisor 实例使
+跨轮状态由 ConversationState 承载(prev_intent / pending_intent),复用同一 Supervisor 实例使
 上下文压缩器的历史跨轮累积。
 """
 import asyncio
@@ -14,7 +14,7 @@ from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.agent_registry import AgentRegistry
 from paperflow.core.llm import LLMClient
-from paperflow.core.session import Session, PendingClarification
+from paperflow.core.conversation_state import ConversationState, PendingClarification
 from paperflow.core.security import (
     AuditMiddleware, WorkspacePolicyMiddleware,
     SecurityScanMiddleware, PolicyEngineMiddleware,
@@ -126,23 +126,23 @@ class _ReplStreamer:
         return "\n" + result            # on_finish 改写了（如 SAFE_PROMPT）→ 补打最终版
 
 
-def _merge_pending(session: Session, raw: str) -> tuple[str, bool]:
+def _merge_pending(conversation: ConversationState, raw: str) -> tuple[str, bool]:
     """合并跨轮澄清输入,返回 (query, force_dispatch)。
 
     round < 2 → 合并澄清上下文重跑;round >= 2 → 超轮终止:force_dispatch=True、
     以累积澄清上下文的 original_input 调度——绝不重跑后再次挂起。
     """
-    p = session.pending_intent
+    p = conversation.pending_intent
     if p is None:
         return raw, False
     if p.round >= 2:
-        session.pending_intent = None
+        conversation.pending_intent = None
         return p.original_input, True
-    session.pending_intent = None
+    conversation.pending_intent = None
     return f"{p.original_input}（用户澄清：{raw}）", False
 
 
-async def _repl(supervisor: Agent, session: Session, *,
+async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 input_fn=input, print_fn=print, dream=None) -> None:
     """REPL 主循环。input_fn/print_fn 可注入（测试）。
 
@@ -165,8 +165,8 @@ async def _repl(supervisor: Agent, session: Session, *,
             break                # Ctrl-D：与 /exit 同效，优雅退出（不吐 traceback）
         if raw.strip() == "/exit":
             break
-        p = session.pending_intent
-        query, force = _merge_pending(session, raw)
+        p = conversation.pending_intent
+        query, force = _merge_pending(conversation, raw)
         streamer.reset()                    # 每轮清残留：异常/澄清路径不消费 should_print
         try:
             result = await supervisor.run(query, force_dispatch=force)
@@ -185,7 +185,7 @@ async def _repl(supervisor: Agent, session: Session, *,
         if intent is not None and intent.clarification and not force:
             # 未超轮：挂起澄清，round 链式累计（REPL 重建时用 p.round，不重置为 0）
             prev_round = p.round if p is not None else 0
-            session.pending_intent = PendingClarification(
+            conversation.pending_intent = PendingClarification(
                 question=intent.clarification, original_input=query,
                 round=prev_round + 1)
             print_fn(intent.clarification)
@@ -226,14 +226,14 @@ def main() -> None:
         routes=load_routes(), alpha=0.6)
     pipeline = IntentPipeline(router=router, structured=structured)
 
-    session = Session()
+    conversation = ConversationState()
     supervisor = Agent(
         llm=llm, agent_registry=registry, agent_type="supervisor",
         security_middleware=middlewares,
         memory_index=MemoryIndex(memory_dir),
         compressor=ContextCompressor(config.context, llm, structured=structured),
-        intent_enabled=True, intent_pipeline=pipeline, session=session,
+        intent_enabled=True, intent_pipeline=pipeline, conversation=conversation,
         confirm_callback=_stdin_confirm, ask_user_callback=_stdin_ask,
     )
     dream = Dream(store=store, git=git, llm=llm, structured=structured)
-    asyncio.run(_repl(supervisor, session, dream=dream))
+    asyncio.run(_repl(supervisor, conversation, dream=dream))

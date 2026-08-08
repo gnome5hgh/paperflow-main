@@ -11,7 +11,7 @@ from paperflow.core.llm import Message
 from paperflow.core.security import PolicyEngineMiddleware
 from paperflow.core.tool import Tool, ToolResult
 from tests.conftest import _tc
-from tests.test_agent import make_mock_llm, make_mock_registry
+from tests.agent.test_agent import make_mock_llm, make_mock_registry
 
 from paperflow.tools.spawn import (
     SpawnSubAgentTool, ParallelSpawnTool, SubAgentResult,

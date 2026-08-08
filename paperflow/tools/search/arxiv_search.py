@@ -1,10 +1,9 @@
-"""ArxivSearchTool：arXiv API 搜索 + 可选 PDF 下载。
+"""ArxivSearchTool：arXiv API 纯搜索工具（下载已拆至 fetch_pdf）。
 
-下载 PDF 是写操作,故整工具标 medium 风险(即便纯搜索也保守过标)——只读会话
-(风险上限 low)不应触碰本地资料库。出站抓取前做 SSRF 校验,重定向链逐跳校验
-(见 paperflow/tools/_http.py)。
+出站抓取前做 SSRF 校验,重定向链逐跳校验(见 paperflow/tools/_http.py)。
+只读操作,写盘/下载由 FetchPdfTool 承担。
 
-execute() 骨架在 BaseSearchTool(search/_base.py)中与 openalex 共享;本文件保留
+execute() 骨架在 BaseSearchTool(search/_common.py)中与 openalex 共享;本文件保留
 ArxivClient(含年份区间过滤)与来源差异段。
 """
 import urllib.parse
@@ -14,7 +13,7 @@ import httpx
 
 from paperflow.core.security.network import validate_url_target
 from paperflow.tools._http import _HttpClientMixin
-from paperflow.tools.search._base import BaseSearchTool
+from paperflow.tools.search._common import BaseSearchTool
 
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
@@ -72,8 +71,7 @@ class ArxivClient(_HttpClientMixin):
 
 class ArxivSearchTool(BaseSearchTool):
     name = "arxiv_search"
-    # description 与行为对齐:缺省不下载,传入 download_to 才下载(LLM 据此决定是否触发写盘)
-    description = "搜索 arXiv 论文；可选下载 PDF（缺省不下载，传入 download_to 才下载）"
+    description = "搜索 arXiv 论文"
     parameters = {
         "type": "object",
         "properties": {
@@ -81,8 +79,6 @@ class ArxivSearchTool(BaseSearchTool):
             # schema 层给 max_results 上下限,让模型端发起调用时就钳在合法区间
             "max_results": {"type": "integer", "default": 5,
                             "minimum": 3, "maximum": 50},
-            "download_to": {"type": "string", "format": "path",
-                            "description": "PDF 保存绝对路径（可选；缺省不下载，传入才下载）"},
             # 年份是结构化过滤参数,与自由文本 query 平级——不要拼进检索词
             "year_from": {"type": "integer", "description": "起始年份（含），用此参数而非拼进 query"},
             "year_to": {"type": "integer", "description": "结束年份（含），用此参数而非拼进 query"},

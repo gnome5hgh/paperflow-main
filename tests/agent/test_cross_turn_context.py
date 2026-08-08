@@ -6,8 +6,8 @@ from paperflow.core.agent import Agent
 from paperflow.core.llm import Message
 from paperflow.core.memory.context_compressor import ContextCompressor
 from paperflow.core.memory.context_config import ContextConfig, SummarySchema
-from paperflow.core.session import Session
-from tests.test_agent import make_capture_llm, make_mock_registry, MockIntentPipeline
+from paperflow.core.conversation_state import ConversationState
+from tests.agent.test_agent import make_capture_llm, make_mock_registry, MockIntentPipeline
 
 
 def make_structured(result: SummarySchema | None = None):
@@ -79,7 +79,7 @@ def test_clarification_early_return_not_accumulated():
         source=IntentStep.ROUTER, clarification="你要搜索哪类论文？"))
     llm = make_capture_llm([Message(role="assistant", content="不该被消费")], capture)
     agent = Agent(llm=llm, agent_registry=make_mock_registry([]), agent_type="test",
-                  intent_enabled=True, intent_pipeline=pipeline, session=Session(),
+                  intent_enabled=True, intent_pipeline=pipeline, conversation=ConversationState(),
                   compressor=comp)
     result = asyncio.run(agent.run("搜索论文"))
     assert result == "你要搜索哪类论文？"
