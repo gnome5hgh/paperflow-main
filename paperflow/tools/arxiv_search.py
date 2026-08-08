@@ -34,6 +34,16 @@ from paperflow.tools._search_common import _SearchClientMixin, _download_pdf
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
 
+def _normalize_arxiv_query(query: str) -> str:
+    """裸关键词转 arXiv 字段前缀形式：'graph algorithm' → 'all:graph AND all:algorithm'。
+
+    必须有字段前缀才能与 submittedDate 组合——arXiv 已知缺陷：裸多词 AND submittedDate
+    会静默丢弃日期过滤（2026-08-08 实测，返回旧论文；'all:'/'abs:' 前缀+显式 AND 则生效）。
+    仅在有日期过滤时调用；无日期过滤的纯搜索保持原样（不带前缀也正确）。"""
+    terms = [t for t in query.split() if t]
+    return " AND ".join(f"all:{t}" for t in terms) if terms else query
+
+
 class ArxivClient(_SearchClientMixin):
     def __init__(self, transport=None, ssrf_check=None):
         self.client = httpx.Client(transport=transport, timeout=30.0)
@@ -45,10 +55,12 @@ class ArxivClient(_SearchClientMixin):
         # 拼进 query 会被 arXiv 当关键词模糊匹配，且易被注入改写检索语义；
         # submittedDate 是 arXiv 官方字段，[lo TO hi] 是标准 Lucene 区间语法。
         # lo/hi 格式 YYYYMMDDHHMM：缺侧边界用全开（0000 年起 / 9999 年止）。
+        # Fix 3（2026-08-08 实测）：裸多词 + submittedDate 会被 arXiv 静默丢弃日期过滤
+        #（返回旧论文），必须先经 _normalize_arxiv_query 转 all: 前缀再组合才生效。
         if year_from or year_to:
             lo = f"{year_from}01010000" if year_from else "000001010000"
             hi = f"{year_to}12312359" if year_to else "999912312359"
-            query = f'{query} AND submittedDate:[{lo} TO {hi}]'
+            query = f"{_normalize_arxiv_query(query)} AND submittedDate:[{lo} TO {hi}]"
         url = ("http://export.arxiv.org/api/query?" +
                urllib.parse.urlencode({"search_query": query,
                                        "max_results": max_results}))

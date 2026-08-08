@@ -181,16 +181,20 @@ def test_download_blocks_private_redirect(tmp_path, monkeypatch):
 # ── Task 3：A1 年份结构化过滤 / B2 钳制 / A3 池 append / A4 缓存 / A5 熔断 ──
 
 def test_arxiv_year_range_in_query():
-    # A1：年份用原生 submittedDate 区间过滤，绝不拼进自由文本 query——
-    # 断言 URL 含 submittedDate 字段与 [lo TO hi] 区间边界（2026-01-01 ~ 2026-12-31）
+    # A1 + Fix 3：年份用原生 submittedDate 区间过滤——但裸多词 AND submittedDate 会被
+    # arXiv 静默丢弃日期过滤（2026-08-08 实测返回旧论文），必须把裸关键词转 all: 前缀
+    # 再组合。断言解码后的 URL 含 'all:graph AND all:algorithm AND submittedDate'
+    #（而非裸词 'graph AND algorithm'）。URL 是 urlencode 编码的，先 unquote_plus 还原。
+    from urllib.parse import unquote_plus
     from paperflow.tools.arxiv_search import ArxivClient
     seen = {}
     def handler(req):
-        seen["q"] = str(req.url)
+        seen["q"] = unquote_plus(str(req.url))
         return httpx.Response(200, content=_ATOM.encode(), request=req)
     client = ArxivClient(transport=httpx.MockTransport(handler), ssrf_check=lambda u: None)
-    client.search("heterogeneous graph", max_results=3, year_from=2026, year_to=2026)
-    assert "submittedDate" in seen["q"] and "20260101" in seen["q"] and "20261231" in seen["q"]
+    client.search("graph algorithm", max_results=3, year_from=2026, year_to=2026)
+    assert "all:graph AND all:algorithm AND submittedDate" in seen["q"]
+    assert "20260101" in seen["q"] and "20261231" in seen["q"]   # 区间边界仍保留
 
 
 def test_max_results_clamped():
