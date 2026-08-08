@@ -16,7 +16,7 @@ from tests.test_agent import make_mock_llm, make_mock_registry
 from paperflow.tools.spawn import (
     SpawnSubAgentTool, ParallelSpawnTool, SubAgentResult,
     _UserWaitClock, _wrap_confirm_callback, _run_child_with_budget,
-    _task_fingerprint, _SPAWN_REGISTRY,
+    _task_fingerprint, _task_has_path, _SPAWN_REGISTRY,
     _evict_stale_spawn_entries, _SPAWN_REUSE_WINDOW_S,
 )
 from agents.supervisor.tools import AskUserTool
@@ -31,12 +31,13 @@ def _supervisor(tools, **kwargs):
                  agent_type="supervisor", **kwargs)
 
 
-# ─── B3 同 session 同指纹去重（Task 10，世界感知指纹）─────────────────
-# 主防线是 SKILL「同一意图不重复 spawn」；_SPAWN_REGISTRY 是机械安全网。指纹 = 规范化
-# 任务文本 + 任务中所有绝对路径的当前内容快照：同文本但世界已变（generate-note 再审前
-# edit_file 改了草稿）→ 指纹变 → done 缓存 miss → 真重跑；同文本且世界未变 → 指纹同 →
-# done 缓存命中（防重复派发）。running（in-flight）命中 → 提示等待。注册表键为 session_id，
-# 去重只作用于同一会话内（并行 supervisor 各自独立会话互不干扰）。
+# ─── B3 同 session 同指纹去重（Task 10，路径门控最小缓存）───────────────
+# 主防线是 SKILL「同一意图不重复 spawn」；_SPAWN_REGISTRY 是机械安全网。指纹 = 纯文本
+# sha256（规范化文本，零 I/O、不含内容快照）。路径门控（route 3，openclaw 式）：
+# 无路径任务（纯文本，世界不变）→ running + done<5min 全量去重；有路径任务（引用真实
+# 文件，世界可变）→ 只 running 去重、完成即清条目、永不缓存 done。running（in-flight）
+# 命中 → 提示等待。注册表键为 session_id，去重只作用于同一会话内（并行 supervisor 各自
+# 独立会话互不干扰）。
 
 
 def test_task_fingerprint_normalizes_whitespace():
@@ -44,48 +45,13 @@ def test_task_fingerprint_normalizes_whitespace():
     assert _task_fingerprint("  a\n b  ") == _task_fingerprint("a b")
 
 
-def test_fingerprint_tracks_file_content(tmp_path):
-    """世界感知：同文本 + 文件内容不变 → 指纹同；改文件内容 → 指纹变（tmp 文件）。"""
-    p = tmp_path / "draft.md"
-    p.write_text("v1", encoding="utf-8")
-    task = f"审阅草稿文件 {p}，对照原文 {tmp_path / 'paper.pdf'}"
-    f1 = _task_fingerprint(task)
-    assert _task_fingerprint(task) == f1            # 世界未变 → 指纹同
-    p.write_text("v2", encoding="utf-8")            # edit_file 改草稿 → 世界变
-    assert _task_fingerprint(task) != f1            # 指纹变 → 缓存 miss
+def test_spawn_dedup_reuses_completed():
+    """B3 done 缓存复用（无路径任务）：同 session 同指纹第二次 spawn 返回缓存，子 agent 不重构造。
 
-
-def test_fingerprint_extracts_paren_and_punct_paths(tmp_path):
-    """世界感知健壮性（review Important 回归锁）：含半角括号 / 尾随标点的路径能完整提取。
-
-    原 _PATH_RE 排除集含半角括号 → `/a/b/file(v2).md` 被截为 `/a/b/file`（快照落 <missing>，
-    改文件内容指纹不变 → done 缓存假命中返回陈旧裁决）；尾点（`x.pdf.`）被整串捕获。修复：
-    正则放行半角括号 + _extract_paths 修剪尾随标点。断言：改括号路径文件内容 → 指纹变；
-    改尾点路径文件内容 → 指纹变。"""
-    p1 = tmp_path / "file(v2).md"
-    p1.write_text("v1", encoding="utf-8")
-    p2 = tmp_path / "x.pdf"
-    p2.write_text("pdf-v1", encoding="utf-8")
-    # 任务文本：`(v2)` 半角括号（曾被排除集截断）；`{p2}.` 尾随句点（曾被整串捕获）
-    task = f"审阅 {p1}，对照 {p2}. 后给出意见"
-    f1 = _task_fingerprint(task)
-    assert _task_fingerprint(task) == f1            # 世界未变 → 指纹同
-    p1.write_text("v2", encoding="utf-8")           # 改括号路径文件内容
-    assert _task_fingerprint(task) != f1            # 指纹变（证明 file(v2).md 被完整提取）
-    f2 = _task_fingerprint(task)
-    p2.write_text("pdf-v2", encoding="utf-8")       # 改尾点路径文件内容
-    assert _task_fingerprint(task) != f2            # 指纹变（证明 x.pdf. 修剪后指向 x.pdf）
-
-
-def test_spawn_dedup_reuses_completed(tmp_path):
-    """B3 done 缓存复用：同 session 同指纹（世界未变）第二次 spawn 返回缓存，子 agent 不重构造。
-
-    第一次 spawn（mock child 返回 success）→ 注册表落 done；第二次同指纹（任务文本与文件
-    内容都未变）命中缓存 → 返回同一 ToolResult。MockAgent.call_count==1 证明第二次未重新
-    构造子 agent（若去重失效，第二次会再构造 → call_count==2）。"""
-    p = tmp_path / "draft.md"
-    p.write_text("v1", encoding="utf-8")
-    task = f"审阅草稿文件 {p}"
+    无路径任务（纯文本，世界不变）→ done<5min 缓存可复用。第二次同文本命中缓存 → 返回
+    同一 ToolResult。MockAgent.call_count==1 证明第二次未重新构造子 agent（若去重失效，
+    第二次会再构造 → call_count==2）。"""
+    task = "审阅这份草稿并给出意见"
     with patch("paperflow.tools.spawn.Agent") as MockAgent:
         MockAgent.return_value.run = AsyncMock(return_value="done")
         agent = _supervisor([SpawnSubAgentTool()])
@@ -99,10 +65,12 @@ def test_spawn_dedup_reuses_completed(tmp_path):
 
 
 def test_spawn_dedup_reruns_when_world_changed(tmp_path):
-    """世界感知回归（generate-note 再审锁）：同文本但文件内容变 → 指纹变 → 缓存 miss → 真重跑。
+    """路径门控回归（generate-note 再审锁）：含路径任务同文本二次 spawn 永不命中 done 缓存。
 
-    再审同任务文本（edit_file 修订后世界已变）必须拿到新 child 的输出（pass），而非第一次的
-    fail 缓存。MockAgent.call_count==2 证明第二次真重构造 child。"""
+    过去靠内容快照感知「文件内容变 → 指纹变 → miss」；route 3 改为路径门控——含路径任务
+    完成即清条目、永不缓存 done，文件内容根本不影响指纹。这里保留「改文件内容」叙事的
+    回归锁：再审同任务文本（edit_file 修订后）必须拿到新 child 输出（pass），而非第一次
+    的 fail 缓存。MockAgent.call_count==2 证明第二次真重构造 child。"""
     p = tmp_path / "draft.md"
     p.write_text("v1", encoding="utf-8")
     task = f"审阅草稿文件 {p}，对照原文 {tmp_path / 'paper.pdf'}"
@@ -134,6 +102,58 @@ def test_spawn_dedup_running_hint():
         result = tool.execute(agent_type="search-paper", task="搜索 x")
     assert "正在执行中" in result.text
     MockAgent.assert_not_called()
+
+
+def test_task_has_path_boolean():
+    r"""_task_has_path 布尔判据：含路径 → True；纯文本 → False；散文 "/" 假阳性 → True（保守）。
+
+    route 3 门控依赖此布尔判断区分「有路径任务（只 running 去重）」与「无路径任务（可 done
+    缓存）」。安全方向：散文里的 "/"（如 "/5 评分"）误判为路径（假阳性）→ 跳过 done 缓存 →
+    安全重跑；真路径漏判风险低（模板路径跟在空格后，命中 (?<!\S)）。"""
+    assert _task_has_path("/Users/x/draft.md")                     # 裸绝对路径
+    assert _task_has_path("审阅草稿文件 /tmp/x/draft.md")           # 模板：路径跟在空格后
+    assert _task_has_path("对照 /tmp/x/paper(v2).pdf 审查")         # 半角括号路径仍被识别
+    assert not _task_has_path("搜索关于强化学习的论文")              # 纯文本无 "/" → False
+    assert not _task_has_path("请给出 5 分评价")                    # 无 "/" → False
+    assert _task_has_path("请给出 /5 分评价")                       # 散文 "/" 假阳性 → 保守 True
+
+
+def test_path_bearing_task_never_caches_done(tmp_path):
+    """路径门控核心：含路径任务完成即清条目、永不缓存 done——同文本同内容二次 spawn 也重跑。
+
+    与 test_spawn_dedup_reruns_when_world_changed 的区别：这里文件内容**未变**（世界未变），
+    纯靠「任务含路径」这一布尔判据就拒绝 done 缓存——证明门控不依赖内容快照。同时断言
+    注册表在完成后已无该指纹条目（完成即清，非残留 done 待超窗剔除）。"""
+    p = tmp_path / "draft.md"
+    p.write_text("v1", encoding="utf-8")
+    task = f"审阅草稿文件 {p}"
+    with patch("paperflow.tools.spawn.Agent") as MockAgent:
+        MockAgent.return_value.run = AsyncMock(return_value="done")
+        agent = _supervisor([SpawnSubAgentTool()])
+        tool = agent.tools["spawn_sub_agent"]
+        first = tool.execute(agent_type="reviewer", task=task)
+        assert _task_fingerprint(task) not in _SPAWN_REGISTRY.get(agent.session_id, {})  # 完成即清
+        second = tool.execute(agent_type="reviewer", task=task)
+    assert MockAgent.call_count == 2                # 有路径 → 二次同文本同内容也真重构造
+    assert json.loads(first.text)["summary"] == "done"
+    assert json.loads(second.text)["summary"] == "done"
+
+
+def test_pathless_task_done_cache_reuse():
+    """路径门控：无路径任务完成后注册表确实写 done 条目（与有路径「完成即清」对照），窗内复用。
+
+    test_spawn_dedup_reuses_completed 已锁复用行为；这里补充注册表状态断言——无路径任务
+    完成后落 done（可被窗内同指纹命中），与 _SPAWN_REGISTRY 残留清理逻辑正交。"""
+    task = "搜索关于强化学习的论文"
+    with patch("paperflow.tools.spawn.Agent") as MockAgent:
+        MockAgent.return_value.run = AsyncMock(return_value="done")
+        agent = _supervisor([SpawnSubAgentTool()])
+        tool = agent.tools["spawn_sub_agent"]
+        first = tool.execute(agent_type="search-paper", task=task)
+        assert _SPAWN_REGISTRY[agent.session_id][_task_fingerprint(task)]["state"] == "done"  # 无路径写 done
+        second = tool.execute(agent_type="search-paper", task=task)
+    assert MockAgent.call_count == 1                # done 缓存命中 → 第二次不重构造
+    assert first.text == second.text
 
 
 class TestSpawnSubAgentTool:

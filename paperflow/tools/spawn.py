@@ -8,7 +8,6 @@ SubAgent 无递归调度）。需 parent 注入（needs_parent），见 Tool 约
 import asyncio
 import hashlib
 import json
-import os
 import re
 import threading
 import time
@@ -135,87 +134,50 @@ def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
 
 #: spawn 去重注册表：session_id -> {task指纹: {"state": "running"|"done", "result": ToolResult|None, "started_at": float}}
 #: B3 去重的机械安全网——同 session 同任务防重复派发。键为 session_id：去重只在同一
-#: 会话内生效，跨会话互不影响（并行 supervisor 各自独立会话互不干扰）。指纹是
-#: 世界感知的（含任务中所有绝对路径的当前内容快照）：同文本但世界已变（如 generate-
-#: note 再审前 edit_file 改了草稿）→ 指纹变 → done 缓存 miss → 真重跑；同文本且世界
-#: 未变 → 指纹同 → done 缓存命中（防真正的"重复派发"重复烧 token）。
+#: 会话内生效，跨会话互不影响（并行 supervisor 各自独立会话互不干扰）。指纹是**纯文本**
+#: 的（sha256 规范化文本，零 I/O、不含内容快照）；done 缓存语义由 _task_has_path 门控：
+#: 无路径任务（纯文本，世界不变）→ done<5min 可复用；有路径任务（引用真实文件，世界
+#: 可变——子 agent 执行期间 edit_file 可能改它）→ 只 running 去重、完成即清条目，永不
+#: 缓存 done（route 3 路径门控，见 execute）。
 _SPAWN_REGISTRY: dict[str, dict[str, dict]] = {}
 #: 注册表并发锁：execute 跑在 to_thread worker 线程，并行 spawn 同时读写注册表
 #: → 所有访问持这把锁（单次 dict.get/set 虽原子，"检查命中-注册 running"两步
 #: 必须整体原子，否则两线程同时注册各自派发一次——去重失效）。
 _SPAWN_LOCK = threading.Lock()
-#: done 结果可复用的时间窗（秒）：5 分钟内同指纹（世界未变）spawn 直接复用缓存结果，
-#: 超窗重跑——避免过期结果无限复用（世界变化后旧结果不该被当作新结果交付）。
+#: done 结果可复用的时间窗（秒）：5 分钟内同指纹（仅无路径任务）spawn 直接复用缓存结果，
+#: 超窗重跑——避免过期结果无限复用（世界变化后旧结果不该被当作新结果交付）。有路径任务
+#: 完成即清条目、不写 done（world 可变，无 done 可复用）。
 _SPAWN_REUSE_WINDOW_S = 300
-#: 内容快照上限（字节）：超过则不读内容只记大小哨兵，避免每次 spawn 全量读大 PDF。
-_SNAPSHOT_MAX_BYTES = 20 * 1024 * 1024
 
-#: 任务文本中绝对路径的启发式正则（world-aware 指纹用）：抓 "/..." 开头、不含空白/
-#: 中文标点/逗号/冒号/引号的最长串。排除集**不含半角括号**——文件名里的括号（如
-#: file(v2).md）会被完整捕获（review Important：原排除集含 ()，`/a/b/file(v2).md` 被截为
-#: `/a/b/file`，快照落 <missing>，改文件内容指纹不变 → 世界感知静默失效）。中文全角括号
-#: `（）`仍是分隔符（中文文本里作括号引用，文件名几乎不含全角括号）。路径后的英文标点
-#: 由 _extract_paths 修剪。误抓非文件路径无害——_file_snapshot 落 <missing> 哨兵。
+#: 任务文本中绝对路径的启发式正则（_task_has_path 的布尔判据）：抓 "/" 开头、不含空白/
+#: 中文标点/半角逗号分号冒号/引号的最长串。不再做提取/修剪（_extract_paths/_TRAILING 已删，
+#: 不读文件内容）——只作「是否含路径」的布尔判断。排除集不含半角括号（file(v2).md 完整
+#: 识别）；中文全角括号 `（）` 仍是分隔符。误判安全：散文里的 "/"（如 "/5 评分"）假阳性 →
+#: 保守跳过 done 缓存 → 安全重跑；真路径假阴性风险低（模板路径跟在空格后，命中 (?<!\S)）。
 _PATH_RE = re.compile(r"(?<!\S)/[^\s，,;:。（）\"']+")
-
-#: 尾随标点修剪集：_PATH_RE 匹配后再剥掉这些结尾字符——路径后紧跟的英文标点（句点/
-#: 逗号/分号/冒号/叹号/问号/右括号/右引号）不是路径的一部分（如 "x.pdf." 的尾点、
-#: "file.md)" 的右括号）。而路径**内部**的括号由 _PATH_RE 放行，不受此修剪影响。
-_TRAILING = ".,;:!?)]}\"'"
-
-
-def _extract_paths(task: str) -> list[str]:
-    """从任务文本提取绝对路径：_PATH_RE 匹配 + 尾随标点修剪。
-
-    匹配串可能带路径后的英文标点（"x.pdf." 的尾点、")" 结束的引用）→ 逐个剥掉；剥完
-    为空（纯标点串）则丢弃。修剪后仍是完整路径；_file_snapshot 的 isfile 检查天然过滤
-    非文件（落 <missing> 哨兵），不会把标点串当路径。同一任务文本每次提取同一集合 → 指纹稳定。
-    """
-    out = []
-    for m in _PATH_RE.findall(task):
-        while m and m[-1] in _TRAILING:
-            m = m[:-1]
-        if m:
-            out.append(m)
-    return out
-
-
-def _file_snapshot(path: str) -> str:
-    """路径当前内容快照（world-aware 指纹的原料）。
-
-    非普通文件（不存在/目录）→ "<missing>"；>20MB → "<large:size>"（不读内容，避免
-    每次 spawn 全量读大 PDF）；读失败（OSError）→ "<unreadable>"；正常 →
-    sha256(read_bytes())[:16]。世界感知的核心：快照随文件内容变化——generate-note 再审
-    （edit_file 改草稿后同任务文本重 spawn）快照不同 → 指纹不同 → 缓存 miss → 真重读；
-    同文本同内容才命中缓存。
-    """
-    if not os.path.isfile(path):
-        return "<missing>"
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        return "<unreadable>"
-    if size > _SNAPSHOT_MAX_BYTES:
-        return f"<large:{size}>"
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-    except OSError:
-        return "<unreadable>"
-    return hashlib.sha256(data).hexdigest()[:16]
 
 
 def _task_fingerprint(task: str) -> str:
-    """世界感知指纹：规范化任务文本 + 任务中所有绝对路径的当前内容快照。
+    """纯文本指纹 = sha256(规范化任务文本)[:16]（route 3 回退：不再含内容快照）。
 
-    snap = "|".join(f"{path}:{_file_snapshot(path)}" for path in sorted(set(_extract_paths(task)))),
-    再 sha256((norm + "||" + snap).encode("utf-8")).hexdigest()[:16]。同文本但文件内容变 →
-    指纹变 → 缓存 miss → 真重跑；同文本且世界未变 → 指纹同 → done 缓存命中（防重复派发）。
+    仅对空白/换行做规范化（"  a\n b  " → "a b"），不读任何文件 → 零 I/O。指纹不再感知
+    文件内容变化：同文本恒同指纹。内容变化的正确性改由 _task_has_path 门控兜底——有路径
+    任务完成即清条目、永不缓存 done（见 execute），无路径任务纯文本世界不变可直接缓存。
     """
     norm = " ".join(task.split())
-    paths = sorted(set(_extract_paths(task)))
-    snap = "|".join(f"{p}:{_file_snapshot(p)}" for p in paths)
-    return hashlib.sha256((norm + "||" + snap).encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+
+
+def _task_has_path(task: str) -> bool:
+    r"""任务文本是否含绝对路径（布尔判断，不提取）：_PATH_RE.search 命中即 True。
+
+    门控语义（route 3，openclaw 式）：含路径的任务引用真实文件（世界可变——子 agent 执行
+    期间 edit_file 可能改它），故只 running 去重、完成即清条目，永不缓存 done；无路径任务
+    （纯文本）才允许 done<5min 缓存复用。误判安全方向：散文里的 "/"（如 "/5 评分"）被误判
+    为路径（假阳性）→ 保守跳过 done 缓存 → 安全重跑；真路径漏判（假阴性）风险低——模板
+    路径都跟在空格后，满足 (?<!\S) 前缀守卫。
+    """
+    return _PATH_RE.search(task) is not None
 
 
 def _evict_stale_spawn_entries(reg: dict, now: float) -> None:
@@ -358,11 +320,15 @@ class SpawnSubAgentTool(Tool):
             result = SubAgentResult(status="denied", summary=denied)
             return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
-        # ② B3：同一 session 同指纹去重——running（in-flight）命中 → 提示等待；
-        #    done 且 <5 分钟（世界未变）→ 复用缓存 result。主防线是 SKILL「同一意图
-        #    不重复 spawn」，此处是机械安全网。execute 跑在 to_thread worker 线程，
-        #    并行 spawn 并发访问注册表 → 检查+注册须持锁整体原子。
+        # ② B3 路径门控最小缓存（route 3，openclaw 式）：同一 session 同指纹去重。
+        #    主防线是 SKILL「同一意图不重复 spawn」，此处是机械安全网。execute 跑在
+        #    to_thread worker 线程，并行 spawn 并发访问注册表 → 检查+注册须持锁整体原子。
+        #    门控规则（由 _task_has_path 区分）：
+        #    - 无路径任务（纯文本，世界不变）→ running 提示 + done<5min 缓存复用（全量去重）
+        #    - 有路径任务（引用真实文件，世界可变）→ 只 running 去重，完成即清条目、永不
+        #      缓存 done——子 agent 执行期间 edit_file 可能已改文件，缓存旧结果会交付陈旧裁决
         fp = _task_fingerprint(task)
+        has_path = _task_has_path(task)
         with _SPAWN_LOCK:
             reg = _SPAWN_REGISTRY.setdefault(parent.session_id, {})
             # 访问注册表即顺手清理超窗 done 条目（长会话防无限累积，见 _evict_stale_spawn_entries）
@@ -371,7 +337,8 @@ class SpawnSubAgentTool(Tool):
             now = time.monotonic()
             if hit and hit["state"] == "running":
                 return ToolResult(text="同任务正在执行中，请等待其结果（已去重，勿重复派发）")
-            if hit and hit["state"] == "done" and now - hit["started_at"] < _SPAWN_REUSE_WINDOW_S:
+            if hit and hit["state"] == "done" and not has_path \
+                    and now - hit["started_at"] < _SPAWN_REUSE_WINDOW_S:
                 return hit["result"]
             reg[fp] = {"state": "running", "result": None, "started_at": now}
 
@@ -393,15 +360,15 @@ class SpawnSubAgentTool(Tool):
             # 传解析后的超时：_run_child 用实际生效值（config > 类默认）
             result = self._run_child(child, agent_type, task)
         finally:
-            # 完成即写 done（B3 缓存复用）：同 session 同指纹、世界未变的重 spawn 在复用
-            # 窗内命中缓存直接返回。_run_child 内全捕获总返回 ToolResult；若构造/执行
-            # 意外抛异常 result 为 None → 不缓存（清除条目，后续重跑），防 None 入缓存
-            # 污染后续复用。fp 是 execute 内作用域变量，注册表读写全在 _SPAWN_LOCK 内。
+            # 完成收尾（B3）：无路径写 done 供窗内复用；有路径/异常 → 清条目不缓存
+            # （有路径任务世界可变永不缓存 done；result 为 None 表示构造/执行异常，防
+            # None 入缓存污染后续复用）。has_path/fp 是 execute 内局部变量，finally 直接
+            # 可见，注册表读写全在 _SPAWN_LOCK 内。
             with _SPAWN_LOCK:
                 reg = _SPAWN_REGISTRY.setdefault(parent.session_id, {})
                 # 完成写盘同样先清理超窗 done 条目（防长会话注册表无限膨胀）
                 _evict_stale_spawn_entries(reg, time.monotonic())
-                if result is None:
+                if result is None or has_path:
                     reg.pop(fp, None)
                 else:
                     reg[fp] = {"state": "done", "result": result,
