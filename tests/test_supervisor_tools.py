@@ -54,6 +54,28 @@ def test_fingerprint_tracks_file_content(tmp_path):
     assert _task_fingerprint(task) != f1            # 指纹变 → 缓存 miss
 
 
+def test_fingerprint_extracts_paren_and_punct_paths(tmp_path):
+    """世界感知健壮性（review Important 回归锁）：含半角括号 / 尾随标点的路径能完整提取。
+
+    原 _PATH_RE 排除集含半角括号 → `/a/b/file(v2).md` 被截为 `/a/b/file`（快照落 <missing>，
+    改文件内容指纹不变 → done 缓存假命中返回陈旧裁决）；尾点（`x.pdf.`）被整串捕获。修复：
+    正则放行半角括号 + _extract_paths 修剪尾随标点。断言：改括号路径文件内容 → 指纹变；
+    改尾点路径文件内容 → 指纹变。"""
+    p1 = tmp_path / "file(v2).md"
+    p1.write_text("v1", encoding="utf-8")
+    p2 = tmp_path / "x.pdf"
+    p2.write_text("pdf-v1", encoding="utf-8")
+    # 任务文本：`(v2)` 半角括号（曾被排除集截断）；`{p2}.` 尾随句点（曾被整串捕获）
+    task = f"审阅 {p1}，对照 {p2}. 后给出意见"
+    f1 = _task_fingerprint(task)
+    assert _task_fingerprint(task) == f1            # 世界未变 → 指纹同
+    p1.write_text("v2", encoding="utf-8")           # 改括号路径文件内容
+    assert _task_fingerprint(task) != f1            # 指纹变（证明 file(v2).md 被完整提取）
+    f2 = _task_fingerprint(task)
+    p2.write_text("pdf-v2", encoding="utf-8")       # 改尾点路径文件内容
+    assert _task_fingerprint(task) != f2            # 指纹变（证明 x.pdf. 修剪后指向 x.pdf）
+
+
 def test_spawn_dedup_reuses_completed(tmp_path):
     """B3 done 缓存复用：同 session 同指纹（世界未变）第二次 spawn 返回缓存，子 agent 不重构造。
 

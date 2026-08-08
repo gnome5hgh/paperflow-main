@@ -68,20 +68,45 @@ _SPAWN_REUSE_WINDOW_S = 300
 _SNAPSHOT_MAX_BYTES = 20 * 1024 * 1024
 
 #: 任务文本中绝对路径的启发式正则（world-aware 指纹用）：抓 "/..." 开头、不含空白/
-#: 中文标点/逗号/冒号/括号/引号的最长串。误抓非文件路径无害——_file_snapshot 落
-#: <missing> 哨兵，同一文本每次抓到同一集合，指纹稳定。
-_PATH_RE = re.compile(r"(?<!\S)/[^\s，,;:。（）()\"']+")
+#: 中文标点/逗号/冒号/引号的最长串。排除集**不含半角括号**——文件名里的括号（如
+#: file(v2).md）会被完整捕获（review Important：原排除集含 ()，`/a/b/file(v2).md` 被截为
+#: `/a/b/file`，快照落 <missing>，改文件内容指纹不变 → 世界感知静默失效）。中文全角括号
+#: `（）`仍是分隔符（中文文本里作括号引用，文件名几乎不含全角括号）。路径后的英文标点
+#: 由 _extract_paths 修剪。误抓非文件路径无害——_file_snapshot 落 <missing> 哨兵。
+_PATH_RE = re.compile(r"(?<!\S)/[^\s，,;:。（）\"']+")
+
+#: 尾随标点修剪集：_PATH_RE 匹配后再剥掉这些结尾字符——路径后紧跟的英文标点（句点/
+#: 逗号/分号/冒号/叹号/问号/右括号/右引号）不是路径的一部分（如 "x.pdf." 的尾点、
+#: "file.md)" 的右括号）。而路径**内部**的括号由 _PATH_RE 放行，不受此修剪影响。
+_TRAILING = ".,;:!?)]}\"'"
+
+
+def _extract_paths(task: str) -> list[str]:
+    """从任务文本提取绝对路径：_PATH_RE 匹配 + 尾随标点修剪。
+
+    匹配串可能带路径后的英文标点（"x.pdf." 的尾点、")" 结束的引用）→ 逐个剥掉；剥完
+    为空（纯标点串）则丢弃。修剪后仍是完整路径；_file_snapshot 的 isfile 检查天然过滤
+    非文件（落 <missing> 哨兵），不会把标点串当路径。同一任务文本每次提取同一集合 → 指纹稳定。
+    """
+    out = []
+    for m in _PATH_RE.findall(task):
+        while m and m[-1] in _TRAILING:
+            m = m[:-1]
+        if m:
+            out.append(m)
+    return out
 
 
 def _file_snapshot(path: str) -> str:
     """路径当前内容快照（world-aware 指纹的原料）。
 
-    文件不存在 → "<missing>"；>20MB → "<large:size>"（不读内容，避免每次 spawn 全量
-    读大 PDF）；读失败（OSError）→ "<unreadable>"；正常 → sha256(read_bytes())[:16]。
-    世界感知的核心：快照随文件内容变化——generate-note 再审（edit_file 改草稿后同任务
-    文本重 spawn）快照不同 → 指纹不同 → 缓存 miss → 真重读；同文本同内容才命中缓存。
+    非普通文件（不存在/目录）→ "<missing>"；>20MB → "<large:size>"（不读内容，避免
+    每次 spawn 全量读大 PDF）；读失败（OSError）→ "<unreadable>"；正常 →
+    sha256(read_bytes())[:16]。世界感知的核心：快照随文件内容变化——generate-note 再审
+    （edit_file 改草稿后同任务文本重 spawn）快照不同 → 指纹不同 → 缓存 miss → 真重读；
+    同文本同内容才命中缓存。
     """
-    if not os.path.exists(path):
+    if not os.path.isfile(path):
         return "<missing>"
     try:
         size = os.path.getsize(path)
@@ -100,12 +125,12 @@ def _file_snapshot(path: str) -> str:
 def _task_fingerprint(task: str) -> str:
     """世界感知指纹：规范化任务文本 + 任务中所有绝对路径的当前内容快照。
 
-    snap = "|".join(f"{path}:{_file_snapshot(path)}" for path in sorted(set(paths))),
+    snap = "|".join(f"{path}:{_file_snapshot(path)}" for path in sorted(set(_extract_paths(task)))),
     再 sha256((norm + "||" + snap).encode("utf-8")).hexdigest()[:16]。同文本但文件内容变 →
     指纹变 → 缓存 miss → 真重跑；同文本且世界未变 → 指纹同 → done 缓存命中（防重复派发）。
     """
     norm = " ".join(task.split())
-    paths = sorted(set(_PATH_RE.findall(task)))
+    paths = sorted(set(_extract_paths(task)))
     snap = "|".join(f"{p}:{_file_snapshot(p)}" for p in paths)
     return hashlib.sha256((norm + "||" + snap).encode("utf-8")).hexdigest()[:16]
 
