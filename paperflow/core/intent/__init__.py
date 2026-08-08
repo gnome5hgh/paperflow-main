@@ -1,11 +1,11 @@
 # paperflow/core/intent/__init__.py
 """
-意图识别框架服务（ADR 0007）——包级完整导出。
+意图识别框架服务——包级统一导出。
 
-Task 1-7 已全部落地：契约（schema / intent_schema）、编码器
-（dense_encoder / bm25_encoder）、索引（hybrid_index）、路由器
-（hybrid_router）、管线（pipeline）、知识库加载（route_loader）。
-Task 8 在此汇总导出，供外部消费方（Supervisor / 对照脚本）单一入口导入。
+本包包含意图识别所需的全部组件：路由契约与输出契约（schema / intent_schema）、
+编码器（dense_encoder / bm25_encoder）、混合索引（hybrid_index）、
+路由器（hybrid_router）、级联管线（pipeline）、意图知识库加载（route_loader）。
+这里集中导出公开接口，供外部调用方从单一入口导入。
 """
 from paperflow.core.intent.intent_schema import (
     IntentType, IntentStep, IntentOutput, IntentionResult,

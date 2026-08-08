@@ -1,15 +1,16 @@
 # paperflow/core/intent/intent_schema.py
-"""意图识别输出契约（spec Section 4，Layer 1 定死，Layer 4 扩展）。
+"""意图识别输出契约——识别管线各阶段产出的统一数据结构。
 
-四级级联管线（Stage 0 实体提取 / Stage 1 追问检测 / Stage 2 HybridRouter /
-Stage 3 LLM 兜底）的统一产出：
+这是"输出契约"：定义识别结果的形态，与 schema.py 的"路由契约"（路由器
+输入/输出）职责不同。识别管线分四级：实体提取 / 追问检测 / 混合路由 /
+LLM 兜底，这里的四个类型是它们共同使用的产出契约：
 
-- ``IntentType``: 5 类意图枚举（value 即路由名，= routes.yaml 的 route 名集合）。
-- ``IntentStep``: 产出阶段枚举——审计/监控据此区分"这条意图是 router 定的还是
-  LLM 兜底的"（router 命中率、LLM 兜底率 = Stage 2 质量指标）。
-- ``IntentOutput``: 管线逐级产出的结构化意图，Supervisor 直接消费。
-- ``IntentionResult``: Stage 3 的 LLM 兜底 schema（ADR 0006 StructuredOutput 消费），
-  扁平三字段，不封装路由器内部决策。
+- ``IntentType``: 5 类意图枚举（枚举值即路由名，对应 routes.yaml 的 route 名集合）。
+- ``IntentStep``: 产出阶段枚举——审计/监控据此区分"这条意图是路由层定的
+  还是 LLM 兜底定的"（从而统计路由命中率、LLM 兜底率）。
+- ``IntentOutput``: 管线逐级产出的结构化意图，供上层调用方直接消费。
+- ``IntentionResult``: LLM 兜底阶段的结构化输出契约，扁平三字段，
+  不封装路由器的内部决策。
 """
 
 from enum import Enum
@@ -25,21 +26,21 @@ class IntentType(str, Enum):
     枚举 = 契约 = 当前实现集——不允许"枚举允许但系统无处理路径"的悬空值。
     """
 
-    SEARCH_PAPER = "search_paper"          # 搜索/查找论文（ADR 的 search/download 合并，参数 download 区分留 Layer 4）
+    SEARCH_PAPER = "search_paper"          # 搜索/查找论文（search 与 download 合并为一类，download 区分留给后续扩展）
     GENERATE_NOTE = "generate_note"        # 撰写笔记
-    ASK_QUESTION = "ask_question"          # 具体问答（ADR 的 read/answer/query_notes 合并，mode 参数留 Layer 4）
+    ASK_QUESTION = "ask_question"          # 具体问答（read/answer/query_notes 合并为一类，mode 区分留给后续扩展）
     MANAGE_MEMORY = "manage_memory"        # 记忆查询（读过哪些/阅读记录）
     GENERAL = "general"                    # 兜底：路由未命中 / LLM 解析失败
-    # READ_PAPER / QUERY_NOTES：Layer 4 细化时加入（届时同步扩 routes.yaml + 枚举）
+    # READ_PAPER / QUERY_NOTES：后续细化时加入（届时同步扩展 routes.yaml 与枚举）
 
 
 class IntentStep(str, Enum):
-    """产出阶段枚举——审计/监控可观测（spec 的 B 核心价值）。"""
+    """产出阶段枚举——让审计/监控能看出意图由哪一级产出。"""
 
-    ENTITIES = "entities"                  # Stage 0 实体提取（Layer 4 实现）
-    FOLLOWUP = "followup"                  # Stage 1 追问检测（Layer 4 实现，依赖 session）
-    ROUTER = "router"                      # Stage 2 HybridRouter（真实）
-    LLM = "llm"                            # Stage 3 LLM 兜底（真实）
+    ENTITIES = "entities"                  # 实体提取阶段
+    FOLLOWUP = "followup"                  # 追问检测阶段（依赖会话上下文）
+    ROUTER = "router"                      # 混合路由阶段
+    LLM = "llm"                            # LLM 兜底阶段
 
 
 class IntentOutput(BaseModel):
@@ -52,34 +53,35 @@ class IntentOutput(BaseModel):
     #: 意图类型
     intent_type: IntentType
 
-    #: 置信度范围约束（LLM 可能输出越界值，pydantic 强制 [0,1]）
+    #: 置信度，范围约束在 [0,1]（LLM 可能输出越界值，pydantic 强制约束）
     confidence: float = Field(ge=0.0, le=1.0)
 
-    #: Stage 0 提取的实体（Layer 4 填充）
+    #: 实体提取阶段得到的实体（由管线填充）
     entities: dict = Field(default_factory=dict)
 
-    #: 管线输入原文 / Stage 3 LLM 改写（缺省原文）
+    #: 管线输入原文；LLM 兜底改写时为其改写结果（缺省为原文）
     rewritten_query: str = ""
 
-    #: 产出阶段——审计/监控可观测（spec 的 B 核心价值）
+    #: 产出阶段——审计/监控可观测
     source: IntentStep
 
-    #: Stage 1 填充的前一意图（Layer 4，session 提供）
+    #: 上一轮意图（追问检测阶段填充，来自会话上下文）
     prev_intent: IntentType | None = None
 
-    #: 复合意图有序拆分（Stage 3 填；Stage 2 路由命中保持空——单意图交 Supervisor ReAct 推断）
+    #: 复合意图的有序拆分（LLM 兜底阶段填充；路由命中时保持为空——单意图无需拆分）
     steps: list["IntentType"] = []
 
-    #: 歧义澄清问题（Stage 3 填；非空时 run() 前置钩子提前返回，CLI 跨轮挂起 pending_intent）
+    #: 歧义澄清问题（LLM 兜底阶段填充；非空时管线提前返回，由调用方跨轮挂起待澄清意图）
     clarification: str | None = None
 
     @model_validator(mode="after")
     def _sanitize_surrogates(self) -> "IntentOutput":
-        """清洗未配对 surrogate（PDF 提取 / LLM 兜底输出可能携带）——否则
-        `_intent_block` 的 model_dump_json 抛 PydanticSerializationError
-        （真实冒烟 2026-08-05：'将上面内容总结为笔记' 触发 '\\udce5' 报错）。
-        与 security.text 的信任边界清洗哲学一致：IntentOutput 是跨管线消费的契约，
-        构造时兜住脏文本，上游无需逐个 sanitize。"""
+        """清洗未配对的 surrogate 字符（PDF 提取 / LLM 兜底输出可能携带）。
+
+        若不清洗，后续 model_dump_json 会抛 PydanticSerializationError
+        （实测输入如 '将上面内容总结为笔记' 可能触发 '\\udce5' 报错）。
+        与 security.text 的信任边界清洗思路一致：这是跨管线消费的契约类型，
+        在构造时兜住脏文本，上游调用方无需逐个清洗。"""
         self.rewritten_query = sanitize_surrogates(self.rewritten_query)
         if self.clarification:
             self.clarification = sanitize_surrogates(self.clarification)
@@ -92,10 +94,10 @@ class IntentOutput(BaseModel):
 
 
 class IntentionResult(BaseModel):
-    """Stage 3 的 LLM 兜底 schema（ADR 0006 StructuredOutput 消费）。
+    """LLM 兜底阶段的结构化输出契约。
 
-    扁平三字段：StructuredOutput 只校验类型不校验范围，故 confidence 仍保留
-    pydantic 范围约束，避免 LLM 越界值流入上游。
+    扁平三字段：底层结构化输出机制只校验类型不校验数值范围，
+    因此 confidence 仍保留 pydantic 范围约束，避免 LLM 越界值流入上游。
     """
 
     #: 意图类型
@@ -104,11 +106,11 @@ class IntentionResult(BaseModel):
     #: 置信度（模型概率，范围约束 [0,1]）
     confidence: float = Field(ge=0.0, le=1.0)
 
-    #: LLM 改写后的查询（缺省为空串，pipeline 回落原文）
+    #: LLM 改写后的查询（缺省为空串，管线使用原文）
     query_rewrite: str = ""
 
-    #: 复合意图有序拆分（Stage 3 的 StructuredOutput schema——不带则 LLM 兜底无法产出）
+    #: 复合意图的有序拆分（供后续扩展；若结构化输出契约缺该字段，LLM 兜底无法产出拆分结果）
     steps: list["IntentType"] = []
 
-    #: 歧义澄清问题（同上；非空时 run() 前置钩子提前返回，CLI 跨轮挂起 pending_intent）
+    #: 歧义澄清问题（非空时管线提前返回，由调用方跨轮挂起待澄清意图）
     clarification: str | None = None

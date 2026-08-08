@@ -29,10 +29,11 @@ def load_routes(path: Path = Path("data/intents/routes.yaml")) -> list[Route]:
 
 
 def save_thresholds(path: Path, routes: list[Route]) -> None:
-    """把 per-route score_threshold 写回 routes.yaml（标定持久化端，spec §4.7.4）。
+    """把每个路由的 score_threshold 写回 routes.yaml（阈值调整的持久化端）。
 
-    保留既有结构（routes 列表 + name/utterances）；score_threshold=None 时不输出该
-    字段（最小 diff，load 回落默认 None）。写回是标定验收的一部分，不是运行时路径。
+    保留既有结构（routes 列表 + name/utterances）；score_threshold=None 时不输出
+    该字段（保持文件最小变动，加载时回落到默认 None）。写回是阈值调整流程的一部分，
+    不是运行时路径。
     """
     data = {"routes": []}
     for r in routes:
@@ -45,9 +46,9 @@ def save_thresholds(path: Path, routes: list[Route]) -> None:
 
 
 def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, str]]:
-    """eval.yaml → [(query, intent_label)]。held-out 评估集（spec §4.7.1）。
+    """eval.yaml → [(query, intent_label)]。独立的评估样本集。
 
-    校验：intent 标签必须在 IntentType 枚举中——否则 evaluate() 的 y 无意义。
+    校验：intent 标签必须在 IntentType 枚举中——否则评估时的真值标签无意义。
     """
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)

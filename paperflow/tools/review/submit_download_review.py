@@ -54,9 +54,9 @@ class SubmitDownloadReviewTool(Tool):
         #      一个 pass 都没有却报 pass，属过宽放行（LLM 把"没有合格项"误报成 pass）。
         #    - verdict=fail 但存在 pass 条目 → 自相矛盾（fail 语义=无任何合格项，
         #      输出"审查裁决：fail"却带 [PASS] 行会误导后续门禁）。
-        #    - verdict=pass + 混合列表（如 2 pass + 7 fail）→ **合法**：pass 语义只要求
-        #      存在可下载/推荐项，剩余 fail 项只是"不值得下载的候选"。旧校验按 fail 项
-        #      拦截导致真实审查产出被误拒、逼 reviewer 试错（2026-08-08 冒烟实测）。
+        #    - verdict=pass + 混合列表(如 2 pass + 7 fail)→ **合法**:pass 语义只要求
+        #      存在可下载/推荐项,剩余 fail 项只是"不值得下载的候选"。旧校验按 fail 项
+        #      拦截会把真实审查产出误拒、逼 reviewer 反复试错,故改为按 pass 项存在性判定。
         #    - verdict=pass + 空 items → 上面单独拦截（更明确的报错文案，比"无 pass 条目"
         #      更直接）。
         #    注意：verdict=fail + 空 items 必须保持合法（fail = 无合格项，空清单正是

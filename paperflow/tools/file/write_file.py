@@ -1,9 +1,7 @@
-"""WriteFileTool：写入/重写笔记（新建+覆盖；整篇写/重写，小范围改动用 edit_file）。
+"""WriteFileTool：写入或整篇重写笔记(新建+覆盖;小范围改动用 edit_file)。
 
-写后调 index_document() 热更新钩子，新内容会话内立即可检索（Layer 2 决策）。
-2026-08-06：删除"仅新建"存在性守卫——旧语义让已存在文件必须走 edit_file，但 edit_file
-曾因 high>medium 被拒 → 已存在文件无任何可写工具（死锁）。现 write=整篇写/重写、
-edit=定向 search-replace，两者同 medium 同确认。
+写入后调用索引热更新钩子,新内容会话内立即可被检索。write 负责整篇写/重写,
+edit 负责定向替换,两者同为 medium 风险并需用户确认。
 """
 from pathlib import Path
 
@@ -29,10 +27,9 @@ class WriteFileTool(Tool):
     side_effects = ["write_file"]
 
     def execute(self, path: str, content: str) -> ToolResult:
+        """写入/覆盖笔记文件,并做索引热更新使其立即可检索。"""
         p = Path(path)
-        # 2026-08-06：write_file 支持新建+覆盖（medium+确认）。旧语义"仅新建"让已存在
-        # 文件必须走 edit_file，但 edit_file 曾因 high>medium 被拒 → 已存在文件无任何可写
-        # 工具（死锁）。现两者同 medium 同确认：write=整篇写/重写，edit=定向 search-replace。
+        # 支持新建与覆盖:父目录不存在则先创建。整篇写/重写用本工具,小范围改动用 edit_file。
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         get_rag_service().index_document(str(p))   # 热更新钩子：会话内立即可检索

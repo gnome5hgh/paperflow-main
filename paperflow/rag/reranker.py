@@ -1,25 +1,26 @@
-"""重排器：Cross-encoder 精排。真实 bge-reranker 惰性加载，测试用 FakeReranker。"""
+"""重排器：用 Cross-encoder 模型对初检结果做精排。真实模型首次使用时才加载，测试用确定性假实现。"""
 import hashlib
 from typing import Protocol
 
-# 模块级占位：真实类在 _load() 里首次使用时才惰性导入并回填此名字。
-# 之所以保留这个模块属性（而不是只在函数内局部 import），是因为测试需要用
-# monkeypatch.setattr(reranker, "CrossEncoder", stub) 替换为假模型，
-# 否则 CI 会下载真实权重。函数内局部 import 不会产生模块属性，setattr 会
-# 因属性不存在而 AttributeError，且局部 import 也会绕过 monkeypatch。
+# 模块级占位符：真实模型类在首次使用时才惰性导入并回填到这里。
+# 必须保留为模块属性而不能只在函数内局部 import，因为测试会通过
+# monkeypatch.setattr(reranker, "CrossEncoder", stub) 把这里替换成假模型，
+# 避免测试时联网下载真实权重。若改成函数内局部 import，monkeypatch 会
+# 因为模块上没有这个属性而报错，也绕过不了真实加载。
 CrossEncoder = None  # type: ignore[assignment]
 
 
 class Reranker(Protocol):
-    """重排协议：输入 query + docs，返回按相关度降序的文档索引（前 top_k 个）。"""
+    """重排接口：输入 query 与候选文档列表，返回按相关度降序的文档下标（前 top_k 个）。"""
 
     def __call__(self, query: str, docs: list[str], top_k: int) -> list[int]: ...
 
 
 class FakeReranker:
-    """测试替身：按 md5 稳定排序，确定性且与真实模型无关。"""
+    """测试用的假重排器：按文档原文的 md5 稳定排序，与真实模型无关。"""
 
     def __call__(self, query: str, docs: list[str], top_k: int) -> list[int]:
+        """返回按 md5 排序后的前 top_k 个文档下标（结果确定、可复现）。"""
         # 用 md5 对文档原文排序：同一语料在任何环境/进程下重排结果一致，
         # 便于测试断言确定性与 top_k 截断行为（不依赖真实模型或随机性）。
         order = sorted(range(len(docs)),
@@ -28,7 +29,7 @@ class FakeReranker:
 
 
 class BgeReranker:
-    """bge-reranker-v2-m3 Cross-encoder，惰性加载，CPU 推理。"""
+    """bge-reranker-v2-m3 Cross-encoder 重排模型，惰性加载，CPU 推理。"""
 
     def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3"):
         self._model_name = model_name
@@ -44,9 +45,10 @@ class BgeReranker:
         self._model = CrossEncoder(self._model_name)
 
     def __call__(self, query: str, docs: list[str], top_k: int) -> list[int]:
+        """对每个候选文档给出与 query 的相关性分数，按分数降序返回前 top_k 个文档的下标。"""
         if self._model is None:
             self._load()
-        # bge-reranker 输入是 [query, doc] 对，输出每对的相关性分数
+        # bge-reranker 的输入是 [query, doc] 对，输出每对的相关性分数
         pairs = [[query, d] for d in docs]
         scores = self._model.predict(pairs)
         order = sorted(range(len(docs)), key=lambda i: scores[i], reverse=True)

@@ -43,8 +43,7 @@ class LLMConfig:
     model: str = "deepseek-v4-flash"
 
     #: 单次响应输出上限——deepseek-v4-flash 官方最大输出 384K（max_tokens 合法范围 1-393216）。
-    #: 2026-08-06 修复：4096 → 393216。长笔记草稿/大参数 write_file 不再被静默截断
-    #:（writer 流程失败的 P8 根因之一）。
+    #: 必须给足:上限过小会把长笔记草稿/大参数 write_file 静默截断成残缺内容。
     max_tokens: int = 393216
 
     #: 采样温度，0.0 表示确定性输出（适合工具调用场景）
@@ -58,9 +57,9 @@ class LLMConfig:
 @dataclass
 class PaperFlowConfig:
     """
-    项目全局配置，聚合所有子系统的配置项。
+    项目全局配置,聚合所有子系统的配置项。
 
-    ``workspace`` 在 Layer 0 仅作占位，后续 Layer 的数据写入统一走此路径。
+    ``workspace`` 是运行时数据根目录,各子系统的数据写入统一走此路径。
     """
 
     #: LLM 连接配置
@@ -99,12 +98,10 @@ class PaperFlowConfig:
     #: 重排模型（Cross-encoder）
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
 
-    #: 子 agent 超时覆盖表（D2）：writer 默认 600s——端到端（读+起草+写盘+≤3 轮审稿
-    #: 每轮 ≤120s）远超默认 120s，旧值下必然超时→supervisor 反复重试（2026-08-06
-    #: 实测）。searcher 300s / reviewer 180s：完整门禁链路（搜索→等级查询→审查裁决→
-    #: 下载）在多候选下远超类默认 120s，短超时把整条 reviewer 链路误判 timeout
-    #:（2026-08-08 冒烟实测）。2026-08-08 角色化命名：generate-note→writer、
-    #: search-paper→searcher。YAML 顶层 agent_timeouts 可覆盖；dict 无 env 形态。
+    #: 子 agent 超时覆盖表(按 agent 类型→秒数)。默认 120s 对完整流程太短:
+    #: writer 端到端(读+起草+写盘+最多 3 轮审稿)远超默认,searcher 完整门禁链路
+    #: (搜索→等级查询→审查裁决→下载)在多候选下也远超——短超时会把整条链路误判为
+    #: 超时。YAML 顶层 agent_timeouts 可覆盖;dict 无环境变量形态。
     agent_timeouts: dict[str, int] = field(default_factory=lambda: {"writer": 600, "searcher": 300, "reviewer": 180})
 
     @property
@@ -125,11 +122,9 @@ class PaperFlowConfig:
         config = cls()
         config._load_yaml(config_path)  # 第一步：YAML 文件（优先级最低）
         config._load_env()               # 第二步：环境变量（覆盖 YAML 值）
-        # workspace 绝对化：RC1 根因——相对 workspace（默认 "data"）派生相对根
-        #（_root_map 的 Path(workspace)/"templates"），被 WorkspacePolicy.before 的
-        # resolve_path(root, workspace) 二次拼接成 data/data/templates → 正确绝对路径
-        # 也被 security_blocked。绝对化后所有派生根一致绝对、[目录] 提示变绝对。
-        # 只在此生产入口处理：直接构造 PaperFlowConfig(...) 的测试值不受影响。
+        # workspace 绝对化:相对 workspace(默认 "data")派生的根会被工作区校验二次拼接
+        # 成 data/data/... 双前缀,把正确绝对路径也误拦。绝对化后所有派生根一致绝对、
+        # [目录] 提示也变绝对。只在此生产入口处理——测试直接构造的值不受影响。
         config.workspace = str(Path(config.workspace).expanduser().resolve())
         return config
 
@@ -154,8 +149,7 @@ class PaperFlowConfig:
                 if hasattr(self.llm, key):
                     setattr(self.llm, key, val)
 
-        # 顶层配置字段（含 Layer 2 新增的 vault / RAG 键，
-        # 均可通过 config.yaml 顶层覆盖默认值）
+        # 顶层配置字段(含 vault / RAG 键,均可通过 config.yaml 顶层覆盖默认值)
         for key in ("workspace", "agents_dir", "max_risk",
                     "vault_note_dir", "vault_pdf_dir", "grobid_url",
                     "chroma_path", "embed_model", "rerank_model",

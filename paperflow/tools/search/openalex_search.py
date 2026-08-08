@@ -1,16 +1,10 @@
 """OpenAlexSearchTool：OpenAlex API 搜索 + 可选开放获取 PDF 下载。
 
-risk=medium（下载是写操作，保守过标——只读会话不触碰 vault）。SSRF 走 _http。
+下载 PDF 是写操作,故整工具标 medium 风险(即便纯搜索也保守过标)——只读会话
+(风险上限 low)不应触碰本地资料库。SSRF 校验走共享的 paperflow/tools/_http.py。
 
-Task 3 增补（A1/A3/A4/A5/B2）：与 arxiv_search 同构——
-- A1 年份用 publication_year filter 区间过滤（结构化参数，不拼进 search）
-- A3 声明 wants_run_state，结果入 per-run 自动去重池
-- A4 模块级 query 缓存（键前缀 "openalex"）
-- A5 源熔断（源名 "openalex"）
-- B2 max_results 钳制到 [3,50]；downloadable 由 best_oa_location 判定
-
-2026-08-08 目录整理：execute() 骨架抽到 BaseSearchTool（search/_base.py，与
-arxiv_search 共享模板方法）；本文件保留 OpenAlexClient 与源差异段。
+execute() 骨架在 BaseSearchTool(search/_base.py)中与 arxiv 共享;本文件保留
+OpenAlexClient(含年份区间过滤与开放获取判定)与来源差异段。
 """
 import urllib.parse
 
@@ -29,8 +23,8 @@ class OpenAlexClient(_HttpClientMixin):
     def search(self, query: str, max_results: int = 5,
                year_from: int | None = None, year_to: int | None = None) -> list[dict]:
         params = {"search": query, "per-page": max_results}
-        # A1：年份用 publication_year filter 区间过滤（半开区间，缺侧开放），
-        # 不拼进自由文本 search——结构与关键词分离，避免 filter 词被当成检索词。
+        # 年份用 publication_year filter 区间过滤(半开区间,缺侧开放),不拼进自由文本
+        # search——结构与关键词分离,避免过滤词被当成检索词。
         if year_from or year_to:
             params["filter"] = f"publication_year:{year_from or ''}-{year_to or ''}"
         url = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
@@ -44,14 +38,14 @@ class OpenAlexClient(_HttpClientMixin):
                 "year": w.get("publication_year"),
                 "cited_by_count": w.get("cited_by_count", 0),
                 "openalex_id": w.get("id", ""),
-                # DOI 存进 dict：A3 去重键优先级最高（doi > arxiv_id > 规范化标题），
-                # 跨源同论文靠它合并（openalex 常带 DOI，arxiv 预印本不带）。
+                # DOI 是跨源去重优先级最高的键(doi > arxiv_id > 规范化标题):openalex
+                # 常带 DOI,arxiv 预印本不带,同论文跨源靠它合并
                 "doi": w.get("doi"),
-                "venue": src.get("display_name"),          # A2：来源名（等级 lazy）
-                "issn": (src.get("issn") or [None])[0],    # A2：ISSN 供精确查等级
+                "venue": src.get("display_name"),          # 来源名(等级由 reviewer 后查)
+                "issn": (src.get("issn") or [None])[0],    # ISSN 供精确查等级,避开同名歧义
                 "venue_type": src.get("type"),             # journal / conference-proceedings
                 "pdf_url": (w.get("best_oa_location") or {}).get("pdf_url"),
-                # A2：是否可下载 = 有无 OA 位置（可下才提示下载，不可下静默跳过）
+                # 是否可下载 = 有无开放获取位置(可下才提示下载,不可下静默跳过)
                 "downloadable": bool((w.get("best_oa_location") or {}).get("pdf_url")),
                 "arxiv_id": None,
             })
@@ -60,18 +54,18 @@ class OpenAlexClient(_HttpClientMixin):
 
 class OpenAlexSearchTool(BaseSearchTool):
     name = "openalex_search"
-    # IMPORTANT-3：description 与 execute 行为对齐——缺省不下载，传 download_to 才下载
+    # description 与行为对齐:缺省不下载,传入 download_to 才下载(LLM 据此决定是否触发写盘)
     description = "搜索 OpenAlex 论文；可选下载开放获取 PDF（缺省不下载，传入 download_to 才下载）"
     parameters = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "检索词"},
-            # B2：schema 层给 minimum/maximum，让模型端 tool_use 就钳在合法区间
+            # schema 层给 max_results 上下限,让模型端发起调用时就钳在合法区间
             "max_results": {"type": "integer", "default": 5,
                             "minimum": 3, "maximum": 50},
             "download_to": {"type": "string", "format": "path",
                             "description": "PDF 保存绝对路径（可选；缺省不下载，传入才下载）"},
-            # A1：年份是结构化过滤参数，与自由文本 query 平级——不要拼进检索词
+            # 年份是结构化过滤参数,与自由文本 query 平级——不要拼进检索词
             "year_from": {"type": "integer", "description": "起始年份（含），用此参数而非拼进 query"},
             "year_to": {"type": "integer", "description": "结束年份（含），用此参数而非拼进 query"},
         },

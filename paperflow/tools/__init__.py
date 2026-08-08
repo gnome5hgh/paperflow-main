@@ -2,14 +2,10 @@
 
 一工具一文件（每个 Tool 类一个模块），此处再导出全部 13 个 Tool 供消费方
 `from paperflow.tools import ReadFileTool, ...` 统一导入——隐藏拆分细节。
-2026-08-08 目录整理：工具按领域分拣到 file/ search/ review/ rank/ 子包，
-本模块只更新内部 import 路径，**导出符号名不变**（消费方零改动）。
+工具按领域分拣到 file/ search/ review/ rank/ 子包，本模块只更新内部 import
+路径，**导出符号名不变**（消费方零改动）。
 私有共享模块（_constants / _http / _venue_rank）不在此再导出。
-FormatAnswerTool 已删（2026-08-08 死代码：无任何 agent 装配，qa-agent
-移除后即无消费方）。
-
-Task 8：dedup_papers/filter_papers 已删除（去重并入池、筛选并入 reviewer 门禁），
-本模块与 __all__ 相应减少 2 个导出。
+FormatAnswerTool 已删（死代码：无任何 agent 装配）。
 """
 from paperflow.tools.file.glob import GlobTool
 from paperflow.tools.file.grep import GrepTool

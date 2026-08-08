@@ -1,5 +1,9 @@
 # paperflow/core/intent/dense_encoder.py
-"""稠密编码器接口 + Layer 1 fake（真实 bge 留 Layer 2 RAG 落地时替换）。"""
+"""稠密编码器接口协议 + 确定性伪实现。
+
+当前提供接口协议与一个用于路由逻辑验证的确定性伪编码器；
+后续接入真实向量模型（如 bge）时，只需实现同一接口即可无缝替换。
+"""
 import hashlib
 from typing import Protocol
 
@@ -7,22 +11,27 @@ import numpy as np
 
 
 class DenseEncoder(Protocol):
-    """语义对齐 encoders/base.py 的 DenseEncoder 接口。
-    Layer 2 落地时由真实 bge 实现替换——HybridRouter 只依赖此协议，零改动切换。"""
+    """稠密编码器接口协议。
+
+    路由器只依赖这个协议；后续接入真实向量模型（如 bge）时，
+    实现同一接口即可零改动切换。"""
 
     def __call__(self, texts: list[str]) -> np.ndarray: ...
 
 
 def _deterministic_seed(text: str) -> int:
-    """确定性哈希种子——⚠️ 不能用内置 hash()：PYTHONHASHSEED 随机化导致
-    同一文本跨进程向量不同，对照验证（ours/theirs 两个独立进程）直接失效。"""
+    """由文本生成确定性哈希种子。
+
+    ⚠️ 不能用内置 hash()：PYTHONHASHSEED 随机化会导致同一文本在
+    不同进程里得到不同向量，跨进程对比验证会直接失效。"""
     return int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
 
 
 class FixedDenseEncoder:
-    """Layer 1 fake：确定性伪向量（md5 种子），仅用于路由逻辑验证。
-    跨进程稳定：同一文本 → 同一向量（对照验证的前提）。
-    确定性只来自 md5(text)——无实例级随机状态。"""
+    """确定性伪向量编码器（md5 种子），仅用于路由逻辑验证。
+
+    跨进程稳定：同一文本总是得到同一向量（这是对比验证的前提）。
+    确定性只来自 md5(text)——没有任何实例级随机状态。"""
 
     def __init__(self, dim: int = 384):
         self.dim = dim

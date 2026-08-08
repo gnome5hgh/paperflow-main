@@ -25,9 +25,9 @@ class _HttpClientMixin:
 
 
 def _download_pdf(client, url: str, dest: Path) -> None:
-    """共享下载助手：逐跳 SSRF 校验重定向链，绝不把 3xx 或非 PDF 响应体写盘。
+    """共享下载助手:逐跳 SSRF 校验重定向链,绝不把 3xx 或非 PDF 响应体写盘。
 
-    spec §13：重定向链走 resolve_url_target。两个搜索分支共用此路径，
+    重定向链走 resolve_url_target 逐跳校验;arxiv/openalex 两个搜索分支共用此路径,
     避免各自写下载逻辑再引入同类缺陷。
     """
     resolved = resolve_url_target(url)      # HEAD 逐跳 SSRF 校验，返回最终 URL

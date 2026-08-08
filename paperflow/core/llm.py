@@ -5,9 +5,8 @@ LLM 客户端 —— OpenAI-compatible API 的异步封装。
 设计要点：
 
 1. **异步接口 = 同步 SDK + asyncio.to_thread**
-   Layer 0 使用 ``asyncio.to_thread`` 将 OpenAI SDK 的同步阻塞调用
-   包装为 async 协程。这保证了 ``Agent.run`` 的整体异步性，
-   后续 ParallelSpawnTool（Layer 4）可直接用 ``asyncio.gather`` 并发调度。
+   用 ``asyncio.to_thread`` 将 OpenAI SDK 的同步阻塞调用包装为 async 协程,
+   保证 ``Agent.run`` 的整体异步性,并行派发工具可直接用 ``asyncio.gather`` 并发调度。
 
 2. **Message 是 LLM ↔ Agent 的唯一数据货币**
    ReAct 循环中消息的增删改统一走 ``Message`` dataclass，
@@ -57,8 +56,8 @@ class Message:
     #: 关联的工具调用 ID，仅 tool 角色消息有值，用于将 tool result 关联到对应的 tool_call
     tool_call_id: str | None = None
 
-    #: 响应因 max_tokens 被截断（finish_reason=="length"）。Agent 据此续写而非
-    #: 把半截内容当最终回答（2026-08-06 修复：writer 草稿静默截断是 P5 触发点）。
+    #: 响应因输出长度上限被截断(finish_reason=="length")。Agent 据此续写而非把
+    #: 半截内容当最终回答——否则长笔记草稿会被静默截断成残缺内容交付。
     truncated: bool = False
 
 
@@ -81,8 +80,8 @@ class LLMClient:
         """
         :param config: LLMConfig 实例，包含 base_url / api_key / model 等参数
         """
-        #: key 守卫（2026-08-08，硬编码 key 清理后）:api_key 不再有代码默认值,
-        #: 留空时 OpenAI(api_key="") 抛晦涩 SDK 错——此处 fail-fast 报可行动指引。
+        #: key 守卫:api_key 不再有代码默认值,留空时 OpenAI(api_key="") 抛晦涩的
+        #: SDK 错误——此处提前 fail-fast,给出可行动的配置指引。
         if not config.api_key:
             raise RuntimeError(
                 "LLM API key 未配置：请设置环境变量 PAPERFLOW_API_KEY，"

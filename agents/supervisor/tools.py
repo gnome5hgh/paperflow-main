@@ -1,10 +1,9 @@
-"""Supervisor 调度工具（spec §3）——Spawn / Parallel / AskUser。
+"""Supervisor 调度工具装配——Spawn / Parallel / AskUser。
 
-SpawnSubAgentTool / ParallelSpawnTool 已抽到共享层 paperflow/tools/spawn.py
-（Task 1 纯搬移重构，行为不变）；本文件从共享层 import 后经 _make_supervisor_tools
-装配。Supervisor 是唯一装配 spawn 工具的 agent（权限最小化：SubAgent 无递归调度）。
-C2：aggregate_results 已删除——spawn 结果自带 digest（结构化摘要），supervisor 直接读
-各 SubAgentResult 的 digest + needs_attention 组织最终回答，无需再走汇总工具。
+SpawnSubAgentTool / ParallelSpawnTool 在共享层 paperflow/tools/spawn.py 定义,
+本文件装配后供 supervisor 使用。Supervisor 是唯一装配 spawn 工具的 agent
+(权限最小化:子 agent 不能递归调度)。spawn 结果自带结构化摘要 digest,
+supervisor 直接读各结果的 digest + needs_attention 组织最终回答。
 """
 from paperflow.config import PaperFlowConfig
 from paperflow.core.tool import Tool, ToolResult
@@ -12,10 +11,10 @@ from paperflow.tools.spawn import SpawnSubAgentTool, ParallelSpawnTool
 
 
 class AskUserTool(Tool):
-    """向用户确认信息（in-turn 阻塞，spec D4②）。
+    """向用户提问并等待回答(阻塞当前 ReAct 轮)。
 
-    经 parent.ask_user_callback 读 stdin；callback 为 None（程序化/测试）→
-    fail-safe 返回"无法交互"（与 _default_confirm 同款，Supervisor ReAct 自行处理）。
+    经父 agent 注入的 ask_user_callback 读 stdin;callback 为空(程序化/测试环境)
+    时返回"无法交互"提示,由 supervisor 基于已有信息自行决策,不挂死。
     """
 
     name = "ask_user"
@@ -33,14 +32,14 @@ class AskUserTool(Tool):
         if cb is None:
             # fail-safe：无法交互时明确告知，Supervisor 依据已有信息自行决策（不挂死）
             return ToolResult(text="无法交互：当前环境未提供用户回调，请基于已有信息决定")
-        # cb 是 CLI 注入的 stdin 读（worker 线程 input() 可用，spec §3.5 线程注记）
+        # cb 由 CLI 注入,在 worker 线程里读 stdin(阻塞等待用户输入,不冻结事件循环)
         answer = cb(question)
         return ToolResult(text=f"用户回答：{answer}")
 
 
 def _make_supervisor_tools() -> list:
-    """装配 3 个调度工具（C2 删 aggregate_results）。config 在 import 时构造（每进程静态，
-    对齐 make_tools 惯例）；agent_timeouts 经 config.yaml 顶层注入 spawn 工具按 agent 解析超时。"""
+    """装配 3 个调度工具。config 在 import 时构造(每进程静态、无副作用);
+    agent_timeouts 从配置注入,spawn 工具按子 agent 类型解析各自超时。"""
     cfg = PaperFlowConfig.from_env()
     return [
         SpawnSubAgentTool(agent_timeouts=cfg.agent_timeouts),

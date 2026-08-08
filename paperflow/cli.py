@@ -1,9 +1,9 @@
-"""CLI REPL（spec §6）：交互式 readline，无子命令，/exit 退出。
+"""CLI REPL：交互式 readline,无子命令,/exit 退出。
 
-每轮：读 stdin → 合并 pending（若挂起）→ supervisor.run(query, force_dispatch) →
-若 last_intent.clarification 且未超轮 → 挂起打印问题；否则打印结果。
-跨轮状态由 Session 承载（prev_intent / pending_intent），复用同一 Supervisor 实例
-使 ContextCompressor.history 跨轮累积。
+每轮:读 stdin → 合并挂起的澄清(若有)→ supervisor.run(query, force_dispatch) →
+若产生澄清问题且未超轮 → 挂起打印问题;否则打印结果。
+跨轮状态由 Session 承载(prev_intent / pending_intent),复用同一 Supervisor 实例使
+上下文压缩器的历史跨轮累积。
 """
 import asyncio
 import logging
@@ -37,27 +37,23 @@ _stdin_lock = threading.Lock()
 
 
 async def _stdin_confirm(cr) -> bool:
-    """yes/no 确认回调（PolicyEngine requires_confirm）。fail-safe：EOF/空 → False。
+    """yes/no 确认回调(策略引擎触发需确认时调用)。fail-safe:EOF/空 → False。
 
-    async 契约：Agent._exec_tool 以 `await self.confirm_callback(cr)` 调用（agent.py），
-    confirm_callback 必须是可 await 的（C1 merge blocker 保留）。
-
-    input() 放线程执行（2026-08-07）：确认等待是用户交互，不应冻结共享事件循环——
-    parallel_spawn 的所有子 agent 共享同一 gather loop，同步 input() 会全部卡死。
-    无限等待：写操作一直等用户确认，不取消（确认时间由 supervisor 的 _run_child_with_
-    budget 排除在子 agent 超时预算外，不会因确认等待而误触发超时）。无超时 → 无被遗弃
-    的等待线程 → 不会吞掉用户后续输入。
+    确认回调必须是可 await 的(Agent 执行器以 await 方式调用)。
+    input() 放到线程执行:确认等待是用户交互,不应冻结共享事件循环——并行派发的
+    所有子 agent 共享同一事件循环,同步 input() 会全部卡死。无限等待不取消:写操作
+    一直等用户确认,确认时间由子 agent 的预算逻辑排除在超时外,不会因等待而误触发
+    超时;无超时 → 无被遗弃的等待线程 → 不会吞掉用户后续输入。
     """
     answer = await asyncio.to_thread(_read_stdin_locked, cr)
     return answer.strip().lower() in {"y", "yes", "是", "确定"}
 
 
 def _read_stdin_locked(cr) -> str:
-    """持 _stdin_lock 读一行 stdin（在线程内调用）。
+    """持 stdin 锁读一行(在线程内调用)。
 
-    并发确认（parallel 多子 agent 同时要确认）经锁串行化、提示不交错；锁只在读行期间
-    持有（用户输入到达即释放），不阻塞任何事件循环。EOF（Ctrl-D）→ ""（fail-safe 拒绝
-    语义，spec §6.3 承诺）。"""
+    并发确认(多个子 agent 同时要确认)经锁串行化、提示不交错;锁只在读行期间持有
+    (用户输入到达即释放),不阻塞任何事件循环。EOF(Ctrl-D)→ ""(fail-safe 拒绝)。"""
     with _stdin_lock:
         print(f"[需要确认] {cr.tool_name} 是否继续？(y/N) ", end="", flush=True)
         try:
@@ -131,10 +127,10 @@ class _ReplStreamer:
 
 
 def _merge_pending(session: Session, raw: str) -> tuple[str, bool]:
-    """合并跨轮澄清输入，返回 (query, force_dispatch)。
+    """合并跨轮澄清输入,返回 (query, force_dispatch)。
 
-    round < 2 → 合并澄清上下文重跑；round >= 2 → 超轮终止：force_dispatch=True、
-    以累积澄清上下文的 original_input 调度（D9）——绝不重跑后再次挂起。
+    round < 2 → 合并澄清上下文重跑;round >= 2 → 超轮终止:force_dispatch=True、
+    以累积澄清上下文的 original_input 调度——绝不重跑后再次挂起。
     """
     p = session.pending_intent
     if p is None:
@@ -175,14 +171,14 @@ async def _repl(supervisor: Agent, session: Session, *,
         try:
             result = await supervisor.run(query, force_dispatch=force)
         except MaxTurnsExceeded:
-            # 安全阀（D10 降级哲学）：LLM 陷入 tool-call 循环时不杀 REPL——报错并继续，
-            # 让用户能换一种更简单的说法重试（而不是丢 pending 状态/整进程崩溃）
+            # 安全阀:LLM 陷入工具调用循环时不杀 REPL——报错并继续,让用户换个更简单
+            # 的说法重试(而不是丢挂起状态/整个进程崩溃)
             print_fn("任务超过最大轮数，请简化请求后重试")
             continue
         except Exception as e:
-            # 网络失败等不可恢复异常同样不杀 REPL（D10）：打印错误，下一轮照常运行。
-            # 这是降级声明的兜底——Supervisor.run 内部已把多数错误 degrade-to-text，
-            # 到这里的是真正未预期的异常（如 LLM 客户端网络超时）。
+            # 网络失败等不可恢复异常同样不杀 REPL:打印错误,下一轮照常运行。Supervisor
+            # 内部已把多数错误转为普通文本反馈,到这里的是真正未预期的异常(如客户端
+            # 网络超时)。
             print_fn(f"执行出错：{e}")
             continue
         intent = supervisor.last_intent
@@ -221,13 +217,10 @@ def main() -> None:
         ExperienceMemoryMiddleware(store),
     ]
 
-    # 意图管线：真实 HybridRouter + LLM 兜底（Layer 1 装配，Stage 0/1 已接线）。
-    # 【真实 bge（D12/D13）】BgeEmbedder 加载 bge-small-zh-v1.5（~30MB/几秒，RAG 栈同模型
-    # 的独立实例）；阈值由 scripts/verify_intent.py 标定后写回 routes.yaml——这里只
-    # load_routes 读已标定 per-route 阈值，零 fit、零阈值搜索（启动只读配置不算配置）。
-    # alpha=0.6：gate 驱动重标定（0.3 是 md5 伪向量时代的默认，真实 bge 下稠密信号应
-    # 主导），由 verify_intent 在 eval 集上选定——与 verify_intent 的 ALPHA 保持一致。
-    # 模型路径本地优先（resolve_model_dir：data/models/<name>，回退 HF 名）
+    # 意图管线:真实混合路由器 + LLM 兜底。BgeEmbedder 加载 bge 小模型(首次加载需
+    # 几秒,与 RAG 栈同模型但独立实例);各意图阈值已由标定脚本写回 routes.yaml——这里
+    # 只读已标定阈值,不做训练或阈值搜索。alpha 是稠密/稀疏信号的融合权重,与标定脚本
+    # 保持一致。模型路径本地优先(resolve_model_dir:data/models/<name>,否则回退 HF 名)。
     router = HybridRouter(
         encoder=BgeEmbedder(model_name=resolve_model_dir(config.workspace, config.embed_model)),
         routes=load_routes(), alpha=0.6)

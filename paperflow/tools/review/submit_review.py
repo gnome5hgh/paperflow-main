@@ -1,19 +1,17 @@
-# paperflow/tools/submit_review.py
-"""SubmitReviewTool：汇总对一篇笔记的审查裁决（reviewer 笔记审查模式返回）。
+# paperflow/tools/review/submit_review.py
+"""SubmitReviewTool：汇总对一篇笔记的审查裁决(reviewer 笔记审查模式返回)。
 
-从 SuggestEditTool 升级（2026-08-06 review-note rework，后改名 reviewer）：无类型
-建议列表 → 结构化裁决（verdict + issues[]，枚举校验）。execute 不读文件内容（只把
-提交的字段格式化），放开 scratch 根零安全影响——安全边界与 suggest_edit 一致。
-
-校验哲学对齐 edit_file 的 miss/multi 报错：非法输入返回可行动报错文本，
-不静默吞（让 reviewer 的 LLM 修正后重试）。
+把审查结果规范成结构化裁决(verdict + issues[],各字段枚举校验)。execute 不读文件
+内容,只把提交的字段格式化,因此放开 scratch 根零安全影响。校验哲学对齐 edit_file
+的 miss/multi 报错:非法输入返回可行动报错文本,不静默吞——让 reviewer 的 LLM
+修正后重试。
 """
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.tools.review._validate import VERDICTS, enum_check
 
-#: severity 合法值（blocking 必须修才能通过；major 应修；minor 可忽略）
+#: severity 合法值(blocking 必须修才能通过;major 应修;minor 可忽略)
 SEVERITIES = ("blocking", "major", "minor")
-#: dimension 合法值（5 审查维度，2026-08-06 rework 定稿；写作质量维度砍掉）
+#: dimension 合法值(5 个审查维度;不设"写作质量"维度,由其余维度覆盖)
 DIMENSIONS = ("requirements", "faithfulness", "consistency", "completeness", "structure")
 
 

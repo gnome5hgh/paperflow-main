@@ -1,3 +1,9 @@
+"""工具调用经验存储与中间件。
+
+MemoryStore 用追加式 JSONL 文件记录每次工具调用，配合写入游标与归档游标两个
+游标文件跟踪消费进度，并支持定期压缩；ExperienceMemoryMiddleware 是消息管道中
+负责在工具执行结束后把调用沉淀为经验记录的中间件。
+"""
 import json
 import threading
 import time
@@ -10,18 +16,23 @@ from paperflow.core.security import (
 
 
 class MemoryStore:
-    """history.jsonl 追加 + 游标管理 + compact。"""
+    """把历史记录追加写入 JSONL 文件，并管理写入/归档两个游标与定期压缩。"""
 
     def __init__(self, memory_dir: Path, max_history_entries: int = 1000):
+        """初始化存储：记录历史文件与两个游标文件的路径，以及保留条数上限。"""
         self.memory_dir = Path(memory_dir)
         self.history_path = self.memory_dir / "history.jsonl"
         self.cursor_path = self.memory_dir / ".cursor"
         self.dream_cursor_path = self.memory_dir / ".dream_cursor"
         self.max_history_entries = max_history_entries
-        self._lock = threading.Lock()       # 游标原子性（Layer 4 parallel_spawn 并发就绪）
+        self._lock = threading.Lock()       # 游标读改写加锁，保证多任务并发写入时单调不竞态
 
     def append_history(self, entry: dict) -> int:
-        """追加一条记录，返回 cursor。同步写（单行 JSON，微秒级）。"""
+        """同步追加一条记录并返回新 cursor。
+
+        先推进写入游标再落盘，保证游标与记录一一对应。单行 JSON 追加写入，
+        耗时在微秒级，足以支撑每轮工具调用的高频记录。
+        """
         with self._lock:
             cursor = self._read_cursor() + 1
             self._write_cursor(cursor)
@@ -96,6 +107,7 @@ class MemoryStore:
                     f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
     def _read_cursor(self) -> int:
+        """读取写入游标；文件缺失或内容损坏时按 0 处理，不抛异常。"""
         if not self.cursor_path.exists():
             return 0
         try:
@@ -104,10 +116,12 @@ class MemoryStore:
             return 0
 
     def _write_cursor(self, cursor: int) -> None:
+        """把写入游标落盘到 .cursor 文件（父目录不存在时先创建）。"""
         self.cursor_path.parent.mkdir(parents=True, exist_ok=True)
         self.cursor_path.write_text(str(cursor), encoding="utf-8")
 
     def _read_dream_cursor(self) -> int:
+        """读取归档游标；文件缺失或内容损坏时按 0 处理，不抛异常。"""
         if not self.dream_cursor_path.exists():
             return 0
         try:
@@ -117,6 +131,7 @@ class MemoryStore:
 
 
 def _error_type(error: Exception | None) -> str:
+    """把异常对象归约为一个稳定的错误类型标识；无异常时返回空串。"""
     if error is None:
         return ""
     if isinstance(error, PolicyDenied):     return "policy_denied"
@@ -126,14 +141,20 @@ def _error_type(error: Exception | None) -> str:
 
 
 class ExperienceMemoryMiddleware(SecurityMiddleware):
-    """管道最后一个中间件（第 ⑤ 个）：after 阶段记录工具调用。"""
+    """消息管道中负责积累经验数据的中间件：在每次工具执行结束后记录调用结果。"""
 
     def __init__(self, store: MemoryStore):
+        """注入底层存储实例。"""
         self.store = store
 
     async def after(self, ctx: ToolContext) -> None:
+        """在工具执行结束后把本次调用记录为一条经验数据。
+
+        只记录真实执行过的工具：未知工具或参数解析失败时直接返回——这类失败由
+        审计中间件单独覆盖（含模型幻觉出的工具名），这里只沉淀真实工具调用的经验。
+        """
         if ctx.tool is None:
-            # 未知工具/解析失败：由 Audit 覆盖（含幻觉工具名），Experience 只学真实工具经验
+            # 未知工具/参数解析失败：由审计环节覆盖，这里只学真实工具的经验
             return
         self.store.append_history({
             "type": "tool",

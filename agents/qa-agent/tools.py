@@ -1,8 +1,8 @@
-"""qa-agent 的工具装配：阅读 + RAG + 笔记查询。
+"""qa-agent 的工具装配：阅读 + RAG 检索 + 笔记/记忆查询。
 
-不再装配 format_answer：真实 CLI 冒烟发现该 agent 会用它把最终回答格式化，
-反而劣化回答质量（传入的常是"已读取"这类状态文本而非答案，产出无用输出）。
-最终回答的内容安全扫描由 SecurityScanMiddleware.on_finish 兜底，移除无安全缺口。
+装配 read_pdf/read_file(阅读论文与笔记)、mark_read(记录已读)、RagRetrieveTool
+(从知识库检索相关段落回答开放问题)、glob/grep(定位文件)。不装配任何"格式化
+最终回答"类的工具——回答的内容安全由安全中间件的 on_finish 钩子统一兜底。
 """
 from paperflow.config import PaperFlowConfig
 from paperflow.tools.factory import make_tools

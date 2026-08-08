@@ -1,8 +1,8 @@
-# paperflow/tools/glob.py
-"""GlobTool：按文件名模式在 vault 内定位文件（只读）。
+# paperflow/tools/file/glob.py
+"""GlobTool：按文件名模式在资料库内定位文件(只读)。
 
-writer 定位 PDF/笔记、searcher 下载前去重、qa-agent 找论文——
-agent 不再盲猜精确路径（P2 路径风暴根因）。只读 → low、无确认。
+writer 定位 PDF/笔记、searcher 下载前去重、qa-agent 找论文——让 agent 不必盲猜
+精确路径。只读 → low 风险、无需确认。
 """
 from pathlib import Path
 
@@ -27,16 +27,21 @@ class GlobTool(Tool):
     allowed_roots = ["note", "pdf", "memory"]
 
     def execute(self, pattern: str, root: str | None = None) -> ToolResult:
-        # 通过 _config 取默认根（make_tools 注入）；root 显式传入则覆盖默认。
-        # 保持 config 读取为防御式 getattr——测试与裸构造时可能没有 _config。
+        """按 glob 模式列出匹配的文件路径(最多 50 条);根目录可显式指定。
+
+        :param pattern: glob 模式(** 递归匹配子目录)
+        :param root: 搜索根目录;缺省用配置的笔记目录,可传 pdf/memory 根
+        :returns: 命中路径每行一条;无匹配返回"无匹配"
+        """
+        # 通过 _config 取默认根(make_tools 注入);root 显式传入则覆盖默认。
+        # config 读取用防御式 getattr——测试与裸构造时可能没有 _config。
         cfg = getattr(self, "_config", None)
         base = Path(root) if root else Path(cfg.vault_note_dir if cfg else ".")
         try:
-            # 越界防护（Important 1）：glob 不约束 pattern 到 base，`../../**/*` 能命中
-            # base 外路径（只读泄露，违反 allowed_roots 边界）。逐个过滤命中：
-            # 逃逸（resolve 后不在 base 内）→ 跳过。
-            # 注意必须用 resolve() 比较——`p.relative_to(base)` 是纯词法比较，把 `..`
-            # 当作普通路径段，`base/../../outside/f` 不会触发 ValueError，根本拦不住逃逸。
+            # 越界防护:glob 不把 pattern 约束到 base,`../../**/*` 能命中 base 外路径
+            # (只读泄露,违反 allowed_roots 边界)。逐个过滤命中,resolve 后不在 base 内
+            # 的跳过。必须用 resolve() 比较——relative_to 是纯词法比较,把 `..` 当普通
+            # 路径段,`base/../../outside/f` 不会触发 ValueError,根本拦不住逃逸。
             base_resolved = base.resolve()
             hits: list[str] = []
             for p in base.glob(pattern):

@@ -8,15 +8,14 @@ Supervisor 和所有 SubAgent 使用同一个 Agent 类，差异仅在于
 
 设计依据：
 
-- **ADR 0003**：权限最小化 —— Supervisor 只加载 supervisor 组的调度类 Tool，
-  SubAgent 只加载领域类 Tool，互不越界
-- **ReAct 循环**：Thought → Act → Obs → ... → Finish，
-  LLM 自主决定何时停止（返回无 tool_calls 的 content 时）
-- **Pull 模式**：Agent 不接收外部组装的 tools 列表，而是通过 agent_type
-  从 AgentRegistry 拉取配置，保证 Tool 权限的集中控制
-- **中间件管道（Layer 1）**：每次工具调用依次经过 security_middleware 的
-  before 钩子（可 deny / 要求 confirm）→ 执行工具 → 逆序 after 钩子（洋葱模型）；
-  每轮 run 结束经过 on_finish 钩子（可改写最终回答）
+- **权限最小化**：Supervisor 只加载调度类工具，子 agent 只加载领域类工具，互不越界
+- **ReAct 循环**：Thought → Act → Obs → ... → Finish，LLM 自主决定何时停止
+  （返回无 tool_calls 的 content 时）
+- **Pull 模式**：Agent 不接收外部组装的工具列表，而是通过 agent_type 从注册表拉取
+  配置，保证工具权限的集中控制
+- **中间件管道**：每次工具调用依次经过 security_middleware 的 before 钩子（可拒绝/
+  要求确认）→ 执行工具 → 逆序 after 钩子（洋葱模型）；每轮 run 结束经过 on_finish
+  钩子（可改写最终回答）
 
 ReAct 循环流程::
 
@@ -24,7 +23,7 @@ ReAct 循环流程::
     2. LLM 调用 → response
     3. 如果 response 无 tool_calls → 经 on_finish 钩子后返回 content（结束）
     4. 如果 response 有 tool_calls → 并发经中间件管道执行
-      （B1：gather 并行 + 信号量上限 4 + confirm 锁串行，结果按调用顺序返回）
+      （并行 gather + 信号量上限 4 + 确认锁串行，结果按调用顺序返回）
     5. 将 tool 结果附加到 messages → 回到步骤 2
     6. 超过 max_turns → 抛出 MaxTurnsExceeded
 
@@ -59,8 +58,7 @@ from paperflow.core.security import (
 from paperflow.core.tool import ToolResult
 from paperflow.core.security.text import sanitize_surrogates
 
-#: 模块级 logger（§4.2 管线失败降级用；本项目 core 现无 logger，需初始化）。
-#: 管线 Stage 3 网络异常/解析失败降级时在此留痕，供运维排查而不是静默吞掉。
+#: 模块级 logger:意图管线的网络异常/解析失败降级时在此留痕,供运维排查而不是静默吞掉。
 logger = logging.getLogger(__name__)
 
 
@@ -92,29 +90,25 @@ class StreamEvent:
 
 
 def _compact(v) -> str:
-    """参数值压缩为单行；绝对路径（/ 开头）完整展示，其余值截断到 40 字符。
+    """参数值压缩为单行:绝对路径(/ 开头)完整展示,其余值截断到 40 字符。
 
-    路径是文件类工具（read_pdf/write_file/mark_read 等）的关键信息，截断会让人
-    看不出在读哪个文件——真实冒烟反馈（2026-08-05）路径被截成 .../Obsidian V...。
+    路径是文件类工具(read_pdf/write_file/mark_read 等)的关键信息,截断会让人看不出
+    在读哪个文件,故路径不截断。截断处用单个 "…" 标记——三个点语义不清,用户看不出
+    内容被截断。len(s) <= 40 时整值展示(40 是完整展示的阈值,不是截断后的长度)。
     """
     s = str(v).replace("\n", " ")
     if s.lstrip().startswith("/"):
         return s
-    # D1：截断处用 "…" 单字符标记（原 "..." 三个点语义不清——用户在状态行看不出
-    # 内容被截断，以为完整值就是这么多字符）。截断后实际为约 38 字符（37 内容 + 1 标记）；
-    # len(s) <= 40 时整值展示（值本身 ≤40 不截断），>40 才压到 38——"40"只是
-    # 完整展示的阈值，不是截断后的长度。
     return s if len(s) <= 40 else s[:37] + "…"
 
 
 def _format_tool_call(name: str, raw_args: str) -> str:
-    """把工具调用格式化为终端一行（claude code 风格：Read(path)）。
+    """把工具调用格式化为终端一行(claude code 风格:Read(path))。
 
-    尽力解析参数；LLM 产出非法 JSON / 参数缺失（None）时只显示工具名——错误
-    路径保持可读，且缓冲清理不依赖参数解析成功（见 _ReplStreamer）。
-    行宽策略（spec §3.4 修订）：含绝对路径的行不再压 80——路径是文件类工具的
-    关键信息，终端可换行展示完整；其余行按“固定前缀后的剩余预算”截断 pairs，
-    工具名自身过长（预算≤0）时退化为纯工具名。
+    尽力解析参数;LLM 产出非法 JSON 或参数缺失时只显示工具名——错误路径保持可读,
+    且缓冲清理不依赖参数解析成功(见 _ReplStreamer)。行宽策略:含绝对路径的行不再
+    压 80(路径是文件类工具的关键信息,终端可换行展示完整);其余行按"固定前缀后的
+    剩余预算"截断参数对;工具名自身过长(预算 ≤0)时退化为纯工具名。
     """
     try:
         args = json.loads(raw_args) if (raw_args or "").strip() else {}
@@ -128,8 +122,7 @@ def _format_tool_call(name: str, raw_args: str) -> str:
     budget = max(0, 80 - len(f"调用 {name}()"))
     if budget <= 0:
         return f"调用 {name}()"
-    # D1：行宽截断处补 "…" 标记（原来直接 pairs[:budget] 硬切，截断无提示）。
-    # 留 1 字符给标记：截断后 pairs = 预算内内容 + "…"，整行仍 ≤80。
+    # 行宽截断处补 "…" 标记(留 1 字符给标记),截断后整行仍 ≤80。
     if len(pairs) > budget:
         pairs = pairs[:max(0, budget - 1)] + "…"
     return f"调用 {name}({pairs})"
@@ -150,18 +143,18 @@ class Agent:
         )
         result = await agent.run("搜索异构图神经网络的最新论文")
 
-    Agent 通过 ``agent_type`` 从 ``AgentRegistry`` 拉取：
-    - system_prompt：注入 LLM 的行为规范
-    - tools：本 Agent 可调用的 Tool 集合
-    - allowed_spawns：本 Agent 能 spawn 哪些 SubAgent（Layer 4 使用）
+    Agent 通过 ``agent_type`` 从注册表拉取:
+    - system_prompt:注入 LLM 的行为规范
+    - tools:本 Agent 可调用的工具集合
+    - allowed_spawns:本 Agent 能 spawn 哪些子 agent
 
-    安全模型（Layer 1）：
-    - ``security_middleware``：每次工具调用的守卫链，before 可拦截或要求
-      用户确认，after 在工具执行后（含被拦截时）以逆序运行；
-      每轮 run 结束时 on_finish 可改写最终回答
-    - ``confirm_callback``：ConfirmRequired 决策回调，默认 fail-safe 拒绝
-    - ``session_id``：跨多轮 run 的会话标识，未传入时自动生成
-    - ``_trace_id``：每次 run 自动生成的追踪 ID，注入 ToolContext 供中间件审计
+    安全模型:
+    - ``security_middleware``:每次工具调用的守卫链,before 可拦截或要求用户确认,
+      after 在工具执行后(含被拦截时)以逆序运行;每轮 run 结束时 on_finish 可改写
+      最终回答
+    - ``confirm_callback``:确认决策回调,默认 fail-safe 拒绝
+    - ``session_id``:跨多轮 run 的会话标识,未传入时自动生成
+    - ``_trace_id``:每次 run 自动生成的追踪 ID,注入上下文供中间件审计
     """
 
     def __init__(
@@ -189,29 +182,28 @@ class Agent:
             逆序执行 after；每轮 run 结束时顺序执行 on_finish
         :param confirm_callback: async 确认回调，接收 ConfirmRequired，
             返回 bool；None 时使用 fail-safe 的 _default_confirm（始终拒绝）
-        :param intent_enabled: 意图识别门控（spec D3）。仅 CLI 构造的
-            Supervisor 置 True；spawn 工具构造的子 agent 不传
-            intent_pipeline/session → 门控关闭
-        :param intent_pipeline: 意图识别管线实例（IntentPipeline | None），
-            run() 前置钩子消费；None 时跳过
-        :param session: 会话状态容器（Session | None），提供跨轮
-            prev_intent/prev_user_input 并在 run 结束后回写
-        :param ask_user_callback: 向用户提问的回调（Callable[[str], str] |
-            None），Task 11 AskUserTool 消费；None 时该工具不可用
-        :param session_id: 会话标识，跨多次 run 保持一致，便于审计聚合；
-            None 时自动生成 8 位 hex
-        :param memory_index: MemoryIndex 实例（可选），每轮 run 读取
-            MEMORY.md 索引并注入 system 消息（②位）；None 时完全跳过
-        :param compressor: ContextCompressor 实例（可选），跨轮摘要注入
-            system 消息（③位）+ 每次 model call 前压缩检查；None 时完全跳过
-        :param max_turns: ReAct 循环最大轮数，防止死循环
-        :param stream_callback: 流式事件回调（CLI 渲染器消费）；None =
-            非流式路径——run() 保持调 chat()，mock/无 UI 调用方零影响
+        :param intent_enabled: 意图识别门控:仅 CLI 构造的 Supervisor 置 True;
+            spawn 工具构造的子 agent 不传管线/会话 → 门控关闭
+        :param intent_pipeline: 意图识别管线实例(IntentPipeline | None),
+            run() 前置钩子消费;None 时跳过
+        :param session: 会话状态容器(Session | None),提供跨轮 prev_intent/
+            prev_user_input 并在 run 结束后回写
+        :param ask_user_callback: 向用户提问的回调(Callable[[str], str] | None),
+            供 ask_user 工具消费;None 时该工具不可用
+        :param session_id: 会话标识,跨多次 run 保持一致,便于审计聚合;None 时
+            自动生成 8 位 hex
+        :param memory_index: MemoryIndex 实例(可选),每轮 run 读取 MEMORY.md
+            索引并注入 system 消息;None 时完全跳过
+        :param compressor: ContextCompressor 实例(可选),跨轮摘要注入 system
+            消息 + 每次模型调用前压缩检查;None 时完全跳过
+        :param max_turns: ReAct 循环最大轮数,防止死循环
+        :param stream_callback: 流式事件回调(CLI 渲染器消费);None = 非流式路径
+            ——run() 保持调 chat(),mock/无 UI 调用方零影响
         """
-        # Pull 模式：从唯一注册表按类型加载完整配置
+        # Pull 模式:从唯一注册表按类型加载完整配置
         config = agent_registry.get_config(agent_type)
 
-        #: Agent 注册表（ReviewDraftTool 等嵌套工具需要它构造子 agent）
+        #: Agent 注册表(构造子 agent 时需要)
         self.agent_registry = agent_registry
 
         #: LLM 客户端（async 接口）
@@ -236,7 +228,7 @@ class Agent:
         #: 在构造时转换一次，避免每轮 run 都重复转换
         self._tool_schemas = [tool_to_openai_schema(t) for t in config.tools]
 
-        #: 安全中间件管道，空列表时 _exec_tool 退化为 Layer 0 直通行为
+        #: 安全中间件管道,空列表时执行器退化为直通行为(不经过任何守卫)
         self.security_middleware = security_middleware or []
 
         #: 用户确认回调；未提供时使用 fail-safe 的 _default_confirm
@@ -254,9 +246,9 @@ class Agent:
         #: 当前 run 的追踪 ID，每次 run 开始时重新生成，注入 ToolContext
         self._trace_id: str | None = None
 
-        # 意图识别门控（spec D3）：只有 CLI 构造的 Supervisor 置 True；spawn 工具
-        # 构造的子 agent 不传 intent_pipeline/session → 门控关闭（子任务是结构化任务，
-        # 非用户意图，跑管线会误分类 + 白花 LLM 调用）
+        # 意图识别门控:只有 CLI 构造的 Supervisor 置 True;spawn 工具构造的子 agent
+        # 不传管线/会话 → 门控关闭(子任务是结构化任务而非用户意图,跑管线会误分类
+        # 且白花 LLM 调用)
         self.intent_enabled = intent_enabled
         self.intent_pipeline = intent_pipeline
         self.session = session
@@ -321,51 +313,49 @@ class Agent:
         # session.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 
-        # 构建初始对话上下文：head（SKILL/MEMORY/INTENT，每轮重建不进累积）+
-        # 跨轮回放 history + 本轮 user。history 是 ContextCompressor 累积的对话消息
-        # （压缩后 history[0] 是摘要消息，天然落在 INTENT 后、user 前的③位）。
+        # 构建初始对话上下文:head(system_prompt / MEMORY 索引 / INTENT 块,每轮重建
+        # 不进累积)+ 跨轮回放 history + 本轮 user。history 是上下文压缩器累积的
+        # 对话消息,压缩后 history[0] 是摘要消息,天然落在 system 块之后、user 之前。
         head: list[Message] = [Message(role="system", content=self.system_prompt)]
 
-        # ② MEMORY.md 索引（每轮读取，Dream 间隙写入 → 下一轮生效）
+        # MEMORY.md 索引(每轮读取,归档任务在间隙写入 → 下一轮生效)
         if self.memory_index:
             index = await self.memory_index.read()
             if index:
                 head.append(Message(role="system", content=index))
 
-        # ②b 意图识别前置钩子（Layer 4）：intent_enabled 门控——只有 CLI 构造的
-        # Supervisor 置 True。产出 IntentOutput 注入 INTENT 块作为 ReAct 的强提示
-        # （非命令，LLM 自行决定调度）。逻辑不变，产出 append 到 head（不进累积）。
+        # 意图识别前置钩子:intent_enabled 门控——只有 CLI 构造的 Supervisor 置 True。
+        # 产出意图注入 INTENT 块作为 ReAct 的强提示(非命令,LLM 自行决定调度),追加到
+        # head,不进累积。
         if self.intent_enabled and self.intent_pipeline is not None and self.session is not None:
             try:
                 intent = await self.intent_pipeline.run(
                     task, prev_intent=self.session.prev_intent,
                     prev_user_input=self.session.prev_user_input)
             except Exception:
-                # 管线失败降级（D10）：Stage 3 是 LLM 兜底，网络异常/解析失败会传播到
-                # 这里（structured.extract 只 catch JSONDecode/ValidationError）——不阻断
-                # 本轮：log + 跳过 INTENT 块 + 普通 ReAct 继续（退化到 Layer 0/1）。
-                # last_intent 显式置 None：CLI 澄清检查跳过、session.prev_intent 不更新。
+                # 管线失败降级:意图管线是 LLM 兜底,网络异常/解析失败会传播到这里——
+                # 不阻断本轮:记日志 + 跳过 INTENT 块 + 普通 ReAct 继续。last_intent
+                # 显式置 None:CLI 澄清检查跳过、session 的上一轮意图不更新。
                 logger.warning("intent pipeline failed, degraded to plain ReAct", exc_info=True)
                 self.last_intent = None
                 intent = None
             if intent is not None:
                 self.last_intent = intent
                 if intent.clarification and not force_dispatch:
-                    # 跨轮澄清（D4①）：早退在 conv 收集前 → 不累积（非任务轮）。
-                    # 澄清只走 CLI 层；INTENT 块不含 clarification（避免与 AskUserTool 双问）。
+                    # 跨轮澄清:早退在 conv 收集前 → 不累积(非任务轮)。澄清只走 CLI 层;
+                    # INTENT 块不含澄清问题(避免与 ask_user 工具双重发问)。
                     return intent.clarification
                 head.append(Message(role="system", content=_intent_block(intent)))
 
-        #: messages = head + 跨轮回放 history（④位）+ 本轮 user
+        #: messages = head + 跨轮回放 history + 本轮 user
         messages = list(head)
         if self.compressor:
-            messages.extend(self.compressor.history)      # ④ 跨轮回放（首轮为空 → 现状）
+            messages.extend(self.compressor.history)      # 跨轮回放(首轮为空 → 现状)
 
-        #: conv = 本轮对话残留（旁路列表）。兼两职：(a) 压缩重建时拼回 messages（Task 4）；
-        #: (b) run 结束时作为 accumulate 输入。与 messages 始终同步 append，不用索引
-        #: 定位——压缩重建会改变 head+history 长度，固定索引会错位。
-        #: 唯一例外：截断续写分支（truncated）只 append 到 messages 不进 conv——
-        #: 半截内容不出现在最终累积里，conv 只收合并后的完整 assistant。
+        #: conv = 本轮对话残留(旁路列表)。兼两职:(a) 压缩重建时拼回 messages;
+        #: (b) run 结束时作为累积输入。与 messages 始终同步追加,不用索引定位——压缩
+        #: 重建会改变 head+history 长度,固定索引会错位。唯一例外:截断续写分支只追加
+        #: 到 messages 不进 conv——半截内容不出现在最终累积里,conv 只收合并后的完整回答。
         conv: list[Message] = [Message(role="user", content=task)]
         messages.append(conv[0])
 
@@ -374,17 +364,14 @@ class Agent:
         accumulated: list[str] = []
 
         for _ in range(self.max_turns):
-            # 每次 model call 前检查压缩：messages 已含回放 history，超阈值即触发。
-            # compress_history 原地改写 compressor.history（摘要写进 history[0]——
-            # 压缩产物跨轮持久），再重建 messages：head（本 run 构建的 system 块）+
-            # 新 history + conv（本轮残留，含已执行的 tool 往返）。与旧 compress(messages)
-            # 的区别：旧版只重建传入的 messages 不动 history → 摘要跨轮丢失（Task 3
-            # review 发现）；新版以 history 为唯一压缩状态。旧 compress 在此退役（Task 5 删）。
+            # 每次模型调用前检查压缩:messages 已含回放 history,超阈值即触发。
+            # compress_history 原地改写 compressor.history(摘要写进 history[0],
+            # 压缩产物跨轮持久),再重建 messages:head + 新 history + conv(本轮残留,
+            # 含已执行的工具往返)。history 是唯一压缩状态,保证摘要跨轮不丢。
             if self.compressor and self.compressor.should_compress(messages):
-                # 截断续写×压缩重建互斥：截断分支把"半截+续写提示"append 进 messages 但
-                # 不进 conv（见 conv 注释），重建 `messages = head + history + conv` 会丢弃
-                # 它们，而 accumulated 仍持有半截 → 续写因无参照从零重答，返回 半截+重复
-                # 污染 conv/history。弃掉半截（clear），续写无参照即完整重答，不拼接重复。
+                # 截断续写与压缩重建互斥:截断分支把"半截+续写提示"追加进 messages 但
+                # 不进 conv,重建会丢弃它们,而累积器仍持有半截 → 续写因无参照从零重答,
+                # 返回半截+重复,污染 conv/history。故先弃掉半截,续写无参照即完整重答。
                 accumulated.clear()
                 await self.compressor.compress_history()
                 messages = list(head) + list(self.compressor.history) + conv
@@ -405,9 +392,9 @@ class Agent:
             # LLM 判定任务完成：返回无 tool_calls 的纯文本消息
             if not response.tool_calls:
                 if response.truncated:
-                    # 内容被截断 → 不当作最终回答返回（静默半截是 P5 触发点）。
-                    # 暂存半截、把已生成部分+续写提示进上下文，继续循环。
-                    # max_turns 天然封顶续写次数，不会死循环。
+                    # 内容被截断 → 不当作最终回答返回(否则静默交付残缺内容)。暂存半截、
+                    # 把已生成部分+续写提示放进上下文,继续循环;max_turns 天然封顶续写
+                    # 次数,不会死循环。
                     accumulated.append(response.content or "")
                     messages.append(response)
                     messages.append(Message(
@@ -420,8 +407,8 @@ class Agent:
                 # （如追加来源引用、注入安全声明等）
                 for mw in self.security_middleware:
                     content = await mw.on_finish(self, content)
-                # 意图会话更新（不变）：本轮消费了 intent → 更新 prev_intent/prev_user_input 供下轮
-                # Stage 1 追问（clarification 早退 / 管线降级时 last_intent 为 None → 不更新）
+                # 意图会话更新:本轮消费了 intent → 更新上一轮意图/输入供下轮追问使用
+                # (澄清早退或管线降级时 last_intent 为 None → 不更新)
                 if self.intent_enabled and self.last_intent is not None:
                     self.session.prev_intent = self.last_intent.intent_type
                     self.session.prev_user_input = task
@@ -436,13 +423,11 @@ class Agent:
             messages.append(response)
             conv.append(response)          # conv 与 messages 同步追加（见 conv 定义注释）
 
-            # 并发执行 LLM 请求的工具调用（B1）：
-            # 同一 message 的多个 tool_call 用 gather 并行（工具已在 to_thread 线程池，
-            # 见 _exec_tool 第 7 步——真实并发不阻塞事件循环）。
-            # gather 按输入顺序返回 → tool_msg 顺序与 tool_call_id 映射不变（zip 拼接），
-            # LLM 关联 tool result 到对应 tool_call 的顺序语义不因并发而改变。
-            # 并发上限 4（信号量）防一次性打爆网络源（搜索类工具同时打多源 API）；
-            # confirm 用锁串行（CLI stdin 并发读会竞态，见 _exec_tool ConfirmRequired 分支）。
+            # 并发执行 LLM 请求的工具调用:同一 message 的多个工具调用用 gather 并行
+            # (工具已在线程池执行,真实并发不阻塞事件循环)。gather 按输入顺序返回 →
+            # 结果顺序与工具调用 ID 映射不变,LLM 关联结果到对应调用的顺序语义不因并发
+            # 而改变。并发上限 4(信号量)防一次性打爆网络源;确认用锁串行(CLI 标准输入
+            # 并发读会竞态)。
             sem = asyncio.Semaphore(4)
             confirm_lock = asyncio.Lock()
 
@@ -478,7 +463,7 @@ class Agent:
         """
         执行单个 LLM 请求的工具调用，内部处理所有异常。
 
-        流程（Layer 1 中间件管道，v2）::
+        流程(中间件管道)::
 
             1. 构造 ToolContext（trace_id / session_id / agent_type / 工具 / 参数）
                —— ctx 在参数解析前构造，保证所有路径都能走 after 链审计
@@ -492,24 +477,20 @@ class Agent:
             6. 执行工具（异常 → ToolResult(text="Tool error: ...")）
             7. after 阶段：逆序执行各中间件的 after 钩子（洋葱模型）
 
-        v2 与 v1 的区别：JSON 解析失败和未知工具不再绕过中间件管道——
-        ctx 在解析前构造，early return 走 after 链（仅审计），
-        保证这些异常路径同样留下审计痕迹（tool=None 时各中间件
-        before 钩子不执行，只有 Audit 记录调用）。
+        注意:JSON 解析失败和未知工具不绕过中间件管道——ctx 在解析前构造,
+        早退路径也走 after 链(仅审计),保证这些异常路径同样留下审计痕迹
+        (工具为 None 时各中间件 before 钩子不执行,只有审计记录调用)。
 
-        错误处理采用"degrade to text"策略：
-        所有异常（JSON 解析失败、未知工具名、工具执行异常、中间件拦截）
-        都转为 ToolResult(text="...")，作为正常对话流的一部分
-        反馈给 LLM。LLM 在下一轮 ReAct 中看到错误文本后
-        可以自行决定是否重试、调整参数或放弃。
+        错误处理采用"降级为文本"策略:所有异常(JSON 解析失败、未知工具名、工具
+        执行异常、中间件拦截)都转为 ToolResult(text="..."),作为正常对话流的一部分
+        反馈给 LLM。LLM 在下一轮中看到错误文本后可自行决定重试、调整参数或放弃。
 
         :param tool_call: LLM 返回的工具调用字典
             {"id": str, "function": {"name": str, "arguments": str}}
             其中 arguments 为 JSON 字符串，此方法负责 json.loads 解析
-        :param _confirm_lock: B1 并发 confirm 串行锁（asyncio.Lock | None）。
-            同一 message 的多个 tool_call 并发执行时由 run() 传入同一个锁，
-            把 ConfirmRequired 的 confirm_callback 调用串行化（CLI stdin 并发读竞态）；
-            None = 非并发路径，confirm 行为与现状一致
+        :param _confirm_lock: 并发确认串行锁(asyncio.Lock | None)。同一 message 的
+            多个工具调用并发执行时由 run() 传入同一个锁,把确认回调调用串行化
+            (CLI 标准输入并发读会竞态);None = 非并发路径,确认行为与现状一致
         :returns: ToolResult，始终返回（不抛异常）
         """
         name = tool_call["function"]["name"]
@@ -563,12 +544,11 @@ class Agent:
             try:
                 await mw.before(ctx)
             except ConfirmRequired as cr:
-                # 高风险操作：交由 confirm_callback 决策。
-                # B1 并发时多个 tool_call 的 confirm_callback 都跑在事件循环线程上
-                # （to_thread 只包 tool.execute，中间件/回调不离开事件循环），但 gather
-                # 让它们在 await 点交错——CLI stdin 并发读会竞态（两个回调同时抢 input()）。
-                # _confirm_lock 把 confirm 决策串行化：一个 confirm 未决时其余等待；
-                # 非并发路径（_confirm_lock=None，单工具调用）行为与现状完全一致。
+                # 高风险操作:交由确认回调决策。并发时多个工具调用的确认回调都跑在事件
+                # 循环线程上(to_thread 只包工具执行,中间件/回调不离开事件循环),但并行
+                # gather 让它们在 await 点交错——CLI 标准输入并发读会竞态(两个回调同时
+                # 抢 input())。确认锁把确认决策串行化:一个确认未决时其余等待;非并发路径
+                # (锁为 None,单工具调用)行为与现状完全一致。
                 async def _decide() -> bool:
                     return await self.confirm_callback(cr)
                 if _confirm_lock is not None:
@@ -597,15 +577,13 @@ class Agent:
 
         # 7. 执行工具逻辑（结果统一规范化为 ToolResult）
         try:
-            # CPU/网络密集型工具在线程池执行，避免阻塞事件循环
-            # （影响 Layer 4 parallel_spawn 并行与 Dream 后台任务）
-            # opt-in 注入 per-run 搜索状态：声明 wants_run_state 的搜索类工具
-            # 拿同一个 SearchRunState（按 trace_id 键控）——跨多次 tool_call
-            # 共享自动去重池（A3）；非声明工具零开销（不构造状态）。
-            # 注入方式：作为 to_thread 的独立 kwarg 直接传 execute，**不写进
-            # ctx.args**——ctx.args 会被 after 钩子/审计读并 json.dumps，而
-            # SearchRunState 不可序列化，写进去会让该调用的审计行整体丢失
-            # （review finding 2）。
+            # CPU/网络密集型工具在线程池执行,避免阻塞事件循环——否则并行派发与后台
+            # 归档任务会被单个工具调用卡死。
+            # opt-in 注入每轮搜索状态:声明 wants_run_state 的搜索类工具拿到按追踪 ID
+            # 键控的同一个去重池,跨多次工具调用共享自动去重;未声明的工具零开销。
+            # 注入方式:作为 to_thread 的独立参数直接传 execute,**不写进 ctx.args**——
+            # ctx.args 会被 after 钩子/审计读取并序列化,而去重池不可序列化,写进去
+            # 会让该调用的审计行整体丢失。
             if getattr(tool, "wants_run_state", False):
                 from paperflow.core.search_state import get_run_state
                 raw = await asyncio.to_thread(

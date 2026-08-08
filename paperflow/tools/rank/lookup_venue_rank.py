@@ -1,10 +1,10 @@
-"""LookupVenueRankTool：查询论文 venue 等级（A2，spec §3.2）。
+"""LookupVenueRankTool：查询论文发表 venue(期刊/会议)的等级。
 
-reviewer 下载审查模式专属。三层：本地映射 → LetPub(ISSN) → SJR → 未命中。
-等级值带来源与证据链接，未命中显式返回"未找到等级"（不默认通过）。
+reviewer 下载审查模式专属。查询链:本地映射 → LetPub(ISSN) → SJR → 未命中。
+等级值带来源与证据链接,未命中显式返回"未找到等级"(不默认通过,交由人工核验)。
 
-网络访问复用 _HttpClientMixin 的 SSRF 安全抓取（validate_url_target +
-resolve_url_target 逐跳校验重定向），httpx 同步客户端——工具已在线程池跑。
+网络访问复用 _HttpClientMixin 的 SSRF 安全抓取(逐跳校验重定向),httpx 同步客户端
+——工具已在线程池里跑。
 """
 import re
 import urllib.parse
@@ -18,10 +18,10 @@ from paperflow.tools.rank._venue_rank import lookup_local, normalize_venue, RANK
 
 
 class _VenueClient(_HttpClientMixin):
-    """LetPub/SJR 抓取客户端：SSRF 校验 + 超时 + 浏览器头 + 可选 MockTransport（测试注入）。
+    """LetPub/SJR 抓取客户端:SSRF 校验 + 超时 + 浏览器头 + 可选 MockTransport(测试注入)。
 
-    浏览器头是反爬关键：LetPub 对无 UA 的请求可能返回验证页/空结果页（2026-08-08 实测裸
-    UA 抓不到分区行）；Accept/Accept-Language 模拟真实浏览器，降低被识别为脚本的概率。
+    浏览器头是反爬关键:LetPub 对无浏览器标识的请求可能返回验证页/空结果页,抓不到分区
+    行;Accept/Accept-Language 模拟真实浏览器,降低被识别为脚本的概率。
     """
 
     #: 浏览器 UA + Accept 头——LetPub 反爬识别无 UA 客户端并返回空结果（见类 docstring）
@@ -40,15 +40,11 @@ class _VenueClient(_HttpClientMixin):
 
 
 def _parse_letpub(html: str) -> dict | None:
-    """从 LetPub 结果页提取 {cas}。解析失败返回 None（诚实降级）。
+    """从 LetPub 结果页提取中科院分区;解析失败返回 None(诚实降级)。
 
-    LetPub 真实数据行格式（searchissn/searchname 精确检索，2026-08-08 从页面提取）：
-        <td>0178-4617</td><td>ALGORITHMICA…</td><td>IF: 1 h-index: 67…</td><td>4区</td>
-        <td>大类：计算机科学…</td>…
-    第 4 列（td[3]）即分区列（4区/1区/2区/3区）。LetPub 把 JCR/中科院分区放在新锐期刊
-    分区表里，此处当作中科院 CAS 分区使用——来源为真实网页数据，口径按网页标注。
-    只取第一个数据行：精确检索（searchissn/searchname）时首行即目标期刊；不做整页
-    扫描，避免命中列表里无关期刊的分区（歧义误判的根源，与 _parse_sjr 同哲学）。"""
+    结果页每个数据行形如:<td>ISSN</td><td>刊名…</td><td>IF/h-index…</td><td>4区</td>,
+    第 4 列即分区列(1-4 区/一-四区)。只取第一个数据行:精确检索时首行即目标期刊;
+    不做整页扫描,避免命中列表里无关期刊的分区(歧义误判的根源)。"""
     # 阿拉伯数字分区（4区）转中文（四区），与等级值域 cas∈{一区..四区} 对齐
     _CN_NUM = {"1": "一", "2": "二", "3": "三", "4": "四"}
     for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S | re.I):
@@ -71,14 +67,13 @@ _SJR_WINDOW_CHARS = 500
 
 
 def _parse_sjr(html: str, venue: str) -> dict | None:
-    """从 SJR 搜索页提取目标期刊的 JCR 档位（Q1–Q4）；失败返回 None。
+    """从 SJR 搜索页提取目标期刊的 JCR 档位(Q1–Q4);失败返回 None。
 
-    为什么限定窗口而非整页扫描：SJR 搜索页（journalsearch.php?q=<venue>）返回的是
-    候选期刊列表，整页 re.search 首个 Q[1-4] 会命中列表里无关期刊的档位——venue
-    歧义（多本期刊含同名关键词）时误判「通过」，违反 spec「等级未知 → 不默认通过」。
-    修复：先定位规范化 venue 名在页内首次出现的位置，只在其后 ~500 字符窗口内找
-    Q[1-4]；找不到 → None（走「未找到等级」，让 reviewer 人工核验，绝不默认通过）。
-    归一化（小写 + 去非字母数字）让标题与页面文本都去掉标签/大小写干扰后对齐。
+    为什么限定窗口而非整页扫描:SJR 搜索页返回候选期刊列表,整页取首个 Q 档会命中
+    列表里无关期刊的档位——venue 歧义(多本期刊含同名关键词)时误判「通过」,违反
+    「等级未知 → 不默认通过」。修复:先定位规范化 venue 名在页内首次出现的位置,
+    只在其后 ~500 字符窗口内找 Q 档;找不到 → None(走「未找到等级」,让 reviewer
+    人工核验)。归一化(小写 + 去非字母数字)让标题与页面文本去掉标签/大小写干扰后对齐。
     """
     norm_page = re.sub(r"[^a-z0-9]", "", (html or "").lower())
     norm_venue = re.sub(r"[^a-z0-9]", "", (venue or "").lower())

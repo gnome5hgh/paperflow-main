@@ -34,15 +34,19 @@ Always use `conda run -n paperflow` for 非交互命令（测试/脚本/安装�
 
 ## Code style
 
-Write detailed comments in all code. Explain the WHY behind non-obvious logic — design constraints, edge cases, workarounds, and architectural intent. Assume future readers (including yourself) have zero context on why a piece of code exists. Comments should be in Chinese.
+注释面向所有人——包括新人和非维护者。用中文写,不出现内部项目代号(任务/决策/评审编号、日期、spec/ADR 章节引用),也不写过程流水账。需要背景时用一句白话说明。
+
+每个函数/方法的 docstring 至少说明其**作用**;参数含义不显而易见时说明;返回值复杂时说明「是什么」;关键算法思路、非显而易见的边界条件(安全/并发/失败处理)是重点。非显而易见的逻辑保留 WHY,但用通俗语言,不写成变更日志。
+
+按逻辑块组织注释:同一逻辑块的多行代码合并成一条块注释,放在块首;避免每行一注。每条注释紧跟其描述的代码。
 
 Good comments explain the reason, not the mechanics:
 ```python
 # BAD: "Loop over items and add to result"
-# GOOD: "遍历所有 items 并去重，因为多源搜索结果可能包含同一篇论文的不同版本"
+# GOOD: "遍历所有 items 并去重,因为多源搜索结果可能包含同一篇论文的不同版本"
 ```
 
-Keep comments up to date when modifying code — stale comments are worse than no comments.
+修改代码时同步更新注释——过期注释比没有注释更糟。
 
 ## Architecture
 

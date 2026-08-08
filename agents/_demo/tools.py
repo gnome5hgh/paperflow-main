@@ -1,12 +1,11 @@
 # agents/_demo/tools.py
-"""
-Layer 0 验证用 Demo Agent 的工具定义。
+"""Demo Agent 的工具定义(链路验证用)。
 
-``_demo`` Agent 只有一个 echo 工具，用于验证整条链路：
-AgentRegistry 扫描 → Agent 加载 Tool → ReAct 循环 → LLM function calling → 工具执行 → 返回结果。
+_demo agent 只有一个 echo 工具,用于验证整条链路:AgentRegistry 扫描 →
+Agent 加载工具 → ReAct 循环 → LLM 工具调用 → 工具执行 → 返回结果。
 
-``TOOLS`` 模块级列表是本项目的约定 —— AgentRegistry 通过 importlib
-动态加载 tools.py 后读取该列表，因此文件必须定义此变量。
+TOOLS 模块级列表是本项目的约定——AgentRegistry 通过 importlib 动态加载
+tools.py 后读取该列表,因此文件必须定义此变量。
 """
 
 from paperflow.core.tool import Tool, ToolResult
@@ -14,7 +13,7 @@ from paperflow.core.tool import Tool, ToolResult
 
 class EchoTool(Tool):
     """
-    回显工具 —— Layer 0 最简验证工具。
+    回显工具 —— 最简链路验证工具。
 
     接收任意文本消息并原样回显，用于证明：
     - LLM 能正确生成 function call

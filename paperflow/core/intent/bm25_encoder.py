@@ -1,8 +1,10 @@
 # paperflow/core/intent/bm25_encoder.py
-"""BM25 稀疏编码——对齐 semantic_router/encoders/bm25.py。
+"""BM25 稀疏编码——实现思路对齐 semantic_router/encoders/bm25.py。
 
-唯一替换：PretrainedTokenizer("bert-base-uncased") → JiebaTokenizer（中英文意图 utterance）。
-⚠️ encode_documents 严格保留 0.1.16 的 b*b 公式（源码笔误，决策 A 保留——与 0.1.16 行为一致）。
+与上游的唯一差异：用 JiebaTokenizer 替换 PretrainedTokenizer("bert-base-uncased")，
+以支持中英文混合的意图示例句。
+encode_documents 有意保留上游 0.1.16 的 b*b 公式（写法看似笔误），
+以保证与上游版本行为一致。
 """
 import logging
 from functools import partial
@@ -17,15 +19,16 @@ jieba.setLogLevel(logging.ERROR)
 
 
 class JiebaTokenizer:
-    """对齐 PretrainedTokenizer 接口。id=0 = <pad>/<unk>（OOV 归 0）。
-    tokenize 总是 pad 到批内最大长度，返回 2D int 矩阵（_df 的 mask 索引要求 2D）。
+    """接口对齐 PretrainedTokenizer。id=0 = <pad>/<unk>（未登录词归 0）。
+    tokenize 总是把一批文本 pad 到批内最大长度，返回二维整数矩阵
+    （_df 的 mask 索引要求二维）。
 
-    ⚠️ vocab 冻结语义（jieba 替换 bert 的隐藏差异修复）：
-    bert 的 vocab 预训练固定（30522，永不改变）；jieba 是动态构建——
-    若每次 fit 重建 vocab，多次 add 后 token_id 漂移（旧索引 {3:"论文"} vs
-    新向量 {3:"下载"}），稀疏索引数据作废。故：首次 build_vocab 后冻结，
+    ⚠️ 词典冻结语义（jieba 与 bert 的隐藏差异）：
+    bert 的词典在预训练时固定（30522，永不改变）；jieba 是动态构建——
+    若每次 fit 都重建词典，多次 add 后 token_id 会漂移（旧索引 {3:"论文"} vs
+    新向量 {3:"下载"}），稀疏索引数据全部作废。故：首次 build_vocab 后冻结，
     后续 fit 只重算统计量（corpus_size/avg_doc_len/df），token_id 语义稳定。
-    新词 OOV 归 0（丢失贡献）——可接受，语义稳定优先（对齐 bert 固定 vocab）。"""
+    未登录词归 0（丢失该词的贡献）——可接受，语义稳定优先（对齐 bert 固定词典）。"""
 
     def __init__(self):
         self.vocab: dict[str, int] = {"<pad>": 0}
@@ -95,12 +98,13 @@ class BM25Encoder:
         return mask * self._documents_containing_word
 
     def encode_queries(self, queries: list[str]) -> list[dict[int, float]]:
-        """对齐 encode_queries()：df+0.5 平滑 → (N+1)/df → log → 行归一化。
+        """query 编码：df+0.5 平滑 → (N+1)/df → log → 行归一化。
 
-        ⚠️ 未 fit 守卫：_df 里 `mask * self._documents_containing_word` 在未 fit 时为
-        `mask * None`，会崩 `TypeError: unsupported operand type(s) for *: 'bool' and 'NoneType'`
-        ——对齐上游 0.1.16 bm25.py:180 的 `ValueError("Encoder not fitted...")` 干净报错。
-        Layer 4 Supervisor 集成时空 routes.yaml 会让 REPL 首条 query 走这里，必须显式兜底。"""
+        ⚠️ 未 fit 守卫：_df 里 `mask * self._documents_containing_word` 在未 fit 时
+        是 `mask * None`，会崩出 `TypeError`——因此这里显式抛出
+        ValueError("Encoder not fitted. Please call fit() first")，
+        与上游 0.1.16 的干净报错行为一致。即使知识库为空，首条 query 也会
+        走到这里，必须显式兜底而不能依赖 Python 的原始 TypeError。"""
         if self.corpus_size is None or self._avg_doc_len is None or self._documents_containing_word is None:
             raise ValueError("Encoder not fitted. Please call fit() first")
         ids = self.tokenizer.tokenize(queries)
@@ -114,11 +118,12 @@ class BM25Encoder:
         return self._array_to_sparse(idf_norm)
 
     def encode_documents(self, documents: list[str]) -> list[dict[int, float]]:
-        """对齐 encode_documents()：TF 归一化。⚠️ 保留 0.1.16 的 b*b 公式（决策 A）。
+        """文档编码：TF 归一化。⚠️ 有意保留上游 0.1.16 的 b*b 公式（写法看似笔误），
+        以保证与上游行为一致。
 
-        ⚠️ 未 fit 守卫：分母 `self._avg_doc_len` 未 fit 时为 None，`len/avgdl` 会崩
-        `TypeError`。与 encode_queries 同源，统一对齐上游 0.1.16 bm25.py:229 的
-        `ValueError("Encoder not fitted...")`。"""
+        ⚠️ 未 fit 守卫：分母 `self._avg_doc_len` 未 fit 时为 None，`len/avgdl` 会崩出
+        `TypeError`。与 encode_queries 同源，统一显式抛出
+        ValueError("Encoder not fitted. Please call fit() first")。"""
         if self.corpus_size is None or self._avg_doc_len is None or self._documents_containing_word is None:
             raise ValueError("Encoder not fitted. Please call fit() first")
         ids = self.tokenizer.tokenize(documents)
@@ -132,6 +137,7 @@ class BM25Encoder:
         return self._array_to_sparse(tf_normed)
 
     def __call__(self, docs: list[str]) -> list[dict[int, float]]:
+        """让实例可被调用：把一批文本按 query 编码，与稀疏编码接口对齐。"""
         return self.encode_queries(docs)
 
     @staticmethod

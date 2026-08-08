@@ -1,7 +1,7 @@
-"""ReadFileTool：读取 note/pdf/memory/templates/scratch 根下的文本文件。
+"""ReadFileTool：读取资料库内各类根目录下的文本文件。
 
-安全边界靠中间件强制：format="path" → WorkspacePolicy（绝对路径 + allowed_roots 白名单）、
-output_scan="mark" → 外部内容横幅。Tool 自身不重复校验——声明元数据即可。
+安全边界由中间件强制:path 参数经工作区白名单校验,读取外部内容会打"未经安全校验"
+横幅。工具自身不重复校验——声明元数据即可。
 """
 from pathlib import Path
 
@@ -25,4 +25,5 @@ class ReadFileTool(Tool):
     side_effects = ["read_file"]
 
     def execute(self, path: str) -> ToolResult:
+        """读取 path 指向的文本文件并原样返回(编码固定为 UTF-8)。"""
         return ToolResult(text=Path(path).read_text(encoding="utf-8"))

@@ -1,15 +1,15 @@
-"""venue 等级查询：本地映射表 + 等价表判定（A2，spec §3）。
+"""venue 等级查询：本地映射表 + 等价表判定。
 
-三层查询策略（lookup_venue_rank 工具）：
-1. 本地映射表 → 秒回（本模块）
-2. LetPub 按 ISSN 在线查（中科院分区 + JCR 分区）
+查询策略(配合 lookup_venue_rank 工具)：
+1. 本地映射表 → 秒回(本模块)
+2. LetPub 按 ISSN 在线查(中科院分区 + JCR 分区)
 3. SJR 兜底
-4. 全未命中 → "未找到等级"（不默认通过）
+4. 全未命中 → "未找到等级"(不默认通过)
 
 等级值：{"ccf": "A"|"B"|"C"|None, "jcr": "Q1".."Q4"|None, "cas": "一区".."四区"|None}
 
-本模块只承载"本地数据 + 规范化 + 判定"，不含网络；
-网络查询（LetPub/SJR）在 lookup_venue_rank.py。
+本模块只承载"本地数据 + 规范化 + 判定",不含网络;网络查询(LetPub/SJR)在
+lookup_venue_rank.py。
 """
 import re
 from collections import OrderedDict
@@ -46,11 +46,10 @@ VENUE_RANKS: dict[str, dict] = {
 RANK_CACHE: OrderedDict[tuple, dict] = OrderedDict()
 RANK_CACHE_MAX = 200
 
-#: 规范化时剥离的会议噪音前后缀（小写后匹配）。
-#: 注意：不剥期刊前缀（"ieeetransactionson" / "acmtransactionson"）——
-#: 期刊映射键是"前缀+刊名"的完整小写串（如 ieeetransactionsonknowledgeanddataengineering），
-#: 剥了反而失配（brief 测试 normalize_venue 对 IEEE TKDE 断言了带前缀的完整串）。
-#: 长前缀在前：先剥完整前缀，避免先剥 "proceedingsofthe" 留下 "acm…" 再失配。
+#: 规范化时剥离的会议噪音前后缀(小写后匹配)。
+#: 注意:不剥期刊前缀("ieeetransactionson"/"acmtransactionson")——期刊映射键是
+#: "前缀+刊名"的完整小写串(如 ieeetransactionsonknowledgeanddataengineering),剥了
+#: 反而失配。长前缀在前:先剥完整前缀,避免先剥 "proceedingsofthe" 留下 "acm…" 再失配。
 _NOISE_WORDS = (
     "proceedingsoftheacm",
     "proceedingsofthe",
@@ -87,7 +86,7 @@ def lookup_local(venue: str) -> dict | None:
 
 
 def passes_q2(rank: dict) -> bool:
-    """等价表 B（spec §3.3）：期刊 JCR Q1/Q2 或中科院一/二区；会议 CCF-A/B。其余不通过。"""
+    """等级是否达到「≥Q2」:期刊 JCR Q1/Q2 或中科院一/二区,或会议 CCF-A/B。其余不通过。"""
     if rank.get("jcr") in ("Q1", "Q2"):
         return True
     if rank.get("cas") in ("一区", "二区"):

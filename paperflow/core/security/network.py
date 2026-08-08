@@ -2,23 +2,23 @@
 """
 SSRF 防护工具：URL 目标校验与重定向逐跳解析。
 
-``validate_url_target`` 将 hostname 解析为 IP 后拒绝 loopback / 私网 /
-link-local 地址与 cloud metadata endpoint（169.254.169.254、
-metadata.google.internal），支持按 netloc（host 或 host:port）放行；
-``resolve_url_target`` 跟随重定向逐跳校验，httpx 为可选依赖——
-未安装时原样返回 URL，由网络 Tool 层决定是否引入 httpx 做重定向防护。
+``validate_url_target`` 把主机名解析为 IP 后，拒绝回环地址、私网地址、
+链路本地地址以及云元数据端点（169.254.169.254、metadata.google.internal），
+并支持按 netloc（主机名或 主机:端口）放行本地开发地址；
+``resolve_url_target`` 跟随重定向逐跳校验，httpx 为可选依赖——未安装时
+原样返回 URL，由调用方决定是否引入 httpx 做重定向防护。
 
 设计要点：
-- 本模块不挂载为中间件，由 Layer 2/3 网络 Tool 自行调用；
+- 本模块不挂载为中间件，由涉及网络请求的工具自行调用；
 - DNS 解析采用本机 ``socket.gethostbyname``，以实际解析结果为准，
-  避免仅按字面 hostname 判断造成的绕过（如 0x7f000001 形式的地址）；
-- allowlist 匹配的是 ``parsed.netloc``（精确的 host:port 字符串），
+  避免仅按字面主机名判断造成的绕过（如 0x7f000001 形式的地址）；
+- 白名单匹配的是 ``parsed.netloc``（精确的 主机:端口 字符串），
   允许显式放行本地开发地址；
-- allowlist 不对称：``169.254.169.254`` 命中的是 PRIVATE_NETS 分支，
-  allowlist 检查先于 metadata 检查 → 可被 allowlist 放行；
-  而 ``metadata.google.internal`` 的检查在 allowlist 之前 → 不可放行；
-- allowlist 为精确 netloc 匹配：裸 host 条目（如 ``"localhost"``）
-  永不匹配带端口的 URL，GROBID 本地服务场景须写 ``"127.0.0.1:8070"``。
+- 白名单与元数据检查的先后关系不对称：``169.254.169.254`` 命中私网分支，
+  白名单检查先于元数据检查，因此可被白名单放行；而
+  ``metadata.google.internal`` 的检查在白名单之前，不可放行；
+- 白名单为精确 netloc 匹配：裸主机条目（如 ``"localhost"``）永不匹配
+  带端口的 URL，本地服务须写 ``"127.0.0.1:8070"`` 这样的完整形式。
 """
 
 import ipaddress
@@ -39,6 +39,10 @@ class SSRFError(Exception):
 
 
 def validate_url_target(url: str, allowlist: set[str] | None = None) -> None:
+    """校验 URL 目标是否允许访问：把主机名解析为 IP，落在私网/元数据区间即抛 SSRFError。
+
+    allowlist 非空时，netloc 命中白名单的本地地址可放行。
+    """
     parsed = urllib.parse.urlparse(url)
     hostname = parsed.hostname
     if hostname is None:
@@ -63,7 +67,7 @@ def validate_url_target(url: str, allowlist: set[str] | None = None) -> None:
 
 
 def resolve_url_target(url: str, allowlist: set[str] | None = None) -> str:
-    """跟随重定向逐跳校验。httpx 为可选依赖——未安装时原样返回。"""
+    """跟随重定向逐跳校验，返回最终地址。httpx 为可选依赖——未安装时原样返回。"""
     try:
         import httpx
     except ImportError:

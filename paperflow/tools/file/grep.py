@@ -30,13 +30,18 @@ class GrepTool(Tool):
     allowed_roots = ["note", "pdf", "memory"]
 
     def execute(self, pattern: str, path: str) -> ToolResult:
+        """在文件或目录内按正则搜索文本,返回 file:line 匹配行(最多 30 条)。
+
+        :param pattern: 正则表达式
+        :param path: 文件路径或目录(目录递归,只搜文本文件,跳过二进制/PDF)
+        :returns: 匹配行每行一条(file:line: 原文);无匹配返回"无匹配"
+        """
         try:
             regex = re.compile(pattern)
         except re.error as e:
             return ToolResult(text=f"正则无效: {e}")
         p = Path(path)
-        # 敏感路径黑名单：目录递归时跳过 workspace/audit 等 deny 目录（防通配符摸审计日志/密钥）。
-        # cfg 防御式读取——测试与裸构造时可能没有 _config（与 glob 一致）。
+        # 敏感路径黑名单:目录递归时跳过审计/密钥等目录,防通配符枚举。cfg 防御式读取。
         cfg = getattr(self, "_config", None)
         files = [p] if p.is_file() else [
             f for f in p.rglob("*")
@@ -48,13 +53,12 @@ class GrepTool(Tool):
             try:
                 lines = f.read_text(encoding="utf-8").splitlines()
             except (UnicodeDecodeError, OSError):
-                continue    # 非文本/权限问题跳过，不阻断整体搜索
+                continue    # 非文本/权限问题跳过,不阻断整体搜索
             for i, line in enumerate(lines, 1):
                 if regex.search(line):
-                    # 返回原始行（不 strip、不截断）：grep 命中会被当作 edit_file 的
-                    # old_text 锚点，锚点必须与文件逐字节一致（缩进/超长行也不例外），
-                    # strip/截断会让模型复制过去的 old_text 匹配失败（Important 4）。
-                    # 行可能很长，但作为锚点需要原样；用 30 条封顶控制量。
+                    # 返回原始行(不 strip/截断):grep 命中会当作 edit_file 的 old_text
+                    # 锚点,锚点必须与文件逐字节一致,strip/截断会让模型复制过去的锚点
+                    # 匹配失败。行可能很长,但作为锚点需要原样;用 30 条封顶控制量。
                     results.append(f"{f}:{i}: {line}")
                     if len(results) >= 30:                       # 封顶 30 条
                         return ToolResult(text="\n".join(results))

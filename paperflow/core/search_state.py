@@ -1,21 +1,19 @@
-"""per-run 搜索状态：自动去重论文池 + 模块级 query 缓存 + 源熔断。
+"""per-run 搜索状态：自动去重论文池 + 模块级查询缓存 + 源熔断。
 
-作用域设计（spec §7）：
-- SearchRunState 按 trace_id 键控（per-run），池内论文按 四级去重键 自动去重合并
-  （A3：dedup 并入池的插入逻辑，dedup_papers 工具删除）。
-- _QUERY_CACHE 模块级 LRU（A4：重复 query 守卫，跨 run 共享）。
-- _SOURCE_BREAKER 模块级、时间有界（A5：源连续失败 ≥2 次 → 熔断 5 分钟）。
+- SearchRunState 按追踪 ID 键控(每轮搜索一个实例),池内论文按四级去重键自动去重合并
+- _QUERY_CACHE 模块级 LRU:重复 query 守卫,跨轮共享
+- _SOURCE_BREAKER 模块级、时间有界:源连续失败达到阈值 → 熔断一段时间
 
-tool.execute 跑在 to_thread worker 线程，_run_state 由 Agent._exec_tool 注入
-保留 kwarg（对齐 needs_parent 的 opt-in 注入先例，无 contextvar 魔法）。
+工具执行跑在线程池 worker 线程,_run_state 由 Agent._exec_tool 注入保留参数
+(对齐 needs_parent 的 opt-in 注入先例,不用 contextvar 魔法)。
 """
 import re
 import time
 from collections import OrderedDict
 
-#: query 缓存上限（A4）
+#: 查询缓存上限(LRU 逐出)
 QUERY_CACHE_MAX = 20
-#: 熔断阈值与冷却（A5）
+#: 熔断阈值与冷却:连续失败达到阈值即熔断,冷却期后复位
 BREAKER_THRESHOLD = 2
 BREAKER_COOLDOWN_S = 300
 
@@ -33,7 +31,7 @@ class SearchRunState:
 
     @staticmethod
     def dedup_key(p: dict) -> str:
-        """四级去重键：DOI → arXiv ID → 规范化标题（与旧 DedupPapersTool 对齐）。"""
+        """四级去重键:DOI → arXiv ID → 规范化标题(跨源同论文合并的依据)。"""
         if p.get("doi"):
             return f"doi:{p['doi']}"
         if p.get("arxiv_id"):
@@ -71,11 +69,12 @@ def get_run_state(trace_id: str) -> SearchRunState:
     return st
 
 
-# ── A4 模块级 query 缓存（LRU）──
+# ── 模块级查询缓存(LRU)──
 _QUERY_CACHE: OrderedDict[tuple, str] = OrderedDict()
 
 
 def query_cache_get(key: tuple) -> str | None:
+    """取缓存;命中视为最近使用(移到 LRU 末尾),未命中返回 None。"""
     if key in _QUERY_CACHE:
         _QUERY_CACHE.move_to_end(key)
         return _QUERY_CACHE[key]
@@ -83,33 +82,34 @@ def query_cache_get(key: tuple) -> str | None:
 
 
 def query_cache_put(key: tuple, text: str) -> None:
+    """写缓存并维持 LRU:新写入视为最近使用,超上限逐出最久未用的条目。"""
     _QUERY_CACHE[key] = text
     _QUERY_CACHE.move_to_end(key)
     while len(_QUERY_CACHE) > QUERY_CACHE_MAX:
         _QUERY_CACHE.popitem(last=False)
 
 
-# ── A5 模块级源熔断（时间有界）──
+# ── 模块级源熔断(时间有界)──
 _SOURCE_BREAKER: dict[str, dict] = {}
 
 
 def breaker_is_open(source: str) -> bool:
+    """源是否处于熔断状态:失败计数达阈值且仍在冷却期内 → True。"""
     b = _SOURCE_BREAKER.get(source)
     if not b:
         return False
     if b["failures"] >= BREAKER_THRESHOLD and \
             time.monotonic() - b["opened_at"] < BREAKER_COOLDOWN_S:
         return True
-    # 冷却已过（曾真正打开过 → 复位）→ 下次失败重新计数（A5）。
-    # 注意：只有当 failures 已达阈值才清零——否则 is_open 检查会把未达阈值的
-    # 失败计数一并清掉，连续失败永远攒不到 BREAKER_THRESHOLD（brief 原码缺陷，
-    # 与其自测 test_breaker_opens_after_two_failures_and_recovers 冲突，见报告）。
+    # 冷却已过则复位:但只有失败计数已达阈值才清零——否则每次检查都会把未达阈值的
+    # 失败计数一并清掉,连续失败永远攒不到阈值,熔断形同虚设。
     if b["failures"] >= BREAKER_THRESHOLD:
         _SOURCE_BREAKER[source] = {"failures": 0, "opened_at": 0.0}
     return False
 
 
 def breaker_register_failure(source: str) -> None:
+    """记一次源失败;失败计数达到阈值时记录熔断起点时间。"""
     b = _SOURCE_BREAKER.get(source) or {"failures": 0, "opened_at": 0.0}
     b["failures"] += 1
     if b["failures"] >= BREAKER_THRESHOLD:
@@ -118,4 +118,5 @@ def breaker_register_failure(source: str) -> None:
 
 
 def breaker_register_success(source: str) -> None:
+    """记一次源成功:复位该源的失败计数与熔断状态。"""
     _SOURCE_BREAKER[source] = {"failures": 0, "opened_at": 0.0}

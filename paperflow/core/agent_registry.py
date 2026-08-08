@@ -1,21 +1,18 @@
 # paperflow/core/agent_registry.py
 """
-Agent 注册表 —— 扫描 agents/ 目录，统一加载配置和工具。
+Agent 注册表 —— 扫描 agents/ 目录,统一加载配置和工具。
 
-这是 paperFlow 插件体系的唯一入口。系统启动时扫描 ``agents/`` 下的每个子目录，
-同时加载两份文件：
+这是 paperFlow 插件体系的唯一入口。系统启动时扫描 ``agents/`` 下的每个子目录,
+同时加载两份文件:
 
-- ``SKILL.md``（YAML frontmatter + Markdown body）→ 配置元数据 + system prompt
-- ``tools.py``（模块级 ``TOOLS`` 列表）→ Tool 实例
+- ``SKILL.md``(YAML frontmatter + Markdown body)→ 配置元数据 + system prompt
+- ``tools.py``(模块级 ``TOOLS`` 列表)→ Tool 实例
 
-设计依据 ADR 0003：
+设计要点:
 
-- **单一注册表**：取代早期设计中分离的 SkillRegistry + SubAgentRegistry，
-  一个类同时解析配置和导入工具，避免两套注册表之间的数据不同步
-- **权限最小化**：``allowed_agents`` 限制哪些 agent_type 可以加载特权 Skill
-  （Layer 1 由 Policy Engine 执行校验）
-- **Spawn 控制**：``allowed_spawns`` 声明本 agent 能 spawn 哪些 SubAgent
-  （Layer 4 由 SpawnSubAgentTool 执行校验）
+- **单一注册表**:一个类同时解析配置和导入工具,避免两套注册表数据不同步
+- **权限最小化**:``allowed_agents`` 限制哪些 agent 类型可以加载特权 Skill
+- **Spawn 控制**:``allowed_spawns`` 声明本 agent 能 spawn 哪些子 agent
 """
 
 import importlib.util
@@ -54,10 +51,10 @@ class AgentConfig:
     #: 注入 LLM system prompt 的完整文本，定义 Agent 的行为规范
     system_prompt: str = ""
 
-    #: 特权控制：只有白名单中的 agent_type 可加载此 Agent 的 Tool（Layer 1 执行）
+    #: 特权控制:只有白名单中的 agent 类型可加载此 Agent 的工具(策略层执行)
     allowed_agents: list[str] = field(default_factory=list)
 
-    #: Spawn 权限：本 Agent 能 spawn 哪些 SubAgent（Layer 4 执行）
+    #: Spawn 权限:本 Agent 能 spawn 哪些子 agent(spawn 工具运行时校验)
     allowed_spawns: list[str] = field(default_factory=list)
 
     #: 本 Agent 拥有的 Tool 实例列表，从 tools.py 的 TOOLS 列表加载
@@ -202,7 +199,7 @@ class AgentRegistry:
         """
         加载时校验 Tool 的安全元数据字段，非法值立即抛 ValueError。
 
-        校验点（Layer 1 安全中间件的前置防线）：
+        校验点(安全中间件的前置防线):
         - ``risk_level`` ∈ RISK_LEVELS
         - ``side_effects`` 每个值 ∈ SIDE_EFFECTS
         - ``output_scan`` ∈ (None, "mark")

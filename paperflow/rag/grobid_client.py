@@ -1,7 +1,9 @@
-"""GROBID（TEI XML 解析）→ 结构化 section；不可用回退 PyMuPDF 启发式解析。
+"""把 PDF 解析成结构化章节：优先用 GROBID 服务（返回 TEI XML），
+GROBID 不可用时改用 PyMuPDF 做启发式解析。
 
-GrobidClient 刻意跳过 SSRF validate：固定可信本地端点（非用户输入）；
-纵深防御可在上层传 allowlist={"127.0.0.1:8070"}（network.py netloc 精确匹配）。
+GrobidClient 刻意不做 SSRF 防护校验：它的地址是固定的本地可信端点，
+不是用户输入。若需要纵深防御，可在上层调用网络工具时显式传入
+allowlist={"127.0.0.1:8070"} 做精确匹配。
 """
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -14,18 +16,22 @@ _TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
 
 @dataclass
 class ParsedDoc:
-    sections: list[tuple[str, str]]   # (heading, text) 列表
+    """PDF 解析结果：章节列表、表格文本、图片说明文本。"""
+
+    sections: list[tuple[str, str]]   # (标题, 正文) 列表
     tables: list[str]
     figures: list[str]
 
 
 class GrobidClient:
+    """GROBID 服务的 HTTP 客户端，负责可用性探测与 PDF 全文解析。"""
+
     def __init__(self, url: str = "http://127.0.0.1:8070", transport=None, timeout: float = 60.0):
         self.url = url.rstrip("/")
         self._client = httpx.Client(transport=transport, timeout=timeout)
 
     def available(self) -> bool:
-        """可用性探测：GET /api/isalive，异常/超时即 False。"""
+        """探测服务是否可用：请求健康检查接口，异常或超时都视为不可用。"""
         try:
             r = self._client.get(f"{self.url}/api/isalive")
             return r.status_code == 200
@@ -33,6 +39,10 @@ class GrobidClient:
             return False
 
     def parse_pdf(self, path: str) -> ParsedDoc:
+        """把本地 PDF 文件提交给 GROBID 做全文解析，返回结构化章节。
+
+        网络或服务出错时会抛出异常（不吞错，由调用方决定下一步怎么处理）。
+        """
         with open(path, "rb") as f:
             r = self._client.post(
                 f"{self.url}/api/processFulltextDocument",
@@ -43,6 +53,10 @@ class GrobidClient:
         return self._parse_tei(r.text)
 
     def _parse_tei(self, xml: str) -> ParsedDoc:
+        """把 GROBID 返回的 TEI XML 解析成 ParsedDoc。
+
+        遍历所有 div 块，提取每块的标题、正文段落，以及块内的表格和图片说明。
+        """
         root = ET.fromstring(xml)
         sections: list[tuple[str, str]] = []
         tables: list[str] = []
@@ -52,7 +66,7 @@ class GrobidClient:
             if head is not None and head.text:
                 heading = head.text
             else:
-                # GROBID 的 abstract 等 div 常无 <head>，回退用 div@type 作标题
+                # GROBID 的 abstract 等 div 常无 <head>，改用 div@type 作标题
                 # （如 type="abstract"），保证首段有可读 heading。
                 heading = div.get("type", "") or ""
             paras = [p.text or "" for p in div.findall("tei:p", _TEI_NS)]
@@ -67,9 +81,10 @@ class GrobidClient:
 
 
 class PyMuPDFParser:
-    """启发式回退：PyMuPDF 抽全文，按字号跳变粗分 section（够 chunker 用即可）。"""
+    """GROBID 不可用时的备用解析器：用 PyMuPDF 抽取全文，按字号粗略切分章节（精度够切块用即可）。"""
 
     def parse_pdf(self, path: str) -> ParsedDoc:
+        """抽取 PDF 全文并按字号启发式切分章节，返回结构化的章节列表。"""
         import fitz
         doc = fitz.open(path)
         sections: list[tuple[str, str]] = [("", "")]

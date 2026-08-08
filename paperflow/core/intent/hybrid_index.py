@@ -53,8 +53,8 @@ class HybridLocalIndex:
         total_sim = sim_d + sim_s
         top_k = min(top_k, total_sim.shape[0])
         # argpartition 只保证前 k 个在左侧，返回的索引无序——必须按分数降序重排，
-        # 否则调用方拿到的不是真正 top-1/top-k（见 test_query_single_vector：2 元素时
-        # 最小分反而排在 names[0]）。降序排列保证结果可作排名直接消费。
+        # 否则调用方拿到的不是真正 top-1/top-k（例如 2 个元素时最小分反而排在首位）。
+        # 降序排列保证结果可作排名直接消费。
         idx = np.argpartition(total_sim, -top_k)[-top_k:]
         idx = idx[np.argsort(total_sim[idx])[::-1]]
         return total_sim[idx], list(self.routes[idx])

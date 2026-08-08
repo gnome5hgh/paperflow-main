@@ -1,4 +1,4 @@
-"""AcademicChunker：按 section 切块，超长 section 二级 token 切分（带重叠）。"""
+"""AcademicChunker：按章节把文档切成检索块；超长章节再按 token 数二次切分并带重叠。"""
 import hashlib
 from dataclasses import dataclass
 
@@ -10,27 +10,31 @@ _REFERENCE_HEADS = ("references", "参考文献", "bibliography")
 
 @dataclass
 class Chunk:
-    id: str            # sha1(rel_path + chunk_index)，幂等
+    """一个检索块：由切块器产出，包含文本、所属文档路径与章节信息。"""
+
+    id: str            # 块 id：sha1(路径 + 块序号)，内容无关、幂等，编辑同一位置会得到同 id
     text: str
-    path: str          # 相对 vault 根（doc id 与 metadata 共用，跨机器稳定）
-    source: str        # "note" | "pdf"
+    path: str          # 相对知识库根目录的路径（同时用作文档 id 与元数据，跨机器稳定）
+    source: str        # 来源："note"（Markdown 笔记）| "pdf"
     heading: str
     chunk_index: int
 
 
 class AcademicChunker:
-    """两级切分：先按 section，超长 section 再按 max_tokens + 重叠切。
+    """两级切分：先按章节切，超长章节再按 token 数二次切分并带重叠。
 
-    bge max_seq_length 恰为 512，顶到上限有截断风险，故默认 max_tokens=512
-    留余量 + overlap 保持上下文连贯。"""
+    嵌入模型的最大输入长度正好是 512，顶满上限有被截断的风险，所以默认
+    max_tokens=512 留出余量；overlap 让相邻块重叠一部分，保持上下文连贯。
+    """
 
     def __init__(self, max_tokens: int = 512, overlap_tokens: int = 64):
         self.max_tokens = max_tokens
         self.overlap_tokens = overlap_tokens
-        # cl100k_base：GPT-4 系 tokenizer，近似计数即可
+        # cl100k_base：GPT-4 系列的 tokenizer，这里只需近似计数，不必精确
         self._enc = tiktoken.get_encoding("cl100k_base")
 
     def _is_reference(self, heading: str) -> bool:
+        """判断章节标题是否为参考文献类标题（中英文）。此类内容不进入检索块。"""
         return heading.strip().lower().startswith(_REFERENCE_HEADS)
 
     def _split_long(self, text: str) -> list[str]:
@@ -45,6 +49,11 @@ class AcademicChunker:
         return parts
 
     def split_doc(self, rel_path: str, sections: list[tuple[str, str]], source: str) -> list[Chunk]:
+        """把带章节结构的一篇文档切成 Chunk 列表，跳过参考文献章节。
+
+        每个块的 id 由路径加块序号哈希生成、与内容无关，保证同一位置
+        重复切分得到相同 id（幂等）。
+        """
         chunks: list[Chunk] = []
         idx = 0
         for heading, text in sections:

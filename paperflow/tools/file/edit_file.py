@@ -1,10 +1,9 @@
-# paperflow/tools/edit_file.py
-"""EditFileTool：定向修改既有笔记（search-replace，小范围改动）。
+# paperflow/tools/file/edit_file.py
+"""EditFileTool：定向修改既有笔记(search-replace,小范围改动)。
 
-2026-08-06：从"全量覆盖"改为"定向替换"——LLM 只需输出变更部分（省 token），
-且不误伤无关内容。risk 从 high 降为 medium（与 write_file 对齐）：限 note 根 +
-requires_confirm=True，用户对每次修改确认，安全性由路径限制 + 确认保证。
-写后调 index_document() 热更新钩子（与 WriteFileTool 同款，索引一致维护）。
+LLM 只需输出变更部分(省 token),且不误伤无关内容。风险为 medium(与 write_file
+对齐):限笔记根目录 + 需用户确认,安全性由路径限制与确认保证。写后调用索引热更新
+钩子,与 WriteFileTool 保持索引一致。
 """
 from pathlib import Path
 
@@ -25,14 +24,18 @@ class EditFileTool(Tool):
         },
         "required": ["path", "old_text", "new_text"],
     }
-    risk_level = "medium"                      # 与 write_file 对齐（2026-08-06）；定向替换 + 限 note 根 + 确认
+    risk_level = "medium"                      # 与 write_file 对齐:定向替换 + 限笔记根 + 确认
     requires_confirm = True
     allowed_roots = NOTE_ROOTS
     side_effects = ["write_file"]
 
     def execute(self, path: str, old_text: str, new_text: str) -> ToolResult:
-        # 空 old_text 守卫：str.count("") 恒等于 len+1 > 1，会误入"多命中"分支，
-        # 返回的报错让模型困惑（Minor 10）。直接明示参数错误。
+        """在文件里精确替换一处 old_text 为 new_text;不唯一或不存在时拒绝并给指引。
+
+        查找用 str.count 判断唯一性——锚点必须唯一,避免替换错位置。
+        """
+        # 空 old_text 守卫:str.count("") 恒大于 1,会误入"多命中"分支报出令人困惑的错,
+        # 直接明示参数错误。
         if not old_text:
             return ToolResult(text="old_text 不能为空，请提供要替换的原文")
         p = Path(path)
