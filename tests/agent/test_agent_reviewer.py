@@ -56,7 +56,7 @@ async def test_reviewer_download_mode_submits_verdict(agent_env, agent_registry)
 async def test_reviewer_download_mode_no_rank_constraint(agent_env, agent_registry):
     """无等级约束场景：任务文本不含等级 → reviewer 不调 lookup_venue_rank，预印本项 pass。
 
-    等级门禁条件化（2026-08-08）后，用户未要求等级时 reviewer 跳过等级维度，
+    等级门禁条件化后，用户未要求等级时 reviewer 跳过等级维度，
     直接对预印本项交 submit_download_review（items 无 venue_rank）。mock LLM 序列
     不出现 lookup_venue_rank，锁住该流程形态；SKILL 实际提示效果由 smoke 验证。"""
     cfg, _ = agent_env
