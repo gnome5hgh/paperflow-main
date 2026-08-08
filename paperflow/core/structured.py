@@ -44,10 +44,13 @@ class StructuredOutput:
     """三层防御：生成约束 → 验证重试（带对照纠错）→ 兜底。"""
 
     def __init__(self, llm, config: StructuredOutputConfig | None = None,
-                 store=None):
+                 store=None, telemetry_callback=None):
         self.llm = llm
         self.config = config or StructuredOutputConfig()
         self.store = store
+        #: LLM 调用元数据回调(与 Agent 侧同语义,None = 零开销跳过):
+        #: spawn 摘要提取的调用经此接审计,归属父 agent 的 trace/turn。
+        self.telemetry_callback = telemetry_callback
 
     async def extract(self, prompt: str, schema: type[BaseModel],
                       fallback: Callable[[], BaseModel] | None = None) -> BaseModel:
@@ -65,12 +68,16 @@ class StructuredOutput:
         for attempt in range(self.config.max_retries + 1):
             attempts = attempt + 1
             try:
-                resp = await self.llm.chat(
-                    messages,
+                # telemetry_callback 仅在设置时才传:None 时保持原调用签名不变,
+                # 既有调用方(fake llm 无此参数)零影响。
+                chat_kwargs = dict(
                     json_mode=self.config.json_mode,
                     temperature=self.config.temperature,
                     extra_body={"enable_thinking": False} if self.config.disable_thinking else None,
                 )
+                if self.telemetry_callback is not None:
+                    chat_kwargs["telemetry_callback"] = self.telemetry_callback
+                resp = await self.llm.chat(messages, **chat_kwargs)
                 data = json.loads(_extract_json_body(resp.content))
                 result = schema(**data)
                 self._record(schema, True, attempts, None)

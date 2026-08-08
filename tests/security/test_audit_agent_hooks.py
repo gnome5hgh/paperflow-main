@@ -133,3 +133,65 @@ class TestLlmCallFromAgent:
         out = await agent.run("hi")
         assert out == "done"
         assert captured["cb"] is not None        # Agent 向 LLM 传了回调
+
+
+class SpyMW(SecurityMiddleware):
+    """spy 中间件:记录 record_llm_call 收到的字段,验证 _emit_llm_call 的 fan-out。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def record_llm_call(self, **fields):
+        self.calls.append(fields)
+
+
+class TestEmitLlmCall:
+    @pytest.mark.asyncio
+    async def test_emit_llm_call_fans_out_to_middleware(self):
+        agent = make_agent([SpyMW()], [MockEchoTool()], confirm_callback=None)
+        agent._trace_id = "trace_abc"
+        agent._emit_llm_call(3, {"model": "m", "total_tokens": 5})
+        spy = agent.security_middleware[0]
+        assert len(spy.calls) == 1
+        fields = spy.calls[0]
+        assert fields["trace_id"] == "trace_abc"
+        assert fields["session_id"] == agent.session_id
+        assert fields["agent_type"] == "test"
+        assert fields["turn"] == 3
+        assert fields["model"] == "m"
+        assert fields["total_tokens"] == 5
+
+    @pytest.mark.asyncio
+    async def test_make_llm_telemetry_delegates_to_emit(self):
+        agent = make_agent([SpyMW()], [MockEchoTool()], confirm_callback=None)
+        agent._trace_id = "trace_def"
+        agent._make_llm_telemetry(2)({"model": "m"})
+        spy = agent.security_middleware[0]
+        assert len(spy.calls) == 1
+        assert spy.calls[0]["trace_id"] == "trace_def"
+        assert spy.calls[0]["turn"] == 2
+
+    @pytest.mark.asyncio
+    async def test_run_tracks_current_turn(self):
+        """run() 每轮更新 _current_turn:spawn 摘要提取据此归属父的当前轮次。"""
+        registry = MagicMock(spec=AgentRegistry)
+        registry.get_config.return_value = AgentConfig(
+            name="test", system_prompt="p", tools=[MockEchoTool()])
+        llm = MagicMock()
+        responses = iter([
+            Message(role="assistant", content=None, tool_calls=[
+                {"id": "c1", "type": "function",
+                 "function": {"name": "echo", "arguments": '{"message": "hi"}'}}]),
+            Message(role="assistant", content="done"),
+        ])
+
+        async def chat(messages, tools=None, tool_choice="auto", telemetry_callback=None):
+            return next(responses)
+        llm.chat = chat
+
+        agent = Agent(llm=llm, agent_registry=registry, agent_type="test",
+                      security_middleware=[])
+        assert agent._current_turn == 0
+        out = await agent.run("hi")
+        assert out == "done"
+        assert agent._current_turn == 1        # 第二轮是最终回答所在轮

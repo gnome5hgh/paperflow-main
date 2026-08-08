@@ -254,6 +254,10 @@ class Agent:
         #: 当前 run 的追踪 ID，每次 run 开始时重新生成，注入 ToolContext
         self._trace_id: str | None = None
 
+        #: 当前 ReAct 轮次:run() 每轮循环开头更新。spawn 摘要提取的 LLM 调用
+        #: 读父 agent 的此属性归属轮次(父在做摘要提取,归父的 trace/轮次)。
+        self._current_turn: int = 0
+
         # 意图识别门控:只有 CLI 构造的 Supervisor 置 True;spawn 工具构造的子 agent
         # 不传管线/会话 → 门控关闭(子任务是结构化任务而非用户意图,跑管线会误分类
         # 且白花 LLM 调用)
@@ -372,6 +376,8 @@ class Agent:
         accumulated: list[str] = []
 
         for turn in range(self.max_turns):
+            # 记录当前轮次:spawn 摘要提取的 LLM 调用据此归属父 agent 的当前轮
+            self._current_turn = turn
             # 每次模型调用前检查压缩:messages 已含回放 history,超阈值即触发。
             # compress_history 原地改写 compressor.history(摘要写进 history[0],
             # 压缩产物跨轮持久),再重建 messages:head + 新 history + conv(本轮残留,
@@ -473,17 +479,24 @@ class Agent:
         """构造 LLM 调用 telemetry 回调（sync，可能跑在线程池线程）。
 
         每次调用传独立回调（而非共享属性）——parallel_spawn 下多个子 agent 共享
-        同一个 LLMClient，共享属性会互相覆盖导致归属错乱。
+        同一个 LLMClient，共享属性会互相覆盖导致归属错乱。实际 fan-out 逻辑在
+        _emit_llm_call。
         """
-        def _cb(data: dict) -> None:
-            fields = dict(data)
-            fields.update(trace_id=self._trace_id, session_id=self.session_id,
-                          agent_type=self.agent_type, turn=turn)
-            for mw in self.security_middleware:
-                record = getattr(mw, "record_llm_call", None)
-                if record is not None:
-                    record(**fields)
-        return _cb
+        return lambda data: self._emit_llm_call(turn, data)
+
+    def _emit_llm_call(self, turn: int, data: dict) -> None:
+        """补全归属字段并 fan-out LLM 调用元数据到各中间件 record_llm_call。
+
+        sync（LLM 回调可能跑在线程池线程）。spawn 摘要提取的 LLM 调用也复用
+        此入口——父 agent 在做摘要提取,归属父的 trace/session/agent_type/turn。
+        """
+        fields = dict(data)
+        fields.update(trace_id=self._trace_id, session_id=self.session_id,
+                      agent_type=self.agent_type, turn=turn)
+        for mw in self.security_middleware:
+            record = getattr(mw, "record_llm_call", None)
+            if record is not None:
+                record(**fields)
 
     async def _exec_tool(
         self, tool_call: dict, _confirm_lock: asyncio.Lock | None = None,

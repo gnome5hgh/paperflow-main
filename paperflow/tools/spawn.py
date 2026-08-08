@@ -81,17 +81,20 @@ def digest_schema_for(agent_type: str) -> type[BaseModel]:
     }.get(agent_type, GenericDigest)
 
 
-async def _extract_digest(llm, agent_type: str, text: str) -> dict:
+async def _extract_digest(llm, agent_type: str, text: str,
+                          telemetry_callback=None) -> dict:
     """从子 agent 最终回答提取结构化摘要(失败/超时返回空 dict)。
 
     复用 StructuredOutput 的三层防御(json 模式 + 模型校验 + 重试);独立超时 30s,
     与子 agent 执行超时解耦——摘要提取是"锦上添花",卡死不能拖垮 spawn 主流程。
     只取 text 尾部 2000 字符控制 prompt 长度:子 agent 回答可能很长(如 writer 的
     整篇笔记),结构化摘要只需要结论性尾部。
+
+    :param telemetry_callback: 摘要 LLM 调用的元数据回调,None = 零开销跳过(不接线审计)
     """
     try:
         digest = await asyncio.wait_for(
-            StructuredOutput(llm).extract(
+            StructuredOutput(llm, telemetry_callback=telemetry_callback).extract(
                 prompt=f"从以下子 agent 最终回答提取结构化摘要：\n{text[-2000:]}",
                 schema=digest_schema_for(agent_type)),
             timeout=30)
@@ -368,8 +371,13 @@ class SpawnSubAgentTool(Tool):
         async def _run_and_extract():
             # 先跑子 agent(带预算),再对最终文本提取摘要——两段串在同一事件循环里,
             # 摘要提取不消耗子 agent 的执行预算(独立 30s 超时)。
+            # 摘要 LLM 调用归属父:父在做摘要提取,归父的 trace/当前轮次;getattr
+            # 兜底防父为 mock/旧对象时读属性崩溃。
             text = await _run_child_with_budget(child.run(task), timeout, clock)
-            digest = await _extract_digest(self._parent.llm, agent_type, text)
+            digest = await _extract_digest(
+                self._parent.llm, agent_type, text,
+                telemetry_callback=lambda data: self._parent._emit_llm_call(
+                    getattr(self._parent, "_current_turn", 0), data))
             return text, digest
 
         try:
@@ -460,8 +468,12 @@ class ParallelSpawnTool(Tool):
             async def _run_and_extract():
                 # 与 SpawnSubAgentTool._run_child 同款:子任务.run + 摘要提取串在同一
                 # 协程里(此处已在 gather 循环中,直接 await 而非 asyncio.run)。
+                # 摘要 LLM 调用归属父(父在做摘要提取),getattr 兜底防 mock 父。
                 text = await _run_child_with_budget(child.run(task), timeout, clock)
-                digest = await _extract_digest(parent.llm, agent_type, text)
+                digest = await _extract_digest(
+                    parent.llm, agent_type, text,
+                    telemetry_callback=lambda data: parent._emit_llm_call(
+                        getattr(parent, "_current_turn", 0), data))
                 return text, digest
 
             try:

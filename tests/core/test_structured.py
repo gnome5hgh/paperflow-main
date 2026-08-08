@@ -129,6 +129,27 @@ class TestExtract:
         assert captured["extra_body"] == {"enable_thinking": False}
 
     @pytest.mark.asyncio
+    async def test_telemetry_callback_reaches_llm_chat(self):
+        """telemetry_callback 透传:StructuredOutput 收到的回调原样到达 llm.chat。
+
+        摘要提取的 LLM 调用走这条链路接审计——回调没到 chat 就说明接线断了。
+        """
+        captured = {}
+        llm = MagicMock()
+
+        async def chat(messages, tools=None, tool_choice="auto", json_mode=False,
+                       temperature=None, extra_body=None, telemetry_callback=None):
+            captured["cb"] = telemetry_callback
+            return Message(role="assistant", content='{"name": "x", "count": 1}')
+        llm.chat = chat
+
+        cb = lambda data: None
+        so = StructuredOutput(llm, config=StructuredOutputConfig(record_stats=False),
+                              telemetry_callback=cb)
+        await so.extract("task", FlatSchema)
+        assert captured["cb"] is cb
+
+    @pytest.mark.asyncio
     async def test_records_stats_to_store(self, tmp_path):
         from paperflow.core.memory.experience_memory import MemoryStore
         store = MemoryStore(tmp_path)
