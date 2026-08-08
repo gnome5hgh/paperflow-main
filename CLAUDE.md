@@ -12,7 +12,7 @@ conda run -n paperflow pip install -e ".[dev]"
 conda run -n paperflow python -m pytest tests/ -v
 
 # Run a single test
-conda run -n paperflow python -m pytest tests/test_agent.py::TestExecTool -v
+conda run -n paperflow python -m pytest tests/agent/test_agent.py::TestExecTool -v
 
 # Run the app — 交互式 REPL（⚠️ 不能经 conda run）
 # conda run 不转发 stdin 给子进程 → 交互式 REPL 的 input() 立即 EOF 退出。
