@@ -305,7 +305,8 @@ class SpawnSubAgentTool(Tool):
 
     name = "spawn_sub_agent"
     description = ("派发单个 SubAgent 执行子任务，返回结构化结果（status/summary/error_detail/"
-                   "needs_attention）。失败可依据 error_detail 决定重试或上报。")
+                   "digest/needs_attention），digest 为子任务的结构化摘要（提取失败时为空）。"
+                   "失败可依据 error_detail 决定重试或上报。")
     parameters = {
         "type": "object",
         "properties": {

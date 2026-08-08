@@ -445,3 +445,48 @@ def test_aggregate_tool_removed():
     assert not hasattr(st, "AggregateResultsTool")
     from paperflow.tools.spawn import SpawnSubAgentTool
     assert True
+
+
+def _digest_llm(content: str):
+    """返回接受 json_mode/temperature/extra_body 的 mock chat，固定返回给定 JSON content。
+
+    StructuredOutput.extract 会以这三个 kwarg 调 llm.chat；共享 make_mock_llm 的
+    chat 签名不含它们 → 既有的 digest 提取在测试里恒走 {} 兜底（TypeError 被捕获）。
+    本 helper 是"真实路径"的专用 mock：不碰共享 make_mock_llm（改了会让按序消费
+    mock 的既有用例漂移），只在此锁定 StructuredOutput/schema 交互与 model_dump。
+    """
+    from unittest.mock import MagicMock
+    from paperflow.core.llm import Message
+    m = MagicMock()
+    async def chat(messages, tools=None, tool_choice="auto", json_mode=False,
+                   temperature=None, extra_body=None):
+        return Message(role="assistant", content=content)
+    m.chat = chat
+    m.model = "mock"
+    return m
+
+
+def test_extract_digest_structured_success():
+    """真实路径（review Important 回归锁）：合法 JSON → 提取为 schema 默认值补齐的 dict。
+
+    SearchPaperDigest 的 downloaded/pending_confirm/needs_attention 是可选字段，pydantic
+    model_dump 会补齐默认值——断言整个 dict（含默认值）而非部分键，锁住 model_dump 回归。"""
+    import asyncio
+    import json
+    from paperflow.tools.spawn import _extract_digest
+    llm = _digest_llm(json.dumps({"count": 2, "papers": ["a", "b"]}))
+    d = asyncio.run(_extract_digest(llm, "search-paper", "一些最终回答文本"))
+    assert d == {"count": 2, "papers": ["a", "b"],
+                 "downloaded": [], "pending_confirm": [], "needs_attention": False}
+
+
+def test_extract_digest_invalid_json_falls_back_empty():
+    """真实路径兜底（review Important 回归锁）：非法 JSON 走 except Exception → {}。
+
+    验证 _extract_digest 的失败兜底不是"mock 签名 TypeError 才触发"——即使 chat 接受
+    全部 kwarg、返回非法 JSON，也应静默返回 {}（supervisor 回退读 summary）。"""
+    import asyncio
+    from paperflow.tools.spawn import _extract_digest
+    llm = _digest_llm("不是 JSON")
+    d = asyncio.run(_extract_digest(llm, "search-paper", "文本"))
+    assert d == {}
