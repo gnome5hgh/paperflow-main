@@ -10,6 +10,7 @@ from paperflow.core.llm import Message
 from paperflow.core.security import ToolContext
 from paperflow.core.security.audit import AuditMiddleware
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.spawn import SpawnSubAgentTool
 from tests.conftest import MockEchoTool
 
 
@@ -159,3 +160,82 @@ def test_rollover_resolves_path_per_write(tmp_path):
     from datetime import datetime
     expected = tmp_path / f"audit_{datetime.now():%Y%m%d}.jsonl"
     assert expected.exists()
+
+
+class _DigestE2ELLM:
+    """mock LLM：ReAct 调用按序返回给定响应；摘要提取调用（json_mode=True）触发 telemetry 回调。
+
+    StructuredOutput.extract 以 json_mode=True 调 chat——这是识别「摘要提取调用」的稳定信号
+    （Agent 的 ReAct chat 恒为 json_mode=False）。telemetry 回调必须在摘要调用里真实触发，
+    否则 parent._emit_llm_call 收不到数据，审计里不会有那条 llm_call——锁住 spawn.py 的
+    回调接线。
+    """
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+
+    async def chat(self, messages, tools=None, tool_choice="auto", json_mode=False,
+                   temperature=None, extra_body=None, telemetry_callback=None):
+        if telemetry_callback is not None:
+            telemetry_callback({
+                "model": "mock", "prompt_tokens": 10, "completion_tokens": 5,
+                "total_tokens": 15, "duration_ms": 100,
+                "started_at": "2026-08-09T00:00:00", "finish_reason": "stop"})
+        if json_mode:
+            return Message(role="assistant", content=json.dumps({
+                "count": 3, "papers": ["p1", "p2"], "needs_attention": False}))
+        return self.responses.pop(0) if self.responses else Message(role="assistant", content="done")
+
+
+@pytest.mark.asyncio
+async def test_spawn_digest_llm_call_attrs_to_parent(tmp_path):
+    """digest 端到端（P5 核心）：真实 spawn 路径的摘要 LLM 调用写 llm_call，归父 trace/轮次。
+
+    走完整真实链：parent.run → SpawnSubAgentTool._run_child → _extract_digest →
+    StructuredOutput → llm.chat（json_mode=True）→ telemetry 回调 → parent._emit_llm_call。
+    断言该 llm_call 的 parent_id == 该 spawn 的 span_id、turn == 父 spawn 所在轮次、
+    agent_type == 父的 agent_type——锁住 spawn.py 里那条 lambda：它断了，这条事件就没了，
+    而各环节单元测试仍会静默通过。
+    """
+    mw = AuditMiddleware(audit_dir=str(tmp_path))
+    registry = MagicMock(spec=AgentRegistry)
+    parent_cfg = AgentConfig(name="supervisor", system_prompt="p",
+                             tools=[SpawnSubAgentTool()])
+    child_cfg = AgentConfig(name="searcher", system_prompt="p", tools=[MockEchoTool()])
+    registry.get_config.side_effect = (
+        lambda at: parent_cfg if at == "supervisor" else child_cfg)
+
+    parent = Agent(
+        llm=_DigestE2ELLM([
+            # 父第一轮：要求 spawn 一个 searcher
+            Message(role="assistant", content=None, tool_calls=[
+                {"id": "c1", "type": "function",
+                 "function": {"name": "spawn_sub_agent",
+                              "arguments": json.dumps(
+                                  {"agent_type": "searcher", "task": "research x"})}}]),
+            # 子 agent 的回答（同一 mock llm，json_mode=False 时消费）
+            Message(role="assistant", content="child done"),
+            # 父第二轮：结束
+            Message(role="assistant", content="parent done"),
+        ]),
+        agent_registry=registry, agent_type="supervisor",
+        security_middleware=[mw])
+    out = await parent.run("research x")
+    assert out == "parent done"
+
+    events = read_entries(tmp_path)
+    assert_no_orphans(events)                     # 树不变量：digest 挂 spawn 下，不孤儿
+    by_type = {}
+    for e in events:
+        by_type.setdefault(e["event_type"], []).append(e)
+    spawn_started = [e for e in by_type["tool_started"]
+                     if e["tool_name"] == "spawn_sub_agent"][0]
+    # 只挑「parent_id == spawn span 且 agent_type == 父」的 llm_call——摘要提取那条；
+    # 子 agent 自己的 llm_call agent_type 是 searcher，父 ReAct 的 llm_call 无 parent
+    digest_calls = [e for e in by_type["llm_call"]
+                    if e["parent_id"] == spawn_started["span_id"]
+                    and e["agent_type"] == parent.agent_type]
+    assert len(digest_calls) == 1
+    digest_call = digest_calls[0]
+    assert digest_call["turn"] == spawn_started["turn"]          # 归父 spawn 所在轮次
+    assert digest_call["depth"] == spawn_started["depth"] + 1    # 摘要嵌在 spawn 内一层

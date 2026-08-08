@@ -60,7 +60,7 @@ class SecurityMiddleware(ABC):
         """整轮对话收尾时的钩子：可在最终回复落定前改写内容。默认原样返回。"""
         return content
 
-    async def on_approval(self, ctx: ToolContext, phase: str, outcome: str | None = None) -> None:
+    async def on_approval(self, ctx: ToolContext, phase: str, approval_outcome: str | None = None) -> None:
         # 审批生命周期钩子：phase ∈ {"requested", "decided"}，仅 AuditMiddleware
         # 实现；其余中间件默认 no-op（洋葱模型外的可选横切关注点）。
         return

@@ -155,6 +155,26 @@ class TestAuditTreeFields:
         assert ended["event_type"] == "tool_ended"
 
     @pytest.mark.asyncio
+    async def test_defensive_after_nests_under_outer_span(self, tmp_path):
+        """防御分支父链：嵌套工具（子 agent 幻觉未知工具/坏 JSON）命中 only-after 路径时，
+        补写的 span 应挂到外层 span 下——修复前 ctx.parent_id/depth 用默认值，被误写成根节点。"""
+        mw = AuditMiddleware(audit_dir=str(tmp_path))
+        outer = make_ctx()
+        await mw.before(outer)                       # 外层 span 压栈（真实 token）
+        phantom = make_ctx(tool=None, tool_name="ghost_tool", args={"x": 1})
+        await mw.after(phantom)                      # 防御分支：未写 before，只走 after
+        await mw.after(outer)                        # 收口外层 span（弹栈）
+        events = [json.loads(l) for l in next(tmp_path.glob("audit_*.jsonl")).read_text().strip().splitlines()]
+        p_started = [e for e in events if e["event_type"] == "tool_started" and e["tool_name"] == "ghost_tool"][0]
+        p_ended = [e for e in events if e["event_type"] == "tool_ended" and e["tool_name"] == "ghost_tool"][0]
+        # 防御补写的 start/end 同 span，且父链指向外层 span（不是根节点）
+        assert p_started["span_id"] == p_ended["span_id"]
+        assert p_started["parent_id"] == outer.span_id
+        assert p_started["depth"] == 1
+        assert p_ended["parent_id"] == outer.span_id
+        assert p_ended["depth"] == 1
+
+    @pytest.mark.asyncio
     async def test_error_and_result_and_policy_rules(self, tmp_path):
         from paperflow.core.security import PolicyDenied
         mw = AuditMiddleware(audit_dir=str(tmp_path))
@@ -178,7 +198,7 @@ class TestApprovalEvents:
         ctx = make_ctx(args={"path": "/tmp/x.md"})
         await mw.before(ctx)                       # 工具 span 压栈（先写 tool_started）
         await mw.on_approval(ctx, "requested")
-        await mw.on_approval(ctx, "decided", outcome="user_denied")
+        await mw.on_approval(ctx, "decided", approval_outcome="user_denied")
         await mw.after(ctx)
         lines = [json.loads(l) for l in next(tmp_path.glob("audit_*.jsonl")).read_text().strip().splitlines()]
         assert len(lines) == 4

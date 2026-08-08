@@ -236,6 +236,12 @@ class AuditMiddleware(SecurityMiddleware):
         # 每个 span 必有起始事件）；未压栈则一律不弹栈。
         if ctx.span_id is None:
             ctx.span_id = f"span_{uuid.uuid4().hex[:12]}"
+            # 防御路径仍要把自己挂到当前调用链下：嵌套工具（子 agent 幻觉未知工具/坏
+            # JSON）命中此分支时栈顶是外层 span，不读则父链丢失、被误写成根节点。
+            span = _span_ctx.get()
+            if span:
+                ctx.parent_id = span["span_id"]
+                ctx.depth = span["depth"] + 1
             self._write_event(AuditEntry(
                 event_type="tool_started",
                 span_id=ctx.span_id,
@@ -278,7 +284,7 @@ class AuditMiddleware(SecurityMiddleware):
             causation_id=ctx.approval_decided_span_id,
         ))
 
-    async def on_approval(self, ctx: ToolContext, phase: str, outcome: str | None = None) -> None:
+    async def on_approval(self, ctx: ToolContext, phase: str, approval_outcome: str | None = None) -> None:
         # 审批生命周期：requested（发起确认时）与 decided（决策后）是两条独立事件，
         # decided 通过 causation_id 回溯 requested（合规要求：请求≠决策）。
         # 守卫：phase 只允许两值，拦截笔误（如 "reuested"）写入日志，避免污染审计。
@@ -301,7 +307,7 @@ class AuditMiddleware(SecurityMiddleware):
             started_at=now,
             ended_at=now,
             causation_id=getattr(ctx, "_approval_requested_span_id", None) if phase == "decided" else None,
-            approval_outcome=outcome if phase == "decided" else None,
+            approval_outcome=approval_outcome if phase == "decided" else None,
         )
         # requested 的 span 记到 ctx 上，供 decided 回溯；decided 则把自身 span 与
         # 最终结果记到 ctx 上，供 after 写 tool_ended 时带上因果链与审批结果。
@@ -309,7 +315,7 @@ class AuditMiddleware(SecurityMiddleware):
             ctx._approval_requested_span_id = entry.span_id
         elif phase == "decided":
             ctx.approval_decided_span_id = entry.span_id
-            ctx.approval_outcome = outcome
+            ctx.approval_outcome = approval_outcome
         self._write_event(entry)
 
     def record_llm_call(self, *, trace_id, session_id, agent_type, turn, model,

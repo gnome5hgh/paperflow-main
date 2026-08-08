@@ -98,8 +98,8 @@ def test_tool_context_has_audit_tree_fields():
 
 
 class _ProbeMiddleware(SecurityMiddleware):
-    async def on_approval(self, ctx, phase, outcome=None):
-        self.seen = (ctx, phase, outcome)
+    async def on_approval(self, ctx, phase, approval_outcome=None):
+        self.seen = (ctx, phase, approval_outcome)
 
 
 @pytest.mark.asyncio

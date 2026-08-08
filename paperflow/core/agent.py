@@ -611,7 +611,7 @@ class Agent:
                         "user_denied" if self._has_human_confirm else "auto_denied"))
                 ctx.approval_outcome = outcome
                 for mw in self.security_middleware:
-                    await mw.on_approval(ctx, "decided", outcome=outcome)
+                    await mw.on_approval(ctx, "decided", approval_outcome=outcome)
                 if not confirmed:
                     # 拒绝 → 记录错误并走 after 钩子，反馈给 LLM
                     # summary.decision 用已计算的 outcome（user_denied/auto_denied），
