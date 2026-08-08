@@ -4,7 +4,7 @@
 用法：PAPERFLOW_API_KEY=sk-xxx conda run -n paperflow python scripts/verify_layer4.py
 验证点：
   1. supervisor 装配成功（intent_enabled + 4 工具）
-  2. 一条 search_paper 查询：INTENT 块命中 → supervisor 真实 spawn search-paper → 返回论文列表
+  2. 一条 search_paper 查询：INTENT 块命中 → supervisor 真实 spawn searcher → 返回论文列表
   3. generate_note + confirm 接线走 `python -m paperflow` 交互式验证，本脚本只 smoke search_paper
 """
 import asyncio

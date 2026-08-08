@@ -35,8 +35,8 @@ class SubAgentResult(BaseModel):
     digest: dict = {}
 
 
-class SearchPaperDigest(BaseModel):
-    """search-paper 结果摘要（C2）。
+class SearcherDigest(BaseModel):
+    """searcher 结果摘要（C2）。
 
     supervisor 读它组织回答：命中多少篇、有哪些论文、哪些已下载、哪些待确认。
     pending_confirm / needs_attention 对应下载门禁的"待用户确认"路径——spawn 结果是
@@ -61,8 +61,8 @@ class ReviewerDigest(BaseModel):
     download_list: list[str] = []
 
 
-class GenerateNoteDigest(BaseModel):
-    """generate-note 结果摘要（C2）。
+class WriterDigest(BaseModel):
+    """writer 结果摘要（C2）。
 
     note_path 即产物绝对路径（C1 约定"返回含笔记绝对路径即成功"），status 描述写盘结果。
     """
@@ -85,12 +85,12 @@ def digest_schema_for(agent_type: str) -> type[BaseModel]:
     """按 agent_type 映射 digest schema；未知类型落 GenericDigest（C2）。
 
     与 intent→agent 对照同源：spawn 侧按 agent_type 挑 schema，supervisor 按 agent_type
-    解释 digest。新 agent 类型接入只需在此注册（如 answer-question 未注册走 GenericDigest）。
+    解释 digest。新 agent 类型接入只需在此注册（如 qa-agent 未注册走 GenericDigest）。
     """
     return {
-        "search-paper": SearchPaperDigest,
+        "searcher": SearcherDigest,
         "reviewer": ReviewerDigest,
-        "generate-note": GenerateNoteDigest,
+        "writer": WriterDigest,
     }.get(agent_type, GenericDigest)
 
 
@@ -100,7 +100,7 @@ async def _extract_digest(llm, agent_type: str, text: str) -> dict:
     复用 StructuredOutput 三层防御（json_mode + pydantic 校验 + 重试）；独立超时 30s
     （与子 agent 执行超时解耦——digest 提取是"锦上添花"，卡死不能拖垮 spawn 主流程）；
     失败/超时返回 {} 兜底（supervisor 回退读 summary，与未接入 digest 前行为一致）。
-    截取 text[-2000:] 控制 prompt 长度——子 agent 最终回答可能很长（如 generate-note
+    截取 text[-2000:] 控制 prompt 长度——子 agent 最终回答可能很长（如 writer
     的整篇笔记内容），结构化摘要只需要结论性尾部。
     """
     try:
@@ -296,7 +296,7 @@ class SpawnSubAgentTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "agent_type": {"type": "string", "description": "目标 SubAgent 类型，如 search-paper"},
+            "agent_type": {"type": "string", "description": "目标 SubAgent 类型，如 searcher"},
             "task": {"type": "string", "description": "子任务文本（含实体，已拼入上下文）"},
         },
         "required": ["agent_type", "task"],
@@ -352,8 +352,8 @@ class SpawnSubAgentTool(Tool):
         result = None
         try:
             # ③ 构造 child：继承 security_middleware + session_id（同一审计链）+ confirm_callback
-            #    （D6 关键：generate-note 的写盘工具 requires_confirm=True，不传则 _default_confirm
-            #    始终拒绝，spawn 出的 generate-note 永远写不出笔记）。
+            #    （D6 关键：writer 的写盘工具 requires_confirm=True，不传则 _default_confirm
+            #    始终拒绝，spawn 出的 writer 永远写不出笔记）。
             #    不传 intent_pipeline/session → child 的 intent_enabled=False（D3）。
             child = Agent(
                 llm=parent.llm, agent_registry=parent.agent_registry,

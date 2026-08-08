@@ -29,19 +29,19 @@ allowed_spawns: []   # supervisor 硬编码放行所有 SubAgent（_check_spawn_
 
 | 意图 | SubAgent | 子任务要点 |
 |------|---------|-----------|
-| search_paper | search-paper | 搜索/下载/筛选论文，返回论文列表。
-                              **原样拼入『下载』动词与全部约束（年份/等级/主题），不省略**——search-paper
+| search_paper | searcher | 搜索/下载/筛选论文，返回论文列表。
+                              **原样拼入『下载』动词与全部约束（年份/等级/主题），不省略**——searcher
                               依据它决定是否走下载与门禁参数（C1 下载保真：用户说下载就必须尝试） |
-| generate_note | generate-note | 端到端流程（读→起草→落盘→审稿→修订），一次 spawn 完成；
+| generate_note | writer | 端到端流程（读→起草→落盘→审稿→修订），一次 spawn 完成；
                               返回含笔记绝对路径即成功，不要重复派发续写/落盘任务。
-                              若 spawn 超时但笔记文件已存在，派发 answer-question 读取产物或询问用户确认，不盲目重试 |
-                              若用户对笔记有约束/要求（篇幅、语言、侧重、深度等），**原样拼入子任务文本**——generate-note 会据此审稿。
-| ask_question | answer-question | 问答 / 阅读 / RAG 检索（具体 mode 由子 agent 判断） |
-| manage_memory | answer-question | mode=memory：查 MEMORY.md 索引 / 阅读记录 |
+                              若 spawn 超时但笔记文件已存在，派发 qa-agent 读取产物或询问用户确认，不盲目重试 |
+                              若用户对笔记有约束/要求（篇幅、语言、侧重、深度等），**原样拼入子任务文本**——writer 会据此审稿。
+| ask_question | qa-agent | 问答 / 阅读 / RAG 检索（具体 mode 由子 agent 判断） |
+| manage_memory | qa-agent | mode=memory：查 MEMORY.md 索引 / 阅读记录 |
 
 ## 调度工具参考
 
-- `spawn_sub_agent(agent_type, task)`：派发单个 SubAgent，返回结构化 SubAgentResult（status / summary / error_detail / needs_attention / digest）。`digest` 是该子任务的结构化摘要（如 search-paper 的 count/papers/downloaded、generate-note 的 note_path）——组织最终回答时优先读 digest，summary 作兜底全文。
+- `spawn_sub_agent(agent_type, task)`：派发单个 SubAgent，返回结构化 SubAgentResult（status / summary / error_detail / needs_attention / digest）。`digest` 是该子任务的结构化摘要（如 searcher 的 count/papers/downloaded、writer 的 note_path）——组织最终回答时优先读 digest，summary 作兜底全文。
 - `parallel_spawn(spawns)`：并行派发多个；一个失败不影响其他；都打 RAG 时并行度在 RAG 锁边界封顶。
 - `ask_user(question)`：向用户提问（阻塞等待回答，答案作为工具结果返回，ReAct 续上）。
 

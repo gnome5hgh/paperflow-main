@@ -10,7 +10,7 @@ from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.rag.service import get_rag_service
-from paperflow.tools._constants import NOTE_ROOTS
+from paperflow.tools.file._constants import NOTE_ROOTS
 
 
 class EditFileTool(Tool):

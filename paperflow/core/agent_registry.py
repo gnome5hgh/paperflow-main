@@ -45,7 +45,7 @@ class AgentConfig:
         tools           ← tools.py 模块级 TOOLS 列表
     """
 
-    #: Agent 类型标识符，对应 agents/ 下的目录名（如 "search-paper"）
+    #: Agent 类型标识符，对应 agents/ 下的目录名（如 "searcher"）
     name: str
 
     #: 简短描述，供 LLM 在 Supervisor 选择 spawn 目标时参考
@@ -71,7 +71,7 @@ class AgentRegistry:
     使用方式::
 
         registry = AgentRegistry("agents")
-        config = registry.get_config("search-paper")
+        config = registry.get_config("searcher")
         print(config.system_prompt)   # 从 SKILL.md 正文加载
         print(config.tools)           # 从 tools.py TOOLS 列表加载
 
@@ -138,7 +138,7 @@ class AgentRegistry:
         SKILL.md 格式::
 
             ---
-            name: search-paper
+            name: searcher
             description: 学术论文搜索
             allowed_agents: []
             allowed_spawns: []
@@ -231,7 +231,7 @@ class AgentRegistry:
         """
         按 agent_type 返回完整配置（含 tools）。
 
-        :param agent_type: Agent 类型标识符，如 "supervisor"、"search-paper"
+        :param agent_type: Agent 类型标识符，如 "supervisor"、"searcher"
         :returns: AgentConfig 实例
         :raises KeyError: 如果 agent_type 未在 agents/ 目录下注册
         """

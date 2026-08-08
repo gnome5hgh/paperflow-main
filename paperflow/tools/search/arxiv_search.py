@@ -3,7 +3,7 @@
 risk=medium：下载 PDF 是写操作（tool.py 分类 medium = "下载 PDF"）；整工具标
 medium 而非 low——否则会话降级到只读模式（max_risk=low）时下载仍可绕过写边界。
 保守过标：搜索不下载也按 medium（该工具具备下载能力，只读会话本就不应触碰 vault）。
-SSRF：每次出站抓取前 validate_url_target，重定向链走 _search_common 的 resolve_url_target。
+SSRF：每次出站抓取前 validate_url_target，重定向链走 _http 的 resolve_url_target。
 
 Task 3 增补（A1/A3/A4/A5/B2）：
 - A1 年份用 arXiv 原生 submittedDate 区间过滤（结构化参数，绝不拼进自由文本 query）
@@ -11,25 +11,18 @@ Task 3 增补（A1/A3/A4/A5/B2）：
 - A4 模块级 query 缓存：同 (源, query, 年份, max_results) 重复检索直接复用
 - A5 源熔断：arXiv 连续失败 ≥2 次时 5 分钟内短路，提示改 openalex
 - B2 max_results 钳制到 [3,50]（schema minimum/maximum + execute 兜底）
+
+2026-08-08 目录整理：execute() 骨架抽到 BaseSearchTool（search/_base.py，与
+openalex_search 共享模板方法）；本文件保留 ArxivClient 与源差异段。
 """
 import urllib.parse
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
 import httpx
 
-from paperflow.core.security.network import (
-    validate_url_target, SSRFError,
-)
-from paperflow.core.search_state import (
-    query_cache_get, query_cache_put,
-    breaker_is_open, breaker_register_failure, breaker_register_success,
-)
-from paperflow.core.tool import Tool, ToolResult
-# 模块级绑定 get_rag_service：execute 内直接引用模块全局，测试可 monkeypatch
-# paperflow.tools.arxiv_search.get_rag_service 注入假服务。rag.service 不反向依赖 tools，无循环 import。
-from paperflow.rag.service import get_rag_service
-from paperflow.tools._search_common import _SearchClientMixin, _download_pdf
+from paperflow.core.security.network import validate_url_target
+from paperflow.tools._http import _HttpClientMixin
+from paperflow.tools.search._base import BaseSearchTool
 
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
@@ -44,7 +37,7 @@ def _normalize_arxiv_query(query: str) -> str:
     return " AND ".join(f"all:{t}" for t in terms) if terms else query
 
 
-class ArxivClient(_SearchClientMixin):
+class ArxivClient(_HttpClientMixin):
     def __init__(self, transport=None, ssrf_check=None):
         self.client = httpx.Client(transport=transport, timeout=30.0)
         self.ssrf_check = ssrf_check or validate_url_target
@@ -86,7 +79,7 @@ class ArxivClient(_SearchClientMixin):
         return papers
 
 
-class ArxivSearchTool(Tool):
+class ArxivSearchTool(BaseSearchTool):
     name = "arxiv_search"
     # IMPORTANT-3：description 与 execute 行为对齐——缺省不下载，传 download_to 才下载
     description = "搜索 arXiv 论文；可选下载 PDF（缺省不下载，传入 download_to 才下载）"
@@ -105,73 +98,13 @@ class ArxivSearchTool(Tool):
         },
         "required": ["query"],
     }
-    risk_level = "medium"
-    allowed_roots = ["pdf"]
-    output_scan = "mark"                       # MINOR-7：返回外部内容（标题/摘要/URL）→ 未校验横幅
-    side_effects = ["network", "write_file"]
-    # Task 3：声明后 _exec_tool 会按 trace_id 注入 _run_state（per-run 去重池）——
-    # opt-in 注入，非声明工具零开销（不构造状态）。
-    wants_run_state = True
-
-    def __init__(self):
-        super().__init__()
-        self._client = None
+    _source = "arxiv"
+    _breaker_name = "arXiv"
+    _alternate = "openalex_search"
 
     @classmethod
     def _make_client(cls, transport=None, ssrf_check=None):
         return ArxivClient(transport=transport, ssrf_check=ssrf_check)
 
-    def execute(self, query: str, max_results: int = 5, download_to: str | None = None,
-                year_from: int | None = None, year_to: int | None = None,
-                _run_state=None) -> ToolResult:
-        # B2：execute 兜底钳制（模型可能绕过 schema 传 1 或 100）——越界数量会让
-        # 下游 filter/review 超预算，clamp 到 [3,50] 保证结果规模可控。
-        max_results = min(max(3, max_results), 50)
-        # A4：缓存键 = (源, query, 年份区间, max_results)——不同源/参数视为不同检索。
-        # 缓存在网络前：重复 query 直接复用结果，不重复打 API 也不重复入池。
-        # 注意 ckey 用 clamp 后的 max_results，保证同一检索意图（如模型传 1 与 5）
-        # 命中同一份缓存。
-        ckey = ("arxiv", query, year_from, year_to, max_results)
-        cached = query_cache_get(ckey)
-        # review finding 1：缓存命中短路只对纯搜索生效。带 download_to 的调用即使
-        # 缓存命中也要走网络+下载——下游 C1 下载流程是「先搜索→门禁→同 query 复调
-        # download_to」，第二次调用若被缓存短路，PDF 永远不会落盘。入池路径照旧只在
-        # 真实网络调用后 add（缓存命中路径不触池）。
-        if cached is not None and download_to is None:
-            return ToolResult(text=f"（缓存）该 query 已搜索过，结果同上；如需不同结果请调整检索词。\n{cached}")
-        # A5：源熔断在缓存后、网络前——连续失败 ≥2 次时 5 分钟内不再打 arXiv API。
-        # 工具不能自己换源，只能把"改用 openalex"的提示交给 LLM 决策。
-        if breaker_is_open("arxiv"):
-            return ToolResult(text="arXiv 连续失败已熔断，本次任务请改用 openalex_search")
-        client = self._client or self._make_client()
-        try:
-            papers = client.search(query, max_results, year_from, year_to)
-            breaker_register_success("arxiv")
-        except SSRFError as e:
-            # SSRF 违规：返回错误而非继续（LLM 可见，可自行调整目标）；
-            # 不计入源熔断——是安全拦截，不是源故障。
-            return ToolResult(text=f"SSRF blocked: {e}")
-        except Exception as e:
-            # httpx 超时/连接错误等真实源故障 → 计一次失败（A5）
-            breaker_register_failure("arxiv")
-            return ToolResult(text=f"Tool error: {e}")
-        if _run_state is not None:
-            # A3：结果入 per-run 自动去重池（SearchRunState.add 内部按
-            # DOI→arXiv ID→规范化标题 四级键去重合并）。_run_state 由 _exec_tool
-            # 作为独立 kwarg 直传 execute（不写进 ctx.args，避免审计序列化污染）。
-            _run_state.add(papers)
-        lines = [f"- [{p['title']}] ({p['year']}) venue={p['venue']} issn={p['issn']} pdf={p['pdf_url']} 来源=arxiv" for p in papers]
-        # review finding 4：仅非空结果入缓存——空结果若缓存，重复 query 会命中返回
-        # 「（缓存）…」而非「无搜索结果」，语义不一致。
-        if papers:
-            query_cache_put(ckey, "\n".join(lines))      # A4：缓存本次结果供重复 query 复用
-        if download_to and papers:
-            dest = Path(download_to)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                _download_pdf(client, papers[0]["pdf_url"], dest)
-            except Exception as e:
-                return ToolResult(text=f"下载失败: {e}")   # 含 SSRFError/RuntimeError/ValueError
-            get_rag_service().index_document(str(dest))   # 热更新钩子
-            lines.append(f"已下载 PDF: {dest}")
-        return ToolResult(text="\n".join(lines) if lines else "无搜索结果")
+    def _render_lines(self, papers: list[dict]) -> list[str]:
+        return [f"- [{p['title']}] ({p['year']}) venue={p['venue']} issn={p['issn']} pdf={p['pdf_url']} 来源=arxiv" for p in papers]

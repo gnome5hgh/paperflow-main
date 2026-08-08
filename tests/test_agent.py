@@ -654,7 +654,7 @@ class TestToolEvent:
         assert tool_events[0].agent_type == "test"
 
 
-# ─── 截断续写（generate-note-fix Task 3）：半截回答不当作最终结果 ─────
+# ─── 截断续写（writer-fix Task 3）：半截回答不当作最终结果 ─────
 
 
 def test_truncated_response_continues_and_merges():

@@ -1,8 +1,8 @@
 # tests/test_venue_rank.py
 import httpx
 import pytest
-from paperflow.tools._venue_rank import normalize_venue, lookup_local, passes_q2
-from paperflow.tools.lookup_venue_rank import LookupVenueRankTool
+from paperflow.tools.rank._venue_rank import normalize_venue, lookup_local, passes_q2
+from paperflow.tools.rank.lookup_venue_rank import LookupVenueRankTool
 
 
 @pytest.fixture(autouse=True)
@@ -15,7 +15,7 @@ def _no_real_redirect(monkeypatch):
     桩替换为恒等函数，让 httpx.MockTransport 罐头响应成为唯一网络来源；
     生产环境仍保留真实的逐跳重定向 SSRF 防护（此处仅测试隔离）。
     """
-    monkeypatch.setattr("paperflow.tools._search_common.resolve_url_target", lambda u: u)
+    monkeypatch.setattr("paperflow.tools._http.resolve_url_target", lambda u: u)
 
 
 def test_normalize_venue():
@@ -73,14 +73,14 @@ def test_parse_letpub_real_format():
 
     旧正则找 `中科院分区：` / `JCR 分区：` 标记，对真实表格行（td[3]=4区）失配 → 返回
     None → 在线路径永远落到 SJR/未命中。此测试用实测行格式锁死 td[3] 解析。"""
-    from paperflow.tools.lookup_venue_rank import _parse_letpub
+    from paperflow.tools.rank.lookup_venue_rank import _parse_letpub
     assert _parse_letpub(_LETPUB_HTML) == {"ccf": None, "jcr": None, "cas": "一区"}
     assert _parse_letpub(_LETPUB_ARABIC_HTML) == {"ccf": None, "jcr": None, "cas": "四区"}
     assert _parse_letpub("<html>no letpub result</html>") is None
 
 
 def test_lookup_online_letpub_by_issn():
-    from paperflow.tools import lookup_venue_rank as mod
+    from paperflow.tools.rank import lookup_venue_rank as mod
     mod.RANK_CACHE.clear()
     def handler(req):
         assert "example-issn" in str(req.url) or "issn" in str(req.url).lower()
@@ -111,7 +111,7 @@ _SJR_AMBIGUOUS_HTML = """<html><body>
 
 
 def test_lookup_sjr_ambiguous_picks_target_journal_band():
-    from paperflow.tools import lookup_venue_rank as mod
+    from paperflow.tools.rank import lookup_venue_rank as mod
     mod.RANK_CACHE.clear()
     def handler(req):
         if "scimagojr" in str(req.url):
@@ -133,7 +133,7 @@ def test_lookup_local_hit_skips_network():
 
 
 def test_lookup_miss_reports_not_found():
-    from paperflow.tools import lookup_venue_rank as mod
+    from paperflow.tools.rank import lookup_venue_rank as mod
     mod.RANK_CACHE.clear()
     def handler(req):
         return httpx.Response(200, text="<html>no results</html>")

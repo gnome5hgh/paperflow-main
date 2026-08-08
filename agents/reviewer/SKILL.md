@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: 审查 agent——两种审查：① 笔记审稿（5 维度 + 分级裁决）；② 下载/推荐前门禁（逐篇核验年份/等级/相关性/可下载性，产出通过清单）。由 generate-note（笔记）与 search-paper（下载/推荐）直接 spawn；不独立任务派发。只给裁决与建议，不产出或修改笔记/论文内容。
+description: 审查 agent——两种审查：① 笔记审稿（5 维度 + 分级裁决）；② 下载/推荐前门禁（逐篇核验年份/等级/相关性/可下载性，产出通过清单）。由 writer（笔记）与 searcher（下载/推荐）直接 spawn；不独立任务派发。只给裁决与建议，不产出或修改笔记/论文内容。
 allowed_agents: []
 allowed_spawns: []
 ---

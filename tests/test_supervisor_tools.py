@@ -65,7 +65,7 @@ def test_spawn_dedup_reuses_completed():
 
 
 def test_spawn_dedup_reruns_when_world_changed(tmp_path):
-    """路径门控回归（generate-note 再审锁）：含路径任务同文本二次 spawn 永不命中 done 缓存。
+    """路径门控回归（writer 再审锁）：含路径任务同文本二次 spawn 永不命中 done 缓存。
 
     过去靠内容快照感知「文件内容变 → 指纹变 → miss」；route 3 改为路径门控——含路径任务
     完成即清条目、永不缓存 done，文件内容根本不影响指纹。这里保留「改文件内容」叙事的
@@ -99,7 +99,7 @@ def test_spawn_dedup_running_hint():
         _SPAWN_REGISTRY.setdefault(agent.session_id, {})[fp] = {
             "state": "running", "result": None, "started_at": time.monotonic(),
         }
-        result = tool.execute(agent_type="search-paper", task="搜索 x")
+        result = tool.execute(agent_type="searcher", task="搜索 x")
     assert "正在执行中" in result.text
     MockAgent.assert_not_called()
 
@@ -161,9 +161,9 @@ def test_pathless_task_done_cache_reuse():
         MockAgent.return_value.run = AsyncMock(return_value="done")
         agent = _supervisor([SpawnSubAgentTool()])
         tool = agent.tools["spawn_sub_agent"]
-        first = tool.execute(agent_type="search-paper", task=task)
+        first = tool.execute(agent_type="searcher", task=task)
         assert _SPAWN_REGISTRY[agent.session_id][_task_fingerprint(task)]["state"] == "done"  # 无路径写 done
-        second = tool.execute(agent_type="search-paper", task=task)
+        second = tool.execute(agent_type="searcher", task=task)
     assert MockAgent.call_count == 1                # done 缓存命中 → 第二次不重构造
     assert first.text == second.text
 
@@ -175,16 +175,16 @@ class TestSpawnSubAgentTool:
         assert tool._parent is agent
 
     def test_confirm_callback_passed_to_child(self):
-        """D6 关键断言：child 构造必须继承父 confirm_callback（generate-note 写盘靠它）。"""
+        """D6 关键断言：child 构造必须继承父 confirm_callback（writer 写盘靠它）。"""
         with patch("paperflow.tools.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(return_value="done")
             cb = lambda cr: True
             agent = _supervisor([SpawnSubAgentTool()], confirm_callback=cb)
             result = agent.tools["spawn_sub_agent"].execute(
-                agent_type="search-paper", task="搜索 x")
+                agent_type="searcher", task="搜索 x")
         kwargs = MockAgent.call_args.kwargs
         assert kwargs["confirm_callback"] is cb
-        assert kwargs["agent_type"] == "search-paper"
+        assert kwargs["agent_type"] == "searcher"
         assert kwargs["security_middleware"] == agent.security_middleware
         assert kwargs["session_id"] == agent.session_id
         parsed = json.loads(result.text)
@@ -201,7 +201,7 @@ class TestSpawnSubAgentTool:
                 MockAgent.return_value.run = hang
                 agent = _supervisor([SpawnSubAgentTool()])
                 result = agent.tools["spawn_sub_agent"].execute(
-                    agent_type="search-paper", task="t")
+                    agent_type="searcher", task="t")
             # M3：断言用执行期生效的 self.timeout（0.05）插值——写死 "120s" 会与
             # 类属性覆盖后的真实值漂移，无法防插值回归
             expected = f"SubAgent 在 {SpawnSubAgentTool.timeout}s 内未完成"
@@ -216,7 +216,7 @@ class TestSpawnSubAgentTool:
             MockAgent.return_value.run = AsyncMock(side_effect=MaxTurnsExceeded("boom"))
             agent = _supervisor([SpawnSubAgentTool()])
             result = agent.tools["spawn_sub_agent"].execute(
-                agent_type="search-paper", task="t")
+                agent_type="searcher", task="t")
         parsed = json.loads(result.text)
         assert parsed["status"] == "failed"
         assert "boom" in parsed["error_detail"]
@@ -226,7 +226,7 @@ class TestSpawnSubAgentTool:
         tool = SpawnSubAgentTool()
         registry = make_mock_registry([tool])     # allowed_spawns 缺省 []
         agent = Agent(llm=make_mock_llm([], ), agent_registry=registry,
-                      agent_type="generate-note")
+                      agent_type="writer")
         result = tool.execute(agent_type="reviewer", task="审稿")
         parsed = json.loads(result.text)
         assert parsed["status"] == "denied"
@@ -234,9 +234,9 @@ class TestSpawnSubAgentTool:
 
     def test_resolve_timeout_map_and_fallback(self):
         """D2：config 按 agent 命中优先；未命中 fallback 到类默认（M3 seam 保留）。"""
-        tool = SpawnSubAgentTool(agent_timeouts={"generate-note": 300})
-        assert tool._resolve_timeout("generate-note") == 300
-        assert tool._resolve_timeout("search-paper") == 120      # 类默认
+        tool = SpawnSubAgentTool(agent_timeouts={"writer": 300})
+        assert tool._resolve_timeout("writer") == 300
+        assert tool._resolve_timeout("searcher") == 120      # 类默认
 
     def test_timeout_uses_agent_timeouts_map(self):
         """config 命中时 error_detail 插值用 map 值而非类默认（防漂移）。"""
@@ -244,10 +244,10 @@ class TestSpawnSubAgentTool:
             async def hang(*a, **k):
                 await asyncio.sleep(5)
             MockAgent.return_value.run = hang
-            tool = SpawnSubAgentTool(agent_timeouts={"search-paper": 0.05})
+            tool = SpawnSubAgentTool(agent_timeouts={"searcher": 0.05})
             agent = _supervisor([tool])
             result = agent.tools["spawn_sub_agent"].execute(
-                agent_type="search-paper", task="t")
+                agent_type="searcher", task="t")
         parsed = json.loads(result.text)
         assert parsed["status"] == "timeout"
         assert parsed["error_detail"] == "SubAgent 在 0.05s 内未完成"
@@ -294,7 +294,7 @@ class TestParallelSpawnTool:
             MockAgent.return_value.run = AsyncMock(return_value="ok")
             registry = make_mock_registry([tool])     # allowed_spawns 缺省 []
             agent = Agent(llm=make_mock_llm([]), agent_registry=registry,
-                          agent_type="generate-note")
+                          agent_type="writer")
             result = tool.execute(spawns=[
                 {"agent_type": "a", "task": "t1"},
                 {"agent_type": "b", "task": "t2"},
@@ -307,8 +307,8 @@ class TestParallelSpawnTool:
 
     def test_parallel_resolve_timeout_map(self):
         """Parallel 与 Spawn 对称：同款 _resolve_timeout（R1 对齐哲学延续）。"""
-        tool = ParallelSpawnTool(agent_timeouts={"generate-note": 300})
-        assert tool._resolve_timeout("generate-note") == 300
+        tool = ParallelSpawnTool(agent_timeouts={"writer": 300})
+        assert tool._resolve_timeout("writer") == 300
         assert tool._resolve_timeout("other") == 120
 
 
@@ -339,7 +339,7 @@ class TestStreamCallbackPropagation:
             MockAgent.return_value.run = AsyncMock(return_value="done")
             agent = _supervisor([SpawnSubAgentTool()], stream_callback=cb)
             result = agent.tools["spawn_sub_agent"].execute(
-                agent_type="search-paper", task="搜索 x")
+                agent_type="searcher", task="搜索 x")
         kwargs = MockAgent.call_args.kwargs
         assert kwargs["stream_callback"] is cb
         assert "done" in json.loads(result.text)["summary"]
@@ -440,7 +440,7 @@ class TestSpawnConfirmBudget:
                 confirm_callback=slow_confirm,
             )
             result = agent.tools["spawn_sub_agent"].execute(
-                agent_type="search-paper", task="写笔记")
+                agent_type="searcher", task="写笔记")
         finally:
             SpawnSubAgentTool.timeout = old
         parsed = json.loads(result.text)
@@ -449,7 +449,7 @@ class TestSpawnConfirmBudget:
 
 
 # ─── C2 结构化摘要聚合（Task 11）────────────────────────────────────
-# digest = StructuredOutput 从子 agent 最终回答提取的结构化摘要（如 search-paper 的
+# digest = StructuredOutput 从子 agent 最终回答提取的结构化摘要（如 searcher 的
 # count/papers/downloaded），supervisor 直接读 digest 组织最终回答，取代 aggregate_results。
 # 失败/超时落 {}（supervisor 回退读 summary）。mock llm 的 chat 不接受 json_mode/
 # temperature/extra_body → 真实提取在测试里 TypeError 静默降级为 {}，不破坏既有 spawn 用例。
@@ -464,11 +464,11 @@ def test_subagent_result_has_digest_field():
 def test_digest_schema_for_maps_types():
     from paperflow.tools.spawn import digest_schema_for
     from paperflow.tools.spawn import (
-        SearchPaperDigest, ReviewerDigest, GenerateNoteDigest, GenericDigest,
+        SearcherDigest, ReviewerDigest, WriterDigest, GenericDigest,
     )
-    assert digest_schema_for("search-paper") is SearchPaperDigest
+    assert digest_schema_for("searcher") is SearcherDigest
     assert digest_schema_for("reviewer") is ReviewerDigest
-    assert digest_schema_for("generate-note") is GenerateNoteDigest
+    assert digest_schema_for("writer") is WriterDigest
     assert digest_schema_for("unknown-x") is GenericDigest
 
 
@@ -502,13 +502,13 @@ def _digest_llm(content: str):
 def test_extract_digest_structured_success():
     """真实路径（review Important 回归锁）：合法 JSON → 提取为 schema 默认值补齐的 dict。
 
-    SearchPaperDigest 的 downloaded/pending_confirm/needs_attention 是可选字段，pydantic
+    SearcherDigest 的 downloaded/pending_confirm/needs_attention 是可选字段，pydantic
     model_dump 会补齐默认值——断言整个 dict（含默认值）而非部分键，锁住 model_dump 回归。"""
     import asyncio
     import json
     from paperflow.tools.spawn import _extract_digest
     llm = _digest_llm(json.dumps({"count": 2, "papers": ["a", "b"]}))
-    d = asyncio.run(_extract_digest(llm, "search-paper", "一些最终回答文本"))
+    d = asyncio.run(_extract_digest(llm, "searcher", "一些最终回答文本"))
     assert d == {"count": 2, "papers": ["a", "b"],
                  "downloaded": [], "pending_confirm": [], "needs_attention": False}
 
@@ -521,7 +521,7 @@ def test_extract_digest_invalid_json_falls_back_empty():
     import asyncio
     from paperflow.tools.spawn import _extract_digest
     llm = _digest_llm("不是 JSON")
-    d = asyncio.run(_extract_digest(llm, "search-paper", "文本"))
+    d = asyncio.run(_extract_digest(llm, "searcher", "文本"))
     assert d == {}
 
 

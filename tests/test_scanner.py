@@ -63,7 +63,7 @@ class TestScanner:
 
     def test_inline_code_path_not_flagged_as_shell(self):
         """RC3 回归：Markdown 行内代码/反引号路径不是 shell_command——修复前任意
-        3+ 字符反引号片段命中 critical，generate-note 失败回答（含反引号路径）被
+        3+ 字符反引号片段命中 critical，writer 失败回答（含反引号路径）被
         on_finish 替换成 SAFE_PROMPT 空结果。"""
         assert not has_critical(scan("无法读取文件 `/Users/x/paper.pdf`"))
         assert not has_critical(scan("方法 `GCN` 用于特征提取"))
@@ -76,14 +76,14 @@ class TestScanner:
 
     def test_spaced_path_in_backticks_not_flagged(self):
         """final review Important 回归：含空格 vault 路径在反引号内不误报——
-        generate-note 最终回复给出绝对路径（vault 全含空格），若误报 on_finish
+        writer 最终回复给出绝对路径（vault 全含空格），若误报 on_finish
         仍把正确回答替换成 SAFE_PROMPT。`/` 前缀内容豁免'空白即命令'。"""
         assert not has_critical(scan("笔记已生成 `/Users/me/Obsidian Vault/paper/note/Heterogeneous graph/a.md`"))
 
     def test_math_formulas_in_backticks_not_flagged_as_shell(self):
         """2026-08-05 回归：学术回答里的反引号数学公式不是 shell_command——
         旧"非 / 开头 + 含空白"判定把 `G = (V, E, x_V)` 等误判为 critical →
-        answer-question 整个回答被 on_finish 替换成 SAFE_PROMPT（真实冒烟复现）。
+        qa-agent 整个回答被 on_finish 替换成 SAFE_PROMPT（真实冒烟复现）。
         命令词形态收窄后：数学公式首 token 大写或以 ( 开头、形如 x = 5 的赋值式
         被负向前瞻排除，全部豁免。"""
         assert not has_critical(scan("图 `G = (V, E, x_V)` 半监督学习"))

@@ -1,6 +1,6 @@
 # tests/test_tools_submit_review.py
 """SubmitReviewTool 单元测试：枚举校验 + verdict/issue 一致性 + 格式化输出。"""
-from paperflow.tools.submit_review import SubmitReviewTool
+from paperflow.tools.review.submit_review import SubmitReviewTool
 
 
 def _tool():

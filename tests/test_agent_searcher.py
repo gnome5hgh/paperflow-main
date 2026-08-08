@@ -1,4 +1,4 @@
-"""search-paper 搜索 agent 测试：mock LLM 驱动，搜索工具注入 MockTransport 隔离网络。"""
+"""searcher 搜索 agent 测试：mock LLM 驱动，搜索工具注入 MockTransport 隔离网络。"""
 import httpx
 import pytest
 
@@ -16,7 +16,7 @@ def _no_real_redirect(monkeypatch):
     桩替换为恒等函数，让 httpx.MockTransport 罐头响应成为唯一网络来源；
     生产环境仍保留真实的逐跳重定向 SSRF 防护（此处仅测试隔离）。
     """
-    monkeypatch.setattr("paperflow.tools._search_common.resolve_url_target", lambda u: u)
+    monkeypatch.setattr("paperflow.tools._http.resolve_url_target", lambda u: u)
 
 _ATOM = """<feed xmlns="http://www.w3.org/2005/Atom"><entry>
 <title>Graph Neural Networks for Link Prediction</title>
@@ -52,7 +52,7 @@ async def test_search_paper_happy_path(agent_env, agent_registry):
         Message(role="assistant", content="审查裁决：pass\n- [PASS] Graph Neural Networks | Q1 | 可下载"),
         Message(role="assistant", content="找到 1 篇论文"),
     ])
-    agent = make_agent(agent_registry, "search-paper", llm, cfg)
+    agent = make_agent(agent_registry, "searcher", llm, cfg)
     # 注入 mock transport：搜索工具 execute 会真打网络，必须隔离（ssrf_check 桩跳过 DNS 校验）
     agent.tools["arxiv_search"]._client = ArxivSearchTool._make_client(transport=_atransport(), ssrf_check=lambda u: None)
     agent.tools["openalex_search"]._client = OpenAlexSearchTool._make_client(transport=_otransport(), ssrf_check=lambda u: None)
@@ -76,7 +76,7 @@ async def test_search_paper_single_source_failure(agent_env, agent_registry):
         _tc("openalex_search", {"query": "x", "max_results": 3}),
         Message(role="assistant", content="OpenAlex 也无结果"),
     ])
-    agent = make_agent(agent_registry, "search-paper", llm, cfg)
+    agent = make_agent(agent_registry, "searcher", llm, cfg)
     agent.tools["arxiv_search"]._client = ArxivSearchTool._make_client(transport=_atransport(), ssrf_check=blocking)
     agent.tools["openalex_search"]._client = OpenAlexSearchTool._make_client(transport=_otransport(), ssrf_check=lambda u: None)
     result = await agent.run("搜索 x")
@@ -84,12 +84,12 @@ async def test_search_paper_single_source_failure(agent_env, agent_registry):
 
 
 def test_search_paper_has_glob_grep(agent_registry):
-    """Task 4：search-paper 装配 glob/grep——枚举已下载 PDF、下载前去重、内容校验。
+    """Task 4：searcher 装配 glob/grep——枚举已下载 PDF、下载前去重、内容校验。
 
-    search-paper 不再盲猜论文精确路径（P2 路径风暴根因）：glob 按模式枚举
+    searcher 不再盲猜论文精确路径（P2 路径风暴根因）：glob 按模式枚举
     vault 内已下载 PDF（决定要不要重新下载），grep 校验下载后内容锚点。
     只读工具 risk=low，无确认门——装配不进安全边界即可，名单断言防回归。"""
-    config = agent_registry.get_config("search-paper")
+    config = agent_registry.get_config("searcher")
     names = {t.name for t in config.tools}
     assert {"glob", "grep"} <= names
 
@@ -103,9 +103,9 @@ def test_search_paper_tools_without_dedup_filter(agent_registry, agent_env):
     _check_spawn_allowed 运行时校验）。"""
     cfg, _ = agent_env
     from tests.conftest import make_agent, make_mock_llm
-    agent = make_agent(agent_registry, "search-paper", make_mock_llm([]), cfg)
+    agent = make_agent(agent_registry, "searcher", make_mock_llm([]), cfg)
     names = set(agent.tools)
     assert {"arxiv_search", "openalex_search", "glob", "grep", "spawn_sub_agent"} <= names
     assert "dedup_papers" not in names and "filter_papers" not in names
-    cfg2 = agent.agent_registry.get_config("search-paper")
+    cfg2 = agent.agent_registry.get_config("searcher")
     assert cfg2.allowed_spawns == ["reviewer"]

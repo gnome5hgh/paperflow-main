@@ -14,7 +14,7 @@ def _no_real_redirect(monkeypatch):
     让 httpx.MockTransport 罐头响应成为唯一网络来源；
     生产环境仍保留真实的逐跳重定向 SSRF 防护（此处仅测试隔离）。
     """
-    monkeypatch.setattr("paperflow.tools._search_common.resolve_url_target", lambda u: u)
+    monkeypatch.setattr("paperflow.tools._http.resolve_url_target", lambda u: u)
 
 
 @pytest.fixture(autouse=True)
@@ -105,7 +105,7 @@ def test_ssrf_check_blocks_private():
 
 def test_download_resolves_redirect_and_indexes(tmp_path, monkeypatch):
     # 302 → 200 PDF 开心路径：解析后的最终 URL 被 GET、写盘字节正确、触发 index_document
-    from paperflow.tools import _search_common as search_mod
+    from paperflow.tools import _http as search_mod
 
     def fake_resolve(url):
         # 模拟 HEAD 逐跳校验把 arxiv pdf 302 到最终地址的解析结果；
@@ -130,7 +130,7 @@ def test_download_resolves_redirect_and_indexes(tmp_path, monkeypatch):
         def index_document(self, p):
             self.indexed.append(p)
     fake = FakeSvc()
-    monkeypatch.setattr("paperflow.tools.arxiv_search.get_rag_service", lambda: fake)
+    monkeypatch.setattr("paperflow.tools.search._base.get_rag_service", lambda: fake)
 
     dest = tmp_path / "out.pdf"
     result = tool.execute(query="link prediction", max_results=1, download_to=str(dest))
@@ -143,7 +143,7 @@ def test_download_resolves_redirect_and_indexes(tmp_path, monkeypatch):
 def test_download_blocks_private_redirect(tmp_path, monkeypatch):
     # 302 → 私网 IP 被拒：下载报错、无文件落盘、不触发索引
     from paperflow.core.security.network import SSRFError
-    from paperflow.tools import _search_common as search_mod
+    from paperflow.tools import _http as search_mod
 
     monkeypatch.setattr(search_mod, "resolve_url_target",
                         lambda url: "http://169.254.169.254/latest/meta-data/" if "/pdf/" in url else url)
@@ -169,7 +169,7 @@ def test_download_blocks_private_redirect(tmp_path, monkeypatch):
         def index_document(self, p):
             self.indexed.append(p)
     fake = FakeSvc()
-    monkeypatch.setattr("paperflow.tools.arxiv_search.get_rag_service", lambda: fake)
+    monkeypatch.setattr("paperflow.tools.search._base.get_rag_service", lambda: fake)
 
     dest = tmp_path / "evil.pdf"
     result = tool.execute(query="link prediction", max_results=1, download_to=str(dest))
@@ -186,7 +186,7 @@ def test_arxiv_year_range_in_query():
     # 再组合。断言解码后的 URL 含 'all:graph AND all:algorithm AND submittedDate'
     #（而非裸词 'graph AND algorithm'）。URL 是 urlencode 编码的，先 unquote_plus 还原。
     from urllib.parse import unquote_plus
-    from paperflow.tools.arxiv_search import ArxivClient
+    from paperflow.tools.search.arxiv_search import ArxivClient
     seen = {}
     def handler(req):
         seen["q"] = unquote_plus(str(req.url))
@@ -200,7 +200,7 @@ def test_arxiv_year_range_in_query():
 def test_max_results_clamped():
     # B2：低于下限 3 → execute 钳到 3——用 URL 捕获验证 max_results 被钳为 3
     # （review finding 3：mock 恒返回固定 1 篇，单靠文本断言无法证明钳制生效）
-    from paperflow.tools.arxiv_search import ArxivClient
+    from paperflow.tools.search.arxiv_search import ArxivClient
     seen = {}
     def handler(req):
         seen["q"] = str(req.url)
@@ -264,7 +264,7 @@ def test_download_bypasses_cache(tmp_path, monkeypatch):
         def index_document(self, p):
             self.indexed.append(p)
     fake = FakeSvc()
-    monkeypatch.setattr("paperflow.tools.arxiv_search.get_rag_service", lambda: fake)
+    monkeypatch.setattr("paperflow.tools.search._base.get_rag_service", lambda: fake)
 
     def handler(req):
         if "/api/query" in str(req.url):

@@ -35,15 +35,16 @@ class LLMConfig:
     #: API 基础地址，默认为 DeepSeek 兼容端点
     base_url: str = "https://api.deepseek.com/v1"
 
-    #: API 密钥，通过环境变量 PAPERFLOW_API_KEY 设置
-    api_key: str = "sk-78758cabb688452b8230b322f15ae862"
+    #: API 密钥——**不硬编码默认值**。现必须经 PAPERFLOW_API_KEY env / .env /
+    #: config.yaml llm.api_key 提供;留空由 LLMClient.__init__ 兜底报清晰错误。
+    api_key: str = ""
 
     #: 模型名称，传给 API 的 model 参数
     model: str = "deepseek-v4-flash"
 
     #: 单次响应输出上限——deepseek-v4-flash 官方最大输出 384K（max_tokens 合法范围 1-393216）。
     #: 2026-08-06 修复：4096 → 393216。长笔记草稿/大参数 write_file 不再被静默截断
-    #:（generate-note 流程失败的 P8 根因之一）。
+    #:（writer 流程失败的 P8 根因之一）。
     max_tokens: int = 393216
 
     #: 采样温度，0.0 表示确定性输出（适合工具调用场景）
@@ -98,13 +99,13 @@ class PaperFlowConfig:
     #: 重排模型（Cross-encoder）
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
 
-    #: 子 agent 超时覆盖表（D2）：generate-note 默认 600s——端到端（读+起草+写盘+
-    #: ≤3 轮审稿每轮 ≤120s）远超默认 120s，旧值下必然超时→supervisor 反复重试
-    #:（2026-08-06 实测）。search-paper 300s / reviewer 180s：完整门禁链路（搜索→
-    #: 等级查询→审查裁决→下载）在多候选下远超类默认 120s，短超时把整条 reviewer
-    #: 链路误判 timeout（2026-08-08 冒烟实测）。YAML 顶层 agent_timeouts 可覆盖；
-    #: dict 无 env 形态。
-    agent_timeouts: dict[str, int] = field(default_factory=lambda: {"generate-note": 600, "search-paper": 300, "reviewer": 180})
+    #: 子 agent 超时覆盖表（D2）：writer 默认 600s——端到端（读+起草+写盘+≤3 轮审稿
+    #: 每轮 ≤120s）远超默认 120s，旧值下必然超时→supervisor 反复重试（2026-08-06
+    #: 实测）。searcher 300s / reviewer 180s：完整门禁链路（搜索→等级查询→审查裁决→
+    #: 下载）在多候选下远超类默认 120s，短超时把整条 reviewer 链路误判 timeout
+    #:（2026-08-08 冒烟实测）。2026-08-08 角色化命名：generate-note→writer、
+    #: search-paper→searcher。YAML 顶层 agent_timeouts 可覆盖；dict 无 env 形态。
+    agent_timeouts: dict[str, int] = field(default_factory=lambda: {"writer": 600, "searcher": 300, "reviewer": 180})
 
     @property
     def chroma_dir(self) -> str:

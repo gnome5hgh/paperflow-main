@@ -29,7 +29,7 @@ def make_tools(config: PaperFlowConfig, tool_items: list[type[Tool] | Tool]) -> 
 
     类（ReadFileTool 等无参原子工具）经 cls() 实例化；已实例化工具（如
     SpawnSubAgentTool(agent_timeouts=...)——需要构造参数，无参 cls() 会
-    TypeError）直接复用同一实例（Task 7：generate-note 审稿装配走此分支）。
+    TypeError）直接复用同一实例（Task 7：writer 审稿装配走此分支）。
     isinstance(item, type) 判定类是"可实例化"，否则视为现成实例。"""
     roots = _root_map(config)
     tools = []

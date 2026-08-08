@@ -18,7 +18,7 @@ from tests.test_agent import make_mock_registry, make_capture_llm
 class ConfirmWriteTool(Tool):
     """requires_confirm=True 的写盘类工具：触发 PolicyEngine 的 ConfirmRequired 路径。
 
-    （与 generate-note 的 WriteFileTool 同形态，真实 CLI 里靠 confirm_callback 放行。）"""
+    （与 writer 的 WriteFileTool 同形态，真实 CLI 里靠 confirm_callback 放行。）"""
     name = "confirm_write"
     description = "写盘，需用户确认"
     parameters = {"type": "object", "properties": {}}
@@ -159,7 +159,7 @@ async def test_confirm_callback_async_contract_confirm(monkeypatch):
     """C1 回归（merge blocker）：confirm_callback=_stdin_confirm（async）+ ConfirmRequired 不崩。
 
     agent.py:411 以 `await self.confirm_callback(cr)` 调用——若回调是 sync 的，`await True`
-    抛 TypeError，generate-note 写盘工具（requires_confirm=True）在真实 CLI 永远写不出笔记。
+    抛 TypeError，writer 写盘工具（requires_confirm=True）在真实 CLI 永远写不出笔记。
     构造真实 Agent（真实 PolicyEngineMiddleware + async _stdin_confirm），断言完整 ReAct
     走通：输入 y → 确认放行 → 工具执行 → 返回最终答案，全程无 TypeError。
     """
@@ -234,8 +234,8 @@ class TestReplStreamer:
         s = _ReplStreamer(fn, root_agent_type="supervisor")
         s.on_event(StreamEvent("content", "答", "supervisor"))
         s.on_event(StreamEvent("content", "案", "supervisor"))
-        s.on_event(StreamEvent("content", "推理", "search-paper"))   # root → child
-        s.on_event(StreamEvent("content", "续", "search-paper"))
+        s.on_event(StreamEvent("content", "推理", "searcher"))   # root → child
+        s.on_event(StreamEvent("content", "续", "searcher"))
         s.on_event(StreamEvent("content", "总结", "supervisor"))     # child → root
         assert "".join(out) == "答案\n推理续\n总结"
 
@@ -257,7 +257,7 @@ class TestReplStreamer:
     def test_child_content_does_not_pollute_buffer(self):
         out, fn = _collect()
         s = _ReplStreamer(fn, "supervisor")
-        s.on_event(StreamEvent("content", "子agent回答", "search-paper"))   # child 不入 buffer
+        s.on_event(StreamEvent("content", "子agent回答", "searcher"))   # child 不入 buffer
         assert s.should_print("最终答案") == "最终答案"
         s.on_event(StreamEvent("content", "最终答案", "supervisor"))
         assert s.should_print("最终答案") == ""
@@ -276,8 +276,8 @@ class TestReplStreamer:
             out.append(a[0] + k.get("end", "\n"))
         s = _ReplStreamer(_fn, "supervisor")
         s.on_event(StreamEvent("content", "答", "supervisor"))
-        s.on_event(StreamEvent("content", "推理", "search-paper"))   # root→child 段切换
-        s.on_event(StreamEvent("tool", "调用 search_arxiv(query=x)", "search-paper"))
+        s.on_event(StreamEvent("content", "推理", "searcher"))   # root→child 段切换
+        s.on_event(StreamEvent("tool", "调用 search_arxiv(query=x)", "searcher"))
         joined = "".join(out)
         assert "\n\n" not in joined
         assert joined == "答\n推理\n调用 search_arxiv(query=x)\n"

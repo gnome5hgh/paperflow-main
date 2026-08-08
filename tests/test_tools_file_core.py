@@ -35,7 +35,7 @@ def test_pdf_not_in_write_edit_roots(tmp_path):
 def test_write_then_index_document(tmp_path, monkeypatch):
     tools, _ = _tools(tmp_path)
     write_tool = next(t for t in tools if isinstance(t, WriteFileTool))
-    from paperflow.tools import write_file as file_mod
+    from paperflow.tools.file import write_file as file_mod
     class FakeSvc:
         def __init__(self):
             self.lock = __import__("threading").RLock()

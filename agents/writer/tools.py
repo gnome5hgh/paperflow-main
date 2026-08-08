@@ -1,5 +1,5 @@
-# agents/generate-note/tools.py（7 工具完整装配：5 原子工具 + 共享 spawn + glob/grep）
-"""generate-note 的工具装配。
+# agents/writer/tools.py（7 工具完整装配：5 原子工具 + 共享 spawn + glob/grep）
+"""writer 的工具装配。
 
 5 个原子工具（read_file/read_pdf/write_file/edit_file/mark_read）复用
 paperflow/tools/ 的集中式安全边界（WorkspacePolicy 白名单、风险语义）。

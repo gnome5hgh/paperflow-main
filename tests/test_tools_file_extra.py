@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from paperflow.tools import ReadPdfTool, MarkReadTool, FormatAnswerTool, FormatCheckTool
+from paperflow.tools import ReadPdfTool, MarkReadTool, FormatCheckTool
 
 
 def test_format_check_compares_template(tmp_path):
@@ -38,12 +38,6 @@ def test_format_check_creates_skeleton_when_template_missing(tmp_path):
     assert "方法" in result.text               # 骨架章节参与对比并被指出
 
 
-def test_format_answer_ok():
-    tool = FormatAnswerTool()
-    result = tool.execute(answer="这是回答")
-    assert "这是回答" in result.text
-
-
 def test_read_pdf_tool_meta():
     assert ReadPdfTool.allowed_roots == ["pdf"]
     assert ReadPdfTool.output_scan == "mark"
@@ -56,7 +50,7 @@ def test_mark_read_tool_meta():
 def test_read_pdf_routes_through_parse_pdf_cached(agent_env):
     """缓存入口路由：ReadPdfTool 走 parse_pdf_cached（而非裸 pdf_parser().parse_pdf）。
 
-    agent_env fixture 已把 paperflow.tools.read_pdf.get_rag_service patch 成 svc
+    agent_env fixture 已把 paperflow.tools.file.read_pdf.get_rag_service patch 成 svc
     （含 StubPdfParser）；断言 execute 确实经缓存入口——若改回 pdf_parser() 直调，
     此测试失败（called 为空）。"""
     from pathlib import Path
@@ -131,7 +125,7 @@ def test_read_pdf_fuzzy_no_match_reports_not_found(agent_env):
 
 
 def test_glob_finds_files(tmp_path):
-    from paperflow.tools.glob import GlobTool
+    from paperflow.tools.file.glob import GlobTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -148,7 +142,7 @@ def test_glob_finds_files(tmp_path):
 
 
 def test_glob_no_match(tmp_path):
-    from paperflow.tools.glob import GlobTool
+    from paperflow.tools.file.glob import GlobTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -161,7 +155,7 @@ def test_glob_blocks_path_escape(tmp_path):
     # Important 1 回归：glob 不约束 pattern 到 base，`../../**/*.txt` 能命中 base 外
     # 路径（只读泄露，违反 allowed_roots 边界）。修复：逃逸命中（resolve 后不在 base
     # 内）逐个跳过——`p.relative_to(base)` 是纯词法比较，把 `..` 当普通路径段，拦不住。
-    from paperflow.tools.glob import GlobTool
+    from paperflow.tools.file.glob import GlobTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -177,7 +171,7 @@ def test_glob_blocks_path_escape(tmp_path):
 
 def test_glob_caps_at_50(tmp_path):
     # 封顶回归：命中 60 条时只返回 50 条（遍历即 break，不物化全部）。
-    from paperflow.tools.glob import GlobTool
+    from paperflow.tools.file.glob import GlobTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -190,7 +184,7 @@ def test_glob_caps_at_50(tmp_path):
 
 
 def test_grep_finds_lines(tmp_path):
-    from paperflow.tools.grep import GrepTool
+    from paperflow.tools.file.grep import GrepTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -203,7 +197,7 @@ def test_grep_finds_lines(tmp_path):
 
 
 def test_grep_miss_and_bad_regex(tmp_path):
-    from paperflow.tools.grep import GrepTool
+    from paperflow.tools.file.grep import GrepTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -217,7 +211,7 @@ def test_grep_miss_and_bad_regex(tmp_path):
 def test_grep_returns_raw_line_for_anchor(tmp_path):
     # Important 4 回归：grep 命中行被当作 edit_file 的 old_text 锚点，必须原样返回
     # （不 strip、不截断）——缩进/超长行若被裁剪，模型复制过去就 miss，又变试错。
-    from paperflow.tools.grep import GrepTool
+    from paperflow.tools.file.grep import GrepTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -234,7 +228,7 @@ def test_grep_returns_raw_line_for_anchor(tmp_path):
 
 def test_grep_caps_at_30(tmp_path):
     # 封顶回归：40 条命中只返回 30 条（原样行 + 封顶控制量）。
-    from paperflow.tools.grep import GrepTool
+    from paperflow.tools.file.grep import GrepTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -252,7 +246,7 @@ def test_grep_caps_at_30(tmp_path):
 
 
 def test_write_file_overwrites_existing(tmp_path):
-    from paperflow.tools.write_file import WriteFileTool
+    from paperflow.tools.file.write_file import WriteFileTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -266,7 +260,7 @@ def test_write_file_overwrites_existing(tmp_path):
 
 
 def test_edit_file_search_replace(tmp_path):
-    from paperflow.tools.edit_file import EditFileTool
+    from paperflow.tools.file.edit_file import EditFileTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -281,7 +275,7 @@ def test_edit_file_search_replace(tmp_path):
 
 
 def test_edit_file_miss_and_multi(tmp_path):
-    from paperflow.tools.edit_file import EditFileTool
+    from paperflow.tools.file.edit_file import EditFileTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -295,7 +289,7 @@ def test_edit_file_miss_and_multi(tmp_path):
 
 
 def test_edit_file_missing_file(tmp_path):
-    from paperflow.tools.edit_file import EditFileTool
+    from paperflow.tools.file.edit_file import EditFileTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -308,7 +302,7 @@ def test_edit_file_missing_file(tmp_path):
 def test_edit_file_empty_old_text(tmp_path):
     # Minor 10 回归：空 old_text 会走 str.count("") 的"多命中"分支（困惑的报错）。
     # 守卫直接明示参数错误，且文件不被改动。
-    from paperflow.tools.edit_file import EditFileTool
+    from paperflow.tools.file.edit_file import EditFileTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path / "note"))
@@ -323,7 +317,7 @@ def test_edit_file_empty_old_text(tmp_path):
 
 def test_glob_skips_denied_audit_files(tmp_path):
     """错位场景：note 根 = 含 workspace/audit 的目录 → glob 遍历跳过审计文件（deny-list）。"""
-    from paperflow.tools.glob import GlobTool
+    from paperflow.tools.file.glob import GlobTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path))   # note 根 = workspace 父级（错位）
@@ -345,7 +339,7 @@ def test_glob_skips_denied_audit_files(tmp_path):
 
 def test_grep_skips_denied_audit_files(tmp_path):
     """GrepTool 目录递归跳过审计目录（deny-list 防通配符摸敏感文件）。"""
-    from paperflow.tools.grep import GrepTool
+    from paperflow.tools.file.grep import GrepTool
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig(workspace=str(tmp_path / "ws"),
                           vault_note_dir=str(tmp_path))

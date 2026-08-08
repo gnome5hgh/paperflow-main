@@ -9,6 +9,7 @@
 不静默吞（让 reviewer 的 LLM 修正后重试）。
 """
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.review._validate import VERDICTS, enum_check
 
 #: severity 合法值（blocking 必须修才能通过；major 应修；minor 可忽略）
 SEVERITIES = ("blocking", "major", "minor")
@@ -44,17 +45,18 @@ class SubmitReviewTool(Tool):
     allowed_roots = ["note", "scratch"]
 
     def execute(self, path: str, verdict: str, issues: list) -> ToolResult:
-        # ① verdict 枚举校验
-        if verdict not in ("pass", "fail"):
-            return ToolResult(text=f"verdict 非法: {verdict}，应为 pass 或 fail")
+        # ① verdict 枚举校验（enum_check 共享，同 submit_download_review）
+        bad = enum_check(verdict, VERDICTS, "verdict")
+        if bad:
+            return ToolResult(text=bad)
         # ② 逐 issue 校验：severity/dimension 枚举 + location/action 非空
         for issue in issues:
-            sev = issue.get("severity")
-            if sev not in SEVERITIES:
-                return ToolResult(text=f"severity 非法: {sev}，应为 {', '.join(SEVERITIES)}")
-            dim = issue.get("dimension")
-            if dim not in DIMENSIONS:
-                return ToolResult(text=f"dimension 非法: {dim}，应为 {', '.join(DIMENSIONS)}")
+            bad = enum_check(issue.get("severity"), SEVERITIES, "severity")
+            if bad:
+                return ToolResult(text=bad)
+            bad = enum_check(issue.get("dimension"), DIMENSIONS, "dimension")
+            if bad:
+                return ToolResult(text=bad)
             missing = [k for k in ("location", "action") if not issue.get(k)]
             if missing:
                 return ToolResult(text=f"issue 缺少字段: {', '.join(missing)}——每条意见必须有 location + action")
@@ -64,7 +66,7 @@ class SubmitReviewTool(Tool):
             return ToolResult(text="verdict=pass 但存在 blocking 意见——pass 当且仅当无 blocking")
         if verdict == "fail" and not has_blocking:
             return ToolResult(text="verdict=fail 但无 blocking 意见——fail 必须含至少一个 blocking")
-        # ④ 格式化：verdict 行 + 按 severity 分组 issue 清单（generate-note 确定性可读）
+        # ④ 格式化：verdict 行 + 按 severity 分组 issue 清单（writer 确定性可读）
         lines = [f"审查裁决：{verdict}"]
         for sev in SEVERITIES:
             for issue in issues:

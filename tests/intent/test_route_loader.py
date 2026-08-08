@@ -61,7 +61,7 @@ routes:
 
         2026-08-06 实测：ask_question 原本零阅读例句，用户输入
         "阅读 <pdf 路径> 这篇论文" 被 HybridRouter 按 argmax 判为 generate_note（0.676），
-        supervisor 据此 spawn 了 generate-note 而非 answer-question。补阅读例句后
+        supervisor 据此 spawn 了 writer 而非 qa-agent。补阅读例句后
         该查询正确路由到 ask_question（0.713）。此测试守护数据形状，防例句被误删。
         """
         routes = load_routes(Path("data/intents/routes.yaml"))

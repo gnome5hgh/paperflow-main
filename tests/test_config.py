@@ -44,9 +44,9 @@ def test_agent_timeouts_from_yaml(tmp_path):
     """agent_timeouts 经 config.yaml 顶层配置读入（D2，仅 YAML 无 env——dict 无自然 env 形态）。"""
     from paperflow.config import PaperFlowConfig
     cfg_path = tmp_path / "c.yaml"
-    cfg_path.write_text("agent_timeouts:\n  generate-note: 300\n", encoding="utf-8")
+    cfg_path.write_text("agent_timeouts:\n  writer: 300\n", encoding="utf-8")
     cfg = PaperFlowConfig.from_env(str(cfg_path))
-    assert cfg.agent_timeouts == {"generate-note": 300}
+    assert cfg.agent_timeouts == {"writer": 300}
 
 
 def test_from_env_resolves_workspace_absolute(tmp_path):
@@ -84,11 +84,11 @@ def test_llm_config_official_limits():
 
 
 def test_agent_timeouts_default_generate_note():
-    """generate-note 默认 600s；search-paper 300s / reviewer 180s——完整门禁链路
+    """writer 默认 600s；searcher 300s / reviewer 180s——完整门禁链路
     （搜索→等级→审查→下载）远超类默认 120s，短超时把 reviewer 链路误判 timeout
     （2026-08-08 冒烟实测，见 config.py 注释）。"""
     from paperflow.config import PaperFlowConfig
     cfg = PaperFlowConfig()
-    assert cfg.agent_timeouts.get("generate-note") == 600
-    assert cfg.agent_timeouts.get("search-paper") == 300
+    assert cfg.agent_timeouts.get("writer") == 600
+    assert cfg.agent_timeouts.get("searcher") == 300
     assert cfg.agent_timeouts.get("reviewer") == 180

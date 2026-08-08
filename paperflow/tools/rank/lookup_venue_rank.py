@@ -3,7 +3,7 @@
 reviewer 下载审查模式专属。三层：本地映射 → LetPub(ISSN) → SJR → 未命中。
 等级值带来源与证据链接，未命中显式返回"未找到等级"（不默认通过）。
 
-网络访问复用 _SearchClientMixin 的 SSRF 安全抓取（validate_url_target +
+网络访问复用 _HttpClientMixin 的 SSRF 安全抓取（validate_url_target +
 resolve_url_target 逐跳校验重定向），httpx 同步客户端——工具已在线程池跑。
 """
 import re
@@ -13,11 +13,11 @@ import httpx
 
 from paperflow.core.security.network import validate_url_target
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.tools._search_common import _SearchClientMixin
-from paperflow.tools._venue_rank import lookup_local, normalize_venue, RANK_CACHE, RANK_CACHE_MAX
+from paperflow.tools._http import _HttpClientMixin
+from paperflow.tools.rank._venue_rank import lookup_local, normalize_venue, RANK_CACHE, RANK_CACHE_MAX
 
 
-class _VenueClient(_SearchClientMixin):
+class _VenueClient(_HttpClientMixin):
     """LetPub/SJR 抓取客户端：SSRF 校验 + 超时 + 浏览器头 + 可选 MockTransport（测试注入）。
 
     浏览器头是反爬关键：LetPub 对无 UA 的请求可能返回验证页/空结果页（2026-08-08 实测裸
@@ -186,5 +186,5 @@ class LookupVenueRankTool(Tool):
 
 def _venue_passes(rank: dict) -> bool:
     """等价表 B 判定（避免 _venue_rank 与工具循环 import，本地再导一次）。"""
-    from paperflow.tools._venue_rank import passes_q2
+    from paperflow.tools.rank._venue_rank import passes_q2
     return passes_q2(rank)

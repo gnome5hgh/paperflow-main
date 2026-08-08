@@ -1,7 +1,7 @@
 # paperflow/tools/glob.py
 """GlobTool：按文件名模式在 vault 内定位文件（只读）。
 
-generate-note 定位 PDF/笔记、search-paper 下载前去重、answer-question 找论文——
+writer 定位 PDF/笔记、searcher 下载前去重、qa-agent 找论文——
 agent 不再盲猜精确路径（P2 路径风暴根因）。只读 → low、无确认。
 """
 from pathlib import Path

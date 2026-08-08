@@ -32,7 +32,7 @@ class ReadPdfTool(Tool):
     def execute(self, path: str) -> ToolResult:
         try:
             # 精确路径优先（缓存入口，reviewer 每轮复用——见 2026-08-04
-            # generate-note-timeout-fix）。exact 成功零行为变化（D4 承诺）。
+            # writer-timeout-fix）。exact 成功零行为变化（D4 承诺）。
             doc = get_rag_service().parse_pdf_cached(path)
         except (FileNotFoundError, OSError):
             # 精确 miss → 容错分支（D4，RC2b）：LLM 可能折叠路径空白（双空格文件名
@@ -43,7 +43,7 @@ class ReadPdfTool(Tool):
                 # G（2026-08-06）：对齐 read_file——0/多候选 raise，_exec_tool 捕获转
                 # ToolResult("Tool error: ...") + success=False。旧行为返回含错误文本的
                 # ToolResult，审计 success=True 误导（agent 分不清读成功还是读到错误，
-                # 放大 generate-note 的路径猜测风暴 P2）。LLM 仍看到可读错误文本
+                # 放大 writer 的路径猜测风暴 P2）。LLM 仍看到可读错误文本
                 #（经 _exec_tool 的 "Tool error:" 包装）。
                 raise e
         text = "\n\n".join(f"## {h}\n{t}" for h, t in doc.sections)

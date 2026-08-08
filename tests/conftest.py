@@ -100,8 +100,8 @@ def agent_env(tmp_path, monkeypatch):
     svc._pymupdf_parser = StubPdfParser()   # 假 PDF 解析
     # 绑定 get_rag_service 的模块命名空间都要 patch（工具在模块顶部 import 绑定）：
     # 6 个工具模块（拆分自 file.py/search.py，一工具一文件）+ rag.retriever
-    for mod in ("read_pdf", "write_file", "edit_file", "format_check",
-                "arxiv_search", "openalex_search"):
+    for mod in ("file.read_pdf", "file.write_file", "file.edit_file", "file.format_check",
+                "search._base"):
         monkeypatch.setattr(f"paperflow.tools.{mod}.get_rag_service", lambda: svc)
     monkeypatch.setattr("paperflow.rag.retriever.get_rag_service", lambda: svc)
     return cfg, svc

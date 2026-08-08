@@ -58,7 +58,7 @@ class Message:
     tool_call_id: str | None = None
 
     #: 响应因 max_tokens 被截断（finish_reason=="length"）。Agent 据此续写而非
-    #: 把半截内容当最终回答（2026-08-06 修复：generate-note 草稿静默截断是 P5 触发点）。
+    #: 把半截内容当最终回答（2026-08-06 修复：writer 草稿静默截断是 P5 触发点）。
     truncated: bool = False
 
 
@@ -81,6 +81,13 @@ class LLMClient:
         """
         :param config: LLMConfig 实例，包含 base_url / api_key / model 等参数
         """
+        #: key 守卫（2026-08-08，硬编码 key 清理后）:api_key 不再有代码默认值,
+        #: 留空时 OpenAI(api_key="") 抛晦涩 SDK 错——此处 fail-fast 报可行动指引。
+        if not config.api_key:
+            raise RuntimeError(
+                "LLM API key 未配置：请设置环境变量 PAPERFLOW_API_KEY，"
+                "或在 config.yaml 的 llm.api_key 提供"
+            )
         #: OpenAI SDK 客户端实例（底层 httpx 连接池，线程安全）
         self.client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 

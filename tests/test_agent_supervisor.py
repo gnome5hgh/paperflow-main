@@ -29,8 +29,8 @@ def test_supervisor_config_loads_with_three_tools(supervisor_registry):
 def test_supervisor_has_no_glob_grep(supervisor_registry):
     """Task 4：supervisor 不含 glob/grep——只调度不碰文件。
 
-    文件访问（读/写/搜索）全部下放到文件型 agent（search-paper/generate-note/
-    answer-question/reviewer）；supervisor 仅 3 个调度工具，权限最小化。
+    文件访问（读/写/搜索）全部下放到文件型 agent（searcher/writer/
+    qa-agent/reviewer）；supervisor 仅 3 个调度工具，权限最小化。
     此断言防将来向 supervisor 误加文件工具（它有 spawn 权限，绝不能有文件路径暴露）。"""
     config = supervisor_registry.get_config("supervisor")
     names = {t.name for t in config.tools}
@@ -42,9 +42,9 @@ def test_supervisor_dispatch_smoke(supervisor_registry):
     tool_call = Message(role="assistant", content=None, tool_calls=[{
         "id": "c1", "type": "function",
         "function": {"name": "spawn_sub_agent", "arguments":
-                     '{"agent_type": "search-paper", "task": "搜索 circRNA"}'},
+                     '{"agent_type": "searcher", "task": "搜索 circRNA"}'},
     }])
-    # 3 条响应：① supervisor 调 spawn → ② child（search-paper，同一 mock llm）返回
+    # 3 条响应：① supervisor 调 spawn → ② child（searcher，同一 mock llm）返回
     # "子任务已执行" → ③ supervisor 汇总后返回"已搜索"。mock 列表 pop(0) 顺序消费，
     # 少一条会 IndexError。
     llm = make_mock_llm([
@@ -55,7 +55,7 @@ def test_supervisor_dispatch_smoke(supervisor_registry):
     agent = Agent(llm=llm, agent_registry=supervisor_registry, agent_type="supervisor",
                   confirm_callback=lambda cr: True)
     # supervisor 前置钩子缺省关闭（未传 intent_pipeline/session）；spawn 的 child 是
-    # 真实 search-paper 装配但吃同一 mock llm → 返回"子任务已执行"，无网络。
+    # 真实 searcher 装配但吃同一 mock llm → 返回"子任务已执行"，无网络。
     import asyncio
     text = asyncio.run(agent.run("搜索 circRNA 文献"))
     assert text == "已搜索"
@@ -72,7 +72,7 @@ def test_subagent_result_cross_turn_visible(supervisor_registry):
     tool_call = Message(role="assistant", content=None, tool_calls=[{
         "id": "c1", "type": "function",
         "function": {"name": "spawn_sub_agent", "arguments":
-                     '{"agent_type": "search-paper", "task": "搜索 circRNA"}'},
+                     '{"agent_type": "searcher", "task": "搜索 circRNA"}'},
     }])
     structured = MagicMock()
     async def extract(prompt, schema, fallback=None):

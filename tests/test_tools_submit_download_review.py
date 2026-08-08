@@ -1,5 +1,5 @@
 import pytest
-from paperflow.tools.submit_download_review import SubmitDownloadReviewTool
+from paperflow.tools.review.submit_download_review import SubmitDownloadReviewTool
 
 def _item(decision="pass", reasons=None, **kw):
     d = {"title": "Paper X", "venue_rank": {"ccf": "A"}, "decision": decision,

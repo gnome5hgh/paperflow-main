@@ -144,7 +144,7 @@ class Agent:
         agent = Agent(
             llm=llm_client,
             agent_registry=registry,
-            agent_type="search-paper",
+            agent_type="searcher",
             security_middleware=[AuditMiddleware(), PolicyEngineMiddleware()],
             confirm_callback=my_confirm_handler,
         )
