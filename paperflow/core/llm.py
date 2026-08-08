@@ -24,6 +24,7 @@ LLM 客户端 —— OpenAI-compatible API 的异步封装。
 
 import asyncio
 import re
+import time
 from dataclasses import dataclass
 
 from openai import OpenAI
@@ -110,6 +111,7 @@ class LLMClient:
         json_mode: bool = False,
         temperature: float | None = None,
         extra_body: dict | None = None,
+        telemetry_callback=None,
     ) -> Message:
         """
         单次非流式 LLM 调用，返回 assistant message（可能包含 tool_calls）。
@@ -122,9 +124,16 @@ class LLMClient:
         :param temperature: 单次调用温度覆盖，None 表示用 config 默认值
         :param extra_body: 附加请求体参数（如 DeepSeek 的 enable_thinking），
             端点为不支持时自动降级重试一次
+        :param telemetry_callback: 调用结束后同步回调元数据 dict
+            （model/prompt_tokens/completion_tokens/total_tokens/latency_ms/
+            finish_reason），供审计 replay 使用；不含消息正文。None 时零开销跳过
         :returns: 封装后的 assistant Message
         :raises: SDK 异常直接向上抛，由 Agent 自行决定是否 recover
         """
+        # 计时起点：latency_ms 覆盖从入参到返回的完整调用耗时（含降级重试），
+        # 供审计 replay 评估各环节耗时
+        _started = time.monotonic()
+
         # 构建 API 请求参数
         kwargs = dict(
             model=self.model,
@@ -180,21 +189,40 @@ class LLMClient:
 
         # content 可能是 None（OpenAI 2.x 行为：纯 tool-call 响应不含 content）
         # truncated：finish_reason=="length" 表示输出被 max_tokens 截断，调用方须续写
-        return Message(
+        msg = Message(
             role=choice.role,
             content=choice.content or "",
             tool_calls=tool_calls,
             truncated=(response.choices[0].finish_reason == "length"),
         )
 
+        # telemetry：只回传元数据（usage/latency/finish_reason），绝不包含消息正文。
+        # usage 某些端点可能缺失（getattr 兜底 None）；回调不存在时是零开销 no-op
+        if telemetry_callback is not None:
+            usage = getattr(response, "usage", None) or {}
+            telemetry_callback({
+                "model": self.model,
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+                "total_tokens": getattr(usage, "total_tokens", None),
+                "latency_ms": int((time.monotonic() - _started) * 1000),
+                "finish_reason": response.choices[0].finish_reason,
+            })
+        return msg
+
     async def chat_stream(self, messages, tools=None, tool_choice="auto",
-                          on_delta=None) -> Message:
+                          on_delta=None, telemetry_callback=None) -> Message:
         """流式版 chat()：stream=True + 边收边回调 on_delta，返回完整 Message。
 
         仅 Agent（ReAct）消费；StructuredOutput 等要完整 JSON 的调用方继续用 chat()。
         :param on_delta: 每段 content 片段同步回调（跑在 to_thread 流线程内——
             非主事件循环线程，回调只能做追加/打印，别碰事件循环）
+        :param telemetry_callback: 与 chat() 同语义的元数据回调，token 数来自
+            最后一个带 usage 的 chunk；端点不支持流式 usage 时 tokens 记 None
         """
+        # 计时起点：latency_ms 覆盖整个流式接收过程
+        _started = time.monotonic()
+
         kwargs = dict(
             model=self.model,
             messages=[_message_to_openai(m) for m in messages],
@@ -211,7 +239,18 @@ class LLMClient:
             # httpx 读取上；不能把 Stream 交回事件循环再迭代（否则阻塞 loop，
             # 杀死 parallel_spawn 并发）。
             stream = self.client.chat.completions.create(**kwargs)
-            content, tool_calls, role, finish_reason = _accumulate_stream_chunks(stream, on_delta)
+            content, tool_calls, role, finish_reason, usage = _accumulate_stream_chunks(stream, on_delta)
+            if telemetry_callback is not None:
+                # 流式 usage 仅部分端点提供（多在收尾 chunk 上）；缺失时元数据
+                # 留空，不落 content——与 chat() 一致地只回传元数据
+                telemetry_callback({
+                    "model": self.model,
+                    "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                    "completion_tokens": getattr(usage, "completion_tokens", None),
+                    "total_tokens": getattr(usage, "total_tokens", None),
+                    "latency_ms": int((time.monotonic() - _started) * 1000),
+                    "finish_reason": finish_reason,
+                })
             return Message(role=role, content=content, tool_calls=tool_calls,
                            truncated=(finish_reason == "length"))
 
@@ -219,17 +258,24 @@ class LLMClient:
 
 
 def _accumulate_stream_chunks(chunks, on_delta):
-    """把 OpenAI 流式 chunks 累加为 (content, tool_calls, role, finish_reason)。
+    """把 OpenAI 流式 chunks 累加为 (content, tool_calls, role, finish_reason, usage)。
 
     on_delta 每收到一段 content 片段即同步回调（跑在流线程内，须线程安全）。
     tool_calls 按 delta.tool_calls[].index 分片累加，arguments 分片拼接。
     finish_reason 取最后一个带值的 chunk 的（多为尾部收尾 chunk）。
+    usage 取最后一个带 usage 的 chunk（部分端点仅在收尾 chunk 附带用量），
+    无则 None——调用方据此将 tokens 元数据留空。
     """
     content_parts: list[str] = []
     tool_acc: dict[int, dict] = {}
     role = "assistant"
     finish_reason = None
+    usage = None
     for chunk in chunks:
+        # 流式 usage 仅部分端点提供且常出现在收尾 chunk（该 chunk 可能 choices 为空），
+        # 故在跳过空 choices 前收集，最后带值者胜出；getattr 兜底简化 fake chunk
+        if getattr(chunk, "usage", None):
+            usage = chunk.usage
         # 某些端点（如 OpenAI）尾部会发一个空 choices 的 chunk，跳过避免取下标崩溃
         if not chunk.choices:
             continue
@@ -270,7 +316,7 @@ def _accumulate_stream_chunks(chunks, on_delta):
                           "arguments": "".join(tool_acc[i]["args"])}}
             for i in sorted(tool_acc)
         ]
-    return "".join(content_parts), tool_calls, role, finish_reason
+    return "".join(content_parts), tool_calls, role, finish_reason, usage
 
 
 _UNSUPPORTED_PARAM_PATTERNS = [

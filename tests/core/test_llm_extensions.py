@@ -116,7 +116,7 @@ class TestAccumulateStreamChunks:
             _chunk(SimpleNamespace(role="assistant", content="你好", tool_calls=None)),
             _chunk(SimpleNamespace(role=None, content="世界", tool_calls=None)),
         ]
-        content, tool_calls, role, finish_reason = _accumulate_stream_chunks(chunks, deltas.append)
+        content, tool_calls, role, finish_reason, usage = _accumulate_stream_chunks(chunks, deltas.append)
         assert content == "你好世界"
         assert role == "assistant"
         assert tool_calls is None
@@ -136,7 +136,7 @@ class TestAccumulateStreamChunks:
             _chunk(SimpleNamespace(role="assistant", content=None, tool_calls=[tc1_first])),
             _chunk(SimpleNamespace(role=None, content=None, tool_calls=[tc1_second, tc2])),
         ]
-        content, tool_calls, role, finish_reason = _accumulate_stream_chunks(chunks, None)
+        content, tool_calls, role, finish_reason, usage = _accumulate_stream_chunks(chunks, None)
         assert content == ""
         assert tool_calls == [
             {"id": "call_1", "type": "function",
@@ -155,7 +155,7 @@ class TestAccumulateStreamChunks:
             _chunk(None, choices=[]),          # 空 choices chunk
             _chunk(SimpleNamespace(role=None, content=None, tool_calls=None)),  # None content
         ]
-        content, _, _, finish_reason = _accumulate_stream_chunks(chunks, deltas.append)
+        content, _, _, finish_reason, _ = _accumulate_stream_chunks(chunks, deltas.append)
         assert content == "a"
         assert deltas == ["a"]                 # None content 不回调
         # finish_reason 无则 None
@@ -169,7 +169,7 @@ class TestAccumulateStreamChunks:
             return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)])
 
         chunks = [chunk("部分"), chunk("内容", finish_reason="length")]
-        content, tool_calls, role, finish_reason = _accumulate_stream_chunks(chunks, None)
+        content, tool_calls, role, finish_reason, usage = _accumulate_stream_chunks(chunks, None)
         assert content == "部分内容"
         assert finish_reason == "length"
 
@@ -215,3 +215,37 @@ class TestChatStream:
             "id": "c1", "type": "function",
             "function": {"name": "echo", "arguments": '{"m": "x"}'},
         }]
+
+
+class _FakeResp:
+    class _Choice:
+        def __init__(self, finish_reason="stop"):
+            self.finish_reason = finish_reason
+            self.message = type("M", (), {"role": "assistant", "content": "hi",
+                                          "tool_calls": None})()
+    def __init__(self):
+        self.choices = [self._Choice()]
+        self.usage = type("U", (), {"prompt_tokens": 11, "completion_tokens": 7,
+                                    "total_tokens": 18})()
+
+
+def test_chat_calls_telemetry_callback():
+    from paperflow.core.llm import LLMClient
+    from paperflow.config import LLMConfig
+    client = LLMClient(LLMConfig(api_key="x"))
+    resp = _FakeResp()
+
+    def fake_create(**kwargs):
+        return resp
+
+    client.client.chat.completions.create = fake_create
+    captured = {}
+
+    async def go():
+        await client.chat([], telemetry_callback=lambda d: captured.update(d))
+
+    import asyncio; asyncio.run(go())
+    assert captured["model"] == client.model
+    assert captured["total_tokens"] == 18
+    assert captured["latency_ms"] >= 0
+    assert captured["finish_reason"] == "stop"
