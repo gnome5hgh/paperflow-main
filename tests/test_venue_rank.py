@@ -44,10 +44,39 @@ def test_passes_q2_equivalence_table_B():
     assert not passes_q2({"ccf": None, "jcr": None, "cas": "三区"})
     assert not passes_q2({"ccf": None, "jcr": None, "cas": None})
 
+# 真实 LetPub 数据行格式（2026-08-08 从页面提取）：td[3] 即分区列（4区/1区/2区/3区），
+# LetPub 新锐期刊分区表当作中科院 CAS 分区使用。
 _LETPUB_HTML = """<html><body>
-  <div class="journal-info">Journal Name: Example Journal</div>
-  <div class="journal-rank">JCR 分区：Q1<br/>中科院分区：一区</div>
+  <table>
+    <tr>
+      <td>1234-5678</td><td>Example Journal</td>
+      <td>IF: 3.2 h-index: 50</td><td>一区</td>
+      <td>大类：计算机科学</td>
+    </tr>
+  </table>
 </body></html>"""
+
+# 阿拉伯数字分区（4区）的真实形态——parser 需把阿拉伯数字转中文（等级值域 cas∈一~四区）
+_LETPUB_ARABIC_HTML = """<html><body>
+  <table>
+    <tr>
+      <td>0178-4617</td><td>ALGORITHMICA</td>
+      <td>IF: 1 h-index: 67</td><td>4区</td>
+      <td>大类：计算机科学</td>
+    </tr>
+  </table>
+</body></html>"""
+
+
+def test_parse_letpub_real_format():
+    """锁定真实 LetPub 数据行格式：td[3] 分区列 + 阿拉伯数字转中文（Fix 1 根因回归）。
+
+    旧正则找 `中科院分区：` / `JCR 分区：` 标记，对真实表格行（td[3]=4区）失配 → 返回
+    None → 在线路径永远落到 SJR/未命中。此测试用实测行格式锁死 td[3] 解析。"""
+    from paperflow.tools.lookup_venue_rank import _parse_letpub
+    assert _parse_letpub(_LETPUB_HTML) == {"ccf": None, "jcr": None, "cas": "一区"}
+    assert _parse_letpub(_LETPUB_ARABIC_HTML) == {"ccf": None, "jcr": None, "cas": "四区"}
+    assert _parse_letpub("<html>no letpub result</html>") is None
 
 
 def test_lookup_online_letpub_by_issn():
@@ -55,6 +84,8 @@ def test_lookup_online_letpub_by_issn():
     mod.RANK_CACHE.clear()
     def handler(req):
         assert "example-issn" in str(req.url) or "issn" in str(req.url).lower()
+        # Fix 1 根因：URL 必须去掉 &searchfield=all——带上该参数 LetPub 返回 0 数据行
+        assert "searchfield" not in str(req.url)
         return httpx.Response(200, text=_LETPUB_HTML)
     tool = LookupVenueRankTool()
     tool._client = LookupVenueRankTool._make_client(
@@ -62,7 +93,7 @@ def test_lookup_online_letpub_by_issn():
     r = tool.execute(venue="Example Journal", issn="example-issn")
     # 断言来源名（_rank_text 里是 "来源：LetPub" 大写形式），而非证据 URL 里的
     # "letpub" 小写片段——后者只是证据链接，来源名才是语义断言
-    assert "Q1" in r.text and "一区" in r.text and "来源：LetPub" in r.text
+    assert "CAS-一区" in r.text and "来源：LetPub" in r.text
 
 
 # SJR 搜索页歧义场景：页内列出多本期刊，每本都带档位徽章；整页扫首个 Q 档
