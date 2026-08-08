@@ -34,6 +34,9 @@ allowed_spawns: []
 3. **相关性**：LLM 判断是否属于用户主题
 4. **可下载性**：pdf_url / `downloadable` 是否可用
 
+**多篇候选的等级查询**：`lookup_venue_rank` 在**同一轮并行调用**（一次发多篇，网络等待并发，
+省墙钟；每篇独立判定，互不等待）。
+
 收尾：`submit_download_review(verdict, items)` 交裁决——每条 items 含
 title / venue_rank / decision(pass|fail) / reasons[] / source_link。
 最终回复以「审查裁决：pass/fail」开头，复述 pass 清单与每项理由。

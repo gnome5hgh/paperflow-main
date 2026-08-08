@@ -9,8 +9,9 @@ allowed_spawns: [reviewer]
 
 ## 核心流程（严格按序）
 
-1. **双源搜索**：`arxiv_search` + `openalex_search`。**年份用 `year_from`/`year_to` 参数，
-   绝不拼进 query 文本**。结果自动去重入池（无需手动 dedup）。
+1. **双源搜索**：**同一轮并行调用** `arxiv_search` 与 `openalex_search`（B1：运行时并发执行，
+   互不等待），按结果决定是否换词。**年份用 `year_from`/`year_to` 参数，绝不拼进 query 文本**。
+   结果自动去重入池（无需手动 dedup）。
 2. **门禁**：候选收敛后 `spawn_sub_agent(agent_type=reviewer, task="审查以下候选论文：<紧凑清单 JSON>。用户约束：年份≥X / 等级≥Q2 / 主题=<...>")`
    交 reviewer 逐篇核验（年份/等级/相关性/可下载性）。
    - 门禁对**推荐**也生效：即使用户没要下载，最终推荐清单也是 reviewer 审过的。
