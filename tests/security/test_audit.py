@@ -85,6 +85,8 @@ class TestAuditMiddleware:
         assert entry["policy_decision"] == "auto_allowed"
         assert entry["result_status"] == "success"
         assert entry["timestamp"] == "2026-07-31T10:00:00"
+        assert entry["event_type"] == "tool_invoked"
+        assert entry["span_id"].startswith("span_")
 
     @pytest.mark.asyncio
     async def test_writes_blocked_entry(self, tmp_path):
@@ -97,3 +99,78 @@ class TestAuditMiddleware:
         entry = json.loads(files[0].read_text().strip())
         assert entry["result_status"] == "policy_blocked"
         assert entry["policy_decision"] == "policy_denied"
+
+
+class TestAuditTreeFields:
+    @pytest.mark.asyncio
+    async def test_before_sets_span_and_after_writes_it(self, tmp_path):
+        mw = AuditMiddleware(audit_dir=str(tmp_path))
+        ctx = make_ctx()
+        await mw.before(ctx)
+        assert ctx.span_id and ctx.span_id.startswith("span_")
+        assert ctx.parent_id is None          # 根调用无父
+        assert ctx.depth == 0
+        await mw.after(ctx)
+        entry = json.loads(next(tmp_path.glob("audit_*.jsonl")).read_text())
+        assert entry["event_type"] == "tool_invoked"
+        assert entry["span_id"] == ctx.span_id
+        assert entry["parent_id"] is None
+        assert entry["depth"] == 0
+
+    @pytest.mark.asyncio
+    async def test_after_without_before_is_defensive(self, tmp_path):
+        # I2 早退路径只走 after：应补 span_id、不炸
+        mw = AuditMiddleware(audit_dir=str(tmp_path))
+        ctx = make_ctx()
+        await mw.after(ctx)
+        entry = json.loads(next(tmp_path.glob("audit_*.jsonl")).read_text())
+        assert entry["span_id"].startswith("span_")
+        assert entry["event_type"] == "tool_invoked"
+
+    @pytest.mark.asyncio
+    async def test_error_and_result_and_policy_rules(self, tmp_path):
+        from paperflow.core.security import PolicyDenied
+        mw = AuditMiddleware(audit_dir=str(tmp_path))
+        ctx = make_ctx(error=PolicyDenied("风险等级 high 超过阈值 medium"),
+                       policy_context={"max_risk": "medium", "tool_risk": "high"},
+                       policy_fired="risk_threshold",
+                       result=None)
+        await mw.before(ctx); await mw.after(ctx)
+        entry = json.loads(next(tmp_path.glob("audit_*.jsonl")).read_text())
+        assert entry["error"].startswith("PolicyDenied")
+        assert entry["policy_rules"]["fired"] == "risk_threshold"
+        assert entry["policy_rules"]["policy_context"]["max_risk"] == "medium"
+
+
+class TestApprovalEvents:
+    @pytest.mark.asyncio
+    async def test_requested_then_decided_with_causation(self, tmp_path):
+        mw = AuditMiddleware(audit_dir=str(tmp_path))
+        ctx = make_ctx(args={"path": "/tmp/x.md"})
+        await mw.before(ctx)                       # 工具 span 压栈
+        await mw.on_approval(ctx, "requested")
+        await mw.on_approval(ctx, "decided", outcome="user_denied")
+        await mw.after(ctx)
+        lines = [json.loads(l) for l in next(tmp_path.glob("audit_*.jsonl")).read_text().strip().splitlines()]
+        assert len(lines) == 3
+        req, dec, inv = lines
+        assert req["event_type"] == "approval_requested"
+        assert dec["event_type"] == "approval_decided"
+        assert dec["causation_id"] == req["span_id"]     # decided 因果链到 requested
+        assert dec["outcome"] == "user_denied"
+        assert inv["approval_outcome"] == "user_denied"  # ctx 上由 Agent 填，此处为 None 则省略
+        assert inv["parent_id"] == ctx.parent_id         # tool_invoked 父 = 外层 span
+
+
+class TestLlmCall:
+    @pytest.mark.asyncio
+    async def test_record_llm_call_writes_event(self, tmp_path):
+        mw = AuditMiddleware(audit_dir=str(tmp_path))
+        mw.record_llm_call(
+            trace_id="trace_x", session_id="s", agent_type="test", turn=1,
+            model="deepseek-chat", prompt_tokens=10, completion_tokens=5,
+            total_tokens=15, latency_ms=1234, finish_reason="tool_calls")
+        entry = json.loads(next(tmp_path.glob("audit_*.jsonl")).read_text())
+        assert entry["event_type"] == "llm_call"
+        assert entry["model"] == "deepseek-chat"
+        assert entry["total_tokens"] == 15
