@@ -56,3 +56,20 @@ def test_search_by_time_range():
     assert len(early) == 1 and "早期" in early[0].text
     late = pm.search_passages("sess_1", "", start_datetime="2026-08-02T00:00:00+00:00")
     assert len(late) == 1 and "后期" in late[0].text
+
+
+def test_search_semantic_ranking_and_topk():
+    # 语义路径回归：embedder 走代码库协议 __call__(list[str]) -> np.ndarray（无 embed_query）。
+    # FakeEmbedder 按文本 md5 生成确定性向量——文本与 query 完全相同 → 向量恒等 → cos=1.0
+    # （L2 归一化下最大值），必然排第一；top_k 裁剪同时被锁定。
+    from paperflow.rag.embedder import FakeEmbedder
+    pm = PassageManager(MemoryDB(Path(tempfile.mkdtemp()) / "memory.db"),
+                        embedder=FakeEmbedder(dim=32))
+    p = pm.insert_passage("sess_1", "图对比学习", tags=["reading"])
+    pm.insert_passage("sess_1", "异构图神经检索", tags=["paper"])
+    assert isinstance(p.embedding, list) and len(p.embedding) == 32
+    assert all(isinstance(x, float) for x in p.embedding)
+    hits = pm.search_passages("sess_1", "图对比学习", top_k=1)
+    assert len(hits) == 1 and hits[0].text == "图对比学习"
+    all_hits = pm.search_passages("sess_1", "图对比学习")
+    assert len(all_hits) == 2 and all_hits[0].text == "图对比学习"

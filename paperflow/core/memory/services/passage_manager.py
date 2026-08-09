@@ -38,7 +38,9 @@ class PassageManager:
     def _embed(self, text: str) -> list[float] | None:
         if self.embedder is None:
             return None
-        return self.embedder.embed_query(text)
+        # 代码库 Embedder 协议（paperflow.rag.embedder）是 __call__(list[str]) -> np.ndarray，
+        # 没有 embed_query；取首行作为该文本的向量，pydantic 会把它归一成 list[float]。
+        return self.embedder([text])[0]
 
     def insert_passage(self, agent_id: str, text: str,
                        tags: list[str] | None = None) -> Passage:
@@ -61,7 +63,7 @@ class PassageManager:
         if end_datetime:
             passages = [p for p in passages if _ts(p) <= end_datetime]
         if self.embedder is not None and query:
-            qv = self.embedder.embed_query(query)
+            qv = self.embedder([query])[0]
             for p in passages:
                 if p.embedding:
                     p.metadata_["_score"] = _cosine(qv, p.embedding)
