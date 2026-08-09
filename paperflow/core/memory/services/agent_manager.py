@@ -63,7 +63,11 @@ class AgentManager:
         return self.get_agent(agent_id)
 
     def refresh_memory(self, agent_id: str) -> None:
-        """重建 agent_state.memory.blocks（从 BlockManager 读最新），重编译 system。"""
-        # memory 由 get_agent 动态构建（_row_to_state 从 block_manager.list_blocks 读）
+        """供 Task 11 agent 集成作为 system 重编译挂点。
+
+        当前 memory 由 get_agent 动态构建（_row_to_state 从 block_manager.list_blocks
+        读最新块），因此这里的重赋值只作用于局部变量；真实的重编译逻辑在 Task 11
+        agent 集成中接入。
+        """
         st = self.get_agent(agent_id)
         st.memory = Memory(blocks=self.block_manager.list_blocks())

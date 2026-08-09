@@ -26,9 +26,14 @@ def test_create_and_get_agent():
     assert got.agent_id == "sess_1"
 
 
-def test_refresh_memory_rebuilds_blocks():
+def test_memory_reflects_latest_blocks():
+    """memory 由 get_agent 动态构建：BlockManager 新建块后，无需显式刷新即反映。
+
+    refresh_memory 是 system 重编译挂点（真实实现在 Task 11 agent 集成），
+    这里仅作可调用冒烟（不抛错、不破坏状态）。
+    """
     am, bm = _agents()
-    st = am.create_agent("sess_1")
+    am.create_agent("sess_1")
     bm.create_block("persona", "身份")
     am.refresh_memory("sess_1")
     got = am.get_agent("sess_1")
