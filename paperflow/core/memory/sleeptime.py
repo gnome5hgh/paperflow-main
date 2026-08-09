@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Sleeptime", "MemoryEditBatch", "MemoryEdit"]
+__all__ = ["Sleeptime", "MemoryEditBatch", "MemoryEdit",
+           "MemoryEditValidationError"]
 
 #: 可写记忆文件白名单（LLM 输出不可信，写入前必须校验）
 _EDIT_FILE_PATTERN = re.compile(
@@ -32,6 +33,15 @@ class MemoryEdit(BaseModel):
 
 class MemoryEditBatch(BaseModel):
     edits: list[MemoryEdit] = Field(default_factory=list, max_length=20)
+
+
+class MemoryEditValidationError(ValueError):
+    """编辑指令未通过阶段 1 校验（目标不在白名单 / 删除受保护 system/ 块）。
+
+    与阶段 2 的应用期错误（如 update_block_value 因块超限/read_only 抛的
+    ValueError）区分：只有校验错误被上抛（原子性——一条不写）；应用期错误
+    计入连败计数，连败 3 次强制前进游标，避免同一批编辑被无限重放。
+    """
 
 
 class Sleeptime:
@@ -83,7 +93,7 @@ class Sleeptime:
                 prompt=prompt, schema=MemoryEditBatch,
                 fallback=lambda: MemoryEditBatch(edits=[]))
             # 阶段 1：全量预验证——任一非法则整体失败，一条都不写。
-            # 校验失败（ValueError）上抛给调用方，不计入连败计数
+            # 校验失败（MemoryEditValidationError）上抛给调用方，不计入连败
             for edit in batch.edits:
                 self._validate_edit(edit)
             # 阶段 2：全量通过后逐条应用（映射到 block 编辑）
@@ -93,9 +103,11 @@ class Sleeptime:
                 self.block_manager._commit(f"sleeptime: {len(new_msgs)} 条历史")
             self._cursor = self.message_manager.size(self.agent_state.agent_id)
             self._failures = 0
-        except ValueError:
-            raise    # 原子性失败：非法编辑目标不吞掉，直接暴露
+        except MemoryEditValidationError:
+            raise    # 阶段 1 校验失败：原子性失败不吞掉，直接暴露
         except Exception:
+            # 含阶段 2 应用期错误（块超限/read_only 的 ValueError）：
+            # 计入连败，3 次强制前进游标，避免同一批编辑被无限重放
             self._failures += 1
             if self._failures >= 3:
                 # 防卡死：连败 3 次强制前进
@@ -114,9 +126,9 @@ class Sleeptime:
 
     def _validate_edit(self, edit: MemoryEdit) -> None:
         if not _EDIT_FILE_PATTERN.match(edit.file):
-            raise ValueError(f"非法编辑目标: {edit.file}")
+            raise MemoryEditValidationError(f"非法编辑目标: {edit.file}")
         if edit.action == "delete" and edit.file.startswith("system/"):
-            raise ValueError("不允许删除 system/ 块")
+            raise MemoryEditValidationError("不允许删除 system/ 块")
 
     def _apply_edit(self, edit: MemoryEdit) -> None:
         """把编辑指令映射到 BlockManager（file → block label）。

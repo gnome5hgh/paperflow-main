@@ -86,6 +86,53 @@ async def test_rejects_delete_system_block():
 
 
 @pytest.mark.asyncio
+async def test_mixed_batch_atomic_no_partial_write():
+    """混合批次 [合法, 非法目标]：阶段 1 校验失败 → 一条不写（含合法的）。
+
+    校验错误（MemoryEditValidationError）上抛、不计连败；应用期错误才计连败。
+    """
+    class _Mixed:
+        async def extract(self, prompt, schema, fallback=None):
+            return schema(**{"edits": [
+                {"file": "feedback_testing.md", "action": "append",
+                 "content": "用户偏好记录", "hook": "记忆测试"},
+                {"file": "../../etc/passwd", "action": "append",
+                 "content": "x", "hook": ""},
+            ]})
+    sl, bm = _setup(_Mixed())
+    sl._last_run = 0
+    with pytest.raises(ValueError):
+        await sl._run_once()
+    # 原子性：合法目标也未写入；校验失败不计连败
+    assert bm.get_block_by_label("feedback_testing") is None
+    assert sl._failures == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_limit_error_counts_as_failure():
+    """应用期超 limit（阶段 2 ValueError）→ 走连败计数而非上抛。
+
+    区别于校验错误：应用期错误计入 _failures，3 次后强制前进游标，
+    避免同一批编辑被无限重放（重复 append 有界）。
+    """
+    class _OverLimit:
+        async def extract(self, prompt, schema, fallback=None):
+            return schema(**{"edits": [{"file": "small.md", "action": "replace",
+                                        "content": "x" * 10, "hook": ""}]})
+    sl, bm = _setup(_OverLimit())
+    bm.create_block("small", "ok", limit=5)   # 5 字上限，replace 10 字超限
+    sl._last_run = 0
+    await sl._run_once()                      # 阶段 2 update_block_value 抛 ValueError → 计连败，不上抛
+    assert sl._failures == 1
+    assert sl._cursor == 0                    # 未到 3 次，游标不前进
+    await sl._run_once()
+    assert sl._failures == 2
+    await sl._run_once()                      # 连败 3 次 → 强制前进游标
+    assert sl._failures == 3
+    assert sl._cursor == sl.message_manager.size("sess_1")
+
+
+@pytest.mark.asyncio
 async def test_three_failures_advance_cursor():
     class _AlwaysFail:
         async def extract(self, prompt, schema, fallback=None):
