@@ -38,10 +38,13 @@ def migrate(memory_dir: Path, db: MemoryDB, workspace: Path, agent_id: str = "se
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if entry.get("type") == "reading":
+            # reading 是旧代码死分支(从未实际写);mark_read 是实际写入的「已读记录」,
+            # 统一映射为 archival passage(tags=["reading"])——否则用户迁移后查不到旧记录
+            if entry.get("type") in ("reading", "mark_read"):
                 passage_orm.insert_passage(
-                    db, agent_id, Passage(text=str(entry.get("paper_title", "")),
-                                          tags=["reading"]))
+                    db, agent_id, Passage(
+                        text=str(entry.get("paper_title") or entry.get("path", "")),
+                        tags=["reading"]))
             elif entry.get("type") == "tool":
                 message_orm.insert_message(
                     db, agent_id, Message(role=MessageRole.tool,

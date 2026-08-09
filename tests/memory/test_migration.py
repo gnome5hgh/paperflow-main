@@ -39,3 +39,22 @@ def test_migrate_idempotent():
     db2 = MemoryDB(tmp / "memory.db")
     migrate(mem, db2, tmp)
     assert len(block_orm.select_blocks(db2)) == 1
+
+
+def test_migrate_mark_read_to_passage():
+    """评审 I-4：旧代码实际写 history 的类型是 tool/mark_read/structured_output——
+    mark_read（「我读过哪些」）必须迁为 archival passage，否则用户迁移后查不到旧记录。"""
+    tmp = Path(tempfile.mkdtemp())
+    mem = tmp / "memory"
+    mem.mkdir(parents=True)
+    (mem / "history.jsonl").write_text(
+        json.dumps({"type": "mark_read", "path": "papers/GraphCL.pdf"}) + "\n"
+        + json.dumps({"type": "structured_output", "query": "GraphCL"}) + "\n",
+        encoding="utf-8")
+    db = MemoryDB(tmp / "memory.db")
+    migrate(mem, db, tmp)
+    from paperflow.core.memory.orm import passage as passage_orm
+    passages = passage_orm.select_passages(db, "sess_1")
+    assert len(passages) == 1
+    assert "GraphCL.pdf" in passages[0]["text"]
+    assert json.loads(passages[0]["tags"]) == ["reading"]
