@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 
 from paperflow.core.memory.orm.database import MemoryDB
+from paperflow.core.memory.schemas.block import Block
 from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
 from paperflow.core.memory.services.memfs import MemFS
 
@@ -78,3 +79,27 @@ def test_no_empty_commit():
     n = len(bm._git_log())
     bm._commit("noop")
     assert len(bm._git_log()) == n
+
+
+def test_index_description_columns():
+    # 空 description 块：索引 description 列应为空，不显示垃圾 `---`；有 description 正确显示
+    tmp, bm, memfs = _setup()
+    bm.create_block("feedback_testing", "规则")
+    bm.create_block("project_kg", "项目", description="项目知识图谱")
+    index = (tmp / "memory" / "memory_filesystem.md").read_text(encoding="utf-8")
+    assert "feedback_testing.md —" not in index
+    assert "- `feedback_testing.md`\n" in index
+    assert "`project_kg.md` — 项目知识图谱" in index
+
+
+def test_metadata_in_frontmatter():
+    # frontmatter 恒含 metadata（空 dict 写 `metadata: {}`，非空走 YAML 内联）
+    tmp, bm, memfs = _setup()
+    bm.create_block("persona", "身份")
+    assert "metadata: {}" in (tmp / "memory" / "system" / "persona.md").read_text(
+        encoding="utf-8")
+    b = Block.new("feedback_testing", "规则")
+    b.metadata_ = {"tags": ["a", "b"]}
+    memfs.sync_block_to_file(b)
+    content = (tmp / "memory" / "feedback_testing.md").read_text(encoding="utf-8")
+    assert "metadata: {tags: [a, b]}" in content

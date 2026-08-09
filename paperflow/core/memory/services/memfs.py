@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import yaml
+
 from paperflow.core.memory.schemas.block import Block
 
 __all__ = ["MemFS"]
@@ -34,6 +36,8 @@ class MemFS:
         meta_lines = [f"description: {block.description or ''}"]
         if block.read_only:
             meta_lines.append("read_only: true")
+        meta_lines.append("metadata: " + yaml.safe_dump(
+            block.metadata_, default_flow_style=True, sort_keys=False).strip())
         front = "---\n" + "\n".join(meta_lines) + "\n---\n"
         path.write_text(front + block.value + "\n", encoding="utf-8")
         self.regenerate_index()
@@ -80,7 +84,8 @@ def _strip_frontmatter(text: str) -> str:
 
 
 def _frontmatter_field(text: str, key: str) -> str:
-    m = re.search(rf"^{key}:\s*(.+)$", text, re.MULTILINE)
+    # 行内锚定：冒号后只允许水平空白，值不跨行——否则空 description 会吞到下一行 `---`
+    m = re.search(rf"^{key}:[^\S\r\n]*([^\r\n]*?)[^\S\r\n]*$", text, re.MULTILINE)
     return m.group(1).strip() if m else ""
 
 
