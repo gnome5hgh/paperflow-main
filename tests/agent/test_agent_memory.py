@@ -92,3 +92,75 @@ def test_compaction_triggers_when_over_threshold():
     agent.compaction = CompactionSettings(trigger_ratio=0.5, context_size=100)
     big = [WM(role="user", content="x" * 500)]
     assert agent._needs_compaction(big) is True
+
+
+@pytest.mark.asyncio
+async def test_memory_self_edit_reflected_in_next_head():
+    """评审 I-1：memory_replace 编辑块后，下一轮 _build_head 从 BlockManager 重建
+    memory——会话内 self-edit 即进 system prompt，无需重启。"""
+    from paperflow.core.memory.services.tool_manager import ToolManager
+    tmp = Path(tempfile.mkdtemp())
+    db = MemoryDB(tmp / "memory.db")
+    bm = BlockManager(db)
+    mm = MessageManager(db)
+    bm.create_block("persona", "旧身份")
+    memory = Memory(blocks=[bm.get_block_by_label("persona")])
+    tm = ToolManager(db)
+    tm.bind(bm, None, mm, agent_id="sess_1")
+    tm.upsert_base_tools()
+    agent = Agent(llm=_FakeLLM(["完成"]), agent_registry=_Registry(), agent_type="_demo",
+                  memory=memory, block_manager=bm, message_manager=mm,
+                  memory_tools=tm.list_tools(), session_id="sess_1")
+    # 会话内 LLM 调 memory_replace 改 persona 块
+    res = tm.execute_tool("memory_replace", {
+        "label": "persona", "old_string": "旧身份", "new_string": "新身份"}, "tc1")
+    assert "Updated" in res.text
+    head = await agent._build_head("task")
+    sys_texts = "".join(m.content for m in head if m.role == "system")
+    assert "新身份" in sys_texts
+    assert "旧身份" not in sys_texts
+
+
+def test_memory_self_edit_visible_in_same_run_next_turn():
+    """评审 I-1：同一轮 ReAct 内 memory 工具编辑后，下一轮 LLM 调用的 head 即含新块。"""
+    import asyncio
+    from paperflow.core.memory.services.tool_manager import ToolManager
+    tmp = Path(tempfile.mkdtemp())
+    db = MemoryDB(tmp / "memory.db")
+    bm = BlockManager(db)
+    mm = MessageManager(db)
+    bm.create_block("persona", "旧身份")
+    memory = Memory(blocks=[bm.get_block_by_label("persona")])
+    tm = ToolManager(db)
+    tm.bind(bm, None, mm, agent_id="sess_1")
+    tm.upsert_base_tools()
+    agent = Agent(llm=_FakeLLM(["完成"]), agent_registry=_Registry(), agent_type="_demo",
+                  memory=memory, block_manager=bm, message_manager=mm,
+                  memory_tools=tm.list_tools(), session_id="sess_1")
+    head = asyncio.run(agent._build_head("task"))
+    tm.execute_tool("memory_replace", {
+        "label": "persona", "old_string": "旧身份", "new_string": "新身份"}, "tc1")
+    agent._refresh_head_memory(head)   # 下一轮 LLM 调用前刷新
+    sys_texts = "".join(m.content for m in head if m.role == "system")
+    assert "新身份" in sys_texts
+    assert "旧身份" not in sys_texts
+
+
+@pytest.mark.asyncio
+async def test_memory_index_injected_into_system():
+    """评审 I-2：memory_filesystem.md 索引注入 system——非 system 块出现在索引树里
+    （渐进暴露「按需加载」的文件树对 LLM 可见）。"""
+    from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
+    tmp = Path(tempfile.mkdtemp())
+    db = MemoryDB(tmp / "memory.db")
+    bm = GitEnabledBlockManager(db, memfs_dir=tmp / "memory")
+    mm = MessageManager(db)
+    memory = Memory(blocks=[bm.create_block("persona", "身份")])
+    bm.create_block("feedback_testing", "规则")     # 非 system 块 → 只进索引树
+    agent = Agent(llm=_FakeLLM(["完成"]), agent_registry=_Registry(), agent_type="_demo",
+                  memory=memory, block_manager=bm, message_manager=mm, session_id="sess_1")
+    head = await agent._build_head("task")
+    sys_texts = "".join(m.content for m in head if m.role == "system")
+    assert "<memory_filesystem>" in sys_texts
+    assert "feedback_testing.md" in sys_texts       # 非 system 块在索引树里
+    assert "身份" in sys_texts                       # persona 内容仍常驻

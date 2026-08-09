@@ -168,6 +168,52 @@ def test_run2_message_order_head_history_task():
     assert roles[-1] == "user" and contents[-1] == "任务2"
 
 
+def test_compaction_summary_persists_across_runs():
+    """评审 I-3：压缩产物跨轮持久——第二轮 system 含摘要、被驱逐旧消息不回放、
+    SQL 保留全部原始消息（Recall 完整）、AgentState.message_ids 真正追踪窗口。"""
+    from paperflow.core.memory.compaction import SummarySchema
+    from paperflow.core.memory.services.agent_manager import AgentManager
+    from paperflow.core.memory.services.block_manager import BlockManager
+    db = MemoryDB(Path(tempfile.mkdtemp()) / "memory.db")
+    bm = BlockManager(db)
+    mm = MessageManager(db)
+    am = AgentManager(db, bm, mm)
+    mm.agent_manager = am
+    am.create_agent("sess_1")
+    _preload(mm, 30)                     # 超阈值历史 → run1 首轮 LLM 调用前压缩
+    capture = []
+    llm = make_capture_llm([
+        Message(role="assistant", content="回答1"),
+        Message(role="assistant", content="回答2"),
+    ], capture)
+    agent = Agent(llm=llm, agent_registry=make_mock_registry([]), agent_type="test",
+                  agent_manager=am, message_manager=mm, session_id="sess_1",
+                  compaction=CompactionSettings(trigger_ratio=0.5, context_size=100,
+                                                reserve_ratio=0.2),
+                  structured=make_structured(result=SummarySchema(
+                      task_overview="T", current_state="S", important_discoveries="D",
+                      next_steps="N", context_to_preserve="C")))
+    asyncio.run(agent.run("当前问题1"))
+    asyncio.run(agent.run("当前问题2"))
+    run2 = capture[1]                    # run2 的 LLM 输入
+    contents = [m.content for m in run2]
+    # 摘要跨轮可见（压缩摘要已落盘 SQL，经 message_ids 回放）
+    assert any(isinstance(c, str) and "[对话摘要]" in c for c in contents)
+    # 被驱逐的旧消息不回放（最早 preload 消息移出窗口）
+    joined = "".join(str(c) for c in contents)
+    assert "问题0" not in joined and "问题5" not in joined
+    # 当前轮 user task 恒末位
+    assert run2[-1].role == "user" and contents[-1] == "当前问题2"
+    # AgentState.message_ids 追踪的是窗口（摘要 + 尾部），不是全量历史
+    state = am.get_agent("sess_1")
+    assert len(state.message_ids) < 35 and state.message_ids
+    # SQL 保留全部原始消息 + 摘要 + 各轮落盘（Recall 完整）；两轮都触发压缩，
+    # 每轮各落一条摘要 system 消息
+    all_msgs = mm.get_messages_by_agent_id("sess_1")
+    assert len(all_msgs) == 36           # 30 preload + (user1+summary1+final1) + (user2+summary2+final2)
+    assert all(f"问题{i}" in [m.content for m in all_msgs] for i in range(30))
+
+
 def test_truncated_then_compaction_clears_accumulated():
     """评审 I-2：截断续写 + 压缩互斥——压缩分支必须清空累积器。
 

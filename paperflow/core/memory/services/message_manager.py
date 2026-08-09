@@ -39,9 +39,10 @@ def _row_to_schema(row: dict) -> Message:
 
 
 class MessageManager:
-    def __init__(self, db: MemoryDB, embedder=None):
+    def __init__(self, db: MemoryDB, embedder=None, agent_manager=None):
         self.db = db
         self.embedder = embedder          # 可选：bge embedder（语义检索）
+        self.agent_manager = agent_manager  # 可选：读 AgentState.message_ids（in-context 窗口）
 
     def add_message(self, agent_id: str, wire: WireMessage) -> Message:
         m = _wire_to_schema(wire)
@@ -55,8 +56,20 @@ class MessageManager:
 
     def get_in_context_messages(self, agent_id: str,
                                 limit: int | None = None) -> list[Message]:
-        """回放该 agent 的 in-context 消息（当前 = 全部持久化消息；由 compaction
-        决定哪些留在窗口——被驱逐的只影响 agent.messages，不删 SQL 行）。"""
+        """回放该 agent 的 in-context 消息（AgentState.message_ids 指定的窗口）。
+
+        有 agent_manager 且 message_ids 非空时按 id 返回（压缩后的窗口：摘要 + 保留
+        尾部）；message_ids 为空（首轮/未压缩）返回全部持久化消息——兼容。被驱逐的
+        旧消息只移出窗口，不删 SQL 行（Recall 完整可追溯）。"""
+        if self.agent_manager is not None:
+            try:
+                state = self.agent_manager.get_agent(agent_id)
+                ids = state.message_ids
+            except KeyError:
+                ids = []
+            if ids:
+                rows = message_orm.select_messages_by_ids(self.db, ids)
+                return [_row_to_schema(r) for r in rows]
         return self.get_messages_by_agent_id(agent_id, limit=limit)
 
     def search_messages(self, agent_id: str, query: str,

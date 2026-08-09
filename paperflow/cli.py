@@ -253,6 +253,9 @@ def main() -> None:
                       agent_id=session_id)
     tool_manager.upsert_base_tools()
     agent_manager = AgentManager(db, block_manager, message_manager)
+    # MessageManager 经 agent_manager 读 AgentState.message_ids（in-context 窗口），
+    # 让压缩后的摘要/尾部跨轮回放（评审 I-3）——装配顺序上 agent_manager 后置，故在此回填。
+    message_manager.agent_manager = agent_manager
     agent_state = agent_manager.create_agent(session_id)
 
     structured = StructuredOutput(llm)

@@ -293,6 +293,11 @@ class Agent:
         #: run() 每轮从 MessageManager 重新加载，跨轮消息经 SQL 持久化回放。
         self._messages: list[Message] = []
 
+        #: in-context 窗口的消息 id 追踪（对应 AgentState.message_ids，Letta Message
+        #: Buffer）。与 self._messages 并行维护：加载/落盘/压缩都同步。agent_manager
+        #: 为 None（无记忆装配）时不参与持久化，窗口回退为「全量回放」。
+        self._message_ids: list[str] = []
+
         #: 当前 run 的追踪 ID，每次 run 开始时重新生成，注入 ToolContext
         self._trace_id: str | None = None
 
@@ -354,6 +359,38 @@ class Agent:
             added_messages = [added_messages]
         self._messages.extend(added_messages)
 
+    def _index_text(self) -> str | None:
+        """读取 memory_filesystem.md（MemFS 自动生成的文件树索引）内容。
+
+        索引是渐进暴露的关键：非 system 块不进 compile，但索引让 LLM 知道「有哪些
+        文件可读」。无 MemFS 装配（block_manager 无 memfs）时返回 None。
+        """
+        bm = self.block_manager
+        memfs = getattr(bm, "memfs", None)
+        if memfs is None:
+            return None
+        path = memfs.memory_dir / "memory_filesystem.md"
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        return None
+
+    def _memory_message(self) -> Message | None:
+        """编译当前记忆为 system 消息：核心块 + 文件系统索引。
+
+        有 block_manager 时先从 BlockManager 重建 memory（Memory(blocks=...）——
+        记忆工具（memory_replace 等）在会话内编辑块后，下一轮 LLM 调用即见新内容
+        （spec §13 块变更即时生效，而非重启才可见）。
+        """
+        if self.memory is None:
+            return None
+        if self.block_manager is not None:
+            from paperflow.core.memory.schemas.memory import Memory
+            self.memory = Memory(blocks=self.block_manager.list_blocks())
+        compiled = self.memory.compile(index_text=self._index_text())
+        if not compiled:
+            return None
+        return Message(role="system", content=compiled)
+
     async def _build_head(self, task: str, force_dispatch: bool = False) -> list[Message]:
         """构建头部 system 消息：① SKILL ② Memory.compile()（system/ 块 + 索引）
         ③ INTENT 块；末尾追加 user task。
@@ -363,9 +400,9 @@ class Agent:
         """
         head: list[Message] = [Message(role="system", content=self.system_prompt)]
         if self.memory is not None:
-            compiled = self.memory.compile()
-            if compiled:
-                head.append(Message(role="system", content=compiled))
+            m = self._memory_message()
+            if m is not None:
+                head.append(m)
         if self.intent_enabled and self.intent_pipeline is not None and self.conversation is not None:
             try:
                 intent = await self.intent_pipeline.run(
@@ -388,22 +425,76 @@ class Agent:
         head.append(Message(role="user", content=task))
         return head
 
+    def _refresh_head_memory(self, head: list[Message]) -> None:
+        """会话内刷新 head 里的记忆 system 消息（memory 工具编辑后即时生效）。
+
+        有 block_manager 时在 ReAct 每轮开头重建记忆块并替换 head 中旧的
+        <memory_blocks> 消息——同一轮里 memory_replace 改的块,下一轮 LLM 调用即见。
+        无记忆装配（memory 或 block_manager 为 None）时零开销空操作。
+        """
+        if self.memory is None or self.block_manager is None:
+            return
+        new_msg = self._memory_message()
+        for i, m in enumerate(head):
+            if m.role == "system" and (m.content or "").startswith("<memory_blocks>"):
+                if new_msg is None:
+                    head.pop(i)
+                else:
+                    head[i] = new_msg
+                return
+        if new_msg is not None:
+            head.insert(1, new_msg)
+
     def _load_in_context(self) -> None:
         """从 MessageManager 加载该会话的 in-context 消息 → self._messages（跨轮回放）。
 
         message_manager 为 None 时零开销跳过（无记忆装配的子 agent 行为不变）。
+        同步记录加载消息的 SQL id 到 self._message_ids，保持与窗口并行——压缩时靠
+        它把保留尾部映射回已落盘消息。
         """
         if self.message_manager is None:
             return
-        for m in self.message_manager.get_in_context_messages(self.session_id):
+        loaded = self.message_manager.get_in_context_messages(self.session_id)
+        for m in loaded:
             self._messages.append(_schema_to_wire(m))
+        self._message_ids = [m.id for m in loaded]
 
     def _persist_conversation(self, msgs: list[Message]) -> None:
-        """把对话消息全量落盘（Recall）。message_manager 为 None 时零开销跳过。"""
+        """把对话消息全量落盘（Recall）并更新 in-context 窗口追踪。
+
+        message_manager 为 None 时零开销跳过。agent_manager 存在时把落盘消息 id
+        追加进 AgentState.message_ids（窗口即「当前 in-context 消息」的持久化视图）。
+        """
         if self.message_manager is None:
             return
+        added: list[str] = []
         for m in msgs:
-            self.message_manager.add_message(self.session_id, m)
+            added.append(self.message_manager.add_message(self.session_id, m).id)
+        if self.agent_manager is not None:
+            for mid in added:
+                if mid not in self._message_ids:
+                    self._message_ids.append(mid)
+            self.agent_manager.update_agent(self.session_id, message_ids=self._message_ids)
+
+    def _persist_compacted_window(self, new_window: list[Message]) -> None:
+        """压缩后把窗口状态持久化：摘要落盘 SQL + message_ids 更新为「摘要 + 保留尾部」。
+
+        仅在 agent_manager 存在（窗口状态真正追踪）时生效——无 agent_manager 的
+        Agent 是无记忆装配，压缩只改 in-memory 窗口，SQL 保持原样（兼容既有测试语义）。
+        尾部消息来自压缩前的窗口（已落盘，id 在 _message_ids 里）；摘要消息是新生成
+        的，先 add_message 取 id。被驱逐旧消息只移出窗口，不删 SQL（Recall 完整）。
+        """
+        if self.agent_manager is None:
+            return
+        old_id_by_msg = {id(m): mid for m, mid in zip(self._messages, self._message_ids)}
+        new_ids: list[str] = []
+        for m in new_window:
+            mid = old_id_by_msg.get(id(m))
+            if mid is None:
+                mid = self.message_manager.add_message(self.session_id, m).id
+            new_ids.append(mid)
+        self._message_ids = new_ids
+        self.agent_manager.update_agent(self.session_id, message_ids=new_ids)
 
     def _needs_compaction(self, messages: list[Message]) -> bool:
         """in-context 消息是否超压缩阈值（只检查，执行在 run() 里）。
@@ -475,6 +566,9 @@ class Agent:
         for turn in range(self.max_turns):
             # 记录当前轮次:spawn 摘要提取的 LLM 调用据此归属父 agent 的当前轮
             self._current_turn = turn
+            # 记忆块会话内即时生效:memory 工具编辑后,下一轮 LLM 调用即见新块
+            # (spec §13;head 是本地列表,_refresh_head_memory 就地替换记忆消息)。
+            self._refresh_head_memory(head)
             #: LLM 输入 = head 前段(system/memory/INTENT) + in-context 回放历史 +
             #: 末尾当前 user task(恒末位,与旧版「历史在前、当前任务在末」一致——否则
             #: LLM 会把回放历史里的旧任务误当当前任务)。
@@ -488,8 +582,13 @@ class Agent:
                 # 「半截 + 完整重答」重复交付(与旧版 accumulated.clear 语义一致)。
                 accumulated.clear()
                 from paperflow.core.memory.compaction import run_compaction
-                self._messages = await run_compaction(
+                new_window = await run_compaction(
                     self._messages, self.compaction, self.llm, self.structured)
+                # 摘要落盘 + message_ids 更新为「摘要 + 保留尾部」——压缩产物跨轮
+                # 持久,下轮 _load_in_context 按 message_ids 回放摘要、不回放被驱逐
+                # 旧消息(评审 I-3;SQL 原始消息仍全量保留,Recall 完整)。
+                self._persist_compacted_window(new_window)
+                self._messages = new_window
                 messages = list(head[:-1]) + self._messages + [head[-1]]
 
             # 流式门控：挂了 stream_callback 才走 chat_stream（否则保持 chat()）。
