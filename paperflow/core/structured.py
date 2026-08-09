@@ -44,10 +44,9 @@ class StructuredOutput:
     """三层防御：生成约束 → 验证重试（带对照纠错）→ 兜底。"""
 
     def __init__(self, llm, config: StructuredOutputConfig | None = None,
-                 store=None, telemetry_callback=None):
+                 telemetry_callback=None):
         self.llm = llm
         self.config = config or StructuredOutputConfig()
-        self.store = store
         #: LLM 调用元数据回调(与 Agent 侧同语义,None = 零开销跳过):
         #: spawn 摘要提取的调用经此接审计,归属父 agent 的 trace/turn。
         self.telemetry_callback = telemetry_callback
@@ -97,15 +96,8 @@ class StructuredOutput:
             f"结构化输出失败（{attempts} 次尝试）: {last_error}")
 
     def _record(self, schema, success, attempts, error) -> None:
-        if not self.config.record_stats or self.store is None:
-            return
-        self.store.append_history({
-            "type": "structured_output",
-            "schema": schema.__name__,
-            "success": success,
-            "attempts": attempts,
-            "error_type": error.__class__.__name__ if error else "",
-        })
+        """记忆统计钩子——MemoryStore 已随 Letta 记忆重构移除，保留签名不再落盘。"""
+        return
 
 
 # ── 递归 Schema 展开 ──

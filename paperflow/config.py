@@ -20,7 +20,12 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from paperflow.core.memory.context_config import ContextConfig
+def _default_compaction():
+    """CompactionSettings 惰性导入——compaction.py 依赖 llm.py、llm.py 依赖本模块，
+    顶层 import 会构成 config→compaction→llm→config 循环（部分初始化导入失败）。
+    字段默认值走此工厂，把导入推迟到首次构造时，此刻 config 已完整加载。"""
+    from paperflow.core.memory.compaction import CompactionSettings
+    return CompactionSettings()
 
 
 @dataclass
@@ -75,8 +80,14 @@ class PaperFlowConfig:
     #: 取值 ∈ RISK_ORDER 的键，如 "medium" / "high"）
     max_risk: str = "medium"
 
-    #: 上下文压缩配置（触发比例、保留比例、压缩提示词等）
-    context: ContextConfig = field(default_factory=ContextConfig)
+    #: 上下文压缩配置（Letta CompactionSettings，取代原 ContextConfig；惰性工厂见 _default_compaction）
+    compaction: "CompactionSettings" = field(default_factory=_default_compaction)
+
+    #: Sleeptime 后台整合开关
+    sleeptime_enable: bool = False
+
+    #: Sleeptime 触发频率（每 N 条新消息检查一次）
+    sleeptime_agent_frequency: int = 50
 
     #: Obsidian vault 笔记目录(数据源 note/)——**个人绝对路径,不硬编码默认值**,
     #: 经 .env(PAPERFLOW_VAULT_NOTE_DIR)或 config.yaml 提供;留空则文件类工具无可用根。

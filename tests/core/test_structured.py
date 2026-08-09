@@ -148,15 +148,3 @@ class TestExtract:
                               telemetry_callback=cb)
         await so.extract("task", FlatSchema)
         assert captured["cb"] is cb
-
-    @pytest.mark.asyncio
-    async def test_records_stats_to_store(self, tmp_path):
-        from paperflow.core.memory.experience_memory import MemoryStore
-        store = MemoryStore(tmp_path)
-        llm = make_llm([Message(role="assistant", content='{"name": "x", "count": 1}')])
-        so = StructuredOutput(llm, store=store)
-        await so.extract("task", FlatSchema)
-        entries = store.read_unprocessed_history(since=0)
-        assert entries[0]["type"] == "structured_output"
-        assert entries[0]["schema"] == "FlatSchema"
-        assert entries[0]["success"] is True

@@ -94,3 +94,13 @@ def test_agent_timeouts_default_generate_note():
     assert cfg.agent_timeouts.get("writer") == 600
     assert cfg.agent_timeouts.get("searcher") == 300
     assert cfg.agent_timeouts.get("reviewer") == 180
+
+
+def test_config_has_compaction_and_sleeptime():
+    """Letta 移植后 PaperFlowConfig 以 CompactionSettings 取代 ContextConfig，
+    并新增 Sleeptime 后台整合开关与触发频率（对齐 Letta sleeptime 配置）。"""
+    cfg = PaperFlowConfig()
+    assert cfg.compaction.trigger_ratio == 0.8
+    assert cfg.compaction.mode == "sliding_window"
+    assert cfg.sleeptime_enable is False
+    assert cfg.sleeptime_agent_frequency == 50
