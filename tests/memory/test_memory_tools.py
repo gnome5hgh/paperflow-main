@@ -36,6 +36,16 @@ def test_upsert_base_tools_registers_all():
     assert "conversation_search" in names
 
 
+def test_read_only_search_tools_risk_low():
+    """只读检索工具（search）risk=low；记忆编辑（写）risk=medium。"""
+    tm, _, _ = _tools()
+    by_name = {t.name: t for t in tm.list_tools()}
+    assert by_name["archival_memory_search"].risk_level == "low"
+    assert by_name["conversation_search"].risk_level == "low"
+    assert by_name["archival_memory_insert"].risk_level == "medium"
+    assert by_name["memory_replace"].risk_level == "medium"
+
+
 def test_memory_replace_unique_substring():
     tm, bm, _ = _tools()
     bm.create_block("feedback_testing", "规则一\n规则二")
@@ -69,6 +79,36 @@ def test_memory_insert_line():
                                       "new_string": "插播", "insert_line": 0}, "tc1")
     value = bm.get_block_by_label("feedback_testing").value
     assert value.splitlines()[0] == "插播"
+
+
+def test_memory_apply_patch_removes_and_adds_lines():
+    """简化 unified diff：- 行删除、+ 行追加（多块补丁明确拒绝）。"""
+    tm, bm, _ = _tools()
+    bm.create_block("feedback_testing", "line1\nline2\nline3")
+    res = tm.execute_tool("memory_apply_patch", {
+        "label": "feedback_testing", "patch": "-line2\n+line4"}, "tc1")
+    assert "Applied patch" in res.text
+    value = bm.get_block_by_label("feedback_testing").value
+    assert "line2" not in value          # - 行被移除
+    assert "line4" in value              # + 行被追加
+    assert "line1" in value and "line3" in value
+
+
+def test_memory_apply_patch_multi_block_rejected():
+    tm, bm, _ = _tools()
+    bm.create_block("feedback_testing", "v1")
+    res = tm.execute_tool("memory_apply_patch", {
+        "label": "feedback_testing",
+        "patch": "*** Update Block: feedback_testing\n*** Add Block: x\n"}, "tc1")
+    assert "not supported" in res.text   # 只支持单块模式
+    assert bm.get_block_by_label("feedback_testing").value == "v1"
+
+
+def test_memory_apply_patch_missing_block_errors():
+    tm, bm, _ = _tools()
+    res = tm.execute_tool("memory_apply_patch", {
+        "label": "nope", "patch": "-x"}, "tc1")
+    assert "no block" in res.text
 
 
 def test_archival_insert_and_search():

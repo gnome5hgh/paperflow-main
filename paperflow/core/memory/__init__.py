@@ -1,20 +1,33 @@
-"""paperflow 核心记忆子系统：经验存储、上下文压缩与经验归档。
+"""paperflow 核心记忆子系统（Letta 忠实移植）。
 
-对外统一导出记忆相关组件：工具调用经验存储与中间件、压缩配置与压缩器、
-索引加载器、Git 版本跟踪，以及 Dream 归档的编辑模型与可消费类型常量。
+对外统一导出新记忆栈组件：schema 数据模型、SQLite ORM、服务层
+（块/消息/passage/agent/archive/tool 管理器 + MemFS）、压缩配置、
+Sleeptime 后台整合与常量。旧文件式记忆（MemoryStore/ContextCompressor/
+GitStore/Dream 等）已随 Letta 重构移除。
 """
-from paperflow.core.memory.experience_memory import (
-    MemoryStore, ExperienceMemoryMiddleware, _error_type,
-)
-from paperflow.core.memory.context_config import ContextConfig, SummarySchema
-from paperflow.core.memory.memory_index import MemoryIndex
-from paperflow.core.memory.gitstore import GitStore
-from paperflow.core.memory.context_compressor import ContextCompressor
-from paperflow.core.memory.dream import Dream, DreamEdit, DreamEditBatch, DREAM_CONSUMABLE_TYPES
+from paperflow.core.memory.schemas.block import BaseBlock, Block
+from paperflow.core.memory.schemas.memory import Memory
+from paperflow.core.memory.schemas.message import Message, MessageRole
+from paperflow.core.memory.schemas.passage import Passage, PassageBase
+from paperflow.core.memory.schemas.agent import AgentState
+from paperflow.core.memory.orm.database import MemoryDB
+from paperflow.core.memory.services.block_manager import BlockManager, GitEnabledBlockManager
+from paperflow.core.memory.services.memfs import MemFS
+from paperflow.core.memory.services.message_manager import MessageManager
+from paperflow.core.memory.services.passage_manager import PassageManager
+from paperflow.core.memory.services.agent_manager import AgentManager
+from paperflow.core.memory.services.archive_manager import ArchiveManager, Archive
+from paperflow.core.memory.services.tool_manager import ToolManager
+from paperflow.core.memory.services.tool_execution_manager import ToolExecutionManager
+from paperflow.core.memory.compaction import CompactionSettings, SummarySchema
+from paperflow.core.memory.sleeptime import Sleeptime
+from paperflow.core.memory import constants
 
 __all__ = [
-    "MemoryStore", "ExperienceMemoryMiddleware", "_error_type",
-    "ContextConfig", "SummarySchema", "MemoryIndex", "GitStore",
-    "ContextCompressor", "Dream", "DreamEdit", "DreamEditBatch",
-    "DREAM_CONSUMABLE_TYPES",
+    "BaseBlock", "Block", "Memory", "Message", "MessageRole",
+    "Passage", "PassageBase", "AgentState", "MemoryDB",
+    "BlockManager", "GitEnabledBlockManager", "MemFS", "MessageManager",
+    "PassageManager", "AgentManager", "ArchiveManager", "Archive",
+    "ToolManager", "ToolExecutionManager", "CompactionSettings", "SummarySchema",
+    "Sleeptime", "constants",
 ]

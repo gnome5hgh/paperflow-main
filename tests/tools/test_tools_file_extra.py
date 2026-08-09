@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from paperflow.tools import ReadPdfTool, MarkReadTool, FormatCheckTool
+from paperflow.tools import ReadPdfTool, FormatCheckTool
 
 
 def test_format_check_compares_template(tmp_path):
@@ -41,10 +41,6 @@ def test_format_check_creates_skeleton_when_template_missing(tmp_path):
 def test_read_pdf_tool_meta():
     assert ReadPdfTool.allowed_roots == ["pdf"]
     assert ReadPdfTool.output_scan == "mark"
-
-
-def test_mark_read_tool_meta():
-    assert MarkReadTool.allowed_roots == ["pdf"]   # MINOR-6：对齐 spec §14
 
 
 def test_read_pdf_routes_through_parse_pdf_cached(agent_env):

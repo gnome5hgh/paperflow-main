@@ -14,15 +14,13 @@ async def test_answer_question_read_pdf_mode(agent_env, agent_registry):
     pdf.write_bytes(b"dummy")
     llm = make_mock_llm([
         _tc("read_pdf", {"path": str(pdf)}),
-        _tc("mark_read", {"path": str(pdf)}),
         Message(role="assistant", content="回答完成"),
     ])
     agent = make_agent(agent_registry, "qa-agent", llm, cfg)
     result = await agent.run(f"这篇论文讲了什么？ {pdf}")
     assert "回答完成" in result
-    # mark_read 落 tmp memory history（隔离；不落真实 vault）
-    history = Path(cfg.workspace) / "memory" / "history.jsonl"
-    assert history.exists()
+    # 已读不再经 mark_read 单独标记——阅读随对话落盘自动记录（Letta 记忆栈接管）
+    assert "mark_read" not in agent.tools
 
 
 @pytest.mark.asyncio

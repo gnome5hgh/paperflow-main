@@ -72,7 +72,7 @@ class TestExtract:
     @pytest.mark.asyncio
     async def test_success_first_try(self):
         llm = make_llm([Message(role="assistant", content='{"name": "x", "count": 3}')])
-        so = StructuredOutput(llm, config=StructuredOutputConfig(record_stats=False))
+        so = StructuredOutput(llm, config=StructuredOutputConfig())
         result = await so.extract("task", FlatSchema)
         assert result.name == "x"
         assert result.count == 3
@@ -83,7 +83,7 @@ class TestExtract:
             Message(role="assistant", content='{"name": "x", "cnt": 3}'),   # 字段名错
             Message(role="assistant", content='{"name": "x", "count": 3}'),
         ])
-        so = StructuredOutput(llm, config=StructuredOutputConfig(record_stats=False))
+        so = StructuredOutput(llm, config=StructuredOutputConfig())
         result = await so.extract("task", FlatSchema)
         assert result.count == 3
 
@@ -94,7 +94,7 @@ class TestExtract:
             Message(role="assistant", content="still not json"),
             Message(role="assistant", content="nope"),
         ])
-        so = StructuredOutput(llm, config=StructuredOutputConfig(record_stats=False))
+        so = StructuredOutput(llm, config=StructuredOutputConfig())
         result = await so.extract(
             "task", FlatSchema,
             fallback=lambda: FlatSchema(name="fallback", count=0),
@@ -108,7 +108,7 @@ class TestExtract:
             Message(role="assistant", content="bad"),
             Message(role="assistant", content="bad"),
         ])
-        so = StructuredOutput(llm, config=StructuredOutputConfig(record_stats=False))
+        so = StructuredOutput(llm, config=StructuredOutputConfig())
         with pytest.raises(StructuredOutputError):
             await so.extract("task", FlatSchema)
 
@@ -122,7 +122,7 @@ class TestExtract:
                             extra_body=extra_body)
             return Message(role="assistant", content='{"name": "x", "count": 1}')
         llm.chat = chat
-        so = StructuredOutput(llm, config=StructuredOutputConfig(record_stats=False))
+        so = StructuredOutput(llm, config=StructuredOutputConfig())
         await so.extract("task", FlatSchema)
         assert captured["json_mode"] is True
         assert captured["temperature"] == 0.0
@@ -144,7 +144,7 @@ class TestExtract:
         llm.chat = chat
 
         cb = lambda data: None
-        so = StructuredOutput(llm, config=StructuredOutputConfig(record_stats=False),
+        so = StructuredOutput(llm, config=StructuredOutputConfig(),
                               telemetry_callback=cb)
         await so.extract("task", FlatSchema)
         assert captured["cb"] is cb

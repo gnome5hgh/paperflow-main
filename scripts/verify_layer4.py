@@ -38,11 +38,8 @@ async def main() -> None:
     # 完整装配（镜像 cli.main()）：Stage 3 LLM 兜底必须有真实 StructuredOutput——
     # 否则查询 miss 全部最小 route 时 structured.extract 会崩（⚪3，手动 smoke 不许有必崩路径）。
     from pathlib import Path
-    from paperflow.core.memory import MemoryStore
     from paperflow.core.structured import StructuredOutput
-    memory_dir = Path(config.workspace) / "memory"
-    store = MemoryStore(memory_dir)
-    structured = StructuredOutput(llm, store=store)
+    structured = StructuredOutput(llm)
     # 模型路径本地优先（data/models/<name>），回退 HF 名（resolve_model_dir）
     router = HybridRouter(
         encoder=BgeEmbedder(model_name=resolve_model_dir(config.workspace, config.embed_model)),

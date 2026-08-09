@@ -50,7 +50,7 @@ allowed_spawns: []   # supervisor 硬编码放行所有子 agent(_check_spawn_al
 | search_paper | searcher | 搜索/下载/筛选论文,返回论文列表。**原样拼入『下载』动词与全部约束(年份/等级/主题),不省略**——searcher 依据它决定是否走下载与门禁参数(用户说下载就必须尝试) |
 | generate_note | writer | 端到端流程(读→起草→落盘→审稿→修订),一次 spawn 完成;返回含笔记绝对路径即成功,不要重复派发续写/落盘任务。若 spawn 超时但笔记文件已存在,派发 qa-agent 读取产物或询问用户确认,不盲目重试。若用户对笔记有约束/要求(篇幅、语言、侧重、深度等),**原样拼入子任务文本**——writer 会据此审稿 |
 | ask_question | qa-agent | 问答 / 阅读 / RAG 检索(具体 mode 由子 agent 判断) |
-| manage_memory | qa-agent | mode=memory:查 MEMORY.md 索引 / 阅读记录 |
+| manage_memory | qa-agent | mode=memory:用记忆工具检索（conversation_search / archival_memory_search） |
 
 ## 调度工具参考
 

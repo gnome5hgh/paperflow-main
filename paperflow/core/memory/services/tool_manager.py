@@ -39,7 +39,8 @@ class _FunctionTool(Tool):
         self.parameters = parameters
         self._fn = fn
         self._ctx = ctx
-        self.risk_level = "medium"         # 记忆写入属于本地写操作
+        # 只读检索工具（search）属低风险，其余记忆编辑属本地写操作
+        self.risk_level = "low" if name in ("archival_memory_search", "conversation_search") else "medium"
 
     def execute(self, **kwargs) -> ToolResult:
         try:

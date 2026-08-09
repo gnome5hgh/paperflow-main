@@ -8,9 +8,21 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import BaseModel
+
 from paperflow.core.llm import Message as WireMessage
 
-__all__ = ["CompactionSettings", "should_compress", "run_compaction"]
+__all__ = ["CompactionSettings", "SummarySchema", "should_compress", "run_compaction"]
+
+
+class SummarySchema(BaseModel):
+    """模型输出的结构化摘要字段（压缩时提取对话要点）。"""
+
+    task_overview: str              # 用户核心请求与成功标准
+    current_state: str              # 已完成进度
+    important_discoveries: str      # 关键技术约束/决策/错误
+    next_steps: str                 # 待办与优先级
+    context_to_preserve: str        # 用户偏好/领域细节/承诺
 
 
 class CompactionSettings:
@@ -116,7 +128,6 @@ def _recent_tail(messages: list[WireMessage], settings: CompactionSettings,
 
 async def _summarize(messages, structured) -> str:
     """用 StructuredOutput + SummarySchema 生成结构化摘要文本。"""
-    from paperflow.core.memory.context_config import SummarySchema  # 复用现有 schema
     prompt = "\n".join(f"{m.role}: {(m.content or '')[:2000]}" for m in messages
                        if m.role != "system")
     result = await structured.extract(

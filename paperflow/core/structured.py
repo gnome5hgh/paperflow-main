@@ -32,7 +32,6 @@ class StructuredOutputConfig:
     temperature: float = 0.0
     disable_thinking: bool = True
     json_mode: bool = True
-    record_stats: bool = True
     max_schema_depth: int = 3
 
 
@@ -79,7 +78,6 @@ class StructuredOutput:
                 resp = await self.llm.chat(messages, **chat_kwargs)
                 data = json.loads(_extract_json_body(resp.content))
                 result = schema(**data)
-                self._record(schema, True, attempts, None)
                 return result
             except (json.JSONDecodeError, ValidationError) as e:
                 last_error = e
@@ -89,15 +87,10 @@ class StructuredOutput:
                     f"请对照结构重新输出，不要附加任何说明文字。"
                 )))
 
-        self._record(schema, False, attempts, last_error)
         if fallback is not None:
             return fallback()
         raise StructuredOutputError(
             f"结构化输出失败（{attempts} 次尝试）: {last_error}")
-
-    def _record(self, schema, success, attempts, error) -> None:
-        """记忆统计钩子——MemoryStore 已随 Letta 记忆重构移除，保留签名不再落盘。"""
-        return
 
 
 # ── 递归 Schema 展开 ──
