@@ -5,11 +5,13 @@ Task 4（memfs）中叠加。
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from paperflow.core.memory.orm import block as block_orm
 from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.schemas.block import Block
 
-__all__ = ["BlockManager"]
+__all__ = ["BlockManager", "GitEnabledBlockManager"]
 
 _READ_ONLY = "block is read-only"
 _LIMIT = "Exceeds {limit} character limit"
@@ -87,3 +89,69 @@ class BlockManager:
         snap = block_orm.restore_block_history(self.db, block_history_id)
         block_orm.update_block(self.db, snap["block_id"], snap["value"], snap["version"])
         return self.get_block(snap["block_id"])
+
+
+class GitEnabledBlockManager(BlockManager):
+    """BlockManager 的 git 变体：块变更同步到 MemFS markdown 投影并 git commit。
+
+    对应 Letta GitEnabledBlockManager。原 paperFlow GitStore 由此保留——
+    语义从「markdown 是源」变为「markdown 是 blocks 的投影」。
+    """
+
+    def __init__(self, db, memfs_dir: Path | None = None):
+        super().__init__(db)
+        from paperflow.core.memory.services.memfs import MemFS
+        self.memfs = MemFS(memfs_dir or Path(db.path).parent, db=db)
+        self._memfs_dir = self.memfs.memory_dir
+        self._init_git()
+
+    def _init_git(self) -> None:
+        """惰性初始化 git 仓库（dulwich）。目录不存在时先创建（Repo.init 不建父目录）。"""
+        from dulwich.repo import Repo
+        self._memfs_dir.mkdir(parents=True, exist_ok=True)
+        git_dir = self._memfs_dir / ".git"
+        if not git_dir.exists():
+            Repo.init(str(self._memfs_dir))
+        self._repo = Repo(str(self._memfs_dir))
+
+    def _git_log(self) -> list[str]:
+        from dulwich.repo import Repo
+        repo = Repo(str(self._memfs_dir))
+        try:
+            repo.head()
+        except KeyError:
+            return []
+        # dulwich 1.x 的 get_walker() 返回 WalkEntry，commit 在 .commit 上
+        return [c.commit.id.decode() for c in repo.get_walker(max_entries=50)]
+
+    def _commit(self, message: str) -> str | None:
+        """只跟踪 *.md，无变更返回 None（不产生空 commit）。"""
+        import dulwich.porcelain as porcelain
+        from dulwich.repo import Repo
+        repo = Repo(str(self._memfs_dir))
+        changed = False
+        for path in sorted(self._memfs_dir.rglob("*.md")):
+            rel = str(path.relative_to(self._memfs_dir))
+            porcelain.add(repo, rel)
+            changed = True
+        if not changed:
+            return None
+        status = porcelain.status(repo)
+        staged = status.staged.get("add", []) + status.staged.get("modify", [])
+        if not staged:
+            return None
+        author = b"paperFlow <paperflow@local>"
+        sha = porcelain.commit(repo, message=message, author=author, committer=author)
+        return sha.decode() if isinstance(sha, bytes) else str(sha)
+
+    def create_block(self, label: str, value: str, **kwargs) -> Block:
+        b = super().create_block(label, value, **kwargs)
+        self.memfs.sync_block_to_file(b)
+        self._commit(f"create block {label}")
+        return b
+
+    def update_block_value(self, label: str, value: str) -> Block:
+        b = super().update_block_value(label, value)
+        self.memfs.sync_block_to_file(b)
+        self._commit(f"update block {label}")
+        return b
