@@ -28,6 +28,7 @@ class BaseBlock(BaseModel):
 
 class Block(BaseBlock):
     id: str = Field(default_factory=_block_id)
+    version: int = 1                    # 乐观锁计数：DB 列、由 orm/BlockManager 读写
     project_id: str | None = None
     organization_id: str | None = None
     created_by_id: str | None = None
