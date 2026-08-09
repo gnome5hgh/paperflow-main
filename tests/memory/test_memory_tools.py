@@ -78,3 +78,25 @@ def test_archival_insert_and_search():
     assert pm.agent_passage_size("sess_1") == 1
     res = tm.execute_tool("archival_memory_search", {"query": "", "tags": ["reading"]}, "tc2")
     assert "GraphCL" in res.text
+
+
+def test_memory_create_duplicate_label_errors():
+    tm, bm, _ = _tools()
+    bm.create_block("persona", "v1")
+    res = tm.execute_tool("memory", {"action": "create", "label": "persona", "value": "v2"}, "tc1")
+    assert "already exists" in res.text.lower()
+    assert len([b for b in bm.list_blocks() if b.label == "persona"]) == 1
+
+
+def test_memory_rename_preserves_metadata():
+    tm, bm, _ = _tools()
+    bm.create_block("persona", "身份", read_only=True, limit=500, description="desc")
+    res = tm.execute_tool("memory", {"action": "rename", "label": "persona", "value": "human"}, "tc1")
+    assert "human" in res.text
+    b = bm.get_block_by_label("human")
+    assert b is not None
+    assert b.value == "身份"
+    assert b.read_only is True
+    assert b.limit == 500
+    assert b.description == "desc"
+    assert bm.get_block_by_label("persona") is None

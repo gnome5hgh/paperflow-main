@@ -5,8 +5,6 @@ _FunctionTool 包装后注入 agent 工具面。
 """
 from __future__ import annotations
 
-import re
-
 from paperflow.core.memory.services.block_manager import BlockManager
 
 __all__ = ["memory_replace", "memory_insert", "memory_rethink",
@@ -65,9 +63,15 @@ def memory_finish_edits(ctx) -> str:
 
 
 def memory(ctx, action: str, label: str, value: str | None = None, **kwargs) -> str:
-    """统一块管理：create / replace / delete / rename。"""
+    """统一块管理：create / replace / delete / rename。
+
+    label 在 blocks 表无 UNIQUE 约束——create/rename 必须先查重，
+    否则重复 label 会静默建出不可达的幽灵块。
+    """
     bm: BlockManager = ctx.block_manager
     if action == "create":
+        if bm.get_block_by_label(label) is not None:
+            return f"Error: label '{label}' already exists"
         bm.create_block(label, value or "")
         return f"Created block {label}"
     if action == "replace":
@@ -82,9 +86,14 @@ def memory(ctx, action: str, label: str, value: str | None = None, **kwargs) -> 
         b = bm.get_block_by_label(label)
         if b is None:
             return f"Error: no block with label {label}"
-        # label 无独立 update 接口——重建
+        # label 无独立 update 接口——重建并保留元数据（read_only/description/limit）
         new_label = kwargs.get("new_label", value or label)
-        bm.create_block(new_label, b.value)
+        if new_label == label:
+            return f"Renamed block {label} -> {new_label}"
+        if bm.get_block_by_label(new_label) is not None:
+            return f"Error: label '{new_label}' already exists"
+        bm.create_block(new_label, b.value, limit=b.limit,
+                        description=b.description, read_only=b.read_only)
         bm.delete_block(b.id)
         return f"Renamed block {label} -> {new_label}"
     return f"Error: unknown action {action}"
