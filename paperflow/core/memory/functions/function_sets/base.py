@@ -80,6 +80,8 @@ def memory(ctx, action: str, label: str, value: str | None = None, **kwargs) -> 
         b = bm.get_block_by_label(label)
         if b is None:
             return f"Error: no block with label {label}"
+        if b.read_only:
+            return "Error: block is read-only"
         bm.delete_block(b.id)
         return f"Deleted block {label}"
     if action == "rename":
@@ -94,35 +96,79 @@ def memory(ctx, action: str, label: str, value: str | None = None, **kwargs) -> 
             return f"Error: label '{new_label}' already exists"
         bm.create_block(new_label, b.value, limit=b.limit,
                         description=b.description, read_only=b.read_only)
-        bm.delete_block(b.id)
+        # rename 是重建（保护元数据迁移到新块），不是删除——走不检查 read_only 的
+        # 底层 _delete；直接 delete_block 会因 read_only 拒绝而留下半完成的孤儿新块。
+        bm._delete(b.id)
         return f"Renamed block {label} -> {new_label}"
     return f"Error: unknown action {action}"
 
 
 def memory_apply_patch(ctx, label: str, patch: str) -> str:
-    """简化 unified diff 应用（Letta 同款）。仅支持单块模式：
-    @@ 行号上下文 + +/- 行。多块模式（*** Add Block: 等）返回明确错误（不实现）。"""
+    """就地应用简化 unified diff（Letta 同款）。仅支持单块模式：@@ 行号上下文 +
+    -/+ 行；多块模式（*** Add Block: 等）返回明确错误（不实现）。
+
+    语义：逐 hunk 删 - 行、在对应位置插 + 行（不是「删全部再追加末尾」）。
+    - 行从当前位置向后找首个匹配删除；+ 行插入到删除点；' ' 前缀行是上下文锚点；
+    @@ 头部把游标跳到 hunk 起始（中间未改动行原样保留）。
+    """
+    import re
     bm: BlockManager = ctx.block_manager
     block = bm.get_block_by_label(label)
     if block is None:
         return f"Error: no block with label {label}"
     if "*** Add Block:" in patch or "*** Update Block:" in patch:
         return "Error: multi-block patch not supported"
-    lines = block.value.splitlines(keepends=True)
-    removals: list[str] = []
-    additions: list[str] = []
-    for line in patch.splitlines():
-        if line.startswith("-"):
-            removals.append(line[1:])
-        elif line.startswith("+"):
-            additions.append(line[1:])
-    for r in removals:
-        lines = [l for l in lines if l.rstrip("\n") != r]
-    result = "".join(lines)
-    if additions:
-        result = result.rstrip("\n") + "\n" + "\n".join(additions) + "\n"
+    try:
+        result = _apply_diff(block.value, patch)
+    except ValueError as e:
+        return f"Error: {e}"
     try:
         bm.update_block_value(label, result)
     except ValueError as e:
         return f"Error: {e}"
     return f"Applied patch to block {label}"
+
+
+def _apply_diff(value: str, patch: str) -> str:
+    """就地应用 unified diff：返回改动后的整块文本，语义不符时抛 ValueError。
+
+    patch 行的逐行处理：@@ 头跳到 hunk 起始（中间未改动行原样复制）；' ' 上下文
+    行必须匹配目标当前行；'-' 删行从当前位置向后找首个匹配（无上下文锚定时的
+    简化 diff）；'+' 增行插入到当前删除点。
+    """
+    import re
+    lines = value.splitlines()
+    result: list[str] = []
+    i = 0                      # 目标行游标（指向原始 lines）
+    for pline in patch.splitlines():
+        if pline.startswith("@@"):
+            m = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", pline)
+            if m:
+                target = max(0, int(m.group(1)) - 1)
+                while i < target and i < len(lines):
+                    result.append(lines[i])
+                    i += 1
+            continue
+        if pline.startswith(" "):
+            ctx = pline[1:]
+            if i >= len(lines) or lines[i] != ctx:
+                raise ValueError(f"context line {ctx!r} not found at position {i + 1}")
+            result.append(lines[i])
+            i += 1
+        elif pline.startswith("-"):
+            removed = pline[1:]
+            j = i
+            while j < len(lines) and lines[j] != removed:
+                j += 1
+            if j >= len(lines):
+                raise ValueError(f"line {removed!r} not found")
+            while i < j:                      # 删除点之前未匹配的行按上下文保留
+                result.append(lines[i])
+                i += 1
+            i += 1                            # 跳过被删行
+        elif pline.startswith("+"):
+            result.append(pline[1:])
+        elif pline.startswith("\\"):
+            continue                          # "\ No newline at end of file"
+    result.extend(lines[i:])
+    return "\n".join(result)

@@ -82,16 +82,37 @@ def test_memory_insert_line():
 
 
 def test_memory_apply_patch_removes_and_adds_lines():
-    """简化 unified diff：- 行删除、+ 行追加（多块补丁明确拒绝）。"""
+    """评审 I-6：简化 unified diff 就地应用——- 行在对应位置删除、+ 行原位插入
+    （而非「删全部 - 行再把 + 行追加末尾」）。"""
     tm, bm, _ = _tools()
     bm.create_block("feedback_testing", "line1\nline2\nline3")
     res = tm.execute_tool("memory_apply_patch", {
-        "label": "feedback_testing", "patch": "-line2\n+line4"}, "tc1")
+        "label": "feedback_testing", "patch": "-line2\n+line2b"}, "tc1")
     assert "Applied patch" in res.text
     value = bm.get_block_by_label("feedback_testing").value
-    assert "line2" not in value          # - 行被移除
-    assert "line4" in value              # + 行被追加
-    assert "line1" in value and "line3" in value
+    assert value == "line1\nline2b\nline3"   # 原位替换，不落到末尾
+
+
+def test_memory_apply_patch_with_context_and_hunks():
+    """带 @@ 头部 + ' ' 上下文锚定的真实 unified diff：跨 hunk 中间未改动行保留。"""
+    tm, bm, _ = _tools()
+    bm.create_block("feedback_testing", "line1\nline2\nline3\nline4")
+    patch = "@@ -1,3 +1,3 @@\n line1\n-line2\n+line2b\n line3\n@@ -4,1 +4,1 @@\n-line4\n+line4b"
+    res = tm.execute_tool("memory_apply_patch", {
+        "label": "feedback_testing", "patch": patch}, "tc1")
+    assert "Applied patch" in res.text
+    value = bm.get_block_by_label("feedback_testing").value
+    assert value == "line1\nline2b\nline3\nline4b"
+
+
+def test_memory_apply_patch_missing_line_errors():
+    """patch 引用的行在块里不存在 → 明确报错，块内容不变。"""
+    tm, bm, _ = _tools()
+    bm.create_block("feedback_testing", "line1\nline2")
+    res = tm.execute_tool("memory_apply_patch", {
+        "label": "feedback_testing", "patch": "-nope\n+x"}, "tc1")
+    assert "error" in res.text.lower()
+    assert bm.get_block_by_label("feedback_testing").value == "line1\nline2"
 
 
 def test_memory_apply_patch_multi_block_rejected():
@@ -118,6 +139,23 @@ def test_archival_insert_and_search():
     assert pm.agent_passage_size("sess_1") == 1
     res = tm.execute_tool("archival_memory_search", {"query": "", "tags": ["reading"]}, "tc2")
     assert "GraphCL" in res.text
+
+
+def test_memory_delete_read_only_rejected():
+    """评审 I-5：memory delete 不能删 read_only 保护块（persona 等）。"""
+    tm, bm, _ = _tools()
+    bm.create_block("persona", "身份", read_only=True)
+    res = tm.execute_tool("memory", {"action": "delete", "label": "persona"}, "tc1")
+    assert "read-only" in res.text.lower()
+    assert bm.get_block_by_label("persona") is not None
+
+
+def test_memory_delete_removes_block():
+    tm, bm, _ = _tools()
+    bm.create_block("feedback_testing", "规则")
+    res = tm.execute_tool("memory", {"action": "delete", "label": "feedback_testing"}, "tc1")
+    assert "Deleted" in res.text
+    assert bm.get_block_by_label("feedback_testing") is None
 
 
 def test_memory_create_duplicate_label_errors():

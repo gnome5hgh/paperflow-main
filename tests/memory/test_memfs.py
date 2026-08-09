@@ -81,6 +81,25 @@ def test_no_empty_commit():
     assert len(bm._git_log()) == n
 
 
+def test_delete_removes_projection_and_index():
+    """评审 I-5：GitEnabledBlockManager.delete_block 删 SQL + 投影 .md + 索引条目 + git commit。"""
+    tmp, bm, memfs = _setup()
+    bm.create_block("feedback_testing", "规则")
+    index = tmp / "memory" / "memory_filesystem.md"
+    assert "feedback_testing" in index.read_text(encoding="utf-8")
+    n_commits = len(bm._git_log())
+    b = bm.get_block_by_label("feedback_testing")
+    bm.delete_block(b.id)
+    # SQL 删除
+    assert bm.get_block_by_label("feedback_testing") is None
+    # 投影文件删除
+    assert not (tmp / "memory" / "feedback_testing.md").exists()
+    # 索引条目消失
+    assert "feedback_testing" not in index.read_text(encoding="utf-8")
+    # 删除产生了 git commit
+    assert len(bm._git_log()) == n_commits + 1
+
+
 def test_index_description_columns():
     # 空 description 块：索引 description 列应为空，不显示垃圾 `---`；有 description 正确显示
     tmp, bm, memfs = _setup()

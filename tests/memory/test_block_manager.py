@@ -35,6 +35,23 @@ def test_update_read_only_rejected():
         bm.update_block_value("persona", "新身份")
 
 
+def test_delete_read_only_rejected():
+    """评审 I-5：delete_block 与 update_block_value 一致，拒绝删除 read_only 保护块。"""
+    bm = _bm()
+    bm.create_block("persona", "身份", read_only=True)
+    b = bm.get_block_by_label("persona")
+    with pytest.raises(ValueError, match="read.only"):
+        bm.delete_block(b.id)
+    assert bm.get_block_by_label("persona") is not None   # 块未被删
+
+
+def test_delete_removes_block():
+    bm = _bm()
+    b = bm.create_block("feedback_testing", "规则")
+    bm.delete_block(b.id)
+    assert bm.get_block_by_label("feedback_testing") is None
+
+
 def test_version_increments_and_checkpoint():
     bm = _bm()
     bm.create_block("persona", "身份")

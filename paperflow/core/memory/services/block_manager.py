@@ -78,6 +78,16 @@ class BlockManager:
         return self.get_block(row["id"])
 
     def delete_block(self, block_id: str) -> None:
+        """删除块。read_only 块拒绝（与 update_block_value 一致），防误删保护块。"""
+        row = block_orm.select_block(self.db, block_id)
+        if row is None:
+            raise KeyError(f"block {block_id} not found")
+        if row["read_only"]:
+            raise ValueError(_READ_ONLY)
+        self._delete(block_id)
+
+    def _delete(self, block_id: str) -> None:
+        """底层删除钩子（rename 复用）：不检查 read_only，由 GitEnabled 子类扩展投影清理。"""
         block_orm.delete_block(self.db, block_id)
 
     def checkpoint_block(self, block_id: str) -> None:
@@ -155,3 +165,17 @@ class GitEnabledBlockManager(BlockManager):
         self.memfs.sync_block_to_file(b)
         self._commit(f"update block {label}")
         return b
+
+    def delete_block(self, block_id: str) -> None:
+        # 基类 delete_block 校验 read_only 后走 self._delete()（投影清理 + git commit）
+        super().delete_block(block_id)
+
+    def _delete(self, block_id: str) -> None:
+        """删 SQL + 同步删 MemFS 投影 .md + git commit + 重建索引（不留孤儿投影/陈旧索引）。"""
+        b = self.get_block(block_id)
+        super()._delete(block_id)
+        path = self.memfs._file_for(b)
+        if path.exists():
+            path.unlink()
+        self.memfs.regenerate_index()
+        self._commit(f"delete block {b.label}")
