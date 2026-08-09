@@ -61,12 +61,16 @@ def test_supervisor_dispatch_smoke(supervisor_registry):
     assert text == "已搜索"
 
 
-def test_subagent_result_cross_turn_visible(supervisor_registry):
-    """首轮 spawn 子 agent → 第二轮 messages 含首轮 spawn 的 tool 结果（子结果跨轮可见）。"""
+def test_subagent_result_cross_turn_visible(supervisor_registry, tmp_path):
+    """首轮 spawn 子 agent → 第二轮 messages 含首轮 spawn 的 tool 结果（子结果跨轮可见）。
+
+    新机制下跨轮可见来自 MessageManager：run1 把 spawn 的 tool 结果落盘，run2 经
+    _load_in_context 从 SQL 回放。child（spawn 构造）无 message_manager → 不持久化，
+    不干扰 supervisor 的会话。
+    """
     import asyncio  # noqa: F401  （函数内 import，与本文件 test_supervisor_dispatch_smoke 同风格）
-    from unittest.mock import MagicMock
-    from paperflow.core.memory.context_compressor import ContextCompressor
-    from paperflow.core.memory.context_config import ContextConfig
+    from paperflow.core.memory.orm.database import MemoryDB
+    from paperflow.core.memory.services.message_manager import MessageManager
     from tests.agent.test_agent import make_capture_llm
 
     tool_call = Message(role="assistant", content=None, tool_calls=[{
@@ -74,11 +78,7 @@ def test_subagent_result_cross_turn_visible(supervisor_registry):
         "function": {"name": "spawn_sub_agent", "arguments":
                      '{"agent_type": "searcher", "task": "搜索 circRNA"}'},
     }])
-    structured = MagicMock()
-    async def extract(prompt, schema, fallback=None):
-        return fallback()
-    structured.extract = extract
-    comp = ContextCompressor(ContextConfig(), MagicMock(context_window=65536), structured)
+    mm = MessageManager(MemoryDB(tmp_path / "memory.db"))
     capture = []
     # run1 消费 3 条（supervisor spawn → child → supervisor 汇总）；run2 消费 1 条
     llm = make_capture_llm([
@@ -88,7 +88,8 @@ def test_subagent_result_cross_turn_visible(supervisor_registry):
         Message(role="assistant", content="第二轮回答"),
     ], capture)
     agent = Agent(llm=llm, agent_registry=supervisor_registry, agent_type="supervisor",
-                  confirm_callback=lambda cr: True, compressor=comp)
+                  confirm_callback=lambda cr: True, message_manager=mm,
+                  session_id="sess_1")
     asyncio.run(agent.run("搜索 circRNA 文献"))
     asyncio.run(agent.run("这些论文有什么共同点"))
     # 防护（review Minor 5）：capture[3] 假设 run1 恰好 3 次 LLM 调用——装配/触发条件

@@ -1,107 +1,94 @@
+"""Agent 记忆集成测试：Memory 挂载、消息落盘、compaction 触发、记忆工具注入。"""
+import tempfile
+from pathlib import Path
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+
 from paperflow.core.agent import Agent
-from paperflow.core.llm import Message
-from paperflow.core.agent_registry import AgentConfig, AgentRegistry
-from paperflow.core.memory.memory_index import MemoryIndex
-from paperflow.core.tool import Tool, ToolResult
+from paperflow.core.memory.orm.database import MemoryDB
+from paperflow.core.memory.services.block_manager import BlockManager
+from paperflow.core.memory.services.message_manager import MessageManager
+from paperflow.core.memory.services.passage_manager import PassageManager
+from paperflow.core.memory.services.tool_manager import ToolManager
+from paperflow.core.memory.compaction import CompactionSettings
+from paperflow.core.memory.schemas.memory import Memory
 
 
-class MemTool(Tool):
-    name = "mem_tool"
-    description = "t"
-    parameters = {"type": "object", "properties": {}}
-
-    def execute(self, **kwargs) -> ToolResult:
-        return ToolResult(text="ok")
-
-
-def make_llm(responder):
-    mock = MagicMock()
-    async def chat(messages, tools=None, tool_choice="auto", **kw):
-        return responder(messages)
-    mock.chat = chat
-    mock.context_window = 65536
-    return mock
+class _Registry:
+    """极简注册表替身：返回固定 system_prompt 与空工具。"""
+    def get_config(self, agent_type):
+        class _Cfg:
+            system_prompt = "SKILL: 你是助手"
+            tools = []
+        return _Cfg()
 
 
-def make_agent(memory_index=None, compressor=None, llm=None, tools=None):
-    tools = tools or [MemTool()]
-    registry = MagicMock(spec=AgentRegistry)
-    registry.get_config.return_value = AgentConfig(
-        name="test", system_prompt="SKILL_PROMPT", tools=tools,
-    )
-    return Agent(
-        llm=llm or make_llm(lambda m: Message(role="assistant", content="done")),
-        agent_registry=registry,
-        agent_type="test",
-        memory_index=memory_index,
-        compressor=compressor,
-    )
+class _FakeLLM:
+    context_window = 1000000
+    def __init__(self, replies): self._replies = list(replies)
+    async def chat(self, messages, tools=None, **kw):
+        return self._replies.pop(0) if self._replies else _Reply("完成")
 
 
-class TestMemoryInjection:
-    @pytest.mark.asyncio
-    async def test_injects_memory_index_after_skill(self, tmp_path):
-        (tmp_path / "MEMORY.md").write_text("- [User](user_role.md) — role\n")
-        idx = MemoryIndex(tmp_path)
-        seen = {}
-        def responder(messages):
-            seen["roles"] = [m.role for m in messages[:3]]
-            seen["contents"] = [m.content for m in messages[:3]]
-            return Message(role="assistant", content="ok")
-        agent = make_agent(memory_index=idx, llm=make_llm(responder))
-        await agent.run("hi")
-        assert seen["roles"] == ["system", "system", "user"]
-        assert "SKILL_PROMPT" in seen["contents"][0]
-        assert "user_role" in seen["contents"][1]
+class _Reply:
+    def __init__(self, content, tool_calls=None, truncated=False):
+        self.content = content; self.tool_calls = tool_calls; self.truncated = truncated
 
-    @pytest.mark.asyncio
-    async def test_replays_summary_and_history_before_user(self, tmp_path):
-        (tmp_path / "MEMORY.md").write_text("idx\n")
-        idx = MemoryIndex(tmp_path)
-        compressor = MagicMock()
-        # 新模型：摘要消息是 history[0]（system），随 history 回放而非独立③位注入
-        compressor.history = [
-            Message(role="system", content="SUMMARY_TEXT"),
-            Message(role="user", content="上一轮问题"),
-        ]
-        # MagicMock 的 should_compress 默认返回 truthy，会误入压缩分支；
-        # 本测试只验证消息顺序，显式关闭压缩
-        compressor.should_compress.return_value = False
-        seen = {}
-        def responder(messages):
-            seen["contents"] = [m.content for m in messages[:5]]
-            return Message(role="assistant", content="ok")
-        agent = make_agent(memory_index=idx, compressor=compressor,
-                           llm=make_llm(responder))
-        await agent.run("hi")
-        assert seen["contents"][0] == "SKILL_PROMPT"
-        assert seen["contents"][1] == "idx"
-        assert seen["contents"][2] == "SUMMARY_TEXT"      # 摘要消息随 history 回放（③位）
-        assert seen["contents"][3] == "上一轮问题"         # 历史对话回放
-        assert seen["contents"][4] == "hi"                # 当前轮 user
 
-    @pytest.mark.asyncio
-    async def test_checks_compression_per_turn(self, tmp_path):
-        compressor = MagicMock()
-        # 空 history：压缩重建 messages = head + history + conv 后仍保持短消息，
-        # responder 第一轮看到 len<3 → tool_call，第二轮（不压缩）看到 tool → final
-        compressor.history = []
-        # 第一轮压缩触发，第二轮不触发（否则每轮都压缩重建回短消息，
-        # responder 永远看到 len<3 → tool_call 死循环直到 MaxTurnsExceeded）
-        compressor.should_compress.side_effect = [True, False]
-        # Task 4：压缩点改为 await compress_history()（原地改写 history，结果不进 messages
-        # 参数）→ AsyncMock。旧 compressor.compress 已退役（Task 5 删除）。
-        compressor.compress_history = AsyncMock()
-        # LLM 第一轮返回 tool_call，第二轮返回最终回答（确保至少两轮，压缩检查在每轮发生）
-        def responder(messages):
-            if len(messages) < 3:
-                return Message(role="assistant", content=None, tool_calls=[{
-                    "id": "c1", "type": "function",
-                    "function": {"name": "mem_tool", "arguments": "{}"},
-                }])
-            return Message(role="assistant", content="final")
-        agent = make_agent(compressor=compressor, llm=make_llm(responder))
-        await agent.run("hi")
-        assert compressor.should_compress.call_count >= 1
+def _agent(replies=("完成",)):
+    tmp = Path(tempfile.mkdtemp())
+    db = MemoryDB(tmp / "memory.db")
+    bm = BlockManager(db)
+    mm = MessageManager(db)
+    pm = PassageManager(db)
+    tm = ToolManager(db)
+    tm.bind(bm, pm, mm, agent_id="sess_1")
+    tm.upsert_base_tools()
+    memory = Memory(blocks=[bm.create_block("persona", "身份")])
+    return Agent(llm=_FakeLLM(list(replies)), agent_registry=_Registry(),
+                 agent_type="_demo", memory=memory, block_manager=bm,
+                 message_manager=mm, passage_manager=pm,
+                 memory_tools=tm.list_tools(),
+                 compaction=CompactionSettings(), session_id="sess_1")
+
+
+@pytest.mark.asyncio
+async def test_build_head_contains_memory():
+    from paperflow.core.llm import Message as WM
+    agent = _agent()
+    head = await agent._build_head("task")
+    contents = [m.content for m in head]
+    assert contents[0] == "SKILL: 你是助手"
+    assert any("<memory_blocks>" in c for c in contents)
+    assert contents[-1] == "task"          # 末尾 user task
+
+
+def test_messages_property_returns_wire_dicts():
+    from paperflow.core.llm import Message as WM
+    agent = _agent()
+    agent._append_to_messages([WM(role="user", content="hi")])
+    msgs = agent.messages
+    assert msgs[0] == {"role": "user", "content": "hi"}
+
+
+def test_conversation_persisted_to_message_manager():
+    from paperflow.core.llm import Message as WM
+    agent = _agent(["需要工具", "完成"])
+    # 手工模拟一轮：append 并落盘
+    agent._append_to_messages([WM(role="user", content="q")])
+    agent._persist_conversation([WM(role="user", content="q")])
+    assert agent.message_manager.size("sess_1") == 1
+
+
+def test_memory_tools_injected():
+    agent = _agent()
+    names = set(agent.tools.keys())
+    assert "memory_replace" in names and "conversation_search" in names
+
+
+def test_compaction_triggers_when_over_threshold():
+    from paperflow.core.llm import Message as WM
+    agent = _agent()
+    agent.compaction = CompactionSettings(trigger_ratio=0.5, context_size=100)
+    big = [WM(role="user", content="x" * 500)]
+    assert agent._needs_compaction(big) is True

@@ -11,7 +11,7 @@ from paperflow.core.security import (
     SecurityScanMiddleware, PolicyEngineMiddleware,
 )
 from paperflow.core.memory import (
-    MemoryStore, ExperienceMemoryMiddleware, MemoryIndex,
+    MemoryStore, ExperienceMemoryMiddleware,
     ContextCompressor, GitStore,
 )
 from paperflow.core.structured import StructuredOutput
@@ -70,8 +70,7 @@ class TestFullPipeline:
             return True
 
         agent = Agent(llm=llm, agent_registry=registry, agent_type="test",
-                      security_middleware=middlewares, confirm_callback=confirm,
-                      memory_index=MemoryIndex(memory_dir))
+                      security_middleware=middlewares, confirm_callback=confirm)
         result = await agent._exec_tool({
             "id": "c1",
             "function": {"name": "write_note", "arguments": '{"content": "note"}'},

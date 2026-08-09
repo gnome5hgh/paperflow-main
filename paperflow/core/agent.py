@@ -50,7 +50,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
-from paperflow.core.llm import LLMClient, Message, tool_to_openai_schema
+from paperflow.core.llm import (
+    LLMClient, Message, _message_to_openai, tool_to_openai_schema,
+)
 from paperflow.core.agent_registry import AgentRegistry
 from paperflow.core.security import (
     ToolContext, ConfirmRequired, SecurityError, SecurityMiddleware,
@@ -69,6 +71,20 @@ def _intent_block(intent) -> str:
     Supervisor（避免其用 AskUserTool 双问）；prev_intent 是 conversation 内部状态。
     """
     return "INTENT: " + intent.model_dump_json(exclude={"clarification", "prev_intent"})
+
+
+def _schema_to_wire(m) -> Message:
+    """schemas.Message（Recall 持久化视图）→ wire llm.Message（回放进 in-context 窗口）。
+
+    持久化消息经 MessageManager.get_in_context_messages 加载后,须转回 ReAct 循环
+    使用的 wire 格式;role 枚举转字符串,空 content 归一为空串。
+    """
+    return Message(
+        role=m.role.value,
+        content=m.content or "",
+        tool_calls=m.tool_calls or None,
+        tool_call_id=m.tool_call_id,
+    )
 
 
 class MaxTurnsExceeded(Exception):
@@ -169,8 +185,14 @@ class Agent:
         conversation=None,              # ConversationState | None
         ask_user_callback=None,    # Callable[[str], str] | None
         session_id: str | None = None,
-        memory_index=None,          # MemoryIndex | None
-        compressor=None,            # ContextCompressor | None
+        memory=None,                # Memory | None
+        agent_manager=None,         # AgentManager | None
+        block_manager=None,         # BlockManager | None
+        message_manager=None,       # MessageManager | None
+        passage_manager=None,       # PassageManager | None
+        memory_tools=None,          # list[Tool] | None
+        compaction=None,            # CompactionSettings | None
+        structured=None,            # StructuredOutput | None
         max_turns: int = 20,
         stream_callback: Callable[[StreamEvent], None] | None = None,
     ):
@@ -192,10 +214,21 @@ class Agent:
             供 ask_user 工具消费;None 时该工具不可用
         :param session_id: 会话标识,跨多次 run 保持一致,便于审计聚合;None 时
             自动生成 8 位 hex
-        :param memory_index: MemoryIndex 实例(可选),每轮 run 读取 MEMORY.md
-            索引并注入 system 消息;None 时完全跳过
-        :param compressor: ContextCompressor 实例(可选),跨轮摘要注入 system
-            消息 + 每次模型调用前压缩检查;None 时完全跳过
+        :param memory: Memory 实例(可选),compile() 输出 system 记忆块注入 head
+            (每轮重建);None 时跳过
+        :param agent_manager: AgentManager 实例(可选),当前仅持有供上层(CLI)取用
+        :param block_manager: BlockManager 实例(可选),记忆块 CRUD 的服务句柄
+            (记忆工具经它读写核心记忆)
+        :param message_manager: MessageManager 实例(可选),对话落盘(Recall) +
+            in-context 跨轮回放;None 时记忆相关路径零开销跳过
+        :param passage_manager: PassageManager 实例(可选),长期记忆(archival)
+            检索服务句柄
+        :param memory_tools: 记忆工具列表(list[Tool] | None),框架级注入进
+            self.tools 与 _tool_schemas(LLM 通过 function calling 直接读写记忆)
+        :param compaction: CompactionSettings 实例(可选),触发时只压缩 in-context
+            窗口(驱逐旧对话 + 插摘要),不删 SQL 原始消息
+        :param structured: StructuredOutput 实例(可选),compaction 摘要生成路径
+            消费;None 时压缩不触发(降级,由 Task 12 CLI 接线)
         :param max_turns: ReAct 循环最大轮数,防止死循环
         :param stream_callback: 流式事件回调(CLI 渲染器消费);None = 非流式路径
             ——run() 保持调 chat(),mock/无 UI 调用方零影响
@@ -245,11 +278,20 @@ class Agent:
         #: 会话标识：跨多轮 run 保持一致，供中间件审计日志聚合
         self.session_id = session_id or uuid.uuid4().hex[:8]
 
-        #: MEMORY.md 索引（MemoryIndex | None）：每轮 run 读取注入 system 消息
-        self.memory_index = memory_index
+        #: 核心记忆挂载（Memory | None）：compile() 输出 <memory_blocks> 注入 head
+        self.memory = memory
+        self.agent_manager = agent_manager
+        self.block_manager = block_manager
+        self.message_manager = message_manager
+        self.passage_manager = passage_manager
+        #: 压缩设置（CompactionSettings | None）：触发时只改 in-context 窗口
+        self.compaction = compaction
+        #: 结构化输出（StructuredOutput | None）：compaction 摘要生成路径消费
+        self.structured = structured
 
-        #: 上下文压缩器（ContextCompressor | None）：system 摘要注入 + 每轮压缩检查
-        self.compressor = compressor
+        #: in-context 消息缓冲区（Letta 同款：内部 _messages，外部 messages 只读视图）。
+        #: run() 每轮从 MessageManager 重新加载，跨轮消息经 SQL 持久化回放。
+        self._messages: list[Message] = []
 
         #: 当前 run 的追踪 ID，每次 run 开始时重新生成，注入 ToolContext
         self._trace_id: str | None = None
@@ -267,6 +309,15 @@ class Agent:
         self.ask_user_callback = ask_user_callback
         #: 本轮 run 的 IntentOutput（CLI 读 clarification 判定 + 跨轮 prev_intent）
         self.last_intent = None
+
+        # 记忆工具合并进工具面（框架级注入）：LLM 通过 function calling 直接读写
+        # 记忆。追加到 self.tools（_exec_tool 查找面）与 _tool_schemas（LLM 工具
+        # 描述面），与注册表装载的原子工具同等待遇——needs_parent 默认 False，
+        # 无需 attach_agent，故在 opt-in 注入之前放置。
+        if memory_tools:
+            for t in memory_tools:
+                self.tools[t.name] = t
+                self._tool_schemas.append(tool_to_openai_schema(t))
 
         # opt-in 注入：仅对声明 needs_parent 的工具注入父引用。
         # 原子工具不需要 parent；只有嵌套子 agent 的工具声明——权限最小化。
@@ -287,6 +338,83 @@ class Agent:
         if cb is not None:
             cb(ev)
 
+    #: messages 只读 property（OpenAI wire 格式视图，Letta 同款）。
+    #: 只读：外部（CLI/测试）可观察但不可改，写入统一走 _append_to_messages。
+    @property
+    def messages(self) -> list[dict]:
+        return [_message_to_openai(m) for m in self._messages]
+
+    def _append_to_messages(self, added_messages: "list[Message] | Message") -> None:
+        """唯一的消息追加入口（Letta 同名）：把消息追加进 in-context 缓冲区。
+
+        接受单条 Message 或 Message 列表(run() 各分支混用两种风格,测试多用列表),
+        统一归一为列表后追加。
+        """
+        if isinstance(added_messages, Message):
+            added_messages = [added_messages]
+        self._messages.extend(added_messages)
+
+    async def _build_head(self, task: str, force_dispatch: bool = False) -> list[Message]:
+        """构建头部 system 消息：① SKILL ② Memory.compile()（system/ 块 + 索引）
+        ③ INTENT 块；末尾追加 user task。
+
+        澄清早退时返回单元素 [user] 列表——run() 据此直接返回澄清文本，不落盘、
+        不进入 ReAct（澄清是"非任务轮"，只走 CLI 层）。
+        """
+        head: list[Message] = [Message(role="system", content=self.system_prompt)]
+        if self.memory is not None:
+            compiled = self.memory.compile()
+            if compiled:
+                head.append(Message(role="system", content=compiled))
+        if self.intent_enabled and self.intent_pipeline is not None and self.conversation is not None:
+            try:
+                intent = await self.intent_pipeline.run(
+                    task, prev_intent=self.conversation.prev_intent,
+                    prev_user_input=self.conversation.prev_user_input)
+            except Exception:
+                # 管线失败降级:意图管线是 LLM 兜底,网络异常/解析失败传播到这里——
+                # 不阻断本轮:记日志 + 跳过 INTENT 块 + 普通 ReAct 继续。last_intent
+                # 显式置 None:CLI 澄清检查跳过、conversation 的上一轮意图不更新。
+                logger.warning("intent pipeline failed, degraded to plain ReAct", exc_info=True)
+                self.last_intent = None
+                intent = None
+            if intent is not None:
+                self.last_intent = intent
+                if intent.clarification and not force_dispatch:
+                    # 跨轮澄清:早退在落盘前 → 不持久化(非任务轮)。澄清只走 CLI 层;
+                    # INTENT 块不含澄清问题(避免与 ask_user 工具双重发问)。
+                    return [Message(role="user", content=intent.clarification)]
+                head.append(Message(role="system", content=_intent_block(intent)))
+        head.append(Message(role="user", content=task))
+        return head
+
+    def _load_in_context(self) -> None:
+        """从 MessageManager 加载该会话的 in-context 消息 → self._messages（跨轮回放）。
+
+        message_manager 为 None 时零开销跳过（无记忆装配的子 agent 行为不变）。
+        """
+        if self.message_manager is None:
+            return
+        for m in self.message_manager.get_in_context_messages(self.session_id):
+            self._messages.append(_schema_to_wire(m))
+
+    def _persist_conversation(self, msgs: list[Message]) -> None:
+        """把对话消息全量落盘（Recall）。message_manager 为 None 时零开销跳过。"""
+        if self.message_manager is None:
+            return
+        for m in msgs:
+            self.message_manager.add_message(self.session_id, m)
+
+    def _needs_compaction(self, messages: list[Message]) -> bool:
+        """in-context 消息是否超压缩阈值（只检查，执行在 run() 里）。
+
+        依赖 message_manager 存在:无持久化层时压缩无从安置(摘要无处回放),跳过。
+        """
+        from paperflow.core.memory.compaction import should_compress
+        if self.compaction is None or self.message_manager is None:
+            return False
+        return should_compress(messages, self.compaction, self.llm.context_window)
+
     async def run(self, task: str, *, force_dispatch: bool = False) -> str:
         """
         执行 ReAct 循环，返回 LLM 的最终文本回答。
@@ -303,19 +431,20 @@ class Agent:
 
         ReAct 循环步骤::
 
-            1. 生成本次 run 的 trace_id（trace_<12位hex>）
-            2. 构建初始消息列表：head（① system_prompt → ② MEMORY.md 索引（若有）
-               → ②b INTENT 块（intent_enabled 且管线成功时））→ 跨轮回放 history
-               （若有）→ user_task（消息顺序固定）。每轮 run 结束把本轮对话累积进
-               compressor.history，供下轮回放（短对话跨轮上下文闭合）
-            3. 调用 LLM 前检查压缩（compressor.should_compress → compress_history
-               原地改写 history 并重建 messages），随后调用 LLM → 获取 response
-            4. 如果无 tool_calls → 顺序执行各中间件的 on_finish 钩子，
-               返回改写后的 content（LLM 判定任务完成）
-            5. 如果有 tool_calls → 并发执行（gather，结果按调用顺序返回），
-               将 ToolResult 附加到消息列表
-            6. 回到步骤 3，LLM 根据工具执行结果继续推理
-            7. 若超过 max_turns → 抛出 MaxTurnsExceeded（安全阀）
+            1. 生成本次 run 的 trace_id（trace_<12位hex）并清洗 task 的未配对 surrogate
+            2. 构建 head：① system_prompt → ② Memory.compile()（system/ 记忆块，
+               若有）→ ②b INTENT 块（intent_enabled 且管线成功时）→ user_task。
+               澄清早退直接返回澄清文本（不落盘、不进入 ReAct）
+            3. 从 MessageManager 加载该会话的 in-context 消息（跨轮回放），当前
+               user task 落盘；消息归属 self._messages（in-context 窗口）
+            4. 调用 LLM 前检查压缩（compaction.should_compress → run_compaction
+               驱逐旧对话 + 插摘要，只改 in-context 窗口、不删 SQL），随后调用 LLM
+            5. 如果无 tool_calls → 顺序执行各中间件的 on_finish 钩子，最终回答
+               落盘后返回改写后的 content（LLM 判定任务完成）
+            6. 如果有 tool_calls → 并发执行（gather，结果按调用顺序返回），将
+               ToolResult 落盘并附加到 in-context 消息
+            7. 回到步骤 4，LLM 根据工具执行结果继续推理
+            8. 若超过 max_turns → 抛出 MaxTurnsExceeded（安全阀）
         """
         # 每次 run 独立追踪 ID：同一 conversation 的多次 run 由 trace_id 区分
         self._trace_id = f"trace_{uuid.uuid4().hex[:12]}"
@@ -325,51 +454,19 @@ class Agent:
         # conversation.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 
-        # 构建初始对话上下文:head(system_prompt / MEMORY 索引 / INTENT 块,每轮重建
-        # 不进累积)+ 跨轮回放 history + 本轮 user。history 是上下文压缩器累积的
-        # 对话消息,压缩后 history[0] 是摘要消息,天然落在 system 块之后、user 之前。
-        head: list[Message] = [Message(role="system", content=self.system_prompt)]
+        # head:① SKILL ② Memory.compile()(system/ 记忆块) ③ INTENT 块,每轮重建
+        # 不进累积;末尾 user task。澄清早退时 head=[user 澄清文本] → 直接返回,
+        # 不落盘不加载(澄清是"非任务轮",只走 CLI 层)。
+        head = await self._build_head(task, force_dispatch=force_dispatch)
+        if len(head) == 1 and head[0].role == "user":
+            return head[0].content
 
-        # MEMORY.md 索引(每轮读取,归档任务在间隙写入 → 下一轮生效)
-        if self.memory_index:
-            index = await self.memory_index.read()
-            if index:
-                head.append(Message(role="system", content=index))
-
-        # 意图识别前置钩子:intent_enabled 门控——只有 CLI 构造的 Supervisor 置 True。
-        # 产出意图注入 INTENT 块作为 ReAct 的强提示(非命令,LLM 自行决定调度),追加到
-        # head,不进累积。
-        if self.intent_enabled and self.intent_pipeline is not None and self.conversation is not None:
-            try:
-                intent = await self.intent_pipeline.run(
-                    task, prev_intent=self.conversation.prev_intent,
-                    prev_user_input=self.conversation.prev_user_input)
-            except Exception:
-                # 管线失败降级:意图管线是 LLM 兜底,网络异常/解析失败会传播到这里——
-                # 不阻断本轮:记日志 + 跳过 INTENT 块 + 普通 ReAct 继续。last_intent
-                # 显式置 None:CLI 澄清检查跳过、conversation 的上一轮意图不更新。
-                logger.warning("intent pipeline failed, degraded to plain ReAct", exc_info=True)
-                self.last_intent = None
-                intent = None
-            if intent is not None:
-                self.last_intent = intent
-                if intent.clarification and not force_dispatch:
-                    # 跨轮澄清:早退在 conv 收集前 → 不累积(非任务轮)。澄清只走 CLI 层;
-                    # INTENT 块不含澄清问题(避免与 ask_user 工具双重发问)。
-                    return intent.clarification
-                head.append(Message(role="system", content=_intent_block(intent)))
-
-        #: messages = head + 跨轮回放 history + 本轮 user
-        messages = list(head)
-        if self.compressor:
-            messages.extend(self.compressor.history)      # 跨轮回放(首轮为空 → 现状)
-
-        #: conv = 本轮对话残留(旁路列表)。兼两职:(a) 压缩重建时拼回 messages;
-        #: (b) run 结束时作为累积输入。与 messages 始终同步追加,不用索引定位——压缩
-        #: 重建会改变 head+history 长度,固定索引会错位。唯一例外:截断续写分支只追加
-        #: 到 messages 不进 conv——半截内容不出现在最终累积里,conv 只收合并后的完整回答。
-        conv: list[Message] = [Message(role="user", content=task)]
-        messages.append(conv[0])
+        #: in-context 窗口每轮重建:跨轮回放统一经 MessageManager(SQL) 加载,避免
+        #: self._messages 跨 run 残留导致下一轮重复加载(Letta 同款:每步重新 load)。
+        self._messages = []
+        self._load_in_context()
+        #: 当前 user task 落盘(Recall),下轮经 _load_in_context 回放
+        self._persist_conversation([head[-1]])
 
         #: 截断续写累积器：半截回答在此暂存，完整回答返回前合并。
         #: 只在截断→续写场景使用；非截断路径保持空列表，零额外行为。
@@ -378,17 +475,16 @@ class Agent:
         for turn in range(self.max_turns):
             # 记录当前轮次:spawn 摘要提取的 LLM 调用据此归属父 agent 的当前轮
             self._current_turn = turn
-            # 每次模型调用前检查压缩:messages 已含回放 history,超阈值即触发。
-            # compress_history 原地改写 compressor.history(摘要写进 history[0],
-            # 压缩产物跨轮持久),再重建 messages:head + 新 history + conv(本轮残留,
-            # 含已执行的工具往返)。history 是唯一压缩状态,保证摘要跨轮不丢。
-            if self.compressor and self.compressor.should_compress(messages):
-                # 截断续写与压缩重建互斥:截断分支把"半截+续写提示"追加进 messages 但
-                # 不进 conv,重建会丢弃它们,而累积器仍持有半截 → 续写因无参照从零重答,
-                # 返回半截+重复,污染 conv/history。故先弃掉半截,续写无参照即完整重答。
-                accumulated.clear()
-                await self.compressor.compress_history()
-                messages = list(head) + list(self.compressor.history) + conv
+            #: LLM 输入 = head(每轮重建) + in-context 消息
+            messages = list(head) + self._messages
+            # 压缩检查:只改 in-context 窗口(驱逐旧对话 + 插摘要),SQL 原始消息由
+            # MessageManager 保留(Recall 可追溯)。structured 未注入(摘要生成器缺失)
+            # 时压缩不触发——避免 None.extract 崩溃,Task 12 CLI 接线后恢复。
+            if self._needs_compaction(messages) and self.structured is not None:
+                from paperflow.core.memory.compaction import run_compaction
+                self._messages = await run_compaction(
+                    self._messages, self.compaction, self.llm, self.structured)
+                messages = list(head) + self._messages
 
             # 流式门控：挂了 stream_callback 才走 chat_stream（否则保持 chat()）。
             # mock LLM 只有 chat 方法，无条件换 chat_stream 会让 MagicMock 不可
@@ -410,13 +506,14 @@ class Agent:
             if not response.tool_calls:
                 if response.truncated:
                     # 内容被截断 → 不当作最终回答返回(否则静默交付残缺内容)。暂存半截、
-                    # 把已生成部分+续写提示放进上下文,继续循环;max_turns 天然封顶续写
-                    # 次数,不会死循环。
+                    # 把已生成部分+续写提示放进 in-context,继续循环;max_turns 天然封顶
+                    # 续写次数,不会死循环。
                     accumulated.append(response.content or "")
-                    messages.append(response)
-                    messages.append(Message(
+                    self._append_to_messages(response)
+                    self._append_to_messages(Message(
                         role="user",
                         content="上一条回答因输出长度上限被截断，请直接从断点继续输出，不要重复已输出的内容。"))
+                    self._persist_conversation([response])
                     continue
                 content = "".join(accumulated) + (response.content or "")
                 accumulated.clear()
@@ -429,16 +526,16 @@ class Agent:
                 if self.intent_enabled and self.last_intent is not None:
                     self.conversation.prev_intent = self.last_intent.intent_type
                     self.conversation.prev_user_input = task
-                # 跨轮累积：最终 assistant（on_finish 改写后的 content——回放给 LLM 的
-                # 是"用户看到的事实"，SAFE_PROMPT 等安全声明跨轮保留）补进 conv 后入 history
-                if self.compressor:
-                    conv.append(Message(role="assistant", content=content))
-                    self.compressor.accumulate(conv)
+                # 最终回答(经 on_finish 改写——回放给下轮的是"用户看到的事实",
+                # SAFE_PROMPT 等安全声明跨轮保留)落盘 + 进 in-context,供下轮回放
+                final = Message(role="assistant", content=content)
+                self._append_to_messages(final)
+                self._persist_conversation([final])
                 return content
 
-            # LLM 请求调用工具：将 assistant 消息（含 tool_calls）加入对话
-            messages.append(response)
-            conv.append(response)          # conv 与 messages 同步追加（见 conv 定义注释）
+            # LLM 请求调用工具：将 assistant 消息（含 tool_calls）加入 in-context + 落盘
+            self._append_to_messages(response)
+            self._persist_conversation([response])
 
             # 并发执行 LLM 请求的工具调用:同一 message 的多个工具调用用 gather 并行
             # (工具已在线程池执行,真实并发不阻塞事件循环)。gather 按输入顺序返回 →
@@ -455,7 +552,7 @@ class Agent:
 
             results = await asyncio.gather(*(_run_one(tc) for tc in response.tool_calls))
 
-            # 将工具执行结果以 tool 角色消息加入对话
+            # 将工具执行结果以 tool 角色消息加入 in-context + 落盘
             # tool_call_id 将这条结果关联到 LLM 请求的对应 tool_call
             for tc, result in zip(response.tool_calls, results):
                 tool_msg = Message(
@@ -463,14 +560,14 @@ class Agent:
                     content=result.text,
                     tool_call_id=tc["id"],
                 )
-                messages.append(tool_msg)
-                conv.append(tool_msg)
+                self._append_to_messages(tool_msg)
+                self._persist_conversation([tool_msg])
 
         # 安全阀触发：LLM 陷入了无法在限定轮数内退出的循环。
-        # 刻意不累积（review Minor 8）：raise 路径不调 accumulate——本轮半截对话
-        # （conv）不写回 history。MaxTurnsExceeded 是"任务失败"信号，半截推理不该
-        # 回放给下轮 LLM：下轮从干净 context 重来，而非带着失败残渣。只有成功
-        # return 路径才累积（上方 accumulate 调用）。
+        # 刻意不落盘（review Minor 8 语义延续）：raise 路径不 persist——本轮半截
+        # 对话不写回 SQL。MaxTurnsExceeded 是"任务失败"信号，半截推理不该回放给
+        # 下轮 LLM：下轮从干净 context 重来，而非带着失败残渣。只有成功 return
+        # 路径才落盘（上方 _persist_conversation 调用）。
         raise MaxTurnsExceeded(
             f"ReAct loop did not finish within {self.max_turns} turns"
         )
