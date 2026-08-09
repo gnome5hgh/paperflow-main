@@ -2,12 +2,14 @@
 
 每轮:读 stdin → 合并挂起的澄清(若有)→ supervisor.run(query, force_dispatch) →
 若产生澄清问题且未超轮 → 挂起打印问题;否则打印结果。
-跨轮状态由 ConversationState 承载(prev_intent / pending_intent),复用同一 Supervisor 实例使
-上下文压缩器的历史跨轮累积。
+跨轮状态由 ConversationState 承载(prev_intent / pending_intent);对话历史经
+MessageManager 落盘 SQL 并在每轮 run 回放,超窗口时 compaction 压缩 in-context
+窗口(不删 SQL 原始消息)——同一 Supervisor 实例复用其内存/消息管理服务。
 """
 import asyncio
 import logging
 import threading
+import uuid
 from pathlib import Path
 
 from paperflow.config import PaperFlowConfig
@@ -20,10 +22,14 @@ from paperflow.core.security import (
     SecurityScanMiddleware, PolicyEngineMiddleware,
 )
 from paperflow.core.structured import StructuredOutput
-from paperflow.core.memory import (
-    MemoryStore, ExperienceMemoryMiddleware, MemoryIndex,
-    ContextCompressor, GitStore, Dream,
-)
+from paperflow.core.memory.orm.database import MemoryDB
+from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
+from paperflow.core.memory.services.message_manager import MessageManager
+from paperflow.core.memory.services.passage_manager import PassageManager
+from paperflow.core.memory.services.archive_manager import ArchiveManager
+from paperflow.core.memory.services.tool_manager import ToolManager
+from paperflow.core.memory.services.agent_manager import AgentManager
+from paperflow.core.memory.sleeptime import Sleeptime
 from paperflow.core.intent.pipeline import IntentPipeline
 from paperflow.core.intent.hybrid_router import HybridRouter
 from paperflow.rag.embedder import BgeEmbedder, resolve_model_dir
@@ -34,6 +40,24 @@ logger = logging.getLogger(__name__)
 #: stdin 交互串行锁：并行子 agent 可能同时 ConfirmRequired → 并发读 stdin 提示交错
 #: （spec ⚪4，防御性加锁）
 _stdin_lock = threading.Lock()
+
+#: 模块级 embedder 单例：bge 模型首次调用才加载（sentence-transformers 导入数秒），
+#: 进程内只加载一次。RAG/意图管线/记忆服务共享同一实例——各自 new 一个会让同一
+#: 模型权重被反复加载，启动变慢且占内存。
+_embedder: "BgeEmbedder | None" = None
+
+
+def _rag_embedder(config: PaperFlowConfig) -> "BgeEmbedder":
+    """懒加载共享 bge embedder（单例）。
+
+    MessageManager/PassageManager 的语义检索与意图管线的稠密路由共用它；模型路径
+    本地优先（resolve_model_dir：workspace/models/<name>，否则回退 HF 名）。
+    """
+    global _embedder
+    if _embedder is None:
+        _embedder = BgeEmbedder(
+            model_name=resolve_model_dir(config.workspace, config.embed_model))
+    return _embedder
 
 
 async def _stdin_confirm(cr) -> bool:
@@ -143,8 +167,11 @@ def _merge_pending(conversation: ConversationState, raw: str) -> tuple[str, bool
 
 
 async def _repl(supervisor: Agent, conversation: ConversationState, *,
-                input_fn=input, print_fn=print, dream=None) -> None:
+                input_fn=input, print_fn=print, sleeptime=None) -> None:
     """REPL 主循环。input_fn/print_fn 可注入（测试）。
+
+    sleeptime: 每轮循环顶部触发后台记忆整合（run_once_if_due，未到期/未启用立即
+    返回）；None 跳过（测试/无记忆装配）。Sleeptime 失败不打断 REPL——记日志继续。
 
     澄清挂起：last_intent.clarification 非空且非 force → 存 pending（round 链式累计，
     用旧值 +1，绝不重置为 0）+ 打印问题，等下一轮；否则打印结果。
@@ -159,6 +186,13 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
     )
     supervisor.stream_callback = streamer.on_event
     while True:
+        # 每轮循环顶部触发后台记忆整合（取代 Dream）——放在读 stdin 之前，让
+        # 用户思考期间累积的对话被整合，整合不阻塞本轮输入。
+        if sleeptime is not None:
+            try:
+                await sleeptime.run_once_if_due()
+            except Exception:  # Sleeptime 失败不打断 REPL
+                logger.warning("sleeptime tick failed", exc_info=True)
         try:
             raw = input_fn("> ")
         except EOFError:
@@ -191,11 +225,6 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
             print_fn(intent.clarification)
             continue
         print_fn(streamer.should_print(result))
-        if dream is not None:
-            try:
-                await dream.run_once_if_due()
-            except Exception:  # Dream 失败不打断 REPL
-                logger.warning("dream tick failed", exc_info=True)
 
 
 def main() -> None:
@@ -204,36 +233,65 @@ def main() -> None:
     llm = LLMClient(config.llm)
     registry = AgentRegistry(config.agents_dir)
 
-    memory_dir = Path(config.workspace) / "memory"
-    store = MemoryStore(memory_dir)
-    git = GitStore(memory_dir)
-    structured = StructuredOutput(llm, store=store)
+    # 会话标识：本次进程启动即一个会话。AgentManager.create_agent 的 agent_id 与
+    # Agent.session_id 必须一致——记忆工具（SQL 按 agent_id 键控）与 Sleeptime
+    # 都挂在它下面，三者对不上会各自读到空数据。
+    session_id = uuid.uuid4().hex[:8]
 
+    # Letta 服务层组装：MemoryDB → managers → 记忆工具播种 → agent 状态。
+    # 装配顺序即依赖方向：先 DB，再块/消息/段落管理，再归档（依赖段落管理）、
+    # 工具管理（bind 注入服务上下文）、agent 管理（依赖块+消息）。
+    memory_dir = Path(config.workspace) / "memory"
+    db = MemoryDB(memory_dir / "memory.db")
+    block_manager = GitEnabledBlockManager(db, memfs_dir=memory_dir)
+    embedder = _rag_embedder(config)
+    message_manager = MessageManager(db, embedder=embedder)
+    passage_manager = PassageManager(db, embedder=embedder)
+    archive_manager = ArchiveManager(db, passage_manager)
+    tool_manager = ToolManager(db)
+    tool_manager.bind(block_manager, passage_manager, message_manager,
+                      agent_id=session_id)
+    tool_manager.upsert_base_tools()
+    agent_manager = AgentManager(db, block_manager, message_manager)
+    agent_state = agent_manager.create_agent(session_id)
+
+    structured = StructuredOutput(llm)
+
+    # 安全管道：四中间件（经验记忆中间件随 Letta 重构移除——工具调用经验不再注入
+    # prompt，改由 Sleeptime 后台整合进核心记忆块）。
     middlewares = [
         AuditMiddleware(),
         WorkspacePolicyMiddleware(workspace=config.workspace),
         SecurityScanMiddleware(),
         PolicyEngineMiddleware(max_risk=config.max_risk),
-        ExperienceMemoryMiddleware(store),
     ]
 
-    # 意图管线:真实混合路由器 + LLM 兜底。BgeEmbedder 加载 bge 小模型(首次加载需
-    # 几秒,与 RAG 栈同模型但独立实例);各意图阈值已由标定脚本写回 routes.yaml——这里
-    # 只读已标定阈值,不做训练或阈值搜索。alpha 是稠密/稀疏信号的融合权重,与标定脚本
-    # 保持一致。模型路径本地优先(resolve_model_dir:data/models/<name>,否则回退 HF 名)。
+    # 意图管线:真实混合路由器 + LLM 兜底。bge 小模型经 _rag_embedder 共享单例
+    # (首次加载需几秒,与记忆服务同模型同实例,不重复加载);各意图阈值已由标定脚本
+    # 写回 routes.yaml——这里只读已标定阈值,不做训练或阈值搜索。alpha 是稠密/稀疏
+    # 信号的融合权重,与标定脚本保持一致。模型路径本地优先
+    # (resolve_model_dir:data/models/<name>,否则回退 HF 名)。
     router = HybridRouter(
-        encoder=BgeEmbedder(model_name=resolve_model_dir(config.workspace, config.embed_model)),
+        encoder=embedder,
         routes=load_routes(), alpha=0.6)
     pipeline = IntentPipeline(router=router, structured=structured)
 
     conversation = ConversationState()
     supervisor = Agent(
         llm=llm, agent_registry=registry, agent_type="supervisor",
+        memory=agent_state.memory,
+        agent_manager=agent_manager, block_manager=block_manager,
+        message_manager=message_manager, passage_manager=passage_manager,
+        memory_tools=tool_manager.list_tools(),
+        compaction=config.compaction,
+        structured=structured,
         security_middleware=middlewares,
-        memory_index=MemoryIndex(memory_dir),
-        compressor=ContextCompressor(config.context, llm, structured=structured),
         intent_enabled=True, intent_pipeline=pipeline, conversation=conversation,
         confirm_callback=_stdin_confirm, ask_user_callback=_stdin_ask,
+        session_id=session_id,
     )
-    dream = Dream(store=store, git=git, llm=llm, structured=structured)
-    asyncio.run(_repl(supervisor, conversation, dream=dream))
+    sleeptime = Sleeptime(
+        agent_state, block_manager, passage_manager, message_manager,
+        structured, enable=config.sleeptime_enable,
+        frequency=config.sleeptime_agent_frequency)
+    asyncio.run(_repl(supervisor, conversation, sleeptime=sleeptime))
