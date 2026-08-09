@@ -475,16 +475,22 @@ class Agent:
         for turn in range(self.max_turns):
             # 记录当前轮次:spawn 摘要提取的 LLM 调用据此归属父 agent 的当前轮
             self._current_turn = turn
-            #: LLM 输入 = head(每轮重建) + in-context 消息
-            messages = list(head) + self._messages
+            #: LLM 输入 = head 前段(system/memory/INTENT) + in-context 回放历史 +
+            #: 末尾当前 user task(恒末位,与旧版「历史在前、当前任务在末」一致——否则
+            #: LLM 会把回放历史里的旧任务误当当前任务)。
+            messages = list(head[:-1]) + self._messages + [head[-1]]
             # 压缩检查:只改 in-context 窗口(驱逐旧对话 + 插摘要),SQL 原始消息由
             # MessageManager 保留(Recall 可追溯)。structured 未注入(摘要生成器缺失)
             # 时压缩不触发——避免 None.extract 崩溃,Task 12 CLI 接线后恢复。
             if self._needs_compaction(messages) and self.structured is not None:
+                # 截断续写与压缩重建互斥:压缩可能驱逐"半截+续写提示"(in-context
+                # 重建),先弃掉累积器里的半截——续写无参照即完整重答,避免
+                # 「半截 + 完整重答」重复交付(与旧版 accumulated.clear 语义一致)。
+                accumulated.clear()
                 from paperflow.core.memory.compaction import run_compaction
                 self._messages = await run_compaction(
                     self._messages, self.compaction, self.llm, self.structured)
-                messages = list(head) + self._messages
+                messages = list(head[:-1]) + self._messages + [head[-1]]
 
             # 流式门控：挂了 stream_callback 才走 chat_stream（否则保持 chat()）。
             # mock LLM 只有 chat 方法，无条件换 chat_stream 会让 MagicMock 不可
@@ -564,10 +570,9 @@ class Agent:
                 self._persist_conversation([tool_msg])
 
         # 安全阀触发：LLM 陷入了无法在限定轮数内退出的循环。
-        # 刻意不落盘（review Minor 8 语义延续）：raise 路径不 persist——本轮半截
-        # 对话不写回 SQL。MaxTurnsExceeded 是"任务失败"信号，半截推理不该回放给
-        # 下轮 LLM：下轮从干净 context 重来，而非带着失败残渣。只有成功 return
-        # 路径才落盘（上方 _persist_conversation 调用）。
+        # 失败残渣随消息逐条落盘（Recall 完整原始记录，含失败轮——Letta 语义）；
+        # MaxTurnsExceeded 只中断本轮回放，不回滚已落盘消息。下轮 _load_in_context
+        # 会看到失败残渣，由调用方（CLI）决定是否重试。
         raise MaxTurnsExceeded(
             f"ReAct loop did not finish within {self.max_turns} turns"
         )

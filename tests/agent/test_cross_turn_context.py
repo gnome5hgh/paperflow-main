@@ -133,3 +133,57 @@ def test_compaction_does_not_delete_sql():
     asyncio.run(agent.run("当前问题"))
     # 30 预置 + user task + 最终回答；压缩只截断 in-context，SQL 一行未删
     assert mm.size("sess_1") == 32
+
+
+def test_run2_message_order_head_history_task():
+    """评审 I-1：当前 user task 必须恒在末位（head 前段 + 回放历史 + 当前 task）。
+
+    head 前段(system/memory/INTENT)在前、回放历史在中、当前 user task 在末——
+    否则 LLM 会把回放历史里的旧任务误当当前任务（旧版「历史在前、当前任务在末」）。
+    """
+    from paperflow.core.memory.schemas.block import Block
+    from paperflow.core.memory.schemas.memory import Memory
+    db = MemoryDB(Path(tempfile.mkdtemp()) / "memory.db")
+    mm = MessageManager(db)
+    memory = Memory(blocks=[Block(label="persona", value="身份")])
+    capture = []
+    llm = make_capture_llm([
+        Message(role="assistant", content="回答1"),
+        Message(role="assistant", content="回答2"),
+    ], capture)
+    agent = Agent(llm=llm, agent_registry=make_mock_registry([]), agent_type="test",
+                  memory=memory, message_manager=mm, session_id="sess_1")
+    asyncio.run(agent.run("任务1"))
+    asyncio.run(agent.run("任务2"))
+    run2 = capture[1]                       # run2 的 LLM 输入
+    roles = [m.role for m in run2]
+    contents = [m.content for m in run2]
+    # head(system/memory) 在前
+    assert roles[0] == "system" and contents[0] == "test prompt"
+    assert roles[1] == "system" and "<memory_blocks>" in contents[1]
+    # 回放历史在中（run1 的 user + assistant）
+    assert contents.index("任务1") < len(contents) - 1
+    assert "回答1" in contents
+    # 当前 user task 在末位
+    assert roles[-1] == "user" and contents[-1] == "任务2"
+
+
+def test_truncated_then_compaction_clears_accumulated():
+    """评审 I-2：截断续写 + 压缩互斥——压缩分支必须清空累积器。
+
+    半截(x*500) 让下一轮超阈值触发压缩;压缩可能驱逐半截 → 续写无参照即完整重答。
+    若不清 accumulated,结果 = 半截 + 完整重答(重复);清空后只交付完整重答。
+    """
+    db = MemoryDB(Path(tempfile.mkdtemp()) / "memory.db")
+    mm = MessageManager(db)
+    capture = []
+    llm = make_capture_llm([
+        Message(role="assistant", content="x" * 500, truncated=True),
+        Message(role="assistant", content="完整回答"),
+    ], capture)
+    agent = _mem_agent(llm, mm, compaction=CompactionSettings(
+        trigger_ratio=0.5, context_size=100, reserve_ratio=0.2),
+        structured=make_structured())
+    result = asyncio.run(agent.run("任务"))
+    assert result == "完整回答"                    # 半截未参与合并（已清空）
+    assert "x" * 500 not in result                  # 无「半截 + 完整重答」重复

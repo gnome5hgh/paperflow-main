@@ -180,8 +180,9 @@ async def test_confirm_callback_async_contract_confirm(monkeypatch):
     )
     text = await agent.run("写笔记")
     assert text == "已写入"
-    # 工具真实执行（y → 放行）：最后一轮 LLM 输入里含工具结果
-    assert capture[-1][-1].content == "written"
+    # 工具真实执行（y → 放行）：最后一轮 LLM 输入里含工具结果（当前 task 恒末位，
+    # 工具结果在其前——按"在输入里"断言而非末位）
+    assert any(m.role == "tool" and m.content == "written" for m in capture[-1])
 
 
 @pytest.mark.asyncio
@@ -204,7 +205,9 @@ async def test_confirm_callback_async_contract_denied(monkeypatch):
     )
     text = await agent.run("写笔记")
     assert text == "已取消"
-    assert "User denied: confirm_write" in capture[-1][-1].content  # 工具未执行
+    # 工具未执行（拒绝）：denial 结果在最后一轮 LLM 输入里（当前 task 恒末位，结果在其前）
+    assert any(m.role == "tool" and "User denied: confirm_write" in m.content
+               for m in capture[-1])
 
 
 def test_stdin_ask_eof_returns_empty(monkeypatch):
