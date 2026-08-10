@@ -26,7 +26,7 @@ from agents.supervisor.tools import AskUserQuestionTool
 def _supervisor(tools, **kwargs):
     """构造带指定工具的 Agent（agent_type="supervisor"），可注入 confirm/ask 回调。
 
-    默认 llm 是空响应 mock——这些测试直接调 tool.execute()，不走 Agent.run()。"""
+    默认直接调 tool.execute()；测试多工具调用并行时经 Agent.run()。"""
     llm = kwargs.pop("llm", None) or make_mock_llm([])
     return Agent(llm=llm, agent_registry=make_mock_registry(tools),
                  agent_type="supervisor", **kwargs)

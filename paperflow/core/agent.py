@@ -679,7 +679,7 @@ class Agent:
     def _make_llm_telemetry(self, turn: int):
         """构造 LLM 调用 telemetry 回调（sync，可能跑在线程池线程）。
 
-        每次调用传独立回调（而非共享属性）——parallel_spawn 下多个子 agent 共享
+        每次调用传独立回调（而非共享属性）——同一轮多个 spawn 调用下多个子 agent 共享
         同一个 LLMClient，共享属性会互相覆盖导致归属错乱。实际 fan-out 逻辑在
         _emit_llm_call。
         """

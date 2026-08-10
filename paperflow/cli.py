@@ -99,14 +99,14 @@ def _stdin_ask(question: str) -> str:
 class _ReplStreamer:
     """把 Agent 流式事件渲染为终端增量输出，并决定最终结果如何打印。
 
-    段模型：root content / child content / tool 三类输出段，段间切换补换行；
+    段模型：root content / tool 两类输出段(child content 段保留为防御性代码——子 agent 内容流式已在上游 _make_child_stream_callback 过滤,不再到达)
     root content 额外缓冲，供 should_print 判断最终答案是否已被逐字展示
     （on_finish 改写如 SAFE_PROMPT 时需要补打最终版）。
 
     线程安全：on_event 实践上不会被并发调用——root content 来自主 ReAct 的
-    chat_stream 线程（串行）；parallel_spawn 子 agent 的 content 被上层包装
-    过滤（只留 tool 事件，且都在同一 worker 事件循环上串行）；sequential spawn
-    时父 await 子 run，父子流式严格串行。故无锁设计成立。
+    chat_stream 线程（串行）；spawn 子 agent 的 content 在上游被
+    _make_child_stream_callback 过滤（只透传 tool 事件）；父子流式严格串行。
+    故无锁设计成立。
     """
     def __init__(self, print_fn, root_agent_type: str):
         self._print = print_fn          # 透传 end=/flush=（简单 lambda 会忽略 kwargs）

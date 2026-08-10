@@ -319,7 +319,7 @@ async def test_tool_executes_off_main_thread():
       - 工具执行线程不是 MainThread（事件循环所在线程）
         —— 说明重工具（CPU/网络密集）不会阻塞事件循环
 
-    这是 Layer 4 parallel_spawn 并行与 Dream 后台任务能跑的前提：
+    这是 Layer 4 同一轮多 spawn 调用并行与 Dream 后台任务能跑的前提：
     若工具同步执行会卡住事件循环，Agent 就无法同时处理多个工具。
     """
     tool = ThreadProbeTool()

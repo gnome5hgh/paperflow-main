@@ -1,7 +1,7 @@
 """SQLite 连接与建表（sqlite3 标准库，零新增依赖）。
 
 Letta 用 SQLAlchemy；paperFlow 保持轻量——单例连接 check_same_thread=False +
-threading.Lock 包裹写事务（Layer 4 parallel_spawn 并发安全）。
+threading.Lock 包裹写事务（Layer 4 同一轮多 spawn 调用并发安全）。
 """
 from __future__ import annotations
 

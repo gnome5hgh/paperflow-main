@@ -246,7 +246,7 @@ class LLMClient:
         def _do_stream() -> Message:
             # create 与 iterate 必须同线程：Stream 是同步迭代器，逐 chunk 阻塞在
             # httpx 读取上；不能把 Stream 交回事件循环再迭代（否则阻塞 loop，
-            # 杀死 parallel_spawn 并发）。
+            # 杀死并发子 agent 的并行调用）。
             # 老兼容端点不支持 stream_options → 去掉该参数降级重试一次，
             # 与 chat() 的 response_format/extra_body 降级模式一致。
             try:

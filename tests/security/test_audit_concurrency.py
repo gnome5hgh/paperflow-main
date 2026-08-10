@@ -1,4 +1,4 @@
-"""AuditMiddleware 并发写锁测试（Layer 4 parallel_spawn 并发就绪）。"""
+"""AuditMiddleware 并发写锁测试（Layer 4 同一轮多 spawn 调用并发就绪）。"""
 import asyncio
 import json
 import threading
