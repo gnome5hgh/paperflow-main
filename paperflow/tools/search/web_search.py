@@ -14,8 +14,8 @@ from paperflow.tools.search._common import (
     query_cache_get,
     query_cache_put,
 )
-from paperflow.tools.search.arxiv_search import ArxivClient
-from paperflow.tools.search.openalex_search import OpenAlexClient
+from paperflow.tools.search.clients.arxiv_client import ArxivClient
+from paperflow.tools.search.clients.openalex_client import OpenAlexClient
 
 #: source → 客户端类。后续加源：此表加一行 + 客户端类 + parameters.enum 加一个值。
 _SOURCE_REGISTRY: dict[str, type] = {"arxiv": ArxivClient, "openalex": OpenAlexClient}
