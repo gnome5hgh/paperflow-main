@@ -1,12 +1,11 @@
-"""共享 spawn 工具层——SpawnSubAgentTool / ParallelSpawnTool 及配套 helper。
+"""共享 spawn 工具层——SpawnSubAgentTool 及配套 helper。
 
-子 agent 派发、并行派发与结构化结果摘要的实现。装配仍只在 agents/supervisor/
+子 agent 派发与结构化结果摘要的实现。装配仍只在 agents/supervisor/
 tools.py 的 _make_supervisor_tools——Supervisor 是唯一装配 spawn 工具的 agent
 (权限最小化:子 agent 不能递归调度)。需父 agent 注入(needs_parent),见 Tool 约定。
 """
 import asyncio
 import hashlib
-import json
 import re
 import threading
 import time
@@ -107,8 +106,7 @@ def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
     """运行时校验父 agent 是否有权 spawn 该子 agent;无权返回错误信息,有权返回 None。
 
     supervisor 硬编码放行;其余 agent 依据自身 allowed_spawns 白名单校验,越界返回
-    错误信息(调用方映射为 denied)。Spawn 与 Parallel 两个工具共用此单点校验,保证
-    二者行为永不漂移。
+    错误信息(调用方映射为 denied)。spawn_sub_agent 的运行时校验单点。
     """
     if parent.agent_type == "supervisor":
         return None
@@ -311,7 +309,7 @@ class SpawnSubAgentTool(Tool):
 
     def execute(self, agent_type: str, task: str) -> ToolResult:
         parent = self._parent
-        # ① spawn 权限运行时校验(_check_spawn_allowed 与 Parallel 工具共用)。
+        # ① spawn 权限运行时校验(_check_spawn_allowed 单点)。
         #    supervisor 硬编码放行;非 supervisor 越界 spawn → denied。
         denied = _check_spawn_allowed(parent, agent_type)
         if denied is not None:
@@ -413,107 +411,3 @@ class SpawnSubAgentTool(Tool):
             result = SubAgentResult(status="failed", summary="子任务执行失败",
                                     error_detail=str(e))
         return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-
-
-class ParallelSpawnTool(Tool):
-    """并行派发多个子 agent,逐子任务隔离——一个失败不拖垮其他。"""
-
-    name = "parallel_spawn"
-    description = ("并行派发多个 SubAgent，返回 SubAgentResult 列表。各子任务独立——"
-                   "一个失败不影响其他。注意：都打 RAG 时并行度在 RAG 锁边界封顶。")
-    parameters = {
-        "type": "object",
-        "properties": {
-            "spawns": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "agent_type": {"type": "string"},
-                        "task": {"type": "string"},
-                    },
-                    "required": ["agent_type", "task"],
-                },
-            },
-        },
-        "required": ["spawns"],
-    }
-    needs_parent = True
-    risk_level = "low"
-    timeout = 120
-
-    def __init__(self, agent_timeouts: dict[str, int] | None = None):
-        # 与 SpawnSubAgentTool 对称(两个 spawn 工具行为永不漂移)
-        self._agent_timeouts = agent_timeouts or {}
-
-    def _resolve_timeout(self, agent_type: str) -> int:
-        return self._agent_timeouts.get(agent_type, self.timeout)
-
-    def execute(self, spawns: list[dict]) -> ToolResult:
-        parent = self._parent
-
-        async def _run_one(agent_type: str, task: str) -> SubAgentResult:
-            # ① 与 SpawnSubAgentTool 同款权限校验:越界 spawn 返回 per-child denied,
-            #    不构造子 agent、不拖垮其他子任务(逐子隔离:gather 只收集各自结果)。
-            denied = _check_spawn_allowed(parent, agent_type)
-            if denied is not None:
-                return SubAgentResult(status="denied", summary=denied)
-            # ② 每个 spawn 独立构造子 agent(继承确认回调)。并行子 agent 各自在独立
-            #    线程流式:多路 content 并发会搅成一团,故丢弃 content 只透传工具行
-            #    (行级完整)并加 [agent_type] 前缀;推理文本由 supervisor 汇总后在
-            #    最终回答呈现。
-            pcb = getattr(parent, "stream_callback", None)
-            if pcb is None:
-                child_cb = None
-            else:
-                def child_cb(ev: StreamEvent) -> None:
-                    if ev.kind == "tool":
-                        pcb(StreamEvent("tool", f"[{agent_type}] {ev.text}", ev.agent_type))
-            child = Agent(
-                llm=parent.llm, agent_registry=parent.agent_registry,
-                agent_type=agent_type, security_middleware=parent.security_middleware,
-                session_id=parent.session_id, confirm_callback=parent.confirm_callback,
-                stream_callback=child_cb,
-            )
-            timeout = self._resolve_timeout(agent_type)
-            # 确认等待排除在超时预算外(同 SpawnSubAgentTool)。并行场景下确认回调
-            # (如 CLI 的 stdin 确认)跑在后台线程,不冻结共享的事件循环——一个子任务
-            # 等确认不影响其他子任务继续执行。
-            clock = _UserWaitClock()
-            child.confirm_callback = _wrap_confirm_callback(child.confirm_callback, clock)
-
-            async def _run_and_extract():
-                # 与 SpawnSubAgentTool._run_child 同款:子任务.run + 摘要提取串在同一
-                # 协程里(此处已在 gather 循环中,直接 await 而非 asyncio.run)。
-                # 摘要 LLM 调用归属父(父在做摘要提取),getattr 兜底防 mock 父。
-                text = await _run_child_with_budget(child.run(task), timeout, clock)
-                digest = await _extract_digest(
-                    parent.llm, agent_type, text,
-                    telemetry_callback=lambda data: parent._emit_llm_call(
-                        getattr(parent, "_current_turn", 0), data))
-                return text, digest
-
-            try:
-                text, digest = await _run_and_extract()
-                return SubAgentResult(status="success", summary=text, digest=digest)
-            except asyncio.TimeoutError:
-                return SubAgentResult(status="timeout", summary="子任务执行超时",
-                                      error_detail=f"SubAgent 在 {timeout}s 内未完成")
-            except Exception as e:
-                return SubAgentResult(status="failed", summary="子任务执行失败",
-                                      error_detail=str(e))
-
-        async def _run_all() -> list[SubAgentResult]:
-            # asyncio.gather 是普通函数,必须在运行中的事件循环内调用:在 asyncio.run
-            # 外部直接 gather 会经 get_event_loop() 取"当前循环",Python 3.11 下拿不到
-            # 可用循环 → RuntimeError。故包一层 _run_all,让 gather 在新建循环内执行。
-            return await asyncio.gather(*[
-                _run_one(s["agent_type"], s["task"]) for s in spawns
-            ])
-
-        # _run_one 内部全捕获 → gather 永不因单个子任务失败而 cancel(逐子隔离)。
-        # asyncio.run 桥接同 SpawnSubAgentTool(execute 跑在线程池 worker,无循环)。
-        results = asyncio.run(_run_all())
-        payload = [r.model_dump() for r in results]
-        return ToolResult(text=json.dumps(payload, ensure_ascii=False),
-                          summary={"count": len(payload)})

@@ -22,7 +22,7 @@ def supervisor_registry(tmp_path, monkeypatch):
 def test_supervisor_config_loads_with_three_tools(supervisor_registry):
     cfg = supervisor_registry.get_config("supervisor")
     names = {t.name for t in cfg.tools}
-    assert names == {"spawn_sub_agent", "parallel_spawn", "ask_user"}
+    assert names == {"spawn_sub_agent", "ask_user"}
     assert "INTENT" in cfg.system_prompt          # 消费规则注入系统提示词
 
 
@@ -30,7 +30,7 @@ def test_supervisor_has_no_glob_grep(supervisor_registry):
     """Task 4：supervisor 不含 glob/grep——只调度不碰文件。
 
     文件访问（读/写/搜索）全部下放到文件型 agent（searcher/writer/
-    qa-agent/reviewer）；supervisor 仅 3 个调度工具，权限最小化。
+    qa-agent/reviewer）；supervisor 仅 2 个调度工具，权限最小化。
     此断言防将来向 supervisor 误加文件工具（它有 spawn 权限，绝不能有文件路径暴露）。"""
     config = supervisor_registry.get_config("supervisor")
     names = {t.name for t in config.tools}

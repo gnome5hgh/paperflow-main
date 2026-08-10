@@ -1,13 +1,13 @@
-"""Supervisor 调度工具装配——Spawn / Parallel / AskUser。
+"""Supervisor 调度工具装配——Spawn / AskUser。
 
-SpawnSubAgentTool / ParallelSpawnTool 在共享层 paperflow/tools/spawn.py 定义,
+SpawnSubAgentTool 在共享层 paperflow/tools/spawn.py 定义,
 本文件装配后供 supervisor 使用。Supervisor 是唯一装配 spawn 工具的 agent
 (权限最小化:子 agent 不能递归调度)。spawn 结果自带结构化摘要 digest,
 supervisor 直接读各结果的 digest + needs_attention 组织最终回答。
 """
 from paperflow.config import PaperFlowConfig
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.tools.spawn import SpawnSubAgentTool, ParallelSpawnTool
+from paperflow.tools.spawn import SpawnSubAgentTool
 
 
 class AskUserTool(Tool):
@@ -38,12 +38,11 @@ class AskUserTool(Tool):
 
 
 def _make_supervisor_tools() -> list:
-    """装配 3 个调度工具。config 在 import 时构造(每进程静态、无副作用);
+    """装配 2 个调度工具。config 在 import 时构造(每进程静态、无副作用);
     agent_timeouts 从配置注入,spawn 工具按子 agent 类型解析各自超时。"""
     cfg = PaperFlowConfig.from_env()
     return [
         SpawnSubAgentTool(agent_timeouts=cfg.agent_timeouts),
-        ParallelSpawnTool(agent_timeouts=cfg.agent_timeouts),
         AskUserTool(),
     ]
 

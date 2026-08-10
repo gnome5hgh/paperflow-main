@@ -1,4 +1,4 @@
-"""Supervisor 4 个调度工具测试（mock child，无真实 LLM）。"""
+"""Supervisor 调度工具测试(spawn / ask_user,mock child)。"""
 import asyncio
 import json
 import threading
@@ -15,7 +15,7 @@ from tests.conftest import _tc
 from tests.agent.test_agent import make_mock_llm, make_mock_registry
 
 from paperflow.tools.spawn import (
-    SpawnSubAgentTool, ParallelSpawnTool, SubAgentResult,
+    SpawnSubAgentTool, SubAgentResult,
     _UserWaitClock, _wrap_confirm_callback, _run_child_with_budget,
     _task_fingerprint, _task_has_path, _SPAWN_REGISTRY,
     _evict_stale_spawn_entries, _SPAWN_REUSE_WINDOW_S,
@@ -254,65 +254,6 @@ class TestSpawnSubAgentTool:
         assert parsed["error_detail"] == "SubAgent 在 0.05s 内未完成"
 
 
-class TestParallelSpawnTool:
-    def test_per_child_isolation(self):
-        """一个 child 失败只映射自身，不拖垮其他（spec 🟠3）。"""
-        with patch("paperflow.tools.spawn.Agent") as MockAgent:
-            async def run_mixed(task):
-                if "fail" in task:
-                    raise MaxTurnsExceeded("boom")
-                return f"ok:{task}"
-            MockAgent.return_value.run = run_mixed
-            agent = _supervisor([ParallelSpawnTool()])
-            result = agent.tools["parallel_spawn"].execute(spawns=[
-                {"agent_type": "a", "task": "ok1"},
-                {"agent_type": "b", "task": "fail"},
-            ])
-        parsed = json.loads(result.text)
-        assert len(parsed) == 2
-        by_status = {p["status"] for p in parsed}
-        assert by_status == {"success", "failed"}
-
-    def test_parallel_success_all(self):
-        with patch("paperflow.tools.spawn.Agent") as MockAgent:
-            MockAgent.return_value.run = AsyncMock(side_effect=lambda task: f"r:{task}")
-            agent = _supervisor([ParallelSpawnTool()])
-            result = agent.tools["parallel_spawn"].execute(spawns=[
-                {"agent_type": "a", "task": "t1"},
-                {"agent_type": "a", "task": "t2"},
-            ])
-        parsed = json.loads(result.text)
-        assert [p["status"] for p in parsed] == ["success", "success"]
-
-    def test_denied_when_spawn_not_allowed(self):
-        """R1 修复：ParallelSpawn 越界 spawn 也返回 per-child denied（与 Spawn 校验对齐）。
-
-        审阅发现 SpawnSubAgentTool 有 allowed_spawns 运行时校验，ParallelSpawnTool
-        的 _run_one 却无条件构造 child——两工具不对称。此用例钉死：非 supervisor
-        parent 的越界 spawn 必须 denied，且不构造 child（MockAgent 不被调用）。"""
-        tool = ParallelSpawnTool()
-        with patch("paperflow.tools.spawn.Agent") as MockAgent:
-            MockAgent.return_value.run = AsyncMock(return_value="ok")
-            registry = make_mock_registry([tool])     # allowed_spawns 缺省 []
-            agent = Agent(llm=make_mock_llm([]), agent_registry=registry,
-                          agent_type="writer")
-            result = tool.execute(spawns=[
-                {"agent_type": "a", "task": "t1"},
-                {"agent_type": "b", "task": "t2"},
-            ])
-        parsed = json.loads(result.text)
-        assert len(parsed) == 2
-        assert [p["status"] for p in parsed] == ["denied", "denied"]
-        assert all("不能 spawn" in p["summary"] for p in parsed)
-        MockAgent.assert_not_called()
-
-    def test_parallel_resolve_timeout_map(self):
-        """Parallel 与 Spawn 对称：同款 _resolve_timeout（R1 对齐哲学延续）。"""
-        tool = ParallelSpawnTool(agent_timeouts={"writer": 300})
-        assert tool._resolve_timeout("writer") == 300
-        assert tool._resolve_timeout("other") == 120
-
-
 class TestAskUserTool:
     def test_callback_answer_becomes_result(self):
         tool = AskUserTool()
@@ -350,23 +291,6 @@ class TestStreamCallbackPropagation:
         assert received == []
         child_cb(StreamEvent("tool", "调用 search_arxiv(query=x)", "a"))  # tool 加前缀透传
         assert received == [StreamEvent("tool", "[a] 调用 search_arxiv(query=x)", "a")]
-
-    def test_parallel_filters_content_and_prefixes_tool_events(self):
-        """并行包装回调：content 丢弃、tool 加 [agent_type] 前缀（防多路 token 串字）。"""
-        received = []
-        parent_cb = received.append
-        with patch("paperflow.tools.spawn.Agent") as MockAgent:
-            MockAgent.return_value.run = AsyncMock(return_value="ok")
-            agent = _supervisor([ParallelSpawnTool()], stream_callback=parent_cb)
-            agent.tools["parallel_spawn"].execute(spawns=[
-                {"agent_type": "a", "task": "t1"},
-            ])
-        child_cb = MockAgent.call_args.kwargs["stream_callback"]
-        child_cb(StreamEvent("content", "推理文本", "a"))              # content 被丢弃
-        assert received == []
-        child_cb(StreamEvent("tool", "调用 search_arxiv(query=x)", "a"))  # tool 加前缀透传
-        assert received == [StreamEvent("tool", "[a] 调用 search_arxiv(query=x)", "a")]
-
 
 # ─── 确认等待排除在超时外（2026-08-07 用户决策）───────────────────────
 # 用户确认是交互等待，不应计入子 agent 的执行预算：预算 = 基础 timeout + 累积用户等待。
@@ -554,7 +478,7 @@ def test_evict_stale_spawn_entries_removes_only_expired_done():
 class TestMulticallParallelDispatch:
     """并行 = 同一轮多个 spawn_sub_agent 调用 + run() gather（对齐 OpenAI/Claude Code）。
 
-    删 parallel_spawn 后的并行表达：supervisor 一个 message 发 N 个 spawn 调用，run() 的
+    supervisor 一个 message 发 N 个 spawn 调用，run() 的
     asyncio.gather 天然并行（信号量 4、工具在线程池）。锁三个契约：真并行（重叠执行）、
     逐子隔离（一个失败不影响其他）、按调用顺序返回。"""
 
