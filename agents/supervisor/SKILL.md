@@ -56,6 +56,7 @@ allowed_spawns: []   # supervisor 硬编码放行所有子 agent(_check_spawn_al
 
 - `spawn_sub_agent(agent_type, task)`:派发单个子 agent,返回结构化结果(status / summary / error_detail / needs_attention / digest)。`digest` 是子任务的结构化摘要(如 searcher 的 count/papers/downloaded、writer 的 note_path)——组织最终回答时**优先读 digest**,summary 作兜底全文。**独立子任务在同一轮内连续多次调用即并行执行**(框架 gather,逐子隔离:一个失败不影响其他;都打 RAG 时并行度在 RAG 锁边界封顶)。**依赖子任务分轮串行调用**,不塞进同一轮。
 - `ask_user_question(question)`:向用户提问(阻塞等待回答,答案作为工具结果返回,ReAct 续上)。
+- 注：writer / qa-agent 也可能在子任务中途用 ask_user_question 直接问用户（in-turn 阻塞，答案即回子任务）。**它们结果里的 `needs_attention` 项不要重复 ask_user_question（避免双问）**，但仍需明确提示用户确认。
 
 ## ⚠️ 铁律(IRON RULES)
 
