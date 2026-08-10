@@ -1,10 +1,8 @@
-"""ArxivSearchTool：arXiv API 纯搜索工具（下载已拆至 fetch_pdf）。
+"""ArxivClient：arXiv API 纯搜索客户端（工具本体在 web_search.py）。
 
 出站抓取前做 SSRF 校验,重定向链逐跳校验(见 paperflow/tools/common/_http.py)。
-只读操作,写盘/下载由 FetchPdfTool 承担。
-
-execute() 骨架在 BaseSearchTool(search/_common.py)中与 openalex 共享;本文件保留
-ArxivClient(含年份区间过滤)与来源差异段。
+只读操作,写盘/下载由 FetchPdfTool 承担。本文件只保留客户端与年份区间过滤;
+WebSearchTool 经 _SOURCE_REGISTRY 按 source 分发到本客户端。
 """
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -13,7 +11,6 @@ import httpx
 
 from paperflow.core.security.network import validate_url_target
 from paperflow.tools.common._http import _HttpClientMixin
-from paperflow.tools.search._common import BaseSearchTool
 
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
@@ -67,31 +64,3 @@ class ArxivClient(_HttpClientMixin):
                 "downloadable": True,            # arXiv 一律可下载(开放获取)
             })
         return papers
-
-
-class ArxivSearchTool(BaseSearchTool):
-    name = "arxiv_search"
-    description = "搜索 arXiv 论文"
-    parameters = {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "检索词"},
-            # schema 层给 max_results 上下限,让模型端发起调用时就钳在合法区间
-            "max_results": {"type": "integer", "default": 5,
-                            "minimum": 3, "maximum": 50},
-            # 年份是结构化过滤参数,与自由文本 query 平级——不要拼进检索词
-            "year_from": {"type": "integer", "description": "起始年份（含），用此参数而非拼进 query"},
-            "year_to": {"type": "integer", "description": "结束年份（含），用此参数而非拼进 query"},
-        },
-        "required": ["query"],
-    }
-    _source = "arxiv"
-    _breaker_name = "arXiv"
-    _alternate = "openalex_search"
-
-    @classmethod
-    def _make_client(cls, transport=None, ssrf_check=None):
-        return ArxivClient(transport=transport, ssrf_check=ssrf_check)
-
-    def _render_lines(self, papers: list[dict]) -> list[str]:
-        return [f"- [{p['title']}] ({p['year']}) venue={p['venue']} issn={p['issn']} pdf={p['pdf_url']} 来源=arxiv" for p in papers]

@@ -1,10 +1,8 @@
-"""OpenAlexSearchTool：OpenAlex API 纯搜索工具（下载已拆至 fetch_pdf）。
+"""OpenAlexClient：OpenAlex API 纯搜索客户端（工具本体在 web_search.py）。
 
 SSRF 校验走共享的 paperflow/tools/common/_http.py。只读操作,写盘/下载由
-FetchPdfTool 承担。
-
-execute() 骨架在 BaseSearchTool(search/_common.py)中与 arxiv 共享;本文件保留
-OpenAlexClient(含年份区间过滤与开放获取判定)与来源差异段。
+FetchPdfTool 承担。本文件只保留客户端(含年份区间过滤与开放获取判定);
+WebSearchTool 经 _SOURCE_REGISTRY 按 source 分发到本客户端。
 """
 import urllib.parse
 
@@ -12,7 +10,6 @@ import httpx
 
 from paperflow.core.security.network import validate_url_target
 from paperflow.tools.common._http import _HttpClientMixin
-from paperflow.tools.search._common import BaseSearchTool
 
 
 class OpenAlexClient(_HttpClientMixin):
@@ -50,31 +47,3 @@ class OpenAlexClient(_HttpClientMixin):
                 "arxiv_id": None,
             })
         return papers
-
-
-class OpenAlexSearchTool(BaseSearchTool):
-    name = "openalex_search"
-    description = "搜索 OpenAlex 论文"
-    parameters = {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "检索词"},
-            # schema 层给 max_results 上下限,让模型端发起调用时就钳在合法区间
-            "max_results": {"type": "integer", "default": 5,
-                            "minimum": 3, "maximum": 50},
-            # 年份是结构化过滤参数,与自由文本 query 平级——不要拼进检索词
-            "year_from": {"type": "integer", "description": "起始年份（含），用此参数而非拼进 query"},
-            "year_to": {"type": "integer", "description": "结束年份（含），用此参数而非拼进 query"},
-        },
-        "required": ["query"],
-    }
-    _source = "openalex"
-    _breaker_name = "OpenAlex"
-    _alternate = "arxiv_search"
-
-    @classmethod
-    def _make_client(cls, transport=None, ssrf_check=None):
-        return OpenAlexClient(transport=transport, ssrf_check=ssrf_check)
-
-    def _render_lines(self, papers: list[dict]) -> list[str]:
-        return [f"- [{p['title']}] ({p['year']}) venue={p['venue']} issn={p['issn']} pdf={p['pdf_url'] or 'no OA'} 来源=openalex" for p in papers]
