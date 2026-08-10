@@ -1,6 +1,7 @@
 """Supervisor 4 个调度工具测试（mock child，无真实 LLM）。"""
 import asyncio
 import json
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -542,3 +543,80 @@ def test_evict_stale_spawn_entries_removes_only_expired_done():
     assert "old-done" not in reg
     assert "fresh-done" in reg
     assert "running" in reg
+
+
+class TestMulticallParallelDispatch:
+    """并行 = 同一轮多个 spawn_sub_agent 调用 + run() gather（对齐 OpenAI/Claude Code）。
+
+    删 parallel_spawn 后的并行表达：supervisor 一个 message 发 N 个 spawn 调用，run() 的
+    asyncio.gather 天然并行（信号量 4、工具在线程池）。锁三个契约：真并行（重叠执行）、
+    逐子隔离（一个失败不影响其他）、按调用顺序返回。"""
+
+    def test_multiple_spawns_overlap_and_ordered(self):
+        import threading
+        tool_call = Message(role="assistant", content=None, tool_calls=[
+            {"id": f"c{i}", "type": "function",
+             "function": {"name": "spawn_sub_agent",
+                          "arguments": json.dumps({"agent_type": "searcher", "task": f"t{i}"})}}
+            for i in range(3)
+        ])
+        llm = make_mock_llm([tool_call, Message(role="assistant", content="done")])
+        lock = threading.Lock()
+        active = 0
+        max_active = 0
+        barrier = threading.Barrier(3)
+
+        with patch("paperflow.tools.spawn.Agent") as MockAgent:
+            async def run_mixed(task):
+                nonlocal active, max_active
+                with lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                try:
+                    barrier.wait(timeout=2)
+                except threading.BrokenBarrierError:
+                    pass
+                finally:
+                    with lock:
+                        active -= 1
+                return f"ok:{task}"
+            MockAgent.return_value.run = run_mixed
+            with patch("paperflow.tools.spawn._extract_digest",
+                       new=AsyncMock(return_value={})):
+                agent = _supervisor([SpawnSubAgentTool()], llm=llm)
+                asyncio.run(agent.run("并行任务"))
+
+        assert max_active == 3          # 三路重叠执行 = 真并行（Barrier 全到齐才放行）
+        tool_msgs = [m for m in agent._messages if m.role == "tool"]
+        assert [m.tool_call_id for m in tool_msgs] == ["c0", "c1", "c2"]   # gather 顺序语义
+        assert [json.loads(m.content)["summary"] for m in tool_msgs] == \
+            ["ok:t0", "ok:t1", "ok:t2"]
+
+    def test_one_failure_does_not_affect_others(self):
+        tool_call = Message(role="assistant", content=None, tool_calls=[
+            {"id": "c0", "type": "function",
+             "function": {"name": "spawn_sub_agent",
+                          "arguments": json.dumps({"agent_type": "a", "task": "ok"})}},
+            {"id": "c1", "type": "function",
+             "function": {"name": "spawn_sub_agent",
+                          "arguments": json.dumps({"agent_type": "b", "task": "fail"})}},
+            {"id": "c2", "type": "function",
+             "function": {"name": "spawn_sub_agent",
+                          "arguments": json.dumps({"agent_type": "a", "task": "ok2"})}},
+        ])
+        llm = make_mock_llm([tool_call, Message(role="assistant", content="done")])
+        with patch("paperflow.tools.spawn.Agent") as MockAgent:
+            async def run_mixed(task):
+                if "fail" in task:
+                    raise MaxTurnsExceeded("boom")
+                return f"ok:{task}"
+            MockAgent.return_value.run = run_mixed
+            with patch("paperflow.tools.spawn._extract_digest",
+                       new=AsyncMock(return_value={})):
+                agent = _supervisor([SpawnSubAgentTool()], llm=llm)
+                asyncio.run(agent.run("并行任务"))
+
+        tool_msgs = [m for m in agent._messages if m.role == "tool"]
+        assert len(tool_msgs) == 3
+        statuses = [json.loads(m.content)["status"] for m in tool_msgs]
+        assert statuses == ["success", "failed", "success"]   # 顺序 + 逐子隔离
