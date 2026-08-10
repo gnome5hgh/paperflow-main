@@ -27,7 +27,7 @@ def test_generate_note_tools_review_via_spawn(agent_registry, agent_env):
 
 
 def test_generate_note_tools_metadata(agent_env, agent_registry):
-    """writer 完整装配：7 工具齐备（5 原子 + spawn_sub_agent + glob/grep）。
+    """writer 完整装配：8 工具齐备（5 原子 + spawn_sub_agent + glob/grep）。
 
     Task 7：review_draft 桥删除 → spawn_sub_agent（共享 SpawnSubAgentTool）替代；
     spawn_sub_agent 是唯一需要 parent 注入的工具（嵌套 spawn 子 agent），其余原子
@@ -201,3 +201,10 @@ async def test_generate_note_gives_up_after_three_rounds(agent_env, agent_regist
     assert "未解决" in result
     assert mock.callable_hits == 3          # 恰好 3 次提交，无第 4 次（若尝试第 4 次 mock pop 空 → IndexError）
     assert note_out.exists()
+
+
+def test_writer_has_ask_user_question(agent_registry):
+    """writer opt-in 装配 ask_user_question：格式/篇幅/语言偏好歧义时中途问用户。"""
+    config = agent_registry.get_config("writer")
+    names = {t.name for t in config.tools}
+    assert "ask_user_question" in names

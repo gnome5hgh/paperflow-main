@@ -70,3 +70,10 @@ def test_answer_question_has_glob_grep(agent_registry):
     config = agent_registry.get_config("qa-agent")
     names = {t.name for t in config.tools}
     assert {"glob", "grep"} <= names
+
+
+def test_qa_agent_has_ask_user_question(agent_registry):
+    """qa-agent opt-in 装配 ask_user_question：回答模式/深度歧义时中途问用户。"""
+    config = agent_registry.get_config("qa-agent")
+    names = {t.name for t in config.tools}
+    assert "ask_user_question" in names
