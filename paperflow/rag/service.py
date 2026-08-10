@@ -53,7 +53,10 @@ class RAGService:
             with self.lock:
                 if self._reranker is None:
                     from paperflow.rag.reranker import BgeReranker
-                    self._reranker = BgeReranker(self.config.rerank_model)
+                    from paperflow.rag.embedder import resolve_model_dir
+                    # 模型路径本地优先（工作区 models 目录），否则改用官方模型名
+                    self._reranker = BgeReranker(resolve_model_dir(
+                        self.config.workspace, self.config.rerank_model))
         return self._reranker
 
     def _ensure_vector_store(self):
