@@ -340,9 +340,10 @@ class SpawnSubAgentTool(Tool):
 
         result = None
         try:
-            # ③ 构造子 agent:继承父的安全中间件、会话 ID(同一审计链)与确认回调——
-            #    确认回调是关键:writer 的写盘工具要求用户确认,不传则默认回调始终拒绝,
-            #    spawn 出的 writer 永远写不出笔记。不传意图管线/会话 → 子 agent 不做
+            # ③ 构造子 agent:继承父的安全中间件、会话 ID(同一审计链)、确认回调与
+            #    问用户回调——确认回调是关键:writer 的写盘工具要求用户确认,不传则
+            #    默认回调始终拒绝,spawn 出的 writer 永远写不出笔记;问用户回调同理,
+            #    writer/qa-agent 靠它中途向用户提问。不传意图管线/会话 → 子 agent 不做
             #    意图识别(子任务是结构化任务,非用户意图)。
             # 流式统一：子 agent 只透传工具行（带 agent_type 前缀）、不流 content——
             # 与并行场景同一代码路径（对齐 OpenAI/Claude Code，多路并发不串字）。
@@ -350,6 +351,7 @@ class SpawnSubAgentTool(Tool):
                 llm=parent.llm, agent_registry=parent.agent_registry,
                 agent_type=agent_type, security_middleware=parent.security_middleware,
                 session_id=parent.session_id, confirm_callback=parent.confirm_callback,
+                ask_user_callback=parent.ask_user_callback,
                 stream_callback=_make_child_stream_callback(parent, agent_type),
             )
             # 传解析后的超时:_run_child 用实际生效值(config > 类默认)

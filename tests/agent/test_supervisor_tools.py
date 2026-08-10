@@ -253,6 +253,19 @@ class TestSpawnSubAgentTool:
         assert parsed["status"] == "timeout"
         assert parsed["error_detail"] == "SubAgent 在 0.05s 内未完成"
 
+    def test_ask_user_callback_passed_to_child(self):
+        """子 agent 继承父 ask_user_callback：writer/qa-agent 中途问用户的依赖。
+
+        与 confirm_callback 同款传播——root CLI 注入 → supervisor → 子 agent。
+        searcher/reviewer 也继承回调但不装配工具，权限仍卡在工具面。"""
+        with patch("paperflow.tools.spawn.Agent") as MockAgent:
+            MockAgent.return_value.run = AsyncMock(return_value="done")
+            cb = lambda q: "中文笔记"
+            agent = _supervisor([SpawnSubAgentTool()], ask_user_callback=cb)
+            agent.tools["spawn_sub_agent"].execute(
+                agent_type="writer", task="写一篇关于 X 的笔记")
+        assert MockAgent.call_args.kwargs["ask_user_callback"] is cb
+
 
 class TestAskUserQuestionTool:
     def test_callback_answer_becomes_result(self):
