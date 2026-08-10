@@ -1,4 +1,4 @@
-"""Supervisor 调度工具测试(spawn / ask_user,mock child)。"""
+"""Supervisor 调度工具测试(spawn / ask_user_question,mock child)。"""
 import asyncio
 import json
 import threading
@@ -20,7 +20,7 @@ from paperflow.tools.spawn import (
     _task_fingerprint, _task_has_path, _SPAWN_REGISTRY,
     _evict_stale_spawn_entries, _SPAWN_REUSE_WINDOW_S,
 )
-from agents.supervisor.tools import AskUserTool
+from agents.supervisor.tools import AskUserQuestionTool
 
 
 def _supervisor(tools, **kwargs):
@@ -254,9 +254,9 @@ class TestSpawnSubAgentTool:
         assert parsed["error_detail"] == "SubAgent 在 0.05s 内未完成"
 
 
-class TestAskUserTool:
+class TestAskUserQuestionTool:
     def test_callback_answer_becomes_result(self):
-        tool = AskUserTool()
+        tool = AskUserQuestionTool()
         calls = []
         def cb(q):
             calls.append(q)
@@ -267,7 +267,7 @@ class TestAskUserTool:
         assert "再搜索" in result.text
 
     def test_failsafe_without_callback(self):
-        tool = AskUserTool()
+        tool = AskUserQuestionTool()
         tool._parent = MagicMock(ask_user_callback=None)
         result = tool.execute(question="要搜索吗？")
         assert "无法交互" in result.text

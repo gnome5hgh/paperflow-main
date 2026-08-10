@@ -87,7 +87,7 @@ def _read_stdin_locked(cr) -> str:
 
 
 def _stdin_ask(question: str) -> str:
-    """AskUserTool 回调：打印问题、读一行返回。"""
+    """ask_user_question 工具回调：打印问题、读一行返回。"""
     with _stdin_lock:
         print(question)
         try:

@@ -10,14 +10,14 @@ from paperflow.core.tool import Tool, ToolResult
 from paperflow.tools.spawn import SpawnSubAgentTool
 
 
-class AskUserTool(Tool):
+class AskUserQuestionTool(Tool):
     """向用户提问并等待回答(阻塞当前 ReAct 轮)。
 
     经父 agent 注入的 ask_user_callback 读 stdin;callback 为空(程序化/测试环境)
     时返回"无法交互"提示,由 supervisor 基于已有信息自行决策,不挂死。
     """
 
-    name = "ask_user"
+    name = "ask_user_question"
     description = "向用户提问并等待回答（阻塞直到用户输入）。答案作为工具结果返回。"
     parameters = {
         "type": "object",
@@ -43,7 +43,7 @@ def _make_supervisor_tools() -> list:
     cfg = PaperFlowConfig.from_env()
     return [
         SpawnSubAgentTool(agent_timeouts=cfg.agent_timeouts),
-        AskUserTool(),
+        AskUserQuestionTool(),
     ]
 
 

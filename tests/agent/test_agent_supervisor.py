@@ -19,10 +19,10 @@ def supervisor_registry(tmp_path, monkeypatch):
     return AgentRegistry(agents_dir)
 
 
-def test_supervisor_config_loads_with_three_tools(supervisor_registry):
+def test_supervisor_config_loads_with_supervisor_tools(supervisor_registry):
     cfg = supervisor_registry.get_config("supervisor")
     names = {t.name for t in cfg.tools}
-    assert names == {"spawn_sub_agent", "ask_user"}
+    assert names == {"spawn_sub_agent", "ask_user_question"}
     assert "INTENT" in cfg.system_prompt          # 消费规则注入系统提示词
 
 

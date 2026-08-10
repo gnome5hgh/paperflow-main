@@ -211,7 +211,7 @@ async def test_confirm_callback_async_contract_denied(monkeypatch):
 
 
 def test_stdin_ask_eof_returns_empty(monkeypatch):
-    """ask_user 回调 Ctrl-D → 空串（Supervisor ReAct 自行处理，🟠1）。"""
+    """ask_user_question 工具回调 Ctrl-D → 空串（Supervisor ReAct 自行处理，🟠1）。"""
     def _eof(*a, **k):
         raise EOFError
     monkeypatch.setattr("builtins.input", _eof)

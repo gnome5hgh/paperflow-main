@@ -467,7 +467,7 @@ class TestIntentGate:
         assert len(capture) == 1
         assert any("INTENT:" in m.content for m in capture[0])
         # M5：INTENT 块必须排除 clarification / prev_intent——澄清只走 CLI 层
-        # （避免与 AskUserTool 双问）；prev_intent 是 conversation 内部状态，不暴露给
+        # （避免与 AskUserQuestionTool 双问）；prev_intent 是 conversation 内部状态，不暴露给
         # Supervisor。force_dispatch 用例（澄清文本存在但被 force 跳过）正好可断言。
         intent_msg = next(m for m in capture[0] if "INTENT:" in m.content)
         assert "要哪个？" not in intent_msg.content     # clarification 被排除

@@ -68,7 +68,7 @@ def _intent_block(intent) -> str:
     """把 IntentOutput 格式化为 INTENT 块（ReAct context 的强提示，非命令）。
 
     排除 clarification 与 prev_intent：澄清只走 CLI 层（跨轮 pending），不暴露给
-    Supervisor（避免其用 AskUserTool 双问）；prev_intent 是 conversation 内部状态。
+    Supervisor（避免其用 AskUserQuestionTool 双问）；prev_intent 是 conversation 内部状态。
     """
     return "INTENT: " + intent.model_dump_json(exclude={"clarification", "prev_intent"})
 
@@ -211,7 +211,7 @@ class Agent:
         :param conversation: 会话状态容器(ConversationState | None),提供跨轮 prev_intent/
             prev_user_input 并在 run 结束后回写
         :param ask_user_callback: 向用户提问的回调(Callable[[str], str] | None),
-            供 ask_user 工具消费;None 时该工具不可用
+            供 ask_user_question 工具消费;None 时该工具不可用
         :param session_id: 会话标识,跨多次 run 保持一致,便于审计聚合;None 时
             自动生成 8 位 hex
         :param memory: Memory 实例(可选),compile() 输出 system 记忆块注入 head
@@ -419,7 +419,7 @@ class Agent:
                 self.last_intent = intent
                 if intent.clarification and not force_dispatch:
                     # 跨轮澄清:早退在落盘前 → 不持久化(非任务轮)。澄清只走 CLI 层;
-                    # INTENT 块不含澄清问题(避免与 ask_user 工具双重发问)。
+                    # INTENT 块不含澄清问题(避免与 ask_user_question 工具双重发问)。
                     return [Message(role="user", content=intent.clarification)]
                 head.append(Message(role="system", content=_intent_block(intent)))
         head.append(Message(role="user", content=task))
