@@ -1,6 +1,6 @@
 """WebSearchTool：按 source 指定网站的通用论文搜索工具（arxiv / openalex）。
 
-从 BaseSearchTool + arxiv_search/openalex_search 双工具合并而来：一次调用只搜一个
+由原 arxiv_search/openalex_search 双工具合并而来：一次调用只搜一个
 网站，source 参数选源，客户端经 _SOURCE_REGISTRY 分发。多源搜索由 searcher 同一轮
 并行调用本工具多次承担（复用 multi-call gather + per-run 去重池），本工具不做工具内
 多源 fan-out。SSRF 校验与查询缓存/熔断/去重池逻辑与原双工具一致，语义不变。

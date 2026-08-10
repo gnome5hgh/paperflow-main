@@ -1,7 +1,7 @@
 """FetchPdfTool：从搜索结果 URL 下载 PDF 到本地资料库（独立下载工具）。
 
-从 arxiv/openalex 搜索工具里拆出的下载职责（原 BaseSearchTool.execute 的
-download_to 分支）。拆出后：
+从 arxiv/openalex 搜索工具里拆出的下载职责（原内嵌于搜索工具的 download_to
+参数分支）。拆出后：
 
 - 搜索工具降为纯只读（low 风险），写盘副作用集中在本工具；
 - 审计日志里「写盘」动作归于 fetch_pdf，不再藏在名为 search 的工具下。
