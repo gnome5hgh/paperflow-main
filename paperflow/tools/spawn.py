@@ -261,6 +261,23 @@ async def _run_child_with_budget(coro, timeout: float, clock: _UserWaitClock):
     return task.result()
 
 
+def _make_child_stream_callback(parent, agent_type: str):
+    """构造子 agent 的流式回调：不流 content，tool 事件加 [agent_type] 前缀。
+
+    对齐 OpenAI / Claude Code：子 agent 推理内容不向终端流式输出（多路并发会串字），
+    只透传工具行并加前缀标识来源。父无 stream_callback（非 CLI 调用方）时返回
+    None——子 agent 零流式，零开销。
+    """
+    pcb = getattr(parent, "stream_callback", None)
+    if pcb is None:
+        return None
+
+    def child_cb(ev: StreamEvent) -> None:
+        if ev.kind == "tool":
+            pcb(StreamEvent("tool", f"[{agent_type}] {ev.text}", ev.agent_type))
+    return child_cb
+
+
 class SpawnSubAgentTool(Tool):
     """派发单个子 agent,返回 SubAgentResult 的序列化结果。"""
 
@@ -327,13 +344,13 @@ class SpawnSubAgentTool(Tool):
             #    确认回调是关键:writer 的写盘工具要求用户确认,不传则默认回调始终拒绝,
             #    spawn 出的 writer 永远写不出笔记。不传意图管线/会话 → 子 agent 不做
             #    意图识别(子任务是结构化任务,非用户意图)。
+            # 流式统一：子 agent 只透传工具行（带 agent_type 前缀）、不流 content——
+            # 与并行场景同一代码路径（对齐 OpenAI/Claude Code，多路并发不串字）。
             child = Agent(
                 llm=parent.llm, agent_registry=parent.agent_registry,
                 agent_type=agent_type, security_middleware=parent.security_middleware,
                 session_id=parent.session_id, confirm_callback=parent.confirm_callback,
-                # 流式透传:子 agent 继承父的流式回调,其推理 token 带自己的 agent_type
-                # 实时流式(CLI 渲染为子段)。getattr 让 mock 与真实 Agent 都可用。
-                stream_callback=getattr(parent, "stream_callback", None),
+                stream_callback=_make_child_stream_callback(parent, agent_type),
             )
             # 传解析后的超时:_run_child 用实际生效值(config > 类默认)
             result = self._run_child(child, agent_type, task)

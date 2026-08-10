@@ -333,17 +333,23 @@ class TestAskUserTool:
 
 
 class TestStreamCallbackPropagation:
-    def test_spawn_passes_stream_callback_to_child(self):
-        """子 agent 继承父 stream_callback：单 spawn 全量流式的基础。"""
-        cb = lambda ev: None
+    def test_spawn_child_streams_only_tool_events(self):
+        """统一流式：spawn 子 agent 收到包装回调——content 丢弃、tool 加 [agent_type] 前缀。
+
+        对齐 OpenAI / Claude Code：子 agent 推理内容不向终端流式（多路并发会串字），
+        只透传工具行并加前缀标识来源。子 agent 拿到的不是父回调原样，而是包装后的。"""
+        received = []
+        parent_cb = received.append
         with patch("paperflow.tools.spawn.Agent") as MockAgent:
-            MockAgent.return_value.run = AsyncMock(return_value="done")
-            agent = _supervisor([SpawnSubAgentTool()], stream_callback=cb)
-            result = agent.tools["spawn_sub_agent"].execute(
-                agent_type="searcher", task="搜索 x")
-        kwargs = MockAgent.call_args.kwargs
-        assert kwargs["stream_callback"] is cb
-        assert "done" in json.loads(result.text)["summary"]
+            MockAgent.return_value.run = AsyncMock(return_value="ok")
+            agent = _supervisor([SpawnSubAgentTool()], stream_callback=parent_cb)
+            agent.tools["spawn_sub_agent"].execute(agent_type="a", task="t1")
+        child_cb = MockAgent.call_args.kwargs["stream_callback"]
+        assert child_cb is not parent_cb              # 子 agent 拿到的是包装回调
+        child_cb(StreamEvent("content", "推理文本", "a"))              # content 被丢弃
+        assert received == []
+        child_cb(StreamEvent("tool", "调用 search_arxiv(query=x)", "a"))  # tool 加前缀透传
+        assert received == [StreamEvent("tool", "[a] 调用 search_arxiv(query=x)", "a")]
 
     def test_parallel_filters_content_and_prefixes_tool_events(self):
         """并行包装回调：content 丢弃、tool 加 [agent_type] 前缀（防多路 token 串字）。"""
