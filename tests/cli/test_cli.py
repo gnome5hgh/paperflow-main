@@ -1,5 +1,6 @@
 """CLI REPL 测试：注入 input_fn/print_fn，验证循环/澄清挂起/超轮终止/EOF 路径。"""
 import asyncio
+import threading
 
 import pytest
 from types import SimpleNamespace
@@ -297,6 +298,45 @@ class TestReplStreamer:
         joined = "".join(out)
         assert "\n\n" not in joined
         assert joined == "调用 search_arxiv(query=a)\n调用 spawn_sub_agent(...)\n最终答案"
+
+    def test_thread_safe_concurrent_tool_events(self):
+        """线程安全回归：多线程并发调 on_event，无异常、渲染不交错串字。
+
+        并行派发后 on_event 被主线程与各子 agent 的线程池 worker 并发调用（spawn
+        子 agent 的 tool 事件经 _make_child_stream_callback 加前缀透传）。锁缺失时
+        同一事件的多段输出会交错，行内出现两个 [ 前缀。断言：并发跑完无异常；
+        每个完整工具行恰好一个 [childN] 前缀；渲染器状态仍有效。
+        """
+        out = []
+        def _fn(*a, **k):
+            out.append(a[0])
+        s = _ReplStreamer(_fn, root_agent_type="supervisor")
+        # 锁存在性断言（确定性）：锁缺失时直接失败，而非靠概率捕获
+        assert isinstance(s._lock, type(threading.Lock()))
+
+        def _hammer(agent_type, rounds):
+            ev = StreamEvent("tool", f"[{agent_type}] 调用 search_arxiv(query=x)", agent_type)
+            for _ in range(rounds):
+                s.on_event(ev)
+
+        threads = [
+            threading.Thread(target=_hammer, args=(f"child{i}", 200))
+            for i in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # 每个完整工具行（换行之间）恰好一个 [childN] 前缀——锁串行化 → 行内不穿插
+        tool_lines = [ln for ln in "".join(out).split("\n") if ln]
+        assert tool_lines, "并发事件应产生工具行输出"
+        for ln in tool_lines:
+            assert ln.count("[child") == 1, f"工具行交错：{ln!r}"
+        # 渲染器状态仍有效：最后一次是子 agent 的 tool 事件（_last_segment=="tool"，
+        # 子 agent 事件不清 root buffer → buffer 恒空）
+        assert s._last_segment == "tool"
+        assert s._buffer == []
 
 
 @pytest.mark.asyncio

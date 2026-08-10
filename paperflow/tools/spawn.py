@@ -9,6 +9,7 @@ import hashlib
 import re
 import threading
 import time
+from typing import Callable
 
 from pydantic import BaseModel
 
@@ -259,7 +260,8 @@ async def _run_child_with_budget(coro, timeout: float, clock: _UserWaitClock):
     return task.result()
 
 
-def _make_child_stream_callback(parent, agent_type: str):
+def _make_child_stream_callback(parent,
+                                agent_type: str) -> Callable[[StreamEvent], None] | None:
     """构造子 agent 的流式回调：不流 content，tool 事件加 [agent_type] 前缀。
 
     对齐 OpenAI / Claude Code：子 agent 推理内容不向终端流式输出（多路并发会串字），

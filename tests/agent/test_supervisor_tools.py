@@ -483,7 +483,6 @@ class TestMulticallParallelDispatch:
     逐子隔离（一个失败不影响其他）、按调用顺序返回。"""
 
     def test_multiple_spawns_overlap_and_ordered(self):
-        import threading
         tool_call = Message(role="assistant", content=None, tool_calls=[
             {"id": f"c{i}", "type": "function",
              "function": {"name": "spawn_sub_agent",

@@ -99,20 +99,24 @@ def _stdin_ask(question: str) -> str:
 class _ReplStreamer:
     """把 Agent 流式事件渲染为终端增量输出，并决定最终结果如何打印。
 
-    段模型：root content / tool 两类输出段(child content 段保留为防御性代码——子 agent 内容流式已在上游 _make_child_stream_callback 过滤,不再到达)
+    段模型：root content / tool 两类输出段（child content 段保留为防御性代码——
+    子 agent 内容流式已在上游 _make_child_stream_callback 过滤，不再到达）。
     root content 额外缓冲，供 should_print 判断最终答案是否已被逐字展示
     （on_finish 改写如 SAFE_PROMPT 时需要补打最终版）。
 
-    线程安全：on_event 实践上不会被并发调用——root content 来自主 ReAct 的
-    chat_stream 线程（串行）；spawn 子 agent 的 content 在上游被
-    _make_child_stream_callback 过滤（只透传 tool 事件）；父子流式严格串行。
-    故无锁设计成立。
+    线程安全：on_event 会被并发调用——root content/tool 事件来自主 ReAct 的
+    chat_stream 线程，spawn 子 agent 的 tool 事件来自各子 agent 自己的线程池
+    worker（经 _make_child_stream_callback 加前缀透传），两者可同时到达。
+    _lock 串行化渲染：同一事件的多段输出（补换行、正文、终止换行）整体原子，
+    避免并行子 agent 的工具行交错串字。should_print / reset 只被主线程调用
+    （一轮 run 结束后才取最终答案），不进入 _lock。
     """
     def __init__(self, print_fn, root_agent_type: str):
         self._print = print_fn          # 透传 end=/flush=（简单 lambda 会忽略 kwargs）
         self._root = root_agent_type
         self._last_segment = None       # None | "root" | "child" | "tool"
         self._buffer: list[str] = []    # 仅 root content，用于最终答案比对
+        self._lock = threading.Lock()   # 渲染锁：on_event 跨线程并发调用，锁内串行
 
     def reset(self) -> None:
         """每轮 run 前调用：清空上一轮残留（异常/澄清路径不消费 should_print）。"""
@@ -120,26 +124,27 @@ class _ReplStreamer:
         self._last_segment = None
 
     def on_event(self, ev) -> None:
-        if ev.kind == "content":
-            seg = "root" if ev.agent_type == self._root else "child"
-            # 段切换（root↔child，或 content→content 换段）才补换行；tool→content
-            # 不补（工具行已显式终止，游标已在行首）；同段续打不换行
-            if self._last_segment in ("root", "child") and self._last_segment != seg:
-                self._print("\n", end="")
-            self._print(ev.text, end="", flush=True)  # 逐字打字机效果
-            if seg == "root":
-                self._buffer.append(ev.text)
-            self._last_segment = seg
-        elif ev.kind == "tool":
-            # 工具行：上一段是未自终止的内容（root/child）→ 先补换行结束它；
-            # 上一段是 tool（已终止）或 None → 不补，避免空行
-            if self._last_segment in ("root", "child"):
-                self._print("\n", end="")
-            self._print(ev.text, end="", flush=True)
-            self._print("\n", end="")  # 工具行显式自终止（不再靠 print 隐式 end）
-            if ev.agent_type == self._root:
-                self._buffer.clear()   # 工具调用前的中间内容作废，只留最终轮的流式文本
-            self._last_segment = "tool"
+        with self._lock:
+            if ev.kind == "content":
+                seg = "root" if ev.agent_type == self._root else "child"
+                # 段切换（root↔child，或 content→content 换段）才补换行；tool→content
+                # 不补（工具行已显式终止，游标已在行首）；同段续打不换行
+                if self._last_segment in ("root", "child") and self._last_segment != seg:
+                    self._print("\n", end="")
+                self._print(ev.text, end="", flush=True)  # 逐字打字机效果
+                if seg == "root":
+                    self._buffer.append(ev.text)
+                self._last_segment = seg
+            elif ev.kind == "tool":
+                # 工具行：上一段是未自终止的内容（root/child）→ 先补换行结束它；
+                # 上一段是 tool（已终止）或 None → 不补，避免空行
+                if self._last_segment in ("root", "child"):
+                    self._print("\n", end="")
+                self._print(ev.text, end="", flush=True)
+                self._print("\n", end="")  # 工具行显式自终止（不再靠 print 隐式 end）
+                if ev.agent_type == self._root:
+                    self._buffer.clear()   # 工具调用前的中间内容作废，只留最终轮的流式文本
+                self._last_segment = "tool"
 
     def should_print(self, result: str) -> str:
         streamed = "".join(self._buffer)
