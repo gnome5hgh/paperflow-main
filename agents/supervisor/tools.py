@@ -1,13 +1,13 @@
-"""Supervisor 调度工具装配——Spawn / AskUser（AskUserQuestionTool 定义在共享层 paperflow/tools/ask_user.py）。
+"""Supervisor 调度工具装配——Spawn / AskUser（AskUserQuestionTool 定义在共享层 paperflow/tools/orchestration/ask_user.py）。
 
-SpawnSubAgentTool 在共享层 paperflow/tools/spawn.py 定义,
+SpawnSubAgentTool 在共享层 paperflow/tools/orchestration/spawn.py 定义,
 本文件装配后供 supervisor 使用。Supervisor 是唯一装配 spawn 工具的 agent
 (权限最小化:子 agent 不能递归调度)。spawn 结果自带结构化摘要 digest,
 supervisor 直接读各结果的 digest + needs_attention 组织最终回答。
 """
 from paperflow.config import PaperFlowConfig
-from paperflow.tools.spawn import SpawnSubAgentTool
-from paperflow.tools.ask_user import AskUserQuestionTool
+from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
+from paperflow.tools.orchestration.ask_user import AskUserQuestionTool
 
 
 def _make_supervisor_tools() -> list:

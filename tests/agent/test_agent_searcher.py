@@ -16,7 +16,7 @@ def _no_real_redirect(monkeypatch):
     桩替换为恒等函数，让 httpx.MockTransport 罐头响应成为唯一网络来源；
     生产环境仍保留真实的逐跳重定向 SSRF 防护（此处仅测试隔离）。
     """
-    monkeypatch.setattr("paperflow.tools._http.resolve_url_target", lambda u: u)
+    monkeypatch.setattr("paperflow.tools.common._http.resolve_url_target", lambda u: u)
 
 _ATOM = """<feed xmlns="http://www.w3.org/2005/Atom"><entry>
 <title>Graph Neural Networks for Link Prediction</title>

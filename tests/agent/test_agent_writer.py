@@ -1,7 +1,7 @@
 """writer agent + spawn 审稿测试（Task 7：删 ReviewDraftTool 桥，改共享 SpawnSubAgentTool）。
 
 审稿由 review_draft 桥（agent 目录内单消费者工具）改为直接 spawn_sub_agent
-（paperflow/tools/spawn.py 共享层）——与 supervisor 同款派发。父 writer
+（paperflow/tools/orchestration/spawn.py 共享层）——与 supervisor 同款派发。父 writer
 在 ReAct 循环里调用 spawn_sub_agent(agent_type=reviewer, task="审阅草稿文件 <draft>，对照原文 <pdf>")，
 reviewer 子 agent 返回 SubAgentResult（summary 首行「审查裁决：pass/fail」）。
 """

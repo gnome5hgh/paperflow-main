@@ -7,7 +7,7 @@
 安全中间件的 on_finish 钩子统一兜底。
 """
 from paperflow.config import PaperFlowConfig
-from paperflow.tools.factory import make_tools
+from paperflow.tools.common.factory import make_tools
 from paperflow.tools import (
     ReadFileTool, ReadPdfTool, GlobTool, GrepTool, AskUserQuestionTool,
 )

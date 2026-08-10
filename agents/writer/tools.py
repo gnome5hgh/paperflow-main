@@ -11,8 +11,8 @@ from paperflow.tools import (
     ReadFileTool, ReadPdfTool, WriteFileTool, EditFileTool,
     GlobTool, GrepTool, AskUserQuestionTool,
 )
-from paperflow.tools.factory import make_tools
-from paperflow.tools.spawn import SpawnSubAgentTool
+from paperflow.tools.common.factory import make_tools
+from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
 
 
 # 完整装配 8 工具:4 原子工具 + ask_user_question + 共享 spawn_sub_agent + glob/grep。

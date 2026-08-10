@@ -7,7 +7,7 @@ from paperflow.core.security import SecurityBlocked
 from paperflow.core.security.workspace import WorkspacePolicyMiddleware
 from paperflow.core.security.scanner import SecurityScanMiddleware
 from paperflow.core.security import ToolContext
-from paperflow.tools.factory import make_tools
+from paperflow.tools.common.factory import make_tools
 from paperflow.tools import ReadFileTool, WriteFileTool, EditFileTool
 
 TOOL_CLASSES = [ReadFileTool, WriteFileTool, EditFileTool]

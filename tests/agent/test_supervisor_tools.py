@@ -14,13 +14,13 @@ from paperflow.core.tool import Tool, ToolResult
 from tests.conftest import _tc
 from tests.agent.test_agent import make_mock_llm, make_mock_registry
 
-from paperflow.tools.spawn import (
+from paperflow.tools.orchestration.spawn import (
     SpawnSubAgentTool, SubAgentResult,
     _UserWaitClock, _wrap_confirm_callback, _run_child_with_budget,
     _task_fingerprint, _task_has_path, _SPAWN_REGISTRY,
     _evict_stale_spawn_entries, _SPAWN_REUSE_WINDOW_S,
 )
-from paperflow.tools.ask_user import AskUserQuestionTool
+from paperflow.tools.orchestration.ask_user import AskUserQuestionTool
 
 
 def _supervisor(tools, **kwargs):
@@ -53,7 +53,7 @@ def test_spawn_dedup_reuses_completed():
     同一 ToolResult。MockAgent.call_count==1 证明第二次未重新构造子 agent（若去重失效，
     第二次会再构造 → call_count==2）。"""
     task = "审阅这份草稿并给出意见"
-    with patch("paperflow.tools.spawn.Agent") as MockAgent:
+    with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
         MockAgent.return_value.run = AsyncMock(return_value="done")
         agent = _supervisor([SpawnSubAgentTool()])
         tool = agent.tools["spawn_sub_agent"]
@@ -75,7 +75,7 @@ def test_spawn_dedup_reruns_when_world_changed(tmp_path):
     p = tmp_path / "draft.md"
     p.write_text("v1", encoding="utf-8")
     task = f"审阅草稿文件 {p}，对照原文 {tmp_path / 'paper.pdf'}"
-    with patch("paperflow.tools.spawn.Agent") as MockAgent:
+    with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
         MockAgent.return_value.run = AsyncMock(side_effect=["fail", "pass"])
         agent = _supervisor([SpawnSubAgentTool()])
         tool = agent.tools["spawn_sub_agent"]
@@ -92,7 +92,7 @@ def test_spawn_dedup_running_hint():
 
     running 状态无法在单线程同步调用里自然构造（execute 同步跑完才返回），故直接
     seed 一条 running 记录到注册表，验证读路径返回等待提示而非重复派发。"""
-    with patch("paperflow.tools.spawn.Agent") as MockAgent:
+    with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
         MockAgent.return_value.run = AsyncMock(return_value="done")
         agent = _supervisor([SpawnSubAgentTool()])
         tool = agent.tools["spawn_sub_agent"]
@@ -140,7 +140,7 @@ def test_path_bearing_task_never_caches_done(tmp_path):
     p = tmp_path / "draft.md"
     p.write_text("v1", encoding="utf-8")
     task = f"审阅草稿文件 {p}"
-    with patch("paperflow.tools.spawn.Agent") as MockAgent:
+    with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
         MockAgent.return_value.run = AsyncMock(return_value="done")
         agent = _supervisor([SpawnSubAgentTool()])
         tool = agent.tools["spawn_sub_agent"]
@@ -158,7 +158,7 @@ def test_pathless_task_done_cache_reuse():
     test_spawn_dedup_reuses_completed 已锁复用行为；这里补充注册表状态断言——无路径任务
     完成后落 done（可被窗内同指纹命中），与 _SPAWN_REGISTRY 残留清理逻辑正交。"""
     task = "搜索关于强化学习的论文"
-    with patch("paperflow.tools.spawn.Agent") as MockAgent:
+    with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
         MockAgent.return_value.run = AsyncMock(return_value="done")
         agent = _supervisor([SpawnSubAgentTool()])
         tool = agent.tools["spawn_sub_agent"]
@@ -177,7 +177,7 @@ class TestSpawnSubAgentTool:
 
     def test_confirm_callback_passed_to_child(self):
         """D6 关键断言：child 构造必须继承父 confirm_callback（writer 写盘靠它）。"""
-        with patch("paperflow.tools.spawn.Agent") as MockAgent:
+        with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(return_value="done")
             cb = lambda cr: True
             agent = _supervisor([SpawnSubAgentTool()], confirm_callback=cb)
@@ -196,7 +196,7 @@ class TestSpawnSubAgentTool:
         old = SpawnSubAgentTool.timeout
         SpawnSubAgentTool.timeout = 0.05       # 覆盖 120s 默认（类属性，测试后还原防泄漏）
         try:
-            with patch("paperflow.tools.spawn.Agent") as MockAgent:
+            with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
                 async def hang(*a, **k):
                     await asyncio.sleep(5)
                 MockAgent.return_value.run = hang
@@ -213,7 +213,7 @@ class TestSpawnSubAgentTool:
         assert parsed["error_detail"] == expected
 
     def test_max_turns_maps_to_failed(self):
-        with patch("paperflow.tools.spawn.Agent") as MockAgent:
+        with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(side_effect=MaxTurnsExceeded("boom"))
             agent = _supervisor([SpawnSubAgentTool()])
             result = agent.tools["spawn_sub_agent"].execute(
@@ -241,7 +241,7 @@ class TestSpawnSubAgentTool:
 
     def test_timeout_uses_agent_timeouts_map(self):
         """config 命中时 error_detail 插值用 map 值而非类默认（防漂移）。"""
-        with patch("paperflow.tools.spawn.Agent") as MockAgent:
+        with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
             async def hang(*a, **k):
                 await asyncio.sleep(5)
             MockAgent.return_value.run = hang
@@ -258,7 +258,7 @@ class TestSpawnSubAgentTool:
 
         与 confirm_callback 同款传播——root CLI 注入 → supervisor → 子 agent。
         searcher/reviewer 也继承回调但不装配工具，权限仍卡在工具面。"""
-        with patch("paperflow.tools.spawn.Agent") as MockAgent:
+        with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(return_value="done")
             cb = lambda q: "中文笔记"
             agent = _supervisor([SpawnSubAgentTool()], ask_user_callback=cb)
@@ -294,7 +294,7 @@ class TestStreamCallbackPropagation:
         只透传工具行并加前缀标识来源。子 agent 拿到的不是父回调原样，而是包装后的。"""
         received = []
         parent_cb = received.append
-        with patch("paperflow.tools.spawn.Agent") as MockAgent:
+        with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(return_value="ok")
             agent = _supervisor([SpawnSubAgentTool()], stream_callback=parent_cb)
             agent.tools["spawn_sub_agent"].execute(agent_type="a", task="t1")
@@ -400,14 +400,14 @@ class TestSpawnConfirmBudget:
 
 
 def test_subagent_result_has_digest_field():
-    from paperflow.tools.spawn import SubAgentResult
+    from paperflow.tools.orchestration.spawn import SubAgentResult
     r = SubAgentResult(status="success", summary="x")
     assert r.digest == {}
 
 
 def test_digest_schema_for_maps_types():
-    from paperflow.tools.spawn import digest_schema_for
-    from paperflow.tools.spawn import (
+    from paperflow.tools.orchestration.spawn import digest_schema_for
+    from paperflow.tools.orchestration.spawn import (
         SearcherDigest, ReviewerDigest, WriterDigest, GenericDigest,
     )
     assert digest_schema_for("searcher") is SearcherDigest
@@ -420,7 +420,7 @@ def test_aggregate_tool_removed():
     """C2：aggregate_results 工具已删除——supervisor 直接读各 spawn 结果的 digest。"""
     import agents.supervisor.tools as st
     assert not hasattr(st, "AggregateResultsTool")
-    from paperflow.tools.spawn import SpawnSubAgentTool
+    from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
     assert True
 
 
@@ -450,7 +450,7 @@ def test_extract_digest_structured_success():
     model_dump 会补齐默认值——断言整个 dict（含默认值）而非部分键，锁住 model_dump 回归。"""
     import asyncio
     import json
-    from paperflow.tools.spawn import _extract_digest
+    from paperflow.tools.orchestration.spawn import _extract_digest
     llm = _digest_llm(json.dumps({"count": 2, "papers": ["a", "b"]}))
     d = asyncio.run(_extract_digest(llm, "searcher", "一些最终回答文本"))
     assert d == {"count": 2, "papers": ["a", "b"],
@@ -463,7 +463,7 @@ def test_extract_digest_invalid_json_falls_back_empty():
     验证 _extract_digest 的失败兜底不是"mock 签名 TypeError 才触发"——即使 chat 接受
     全部 kwarg、返回非法 JSON，也应静默返回 {}（supervisor 回退读 summary）。"""
     import asyncio
-    from paperflow.tools.spawn import _extract_digest
+    from paperflow.tools.orchestration.spawn import _extract_digest
     llm = _digest_llm("不是 JSON")
     d = asyncio.run(_extract_digest(llm, "searcher", "文本"))
     assert d == {}
@@ -508,7 +508,7 @@ class TestMulticallParallelDispatch:
         max_active = 0
         barrier = threading.Barrier(3)
 
-        with patch("paperflow.tools.spawn.Agent") as MockAgent:
+        with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
             async def run_mixed(task):
                 nonlocal active, max_active
                 with lock:
@@ -523,7 +523,7 @@ class TestMulticallParallelDispatch:
                         active -= 1
                 return f"ok:{task}"
             MockAgent.return_value.run = run_mixed
-            with patch("paperflow.tools.spawn._extract_digest",
+            with patch("paperflow.tools.orchestration.spawn._extract_digest",
                        new=AsyncMock(return_value={})):
                 agent = _supervisor([SpawnSubAgentTool()], llm=llm)
                 asyncio.run(agent.run("并行任务"))
@@ -547,13 +547,13 @@ class TestMulticallParallelDispatch:
                           "arguments": json.dumps({"agent_type": "a", "task": "ok2"})}},
         ])
         llm = make_mock_llm([tool_call, Message(role="assistant", content="done")])
-        with patch("paperflow.tools.spawn.Agent") as MockAgent:
+        with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
             async def run_mixed(task):
                 if "fail" in task:
                     raise MaxTurnsExceeded("boom")
                 return f"ok:{task}"
             MockAgent.return_value.run = run_mixed
-            with patch("paperflow.tools.spawn._extract_digest",
+            with patch("paperflow.tools.orchestration.spawn._extract_digest",
                        new=AsyncMock(return_value={})):
                 agent = _supervisor([SpawnSubAgentTool()], llm=llm)
                 asyncio.run(agent.run("并行任务"))

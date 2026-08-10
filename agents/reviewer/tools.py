@@ -6,7 +6,7 @@
 reviewer 是叶子审稿 agent,不派发子 agent。
 """
 from paperflow.config import PaperFlowConfig
-from paperflow.tools.factory import make_tools
+from paperflow.tools.common.factory import make_tools
 from paperflow.tools import (
     ReadFileTool, ReadPdfTool, FormatCheckTool, SubmitReviewTool,
     LookupVenueRankTool, SubmitDownloadReviewTool, GlobTool, GrepTool,

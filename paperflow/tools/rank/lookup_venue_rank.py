@@ -13,7 +13,7 @@ import httpx
 
 from paperflow.core.security.network import validate_url_target
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.tools._http import _HttpClientMixin
+from paperflow.tools.common._http import _HttpClientMixin
 from paperflow.tools.rank._venue_rank import lookup_local, normalize_venue, RANK_CACHE, RANK_CACHE_MAX
 
 

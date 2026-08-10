@@ -1,6 +1,6 @@
 """ArxivSearchTool：arXiv API 纯搜索工具（下载已拆至 fetch_pdf）。
 
-出站抓取前做 SSRF 校验,重定向链逐跳校验(见 paperflow/tools/_http.py)。
+出站抓取前做 SSRF 校验,重定向链逐跳校验(见 paperflow/tools/common/_http.py)。
 只读操作,写盘/下载由 FetchPdfTool 承担。
 
 execute() 骨架在 BaseSearchTool(search/_common.py)中与 openalex 共享;本文件保留
@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 import httpx
 
 from paperflow.core.security.network import validate_url_target
-from paperflow.tools._http import _HttpClientMixin
+from paperflow.tools.common._http import _HttpClientMixin
 from paperflow.tools.search._common import BaseSearchTool
 
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}

@@ -7,8 +7,8 @@
 工具实例而非类;allowed_spawns 声明放行 reviewer。
 """
 from paperflow.config import PaperFlowConfig
-from paperflow.tools.factory import make_tools
-from paperflow.tools.spawn import SpawnSubAgentTool
+from paperflow.tools.common.factory import make_tools
+from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
 from paperflow.tools import (
     ArxivSearchTool, OpenAlexSearchTool, FetchPdfTool, GlobTool, GrepTool,
 )

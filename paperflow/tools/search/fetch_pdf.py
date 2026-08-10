@@ -6,7 +6,7 @@ download_to 分支）。拆出后：
 - 搜索工具降为纯只读（low 风险），写盘副作用集中在本工具；
 - 审计日志里「写盘」动作归于 fetch_pdf，不再藏在名为 search 的工具下。
 
-SSRF 校验逻辑从 paperflow/tools/_http.py 的 _download_pdf 助手原样并入本工具的
+SSRF 校验逻辑从 paperflow/tools/common/_http.py 的 _download_pdf 助手原样并入本工具的
 _fetch 方法——该助手仅被下载路径使用，拆分后无跨模块复用方，故不另留模块函数。
 """
 import httpx

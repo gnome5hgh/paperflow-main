@@ -65,7 +65,7 @@ def test_make_tools_roots_absolute_no_double_prefix(tmp_path):
     """RC1 端到端：from_env 相对 workspace 的配置 → _root_map 产出绝对根、无双前缀，
     且正确绝对模板路径能通过 WorkspacePolicy.check_path（修复前被 data/data 拦）。"""
     from paperflow.config import PaperFlowConfig
-    from paperflow.tools.factory import _root_map
+    from paperflow.tools.common.factory import _root_map
     from paperflow.core.security.workspace import WorkspacePolicy
     cfg_path = tmp_path / "c.yaml"
     cfg_path.write_text("workspace: data\n", encoding="utf-8")

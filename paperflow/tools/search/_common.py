@@ -8,7 +8,7 @@
 2. **BaseSearchTool**:arxiv/openalex 双源搜索的共享 execute() 骨架(模板方法),
    子类只实现源标识/客户端/结果渲染差异段。
 
-SSRF 安全抓取走 paperflow/tools/_http.py 的共享 mixin；PDF 下载职责已拆至
+SSRF 安全抓取走 paperflow/tools/common/_http.py 的共享 mixin；PDF 下载职责已拆至
 fetch_pdf.py 的 FetchPdfTool——本模块只做纯搜索,不再触碰本地资料库。
 """
 import re

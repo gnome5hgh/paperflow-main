@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from paperflow.core.llm import Message
-from paperflow.tools.factory import make_tools
+from paperflow.tools.common.factory import make_tools
 from paperflow.tools import SubmitReviewTool
 from tests.conftest import make_mock_llm, _tc, make_agent
 

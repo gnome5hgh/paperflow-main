@@ -3,7 +3,7 @@ from pathlib import Path
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.tools.factory import make_tools
+from paperflow.tools.common.factory import make_tools
 
 
 class RootTool(Tool):
