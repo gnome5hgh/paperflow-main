@@ -94,6 +94,16 @@ def test_search_paper_has_glob_grep(agent_registry):
     assert {"glob", "grep"} <= names
 
 
+def test_searcher_lacks_ask_user_question(agent_registry):
+    """权限最小化：searcher 不装配 ask_user_question（约束由 supervisor 拼入）。
+
+    反面断言锁装配面——防回归：万一误把问用户工具装配给 searcher，
+    上面的 `<=` 子集断言测不出新增工具，只有这条 not in 能拦住。"""
+    config = agent_registry.get_config("searcher")
+    names = {t.name for t in config.tools}
+    assert "ask_user_question" not in names
+
+
 def test_search_paper_tools_without_dedup_filter(agent_registry, agent_env):
     """Task 8 工具集变化：门禁管线工具 = 双源搜索 + fetch_pdf + glob/grep + spawn。
 

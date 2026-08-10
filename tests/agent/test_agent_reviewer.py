@@ -75,3 +75,13 @@ async def test_reviewer_download_mode_no_rank_constraint(agent_env, agent_regist
         "审查以下候选论文：Quantum negative sampling(arXiv, 2025)。用户约束：年份≥2025、主题=负采样算法"
     )
     assert "审查裁决：pass" in out
+
+
+def test_reviewer_lacks_ask_user_question(agent_registry):
+    """权限最小化：reviewer 不装配 ask_user_question（审核标准由任务文本给定）。
+
+    反面断言锁装配面——防回归：reviewer 审核依据是任务文本里的约束，
+    不该有中途问用户入口；上面的 `<=` 子集断言测不出新增工具，这条 not in 拦住。"""
+    config = agent_registry.get_config("reviewer")
+    names = {t.name for t in config.tools}
+    assert "ask_user_question" not in names
