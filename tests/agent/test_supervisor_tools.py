@@ -20,7 +20,7 @@ from paperflow.tools.spawn import (
     _task_fingerprint, _task_has_path, _SPAWN_REGISTRY,
     _evict_stale_spawn_entries, _SPAWN_REUSE_WINDOW_S,
 )
-from agents.supervisor.tools import AskUserQuestionTool
+from paperflow.tools.ask_user import AskUserQuestionTool
 
 
 def _supervisor(tools, **kwargs):
