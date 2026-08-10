@@ -18,6 +18,7 @@ from paperflow.tools.file.format_check import FormatCheckTool
 from paperflow.tools.review.submit_review import SubmitReviewTool
 from paperflow.tools.search.arxiv_search import ArxivSearchTool
 from paperflow.tools.search.openalex_search import OpenAlexSearchTool
+from paperflow.tools.search.web_search import WebSearchTool
 from paperflow.tools.search.fetch_pdf import FetchPdfTool
 from paperflow.tools.rank.lookup_venue_rank import LookupVenueRankTool
 from paperflow.tools.review.submit_download_review import SubmitDownloadReviewTool
@@ -26,6 +27,6 @@ from paperflow.tools.orchestration.ask_user import AskUserQuestionTool
 __all__ = [
     "GlobTool", "GrepTool", "ReadFileTool", "WriteFileTool", "EditFileTool",
     "ReadPdfTool", "FormatCheckTool",
-    "SubmitReviewTool", "ArxivSearchTool", "OpenAlexSearchTool", "FetchPdfTool",
+    "SubmitReviewTool", "ArxivSearchTool", "OpenAlexSearchTool", "WebSearchTool", "FetchPdfTool",
     "LookupVenueRankTool", "SubmitDownloadReviewTool", "AskUserQuestionTool",
 ]
