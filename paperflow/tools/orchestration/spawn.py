@@ -316,8 +316,11 @@ class SpawnSubAgentTool(Tool):
         # 不依赖 LLM 遵循 SKILL）。非派发意图=陈述方向/切换/系统类——直接回复或记忆
         # 操作，绝不派发领域 agent。refine_query 放行（它是重派入口）。last_intent
         # 为 None（管线降级）时放行，不改变现状。
+        # steps 例外：LLM 兜底产出 GENERAL + 复合意图拆分（steps 非空）时放行——
+        # steps 恒为 LLM 标注的业务意图，非派发意图不会带 steps；supervisor 按序
+        # 调度各 step 时每一步 spawn 都应通过门禁（否则复合派发整条被误拒）。
         li = parent.last_intent
-        if li is not None and not INTENT_META[li.intent_type][1]:
+        if li is not None and not li.steps and not INTENT_META[li.intent_type][1]:
             result = SubAgentResult(status="denied",
                                     summary=f"当前意图 {li.intent_type.value} 不派发领域 agent")
             return ToolResult(text=result.model_dump_json(), summary=result.model_dump())

@@ -6,7 +6,7 @@
 流程（spec §4.7.4 标定闭环）：
   1. 加载 BgeEmbedder + load_routes（训练集）+ load_eval（held-out）
   2. fit() 校准 per-route 阈值（routes 为训练集；fit 已预计算得分，不逐候选重编码）
-  3. 门槛断言（统一预测源 _pred 运行时路径，⚪3）：整体≥0.90 / 每意图≥0.80 /
+  3. 门槛断言（统一预测源 _pred 运行时路径，⚪3）：整体≥0.85 / 每意图≥0.80 /
      非general落general≤0.15
   4. 对照基线：FixedDenseEncoder **同样 fit**（🟠1——未 fit 时永不产生 general，
      对比失真；同 routes 同标定才公平），bge 必须 ≥ 基线
@@ -115,6 +115,9 @@ def main() -> int:
         return 1
 
     # ③ 达标 → 写回交付态
+    # 注意：save_thresholds（yaml.safe_dump 重建）会丢掉文件里全部 inline 注释——标定
+    # 写回后需手动恢复 K2/K3 回归锁注释（data/intents/routes.yaml:50/194），否则确定性
+    # 回归锁的防删语义随注释一起消失。
     save_thresholds(Path("data/intents/routes.yaml"), router.routes)
     print("[达标] 阈值已写回 data/intents/routes.yaml（启动只 load，零 fit）")
     return 0

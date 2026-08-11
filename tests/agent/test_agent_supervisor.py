@@ -167,7 +167,6 @@ def test_k2_to_k9_routing(supervisor_registry):
 def test_k10_gate_blocks_spawn_for_non_dispatch(supervisor_registry):
     """K10 门禁交叉：chitchat 轮 supervisor 若尝试 spawn 会被工具拒绝（代码级）。"""
     import asyncio
-    import json
     from paperflow.core.agent import Agent
     from paperflow.core.conversation_state import ConversationState
     from tests.agent.test_agent import make_capture_llm

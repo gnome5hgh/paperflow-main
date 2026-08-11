@@ -207,6 +207,25 @@ class TestSpawnSubAgentTool:
                 parsed = json.loads(result.text)
                 assert parsed["status"] == "success"
 
+    def test_spawn_gate_allows_steps_compound_dispatch(self):
+        """steps 复合派发回归锁：GENERAL + 非空 steps 不被门禁拦（review Important 修复）。
+
+        LLM 兜底可能产出 GENERAL + 复合意图拆分（pipeline 的 steps 字段），supervisor 按序
+        调度各 step 的业务意图——门禁若只按 intent_type 判非派发，每一步 spawn 都会被误拒。
+        steps 恒为 LLM 标注的业务意图（非派发意图不会带 steps），故 steps 非空即放行。"""
+        from paperflow.core.intent.intent_schema import IntentOutput, IntentStep
+        with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
+            MockAgent.return_value.run = AsyncMock(return_value="done")
+            agent = _supervisor([SpawnSubAgentTool()])
+            agent.last_intent = IntentOutput(
+                intent_type=IntentType.GENERAL, confidence=0.9,
+                source=IntentStep.LLM,
+                steps=[IntentType.SEARCH_PAPER, IntentType.GENERATE_NOTE])
+            result = agent.tools["spawn_sub_agent"].execute(
+                agent_type="searcher", task="t")
+            parsed = json.loads(result.text)
+            assert parsed["status"] == "success"
+
     def test_spawn_gate_fallback_when_no_intent(self):
         """管线降级（last_intent=None）时门禁放行——不改变现状行为。"""
         agent = _supervisor([SpawnSubAgentTool()])

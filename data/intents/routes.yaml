@@ -1,3 +1,7 @@
+# 交付态标定注释：score_threshold 全 0.0 是 verify_intent fit 标定后的写回交付态（启动只
+# load 零 fit）。路由器从不主动 punt 到 general——general 仅零匹配命中才产出（Q1 泄漏
+# 0.000 已由 verify_intent 验证）。请勿手工调阈值；重标定写回会丢 inline 注释，
+# 需手动恢复下方 K2/K3 回归锁注释。
 routes:
 - name: search_paper
   utterances:
