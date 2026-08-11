@@ -290,82 +290,25 @@ eval:
   - query: 我的阅读习惯统计
     intent: manage_memory
     hard: true
-  # general —— chitchat / 纯寒暄 / 无明确意图 / 追问（无 prev 上下文）
-  - query: 你好，今天天气不错
-    intent: general
-    hard: true
-  - query: 谢谢你的帮助
-    intent: general
-    hard: true
-  - query: 哈哈哈哈哈哈
-    intent: general
-    hard: true
-  - query: 你是谁
-    intent: general
-    hard: true
-  - query: 今天吃了吗
-    intent: general
-  - query: 你真厉害
-    intent: general
-  - query: 再见
-    intent: general
-    hard: true
+  # general —— 纯兜底（路由 miss / 无明确意图 / 追问无 prev 上下文），对应 routes 的
+  # general ≤5 占位语料。寒暄/感谢/告别/玩笑归 chitchat、天气/代办归 out_of_scope
+  # （spec §5.3 已把闲聊/超范围从 general 拆出为独立系统意图——标 general 会与
+  # 那些 route 的语料语义冲突，路由器正确判给具体系统意图反而被判错）。
   - query: 好嘞
     intent: general
   - query: 嗯好
-    intent: general
-  - query: 帮我倒杯水
-    intent: general
-    hard: true
-  - query: 你叫什么名字
-    intent: general
-    hard: true
-  - query: 周末愉快
-    intent: general
-  - query: 加油
-    intent: general
-    hard: true
-  - query: 哈哈哈笑死我了
-    intent: general
-  - query: 说个笑话
-    intent: general
-    hard: true
-  - query: 随便聊聊吧
-    intent: general
-    hard: true
-  - query: 没什么事
     intent: general
   - query: 哦哦明白了
     intent: general
   - query: 好的收到
     intent: general
-  - query: 拜拜
-    intent: general
-    hard: true
-  - query: 辛苦你了
-    intent: general
-    hard: true
-  - query: 这样啊
-    intent: general
   - query: 哈哈好的
-    intent: general
-    hard: true
-  - query: 你忙吧
-    intent: general
-  - query: 明天见
-    intent: general
-  - query: 那第三篇呢
     intent: general
     hard: true
   - query: 然后呢
     intent: general
     hard: true
-  - query: 你能帮我写作业吗
-    intent: general
-    hard: true
-  - query: 随便说点什么吧
-    intent: general
-  - query: 这是今天的天气吗
+  - query: 那第三篇呢
     intent: general
     hard: true
   # set_research_topic —— 设定/记录研究方向（business，记录+引导，不派发）
@@ -488,6 +431,60 @@ eval:
     intent: chitchat
   - query: 哈哈哈
     intent: chitchat
+  # 以下从 general 归位到 chitchat（spec §5.3 拆出闲聊为独立系统意图）——寒暄/感谢/
+  # 告别/玩笑/身份寒暄，与 chitchat route 语料（你好啊/谢谢你/拜拜啦/你是谁呀/随便聊聊）
+  # 同域。hard 标记保留：形似 general/out_of_scope/help 的混淆样本。
+  - query: 你好，今天天气不错
+    intent: chitchat
+    hard: true
+  - query: 谢谢你的帮助
+    intent: chitchat
+    hard: true
+  - query: 哈哈哈哈哈哈
+    intent: chitchat
+    hard: true
+  - query: 你是谁
+    intent: chitchat
+    hard: true
+  - query: 今天吃了吗
+    intent: chitchat
+  - query: 你真厉害
+    intent: chitchat
+  - query: 再见
+    intent: chitchat
+    hard: true
+  - query: 你叫什么名字
+    intent: chitchat
+    hard: true
+  - query: 周末愉快
+    intent: chitchat
+  - query: 加油
+    intent: chitchat
+    hard: true
+  - query: 哈哈哈笑死我了
+    intent: chitchat
+  - query: 说个笑话
+    intent: chitchat
+    hard: true
+  - query: 随便聊聊吧
+    intent: chitchat
+    hard: true
+  - query: 没什么事
+    intent: chitchat
+  - query: 拜拜
+    intent: chitchat
+    hard: true
+  - query: 辛苦你了
+    intent: chitchat
+    hard: true
+  - query: 这样啊
+    intent: chitchat
+  - query: 你忙吧
+    intent: chitchat
+  - query: 明天见
+    intent: chitchat
+  - query: 随便说点什么吧
+    intent: chitchat
   # out_of_scope —— 超出能力范围（system，明确拒绝）
   - query: 帮我订份外卖
     intent: out_of_scope
@@ -510,6 +507,16 @@ eval:
   - query: 帮我写一封邮件
     intent: out_of_scope
   - query: 帮我校对论文
+    intent: out_of_scope
+    hard: true
+  # 以下从 general 归位到 out_of_scope（代办/天气属超范围，与 out_of_scope route 语料同域）
+  - query: 帮我倒杯水
+    intent: out_of_scope
+    hard: true
+  - query: 你能帮我写作业吗
+    intent: out_of_scope
+    hard: true
+  - query: 这是今天的天气吗
     intent: out_of_scope
     hard: true
   # help —— 帮助/功能引导（system，直接回复）
