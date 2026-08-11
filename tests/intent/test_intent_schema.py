@@ -116,17 +116,3 @@ def test_intention_result_carries_steps_and_clarification():
         clarification="要搜索还是生成笔记？")
     assert r.steps == [IntentType.SEARCH_PAPER, IntentType.GENERATE_NOTE]
     assert r.clarification == "要搜索还是生成笔记？"
-
-
-def test_intent_output_task_requested_default_true():
-    """任务性判别信号：默认 True 保守——漏设时走既有派发，绝不错误抑制。"""
-    out = IntentOutput(intent_type=IntentType.GENERAL, confidence=0.0,
-                       source=IntentStep.ROUTER)
-    assert out.task_requested is True
-    assert out.model_dump()["task_requested"] is True      # 序列化进 INTENT 块
-
-
-def test_intent_output_carries_task_requested():
-    out = IntentOutput(intent_type=IntentType.MANAGE_MEMORY, confidence=0.8,
-                       source=IntentStep.ROUTER, task_requested=False)
-    assert out.task_requested is False

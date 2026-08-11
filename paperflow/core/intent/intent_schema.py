@@ -56,11 +56,6 @@ class IntentOutput(BaseModel):
     #: 置信度，范围约束在 [0,1]（LLM 可能输出越界值，pydantic 强制约束）
     confidence: float = Field(ge=0.0, le=1.0)
 
-    #: 任务性判别：用户是否在下任务（True=任务可派发；False=仅陈述上下文，
-    #: supervisor 应记录+询问不派发）。默认 True 保守——漏设时走既有派发，
-    #: 绝不错误抑制。
-    task_requested: bool = True
-
     #: 实体提取阶段得到的实体（由管线填充）
     entities: dict = Field(default_factory=dict)
 
