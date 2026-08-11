@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 from paperflow.cli import main
 from paperflow.config import PaperFlowConfig
+from paperflow.core.memory.orm import block as block_orm
 from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
 from paperflow.core.memory.services.message_manager import MessageManager
@@ -66,3 +67,29 @@ def test_main_assembly_no_typeerror(monkeypatch):
 
     main()  # 无异常 = 组装成功（T11 前在此抛 TypeError）
     assert (tmp / "memory" / "memory.db").exists()
+
+
+def test_main_seeds_default_blocks(monkeypatch):
+    """核心记忆生命周期：main() 装配后 persona/human 默认块已播种、投影文件已生成。"""
+    tmp = Path(tempfile.mkdtemp())
+    cfg = PaperFlowConfig()
+    cfg.workspace = str(tmp)
+    cfg.agents_dir = str(_AGENTS_DIR)
+    cfg.sleeptime_enable = False
+
+    async def _noop_repl(*a, **k):
+        return None
+
+    monkeypatch.setattr("paperflow.cli.PaperFlowConfig.from_env",
+                        staticmethod(lambda: cfg))
+    monkeypatch.setattr("paperflow.cli.LLMClient",
+                        lambda *a, **k: MagicMock())
+    monkeypatch.setattr("paperflow.cli._rag_embedder",
+                        lambda config: FakeEmbedder())
+    monkeypatch.setattr("paperflow.cli._repl", _noop_repl)
+
+    main()
+    db = MemoryDB(tmp / "memory" / "memory.db")
+    labels = {r["label"] for r in block_orm.select_blocks(db)}
+    assert {"persona", "human"} <= labels
+    assert (tmp / "memory" / "system" / "persona.md").exists()

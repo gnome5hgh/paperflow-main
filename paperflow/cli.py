@@ -249,6 +249,7 @@ def main() -> None:
     memory_dir = Path(config.workspace) / "memory"
     db = MemoryDB(memory_dir / "memory.db")
     block_manager = GitEnabledBlockManager(db, memfs_dir=memory_dir)
+    block_manager.ensure_default_blocks()   # 首启播种默认 persona/human 核心记忆块
     embedder = _rag_embedder(config)
     message_manager = MessageManager(db, embedder=embedder)
     passage_manager = PassageManager(db, embedder=embedder)
