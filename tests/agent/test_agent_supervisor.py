@@ -1,4 +1,7 @@
-"""Supervisor agent 冒烟测试：注册表装配 + INTENT 块消费冒烟（mock LLM）。"""
+"""Supervisor agent 冒烟测试：注册表装配 + INTENT 块消费冒烟（mock LLM）。
+
+K1-K10 是确定性路由代码路径回归锁（FakeEmbedder 稠密信号近常数，路由质量
+由 Task 8 verify_intent 用真实 bge 验证）——615 全绿不代表"路由可用"。"""
 import pytest
 from unittest.mock import MagicMock
 
