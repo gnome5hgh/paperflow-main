@@ -5,6 +5,7 @@ wire（core/llm.py::Message）→ schemas Message（补 id/created_at）→ mess
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from paperflow.core.llm import Message as WireMessage
@@ -13,6 +14,8 @@ from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.schemas.message import Message, MessageRole
 
 __all__ = ["MessageManager"]
+
+logger = logging.getLogger(__name__)
 
 
 def _wire_to_schema(wire: WireMessage) -> Message:
@@ -48,6 +51,23 @@ class MessageManager:
         m = _wire_to_schema(wire)
         message_orm.insert_message(self.db, agent_id, m)
         return m
+
+    def make_ask_recorder(self, base_ask, agent_id):
+        """包装 ask_user 回调：读答案同时把 Q&A 记进 messages 表（role=user）。
+
+        子 agent（writer/qa-agent）无独立 message_manager，其 ask_user 问答本会随
+        spawn 结束丢失；统一在此记录 → Sleeptime 可整合进 human 块。记录失败
+        fail-safe（不阻断提问），answer 原样透传。
+        """
+        def ask(question: str) -> str:
+            answer = base_ask(question)
+            try:
+                self.add_message(agent_id, WireMessage(
+                    role="user", content=f"[ask_user] {question}\n{answer}"))
+            except Exception:
+                logger.warning("记录 ask_user 问答失败", exc_info=True)
+            return answer
+        return ask
 
     def get_messages_by_agent_id(self, agent_id: str,
                                  limit: int | None = None) -> list[Message]:

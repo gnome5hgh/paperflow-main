@@ -15,7 +15,7 @@ from pathlib import Path
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.agent_registry import AgentRegistry
-from paperflow.core.llm import LLMClient, Message as WireMessage
+from paperflow.core.llm import LLMClient
 from paperflow.core.conversation_state import ConversationState, PendingClarification
 from paperflow.core.security import (
     AuditMiddleware, WorkspacePolicyMiddleware,
@@ -94,27 +94,6 @@ def _stdin_ask(question: str) -> str:
             return input("> ").strip()
         except EOFError:
             return ""             # Ctrl-D：返回空串，Supervisor ReAct 自行处理
-
-
-def _make_ask_user_recorder(base_ask, message_manager, session_id):
-    """包装 ask_user 回调：读答案的同时把 Q&A 记进 messages 表。
-
-    子 agent（writer/qa-agent）无 message_manager，其 ask_user 问答本会随 spawn 结束
-    丢失；统一在回调层记 role=user 消息 → Sleeptime 可整合进 human 块。记录失败
-    fail-safe（不阻断提问），answer 原样透传。supervisor 自身问答已有 assistant+tool
-    两条记录，这里多出的 user 版是更干净的整合信号（轻微冗余）。
-    """
-    def ask(question: str) -> str:
-        answer = base_ask(question)
-        try:
-            message_manager.add_message(
-                session_id,
-                WireMessage(role="user",
-                            content=f"[ask_user] {question}\n{answer}"))
-        except Exception:
-            logger.warning("记录 ask_user 问答失败", exc_info=True)
-        return answer
-    return ask
 
 
 class _ReplStreamer:
@@ -318,8 +297,8 @@ def main() -> None:
         security_middleware=middlewares,
         intent_enabled=True, intent_pipeline=pipeline, conversation=conversation,
         confirm_callback=_stdin_confirm,
-        ask_user_callback=_make_ask_user_recorder(_stdin_ask, message_manager,
-                                                  session_id),
+        ask_user_callback=message_manager.make_ask_recorder(_stdin_ask,
+                                                            session_id),
         session_id=session_id,
     )
     sleeptime = Sleeptime(
