@@ -50,11 +50,11 @@ routes:
         含 general route——gate 实证驱动的修订：fit 无 general 负样本收敛到 0.0 阈值
         （pass-all），general 永不产生；加 general route 让 fit 学会拒绝（见 spec §4.7）。
         """
+        from paperflow.core.intent.intent_schema import IntentType
         routes = load_routes(Path("data/intents/routes.yaml"))
-        assert len(routes) >= 5
+        assert len(routes) == 13
         names = {r.name for r in routes}
-        assert names == {"search_paper", "generate_note", "ask_question",
-                         "manage_memory", "general"}
+        assert names == {t.value for t in IntentType}
 
     def test_ask_question_covers_read_intent(self):
         """回归：ask_question 必须有"阅读论文"例句（否则"阅读…论文"误路由到 generate_note）。
@@ -120,8 +120,10 @@ def test_eval_disjoint_from_routes():
     """held-out 泛化保证：eval 查询不得与 routes 例句重复（否则测的是记忆不是泛化）。
 
     用生产文件默认路径断言——这是版本化验收契约的一部分（spec §4.7.1）。
+    排除 general 路由：它是 pass-all 兜底（收窄为 ≤5 条占位），eval 的 general
+    负样本与之重复（「好的」「嗯嗯」）不构成"记答案"；其余语义意图仍逐字不相交。
     """
-    routes = load_routes()
+    routes = [r for r in load_routes() if r.name != "general"]
     route_utterances = {u for r in routes for u in r.utterances}
     eval_items = load_eval()
     overlap = [q for q, _ in eval_items if q in route_utterances]
@@ -134,3 +136,25 @@ def test_eval_covers_all_intents():
     labels = {label for _, label in eval_items}
     assert {"search_paper", "generate_note", "ask_question", "manage_memory", "general"} <= labels
     assert len(eval_items) >= 100          # 规模下限：够统计意义
+
+
+def test_routes_cover_new_taxonomy_13():
+    """R1-R4：13 routes，新 route ≥8 语料，general ≤5 占位。"""
+    from paperflow.core.intent.intent_schema import IntentType
+    routes = load_routes()
+    names = {r.name for r in routes}
+    assert names == {t.value for t in IntentType}          # R1+R2：13 route，名合法
+    utt = {r.name: len(r.utterances) for r in routes}
+    new_intents = {"set_research_topic", "analyze_paper", "refine_query",
+                   "switch_topic", "chitchat", "out_of_scope", "help", "feedback"}
+    for n in new_intents:
+        assert utt[n] >= 8, f"{n} 语料不足 8 条"             # R3
+    assert utt["general"] <= 5                               # R4
+
+
+def test_manage_memory_covers_reading_list():
+    """待读清单折叠进 manage_memory：语料须含增删查待读的表述。"""
+    routes = load_routes()
+    mm = next(r for r in routes if r.name == "manage_memory")
+    joined = "".join(mm.utterances)
+    assert "待读" in joined
