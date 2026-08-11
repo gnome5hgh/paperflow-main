@@ -104,3 +104,40 @@ def test_config_has_compaction_and_sleeptime():
     assert cfg.compaction.mode == "sliding_window"
     assert cfg.sleeptime_enable is True
     assert cfg.sleeptime_agent_frequency == 50
+
+
+def test_sleeptime_config_from_yaml(tmp_path):
+    """sleeptime 开关与频率可经 config.yaml 顶层显式关闭/调整（默认 True/50）。
+    默认已开，若无显式关闭通道则 token 消耗的后台整合不可关。"""
+    from paperflow.config import PaperFlowConfig
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text(
+        "sleeptime_enable: false\nsleeptime_agent_frequency: 10\n",
+        encoding="utf-8",
+    )
+    cfg = PaperFlowConfig.from_env(str(cfg_path))
+    assert cfg.sleeptime_enable is False
+    assert cfg.sleeptime_agent_frequency == 10
+
+
+def test_sleeptime_enable_env_bool_coercion(monkeypatch):
+    """PAPERFLOW_SLEEPTIME_ENABLE 环境变量按布尔解析——"false"→False、"true"→True。
+    否则原始字符串 "false" 非空即真值，默认 True 时无法经 env 显式关闭。"""
+    from paperflow.config import PaperFlowConfig
+
+    monkeypatch.setenv("PAPERFLOW_SLEEPTIME_ENABLE", "false")
+    cfg = PaperFlowConfig.from_env()
+    assert cfg.sleeptime_enable is False
+
+    monkeypatch.setenv("PAPERFLOW_SLEEPTIME_ENABLE", "true")
+    cfg = PaperFlowConfig.from_env()
+    assert cfg.sleeptime_enable is True
+
+
+def test_sleeptime_frequency_env(monkeypatch):
+    """PAPERFLOW_SLEEPTIME_FREQUENCY 环境变量覆盖默认频率（字符串"10"→int 10）。"""
+    from paperflow.config import PaperFlowConfig
+
+    monkeypatch.setenv("PAPERFLOW_SLEEPTIME_FREQUENCY", "10")
+    cfg = PaperFlowConfig.from_env()
+    assert cfg.sleeptime_agent_frequency == 10

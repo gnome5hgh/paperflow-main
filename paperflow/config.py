@@ -166,7 +166,7 @@ class PaperFlowConfig:
         for key in ("workspace", "agents_dir", "max_risk",
                     "vault_note_dir", "vault_pdf_dir", "grobid_url",
                     "chroma_path", "embed_model", "rerank_model",
-                    "agent_timeouts"):
+                    "agent_timeouts", "sleeptime_enable", "sleeptime_agent_frequency"):
             if key in data:
                 setattr(self, key, data[key])
 
@@ -188,6 +188,8 @@ class PaperFlowConfig:
             PAPERFLOW_CHROMA_PATH    → chroma_path
             PAPERFLOW_EMBED_MODEL    → embed_model
             PAPERFLOW_RERANK_MODEL   → rerank_model
+            PAPERFLOW_SLEEPTIME_ENABLE    → sleeptime_enable（"true"/"false"）
+            PAPERFLOW_SLEEPTIME_FREQUENCY → sleeptime_agent_frequency
         """
         # 映射表：环境变量名 → (父对象名, 属性名)
         # parent 为 "llm" 表示写入 self.llm.<attr>，None 表示写入 self.<attr>
@@ -204,12 +206,19 @@ class PaperFlowConfig:
             "PAPERFLOW_CHROMA_PATH": (None, "chroma_path"),
             "PAPERFLOW_EMBED_MODEL": (None, "embed_model"),
             "PAPERFLOW_RERANK_MODEL": (None, "rerank_model"),
+            "PAPERFLOW_SLEEPTIME_ENABLE": (None, "sleeptime_enable"),
+            "PAPERFLOW_SLEEPTIME_FREQUENCY": (None, "sleeptime_agent_frequency"),
         }
 
         for env_var, (parent, attr) in env_map.items():
             val = os.getenv(env_var)
             if val:
-                if parent == "llm":
-                    setattr(self.llm, attr, val)
-                else:
-                    setattr(self, attr, val)
+                obj = self.llm if parent == "llm" else self
+                # 环境变量恒为字符串：按目标字段当前类型做布尔/整数转换，
+                # 否则 bool 字段收到 "false" 会被当真值、int 字段收到 "10" 仍是字符串
+                current = getattr(obj, attr)
+                if isinstance(current, bool):
+                    val = val.lower() in ("1", "true", "yes")
+                elif isinstance(current, int):
+                    val = int(val)
+                setattr(obj, attr, val)
