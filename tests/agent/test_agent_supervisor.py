@@ -99,3 +99,67 @@ def test_subagent_result_cross_turn_visible(supervisor_registry, tmp_path):
     # 子串命中（非精确 in）：spawn 的 tool 结果是 SubAgentResult 的 JSON 序列化
     # （"summary" 字段含"子任务已执行"），裸文本精确匹配会误判——验证跨轮回放即可。
     assert any(c and "子任务已执行" in c for c in contents)    # run1 spawn 的 tool 结果被回放
+
+
+def _make_intent_pipeline():
+    """真实意图管线：FakeEmbedder + 已标定 routes（离线可跑，诊断同款）。"""
+    from paperflow.core.intent.pipeline import IntentPipeline
+    from paperflow.core.intent.hybrid_router import HybridRouter
+    from paperflow.core.intent.route_loader import load_routes
+    from paperflow.rag.embedder import FakeEmbedder
+    router = HybridRouter(encoder=FakeEmbedder(), routes=load_routes(), alpha=0.6)
+    structured = MagicMock()
+    async def extract(prompt, schema, fallback=None):
+        return fallback()
+    structured.extract = extract
+    return IntentPipeline(router=router, structured=structured)
+
+
+def test_statement_direction_intent_block_task_requested_false(supervisor_registry):
+    """陈述方向（原失败句）→ INTENT 块携带 task_requested=false。
+
+    supervisor 据此 memory_insert + ask_user_question，不 spawn searcher——
+    信号确定性到达 ReAct 上下文，不靠 LLM 碰运气。
+    """
+    import asyncio
+    from paperflow.core.agent import Agent
+    from paperflow.core.conversation_state import ConversationState
+    from tests.agent.test_agent import make_capture_llm
+    capture = []
+    llm = make_capture_llm(
+        [Message(role="assistant", content="好的")], capture)
+    agent = Agent(llm=llm, agent_registry=supervisor_registry,
+                  agent_type="supervisor",
+                  confirm_callback=lambda cr: True,
+                  intent_enabled=True,
+                  intent_pipeline=_make_intent_pipeline(),
+                  conversation=ConversationState())
+    asyncio.run(agent.run(
+        "我的课题是做一个circRNA关联预测框架，"
+        "同时预测circRNA-疾病/药物/miRNA的关联。这是我的目前方向"))
+    blocks = [m.content for m in capture[0]
+              if m.content and m.content.startswith("INTENT:")]
+    assert len(blocks) == 1
+    assert '"task_requested":false' in blocks[0]
+
+
+def test_task_direction_intent_block_task_requested_true(supervisor_registry):
+    """真任务 → INTENT 块携带 task_requested=true（正常派发路径）。"""
+    import asyncio
+    from paperflow.core.agent import Agent
+    from paperflow.core.conversation_state import ConversationState
+    from tests.agent.test_agent import make_capture_llm
+    capture = []
+    llm = make_capture_llm(
+        [Message(role="assistant", content="好的")], capture)
+    agent = Agent(llm=llm, agent_registry=supervisor_registry,
+                  agent_type="supervisor",
+                  confirm_callback=lambda cr: True,
+                  intent_enabled=True,
+                  intent_pipeline=_make_intent_pipeline(),
+                  conversation=ConversationState())
+    asyncio.run(agent.run("帮我搜索circRNA关联预测的最新论文"))
+    blocks = [m.content for m in capture[0]
+              if m.content and m.content.startswith("INTENT:")]
+    assert len(blocks) == 1
+    assert '"task_requested":true' in blocks[0]
