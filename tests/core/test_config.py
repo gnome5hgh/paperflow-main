@@ -102,5 +102,5 @@ def test_config_has_compaction_and_sleeptime():
     cfg = PaperFlowConfig()
     assert cfg.compaction.trigger_ratio == 0.8
     assert cfg.compaction.mode == "sliding_window"
-    assert cfg.sleeptime_enable is False
+    assert cfg.sleeptime_enable is True
     assert cfg.sleeptime_agent_frequency == 50

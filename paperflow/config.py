@@ -84,7 +84,7 @@ class PaperFlowConfig:
     compaction: "CompactionSettings" = field(default_factory=_default_compaction)
 
     #: Sleeptime 后台整合开关
-    sleeptime_enable: bool = False
+    sleeptime_enable: bool = True
 
     #: Sleeptime 触发频率（每 N 条新消息检查一次）
     sleeptime_agent_frequency: int = 50
