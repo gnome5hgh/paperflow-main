@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from paperflow.cli import main
+from paperflow.cli import main, _make_ask_user_recorder
 from paperflow.config import PaperFlowConfig
 from paperflow.core.memory.orm import block as block_orm
 from paperflow.core.memory.orm.database import MemoryDB
@@ -93,3 +93,26 @@ def test_main_seeds_default_blocks(monkeypatch):
     labels = {r["label"] for r in block_orm.select_blocks(db)}
     assert {"persona", "human"} <= labels
     assert (tmp / "memory" / "system" / "persona.md").exists()
+
+
+def test_ask_user_recorder_persists_q_and_a():
+    """ask_user 问答（含子 agent 的）经 recorder 落 messages 表 → Sleeptime 可整合进 human 块。"""
+    tmp = Path(tempfile.mkdtemp())
+    db = MemoryDB(tmp / "memory.db")
+    mm = MessageManager(db)
+    recorder = _make_ask_user_recorder(lambda q: "研究生", mm, "sess_1")
+    answer = recorder("你的身份？")
+    assert answer == "研究生"                       # 答案原样透传（不阻断提问）
+    msgs = mm.get_messages_by_agent_id("sess_1")
+    assert len(msgs) == 1
+    assert msgs[0].role.value == "user"
+    assert "你的身份？" in msgs[0].content
+    assert "研究生" in msgs[0].content
+
+
+def test_ask_user_recorder_failsafe_passthrough():
+    """记录失败不阻断提问：answer 仍返回（fail-safe）。"""
+    mm = MagicMock()
+    mm.add_message.side_effect = RuntimeError("db down")
+    recorder = _make_ask_user_recorder(lambda q: "答案", mm, "sess_1")
+    assert recorder("问题") == "答案"
