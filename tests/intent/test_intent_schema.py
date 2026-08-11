@@ -11,10 +11,11 @@ from paperflow.core.intent.intent_schema import (
 
 class TestIntentType:
     def test_current_set(self):
-        # spec Section 3/4：Layer 1 简化集合恰为 5 个，value 即路由名
         values = {t.value for t in IntentType}
-        assert values == {"search_paper", "generate_note", "ask_question",
-                          "manage_memory", "general"}
+        assert values == {
+            "search_paper", "generate_note", "ask_question", "manage_memory",
+            "set_research_topic", "analyze_paper", "refine_query", "switch_topic",
+            "chitchat", "out_of_scope", "help", "feedback", "general"}
 
     def test_str_enum(self):
         # 继承 str，value 可被 YAML / JSON 直接序列化
@@ -116,3 +117,30 @@ def test_intention_result_carries_steps_and_clarification():
         clarification="要搜索还是生成笔记？")
     assert r.steps == [IntentType.SEARCH_PAPER, IntentType.GENERATE_NOTE]
     assert r.clarification == "要搜索还是生成笔记？"
+
+
+class TestIntentMeta:
+    def test_meta_covers_all_intent_types_no_dangling(self):
+        """R5：INTENT_META 完整覆盖 13 IntentType，无悬空（枚举=契约=实现集）。"""
+        from paperflow.core.intent.intent_schema import INTENT_META
+        assert set(INTENT_META) == set(IntentType)
+
+    def test_dispatch_allowed_set(self):
+        """派发/非派发集合核对：非派发 7 个，派发 6 个（含 refine 重派入口）。"""
+        from paperflow.core.intent.intent_schema import INTENT_META
+        dispatch = {it for it, (_cat, d) in INTENT_META.items() if d}
+        assert dispatch == {
+            IntentType.SEARCH_PAPER, IntentType.ASK_QUESTION,
+            IntentType.GENERATE_NOTE, IntentType.ANALYZE_PAPER,
+            IntentType.MANAGE_MEMORY, IntentType.REFINE_QUERY}
+
+    def test_category_mapping(self):
+        from paperflow.core.intent.intent_schema import INTENT_META, IntentCategory
+        assert INTENT_META[IntentType.SET_RESEARCH_TOPIC] == (IntentCategory.BUSINESS, False)
+        assert INTENT_META[IntentType.SWITCH_TOPIC] == (IntentCategory.DIALOGUE, False)
+        assert INTENT_META[IntentType.REFINE_QUERY] == (IntentCategory.DIALOGUE, True)
+        assert INTENT_META[IntentType.CHITCHAT] == (IntentCategory.SYSTEM, False)
+        assert INTENT_META[IntentType.OUT_OF_SCOPE] == (IntentCategory.SYSTEM, False)
+        assert INTENT_META[IntentType.HELP] == (IntentCategory.SYSTEM, False)
+        assert INTENT_META[IntentType.FEEDBACK] == (IntentCategory.SYSTEM, False)
+        assert INTENT_META[IntentType.GENERAL] == (IntentCategory.SYSTEM, False)

@@ -5,7 +5,9 @@
 输入/输出）职责不同。识别管线分四级：实体提取 / 追问检测 / 混合路由 /
 LLM 兜底，这里的四个类型是它们共同使用的产出契约：
 
-- ``IntentType``: 5 类意图枚举（枚举值即路由名，对应 routes.yaml 的 route 名集合）。
+- ``IntentType``: 13 类意图枚举（枚举值即路由名，对应 routes.yaml 的 route 名集合）。
+- ``IntentCategory``: 意图类别（business/dialogue/system）——消费分组，非路由层级。
+- ``INTENT_META``: intent → (category, dispatch_allowed) 单一真相源映射。
 - ``IntentStep``: 产出阶段枚举——审计/监控据此区分"这条意图是路由层定的
   还是 LLM 兜底定的"（从而统计路由命中率、LLM 兜底率）。
 - ``IntentOutput``: 管线逐级产出的结构化意图，供上层调用方直接消费。
@@ -24,14 +26,50 @@ class IntentType(str, Enum):
     """意图类型枚举，value 与路由名一致（routes.yaml 中的 name）。
 
     枚举 = 契约 = 当前实现集——不允许"枚举允许但系统无处理路径"的悬空值。
+    13 值按三类组织（category 见 INTENT_META），类别是消费分组不是路由层级。
     """
 
-    SEARCH_PAPER = "search_paper"          # 搜索/查找论文（search 与 download 合并为一类，download 区分留给后续扩展）
-    GENERATE_NOTE = "generate_note"        # 撰写笔记
-    ASK_QUESTION = "ask_question"          # 具体问答（read/answer/query_notes 合并为一类，mode 区分留给后续扩展）
-    MANAGE_MEMORY = "manage_memory"        # 记忆查询（读过哪些/阅读记录）
-    GENERAL = "general"                    # 兜底：路由未命中 / LLM 解析失败
-    # READ_PAPER / QUERY_NOTES：后续细化时加入（届时同步扩展 routes.yaml 与枚举）
+    SET_RESEARCH_TOPIC = "set_research_topic"  # 设定研究方向（业务；记录+引导，不派发）
+    SEARCH_PAPER = "search_paper"              # 搜索/查找论文（业务；槽位 query/source/year/download）
+    ASK_QUESTION = "ask_question"              # 具体问答（业务）
+    GENERATE_NOTE = "generate_note"            # 撰写笔记（业务）
+    ANALYZE_PAPER = "analyze_paper"            # 精读/分析论文（业务）
+    MANAGE_MEMORY = "manage_memory"            # 记忆查询 + 待读清单操作（业务）
+    REFINE_QUERY = "refine_query"              # 修正上轮查询（对话管理；重派入口）
+    SWITCH_TOPIC = "switch_topic"              # 切换研究方向（对话管理；记忆归档，不派发）
+    CHITCHAT = "chitchat"                      # 闲聊（系统；直接回复）
+    OUT_OF_SCOPE = "out_of_scope"              # 超出能力范围（系统；明确拒绝）
+    HELP = "help"                              # 帮助/功能引导（系统）
+    FEEDBACK = "feedback"                      # 结果反馈（系统；记忆日志）
+    GENERAL = "general"                        # 兜底：路由未命中 / LLM 解析失败（系统）
+
+
+class IntentCategory(str, Enum):
+    """意图类别——消费分组（三类组织），非路由层级。"""
+
+    BUSINESS = "business"        # 业务：派发领域 agent 或记忆操作
+    DIALOGUE = "dialogue"        # 对话管理：会话状态操作（继承/归档/重派）
+    SYSTEM = "system"            # 系统：直接回复，永不 spawn
+
+
+#: 意图 → (category, dispatch_allowed)——单一真相源。枚举=契约=实现集：
+#: 13 值全覆盖、无悬空；dispatch_allowed=False 的意图由 spawn 门禁代码级拒绝派发
+#: （set_research_topic 是业务但非派发——记录+引导；refine_query 是对话管理但派发——重派入口）。
+INTENT_META: dict[IntentType, tuple[IntentCategory, bool]] = {
+    IntentType.SET_RESEARCH_TOPIC: (IntentCategory.BUSINESS, False),
+    IntentType.SEARCH_PAPER:       (IntentCategory.BUSINESS, True),
+    IntentType.ASK_QUESTION:       (IntentCategory.BUSINESS, True),
+    IntentType.GENERATE_NOTE:      (IntentCategory.BUSINESS, True),
+    IntentType.ANALYZE_PAPER:      (IntentCategory.BUSINESS, True),
+    IntentType.MANAGE_MEMORY:      (IntentCategory.BUSINESS, True),
+    IntentType.REFINE_QUERY:       (IntentCategory.DIALOGUE, True),
+    IntentType.SWITCH_TOPIC:       (IntentCategory.DIALOGUE, False),
+    IntentType.CHITCHAT:           (IntentCategory.SYSTEM, False),
+    IntentType.OUT_OF_SCOPE:       (IntentCategory.SYSTEM, False),
+    IntentType.HELP:               (IntentCategory.SYSTEM, False),
+    IntentType.FEEDBACK:           (IntentCategory.SYSTEM, False),
+    IntentType.GENERAL:            (IntentCategory.SYSTEM, False),
+}
 
 
 class IntentStep(str, Enum):
