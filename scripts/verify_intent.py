@@ -74,8 +74,8 @@ def _route_accuracy(router, queries: list[str], labels: list[str]) -> tuple[floa
 def main() -> int:
     config = PaperFlowConfig.from_env()   # config.embed_model 解析模型路径（含 env 覆盖）
     eval_items = load_eval()
-    labels = [l for _, l in eval_items]
-    queries = [q for q, _ in eval_items]
+    labels = [l for _, l, _ in eval_items]
+    queries = [q for q, _, _ in eval_items]
     # 训练集 = routes 全部例句（基线与 bge 共用同一份，apples-to-apples）
     routes = load_routes()
     train_x = [u for r in routes for u in r.utterances]

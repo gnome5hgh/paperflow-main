@@ -1,8 +1,10 @@
-# data/intents/eval.yaml —— held-out 评估集（验收契约，与 routes 不相交）
-# 规模：30 条/意图 × 5 意图 = 150 条（spec §4.7.1 的 ~25-30/意图）
+# data/intents/eval.yaml —— held-out 评估集（验收契约，与 routes 严格逐字不相交）
+# 规模：13 意图 ≈ 234 条（8 个新意图各 10 条 held-out；整体硬负样本 ≥30%）
 # 构成：近义改写 + 边界案例（复合意图取主意图 / 追问无 prev 上下文归 general / chitchat）
+# 硬负样本：hard: true 标记——与其他意图近形的混淆样本（如「讲讲这篇论文讲的什么」标
+#   analyze_paper 但形似 ask_question），让 per-intent 门槛对新意图有约束（Q2，防"自己给自己打分"）
 # 领域：生物信息学/计算生物学（circRNA / miRNA / 异构图神经网络 / 链路预测 / 图对比学习 / 药物-靶点关联预测），中英混合
-# ⚠️ 本集与 data/intents/routes.yaml 逐字不相交——不相交测试 test_eval_disjoint_from_routes 兜底（泛化非记忆）
+# ⚠️ 本集与 data/intents/routes.yaml 逐字不相交（含 general）——不相交测试 test_eval_disjoint_from_routes 兜底（泛化非记忆）
 eval:
   # search_paper —— 近义改写、下载意图、年代/主题限定、复合意图取主意图
   - query: 帮我找找关于 circRNA 的最新研究
@@ -23,10 +25,12 @@ eval:
     intent: search_paper
   - query: 查一查 graph contrastive learning 的资料
     intent: search_paper
+    hard: true
   - query: 帮我找找 miRNA 与肿瘤相关的文献
     intent: search_paper
   - query: 有没有 drug-target association prediction 的文章
     intent: search_paper
+    hard: true
   - query: 找一篇关于 circRNA 数据库的文章
     intent: search_paper
   - query: 帮我搜一下最新的 GNN 论文
@@ -41,16 +45,20 @@ eval:
     intent: search_paper
   - query: 找找图对比学习方向有没有新综述
     intent: search_paper
+    hard: true
   - query: 帮我查一下药物靶点预测的 benchmark
     intent: search_paper
+    hard: true
   - query: 搜一下 circRNA 鉴定的经典论文
     intent: search_paper
   - query: 找一篇讲 heterogeneous graph transformer 的论文
     intent: search_paper
+    hard: true
   - query: 帮我下载那篇图对比学习综述
     intent: search_paper
   - query: 查查最近有没有异构图神经网络的 survey
     intent: search_paper
+    hard: true
   - query: 找一篇关于 lncRNA 的综述
     intent: search_paper
   - query: 帮我搜一下 graph neural network 做 drug discovery 的论文
@@ -65,6 +73,7 @@ eval:
     intent: search_paper
   - query: 下载并整理成笔记那篇链路预测的论文
     intent: search_paper
+    hard: true
   # generate_note —— 生成/整理/总结笔记的多种表述、复合意图取主意图
   - query: 给这篇论文做个阅读笔记
     intent: generate_note
@@ -78,8 +87,10 @@ eval:
     intent: generate_note
   - query: 帮我整理一下这篇论文的内容
     intent: generate_note
+    hard: true
   - query: 给这个实验做个笔记
     intent: generate_note
+    hard: true
   - query: 写一篇关于链路预测的阅读总结
     intent: generate_note
   - query: 帮我为这篇药物靶点文章做个笔记
@@ -104,28 +115,34 @@ eval:
     intent: generate_note
   - query: 写一篇笔记记录这篇文献
     intent: generate_note
+    hard: true
   - query: 帮我生成这篇论文的要点卡片
     intent: generate_note
   - query: 整理一下这篇论文的主要发现
     intent: generate_note
+    hard: true
   - query: 给这篇 paper 做一份摘要笔记
     intent: generate_note
   - query: 把链路预测那篇文章的核心写出来
     intent: generate_note
+    hard: true
   - query: 帮我把这段摘要整理成笔记
     intent: generate_note
   - query: 生成一份这篇文章的阅读笔记
     intent: generate_note
   - query: 总结一下这篇 miRNA 论文并保存
     intent: generate_note
+    hard: true
   - query: 帮我给异构图神经网络那篇做个摘要
     intent: generate_note
   - query: 把药物靶点预测这篇的结论记下来
     intent: generate_note
   - query: 帮我整理这份笔记并导出
     intent: generate_note
+    hard: true
   - query: 查完这篇 miRNA 论文帮我写个笔记
     intent: generate_note
+    hard: true
   # ask_question —— 概念/机制/Figure/公式/方法解释的多种表述
   - query: 链路预测是怎么做的
     intent: ask_question
@@ -155,6 +172,7 @@ eval:
     intent: ask_question
   - query: 解释一下这篇论文里的 metric
     intent: ask_question
+    hard: true
   - query: 这个模型的参数数量是多少
     intent: ask_question
   - query: 图对比学习的 augmentation 是怎么做的
@@ -169,6 +187,7 @@ eval:
     intent: ask_question
   - query: 这个数据集是怎么划分的
     intent: ask_question
+    hard: true
   - query: 讲解一下异构图 attention 的实现
     intent: ask_question
   - query: 什么是 over-smoothing 问题
@@ -177,6 +196,7 @@ eval:
     intent: ask_question
   - query: 解释一下这篇论文的贡献
     intent: ask_question
+    hard: true
   - query: 异构图神经网络里消息传递机制是怎样的
     intent: ask_question
   - query: 为什么图对比学习需要多个视角
@@ -185,16 +205,22 @@ eval:
     intent: ask_question
   - query: 解释一下这张热图的含义
     intent: ask_question
+    hard: true
   - query: 这个模型的过拟合问题怎么解决
     intent: ask_question
+    hard: true
   - query: 帮我把这份 PDF 的内容讲一下
     intent: ask_question
+    hard: true
   - query: 读读这篇论文的关键发现
     intent: ask_question
+    hard: true
   - query: 帮我阅读这份文献资料
     intent: ask_question
+    hard: true
   - query: 通读一下这篇论文
     intent: ask_question
+    hard: true
   # manage_memory —— 记忆/阅读记录/收藏/历史查询的多种表述
   - query: 我标记过哪些论文已读
     intent: manage_memory
@@ -220,14 +246,18 @@ eval:
     intent: manage_memory
   - query: 帮我查查我关注过哪些话题
     intent: manage_memory
+    hard: true
   - query: 我下载记录里有哪些论文
     intent: manage_memory
+    hard: true
   - query: 我的读书笔记在哪里
     intent: manage_memory
   - query: 之前存过的文献给我看看
     intent: manage_memory
+    hard: true
   - query: 我上次搜索的关键词
     intent: manage_memory
+    hard: true
   - query: 帮我看看我的阅读进度
     intent: manage_memory
   - query: 我标星过的论文
@@ -242,53 +272,67 @@ eval:
     intent: manage_memory
   - query: 我保存的异构图神经网络论文
     intent: manage_memory
+    hard: true
   - query: 回顾一下我看过的论文
     intent: manage_memory
   - query: 我的学习记录里有什么
     intent: manage_memory
   - query: 我订阅了哪些期刊
     intent: manage_memory
+    hard: true
   - query: 帮我找找我的阅读清单
     intent: manage_memory
   - query: 我读过哪些异构图相关的论文
     intent: manage_memory
+    hard: true
   - query: 我上次保存的笔记在哪
     intent: manage_memory
   - query: 我的阅读习惯统计
     intent: manage_memory
+    hard: true
   # general —— chitchat / 纯寒暄 / 无明确意图 / 追问（无 prev 上下文）
   - query: 你好，今天天气不错
     intent: general
+    hard: true
   - query: 谢谢你的帮助
     intent: general
+    hard: true
   - query: 哈哈哈哈哈哈
     intent: general
+    hard: true
   - query: 你是谁
     intent: general
+    hard: true
   - query: 今天吃了吗
     intent: general
   - query: 你真厉害
     intent: general
   - query: 再见
     intent: general
-  - query: 好的
+    hard: true
+  - query: 好嘞
     intent: general
-  - query: 嗯嗯
+  - query: 嗯好
     intent: general
   - query: 帮我倒杯水
     intent: general
+    hard: true
   - query: 你叫什么名字
     intent: general
+    hard: true
   - query: 周末愉快
     intent: general
   - query: 加油
     intent: general
+    hard: true
   - query: 哈哈哈笑死我了
     intent: general
   - query: 说个笑话
     intent: general
+    hard: true
   - query: 随便聊聊吧
     intent: general
+    hard: true
   - query: 没什么事
     intent: general
   - query: 哦哦明白了
@@ -297,23 +341,222 @@ eval:
     intent: general
   - query: 拜拜
     intent: general
+    hard: true
   - query: 辛苦你了
     intent: general
+    hard: true
   - query: 这样啊
     intent: general
   - query: 哈哈好的
     intent: general
+    hard: true
   - query: 你忙吧
     intent: general
   - query: 明天见
     intent: general
   - query: 那第三篇呢
     intent: general
+    hard: true
   - query: 然后呢
     intent: general
+    hard: true
   - query: 你能帮我写作业吗
     intent: general
+    hard: true
   - query: 随便说点什么吧
     intent: general
   - query: 这是今天的天气吗
     intent: general
+    hard: true
+  # set_research_topic —— 设定/记录研究方向（business，记录+引导，不派发）
+  - query: 我的课题是做一个circRNA关联预测框架
+    intent: set_research_topic
+  - query: 我最近在研究异构图神经网络
+    intent: set_research_topic
+  - query: 我的方向是药物靶点预测
+    intent: set_research_topic
+  - query: 我打算做miRNA关联预测
+    intent: set_research_topic
+  - query: 我的课题是AI
+    intent: set_research_topic
+  - query: 帮我把这个方向定为circRNA预测
+    intent: set_research_topic
+    hard: true
+  - query: 我的研究方向记录一下
+    intent: set_research_topic
+    hard: true
+  - query: 记下我的课题
+    intent: set_research_topic
+    hard: true
+  - query: 我要研究图对比学习
+    intent: set_research_topic
+  - query: 现在我的方向是链路预测
+    intent: set_research_topic
+  # analyze_paper —— 精读/批判性分析（business，派发）
+  - query: 这篇工作的方法有哪些缺陷
+    intent: analyze_paper
+  - query: 帮我精读这篇论文
+    intent: analyze_paper
+  - query: 这个方法的优点缺点分析一下
+    intent: analyze_paper
+  - query: 这篇工作的结论可信吗
+    intent: analyze_paper
+  - query: 这篇论文有什么创新点
+    intent: analyze_paper
+    hard: true
+  - query: 讲讲这篇论文讲的什么
+    intent: analyze_paper
+    hard: true
+  - query: 精读一下它的方法部分
+    intent: analyze_paper
+    hard: true
+  - query: 评估这个实验设计
+    intent: analyze_paper
+  - query: 批判性分析这篇工作
+    intent: analyze_paper
+  - query: 这个模型有什么问题
+    intent: analyze_paper
+  # refine_query —— 修正上轮查询（dialogue，重派入口）
+  - query: 太老了吧
+    intent: refine_query
+  - query: 只要英文文献
+    intent: refine_query
+  - query: 换一个关键词
+    intent: refine_query
+  - query: 近五年发表的
+    intent: refine_query
+  - query: 太旧了换最新的
+    intent: refine_query
+  - query: 重新找一下最新的
+    intent: refine_query
+    hard: true
+  - query: 换个方向去检索
+    intent: refine_query
+    hard: true
+  - query: 只要顶会
+    intent: refine_query
+    hard: true
+  - query: 别要综述了
+    intent: refine_query
+  - query: 换个期刊档次
+    intent: refine_query
+  # switch_topic —— 切换研究方向（dialogue，记忆归档，不派发）
+  - query: 换个话题吧
+    intent: switch_topic
+    hard: true
+  - query: 我现在不想看这个了
+    intent: switch_topic
+  - query: 换一个研究方向
+    intent: switch_topic
+  - query: 换个课题来研究
+    intent: switch_topic
+  - query: 不研究这个了
+    intent: switch_topic
+    hard: true
+  - query: 改看异构图了
+    intent: switch_topic
+    hard: true
+  - query: 转向药物靶点
+    intent: switch_topic
+  - query: 现在改研究图对比学习了
+    intent: switch_topic
+  - query: 换个方向
+    intent: switch_topic
+  - query: 不搞circRNA了
+    intent: switch_topic
+  # chitchat —— 闲聊（system，直接回复）
+  - query: 你好哇
+    intent: chitchat
+  - query: 早啊
+    intent: chitchat
+  - query: 谢啦
+    intent: chitchat
+  - query: 辛苦啦
+    intent: chitchat
+  - query: 再见啦
+    intent: chitchat
+  - query: 帮我翻译这段话
+    intent: chitchat
+    hard: true
+  - query: 随便聊聊呗
+    intent: chitchat
+    hard: true
+  - query: 你是谁呢
+    intent: chitchat
+    hard: true
+  - query: 你在吗
+    intent: chitchat
+  - query: 哈哈哈
+    intent: chitchat
+  # out_of_scope —— 超出能力范围（system，明确拒绝）
+  - query: 帮我订份外卖
+    intent: out_of_scope
+  - query: 你能帮我查下天气吗
+    intent: out_of_scope
+  - query: 帮我代写一篇论文
+    intent: out_of_scope
+  - query: 帮我写一段代码
+    intent: out_of_scope
+  - query: 帮我订一张飞机票
+    intent: out_of_scope
+  - query: 帮我设置一个提醒
+    intent: out_of_scope
+  - query: 今天天气怎么样
+    intent: out_of_scope
+    hard: true
+  - query: 你能帮我翻译一段话吗
+    intent: out_of_scope
+    hard: true
+  - query: 帮我写一封邮件
+    intent: out_of_scope
+  - query: 帮我校对论文
+    intent: out_of_scope
+    hard: true
+  # help —— 帮助/功能引导（system，直接回复）
+  - query: 你能做什么呀
+    intent: help
+  - query: 这个怎么用
+    intent: help
+    hard: true
+  - query: 你可以帮我做哪些事
+    intent: help
+  - query: 介绍下你的功能
+    intent: help
+  - query: 你有哪些功能
+    intent: help
+  - query: 你会做哪些事
+    intent: help
+    hard: true
+  - query: 我有点不会用
+    intent: help
+  - query: 教教我怎么用
+    intent: help
+  - query: 告诉我怎么开始
+    intent: help
+    hard: true
+  - query: 有哪些命令
+    intent: help
+  # feedback —— 结果反馈（system，记忆日志）
+  - query: 这个回复不对
+    intent: feedback
+  - query: 这篇论文不是我想要的
+    intent: feedback
+  - query: 你刚才讲错了
+    intent: feedback
+  - query: 这个结果不对呀
+    intent: feedback
+  - query: 上次那个回复有问题
+    intent: feedback
+  - query: 结果不对重新来
+    intent: feedback
+    hard: true
+  - query: 这篇笔记写得不怎么样
+    intent: feedback
+    hard: true
+  - query: 搜索结果有问题
+    intent: feedback
+    hard: true
+  - query: 我对这个回答不满意
+    intent: feedback
+  - query: 回答的内容错了
+    intent: feedback

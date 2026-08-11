@@ -45,10 +45,12 @@ def save_thresholds(path: Path, routes: list[Route]) -> None:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
 
 
-def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, str]]:
-    """eval.yaml → [(query, intent_label)]。独立的评估样本集。
+def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, str, bool]]:
+    """eval.yaml → [(query, intent_label, is_hard)]。
 
-    校验：intent 标签必须在 IntentType 枚举中——否则评估时的真值标签无意义。
+    独立评估样本集。is_hard 标记 query 为与其他意图近形的硬负样本（Q2 要求
+    每个新意图的 held-out 中 ≥30% 为混淆/硬负样本——否则 per-intent 门槛对
+    新意图无约束，是"自己给自己打分"的漏洞）。
     """
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
@@ -57,5 +59,5 @@ def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, st
     for e in data["eval"]:
         if e["intent"] not in valid_names:
             raise ValueError(f"eval 意图标签不在 IntentType 中: {e['intent']}")
-        items.append((e["query"], e["intent"]))
+        items.append((e["query"], e["intent"], bool(e.get("hard", False))))
     return items

@@ -101,12 +101,16 @@ def test_load_eval_parses_and_validates(tmp_path):
         "eval:\n"
         "  - query: 帮我找找 circRNA 论文\n"
         "    intent: search_paper\n"
-        "  - query: 你好呀\n"
-        "    intent: general\n",
+        "  - query: 帮我订个外卖\n"
+        "    intent: out_of_scope\n"
+        "    hard: true\n",
         encoding="utf-8",
     )
     items = load_eval(path)
-    assert items == [("帮我找找 circRNA 论文", "search_paper"), ("你好呀", "general")]
+    assert items == [
+        ("帮我找找 circRNA 论文", "search_paper", False),
+        ("帮我订个外卖", "out_of_scope", True),
+    ]
 
 
 def test_load_eval_rejects_invalid_intent(tmp_path):
@@ -120,21 +124,21 @@ def test_eval_disjoint_from_routes():
     """held-out 泛化保证：eval 查询不得与 routes 例句重复（否则测的是记忆不是泛化）。
 
     用生产文件默认路径断言——这是版本化验收契约的一部分（spec §4.7.1）。
-    排除 general 路由：它是 pass-all 兜底（收窄为 ≤5 条占位），eval 的 general
-    负样本与之重复（「好的」「嗯嗯」）不构成"记答案"；其余语义意图仍逐字不相交。
+    13 路由全参与（含 general）：Task 4 改写与 general 占位语料逐字重合的负样本
+    （「好的」「嗯嗯」→ 非重合表述），恢复 general 也严格逐字不相交的完整契约。
     """
-    routes = [r for r in load_routes() if r.name != "general"]
-    route_utterances = {u for r in routes for u in r.utterances}
+    route_utterances = {u for r in load_routes() for u in r.utterances}
     eval_items = load_eval()
-    overlap = [q for q, _ in eval_items if q in route_utterances]
+    overlap = [q for q, _, _ in eval_items if q in route_utterances]
     assert overlap == [], f"eval 与 routes 相交 {len(overlap)} 条: {overlap[:5]}"
 
 
 def test_eval_covers_all_intents():
-    """eval 集契约：覆盖全部 5 类意图 + 规模下限（够统计意义，门槛才可信）。"""
+    """eval 集契约：覆盖全部 13 类意图 + 规模下限（够统计意义，门槛才可信）。"""
+    from paperflow.core.intent.intent_schema import IntentType
     eval_items = load_eval()
-    labels = {label for _, label in eval_items}
-    assert {"search_paper", "generate_note", "ask_question", "manage_memory", "general"} <= labels
+    labels = {label for _, label, _ in eval_items}
+    assert {t.value for t in IntentType} <= labels
     assert len(eval_items) >= 100          # 规模下限：够统计意义
 
 
@@ -158,3 +162,20 @@ def test_manage_memory_covers_reading_list():
     mm = next(r for r in routes if r.name == "manage_memory")
     joined = "".join(mm.utterances)
     assert "待读" in joined
+
+
+def test_eval_covers_new_intents_with_hard_negatives():
+    """Q2：8 个新意图各有 ≥10 条 held-out；硬负样本（hard: true 标记）占比 ≥30%。
+
+    硬负样本=与其他意图近形的混淆样本（如「讲讲这篇论文讲的什么」标 analyze_paper
+    但形似 ask_question）——否则 per-intent 门槛对新意图无约束，是"自己给自己打分"
+    的漏洞。"""
+    items = load_eval()                    # 3 元组 (query, label, is_hard)
+    labels = [l for _, l, _ in items]
+    per = {l: labels.count(l) for l in set(labels)}
+    new_intents = {"set_research_topic", "analyze_paper", "refine_query",
+                   "switch_topic", "chitchat", "out_of_scope", "help", "feedback"}
+    for n in new_intents:
+        assert per.get(n, 0) >= 10, f"{n} held-out 样本 <10"
+    hard = sum(1 for _, _, h in items if h)
+    assert hard >= int(len(items) * 0.30), "硬负样本占比 <30%"
