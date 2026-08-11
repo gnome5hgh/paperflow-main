@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, StreamEvent
+from paperflow.core.intent.intent_schema import INTENT_META
 from paperflow.core.structured import StructuredOutput
 from paperflow.core.tool import Tool, ToolResult
 
@@ -311,6 +312,15 @@ class SpawnSubAgentTool(Tool):
 
     def execute(self, agent_type: str, task: str) -> ToolResult:
         parent = self._parent
+        # 意图派发门禁：dispatch_allowed=False 的意图拒绝 spawn（代码级确定性兜底，
+        # 不依赖 LLM 遵循 SKILL）。非派发意图=陈述方向/切换/系统类——直接回复或记忆
+        # 操作，绝不派发领域 agent。refine_query 放行（它是重派入口）。last_intent
+        # 为 None（管线降级）时放行，不改变现状。
+        li = parent.last_intent
+        if li is not None and not INTENT_META[li.intent_type][1]:
+            result = SubAgentResult(status="denied",
+                                    summary=f"当前意图 {li.intent_type.value} 不派发领域 agent")
+            return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
         # ① spawn 权限运行时校验(_check_spawn_allowed 单点)。
         #    supervisor 硬编码放行;非 supervisor 越界 spawn → denied。
         denied = _check_spawn_allowed(parent, agent_type)

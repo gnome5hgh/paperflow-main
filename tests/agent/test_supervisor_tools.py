@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from paperflow.core.agent import Agent, MaxTurnsExceeded, StreamEvent
+from paperflow.core.intent.intent_schema import IntentType
 from paperflow.core.llm import Message
 from paperflow.core.security import PolicyEngineMiddleware
 from paperflow.core.tool import Tool, ToolResult
@@ -174,6 +175,47 @@ class TestSpawnSubAgentTool:
         tool = SpawnSubAgentTool()
         agent = _supervisor([tool])
         assert tool._parent is agent
+
+    def test_spawn_gate_denies_non_dispatch_intents(self):
+        """意图派发门禁：非派发意图 spawn 被拒（代码级，不依赖 LLM 遵循 SKILL）。"""
+        from paperflow.core.intent.intent_schema import IntentOutput, IntentStep
+        for it in (IntentType.CHITCHAT, IntentType.OUT_OF_SCOPE, IntentType.HELP,
+                   IntentType.FEEDBACK, IntentType.GENERAL,
+                   IntentType.SET_RESEARCH_TOPIC, IntentType.SWITCH_TOPIC):
+            agent = _supervisor([SpawnSubAgentTool()])
+            agent.last_intent = IntentOutput(intent_type=it, confidence=0.9,
+                                             source=IntentStep.ROUTER)
+            result = agent.tools["spawn_sub_agent"].execute(
+                agent_type="searcher", task="t")
+            parsed = json.loads(result.text)
+            assert parsed["status"] == "denied"
+            assert "不派发" in parsed["summary"]
+
+    def test_spawn_gate_allows_dispatch_intents(self):
+        """派发意图放行：search/ask/note/analyze/memory/refine 不被门禁拦。"""
+        from paperflow.core.intent.intent_schema import IntentOutput, IntentStep
+        with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
+            MockAgent.return_value.run = AsyncMock(return_value="done")
+            for it in (IntentType.SEARCH_PAPER, IntentType.ASK_QUESTION,
+                       IntentType.GENERATE_NOTE, IntentType.ANALYZE_PAPER,
+                       IntentType.MANAGE_MEMORY, IntentType.REFINE_QUERY):
+                agent = _supervisor([SpawnSubAgentTool()])
+                agent.last_intent = IntentOutput(intent_type=it, confidence=0.9,
+                                                 source=IntentStep.ROUTER)
+                result = agent.tools["spawn_sub_agent"].execute(
+                    agent_type="searcher", task="t")
+                parsed = json.loads(result.text)
+                assert parsed["status"] == "success"
+
+    def test_spawn_gate_fallback_when_no_intent(self):
+        """管线降级（last_intent=None）时门禁放行——不改变现状行为。"""
+        agent = _supervisor([SpawnSubAgentTool()])
+        assert agent.last_intent is None
+        with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
+            MockAgent.return_value.run = AsyncMock(return_value="done")
+            result = agent.tools["spawn_sub_agent"].execute(
+                agent_type="searcher", task="t")
+        assert json.loads(result.text)["status"] == "success"
 
     def test_confirm_callback_passed_to_child(self):
         """D6 关键断言：child 构造必须继承父 confirm_callback（writer 写盘靠它）。"""
