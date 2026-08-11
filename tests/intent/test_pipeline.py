@@ -135,3 +135,20 @@ class TestPipelineLayer4Wiring:
         pipe = IntentPipeline(router=make_router(), structured=make_structured())
         assert pipe._extract_entities("/abs/x.pdf") == {"pdf_path": "/abs/x.pdf"}
         assert pipe._detect_followup("那第三篇呢", IntentType.SEARCH_PAPER) is True
+
+
+class TestPipelineTaskRequested:
+    @pytest.mark.asyncio
+    async def test_branches_carry_task_requested(self):
+        """三分支（路由/LLM 兜底/追问）都带出判别信号，值来自原始 query。"""
+        pipe = IntentPipeline(router=make_router(), structured=make_structured())
+        # 路由分支：陈述方向 → False（即便路由命中，信号也正确）
+        out = await pipe.run("我的课题是做一个circRNA关联预测框架")
+        assert out.task_requested is False
+        # LLM 兜底分支：祈使句 → True（"帮我写个笔记吧" 走 miss → LLM）
+        out = await pipe.run("帮我写个笔记吧")
+        assert out.task_requested is True
+        # 追问分支：无陈述/祈使 → 保守 True
+        out = await pipe.run("那这个呢", prev_intent=IntentType.SEARCH_PAPER,
+                             prev_user_input="搜索circRNA文献")
+        assert out.task_requested is True

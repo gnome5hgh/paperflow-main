@@ -15,6 +15,7 @@ from paperflow.core.intent.intent_schema import (
 )
 from paperflow.core.intent.entities import extract_entities
 from paperflow.core.intent.followup_detector import detect_followup
+from paperflow.core.intent.statement_detector import detect_task_requested
 
 
 class IntentPipeline:
@@ -40,6 +41,12 @@ class IntentPipeline:
         # 实体提取（确定性正则，只提取不判定意图）
         entities = self._extract_entities(query)
 
+        # 任务性判别：对原始 query 判一次（不依赖路由/LLM 产出），贯穿三个分支。
+        # 用原始 query 而非 rewritten_query——陈述框架/祈使标记是用户原话的句法
+        # 特征，LLM 改写文本会丢。真任务误判成上下文 → supervisor 记录+询问（安全）；
+        # 上下文误判成任务需祈使标记存在，而祈使标记本身是任务信号（不会放大原 bug）。
+        task_requested = detect_task_requested(query)
+
         # 追问检测（词表启发式，依赖会话中的上一轮意图）
         if self._detect_followup(query, prev_intent):
             # 继承上轮意图；实体 = 上轮实体（从 prev_user_input 重跑实体提取）+ 本轮覆盖。
@@ -47,6 +54,7 @@ class IntentPipeline:
             prev_entities = extract_entities(prev_user_input) if prev_user_input else {}
             return IntentOutput(
                 intent_type=prev_intent, confidence=1.0,
+                task_requested=task_requested,
                 entities={**prev_entities, **entities},
                 source=IntentStep.FOLLOWUP, prev_intent=prev_intent,
                 rewritten_query=query)
@@ -58,6 +66,7 @@ class IntentPipeline:
                 intent_type=IntentType(choice.name),
                 # 融合分数 clip 到 [0,1]（cosine 可为负、稀疏点积可 >1，非概率）
                 confidence=float(max(0.0, min(1.0, choice.similarity_score or 0.0))),
+                task_requested=task_requested,
                 entities=entities, source=IntentStep.ROUTER, prev_intent=prev_intent,
                 rewritten_query=query)
 
@@ -73,6 +82,7 @@ class IntentPipeline:
         return IntentOutput(
             intent_type=result.intent_type,
             confidence=result.confidence,
+            task_requested=task_requested,
             entities=entities, source=IntentStep.LLM, prev_intent=prev_intent,
             rewritten_query=result.query_rewrite or query,
             steps=result.steps or [],
