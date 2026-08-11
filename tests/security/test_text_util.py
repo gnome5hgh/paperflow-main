@@ -19,6 +19,20 @@ class TestSanitizeSurrogates:
         s = "emoji \U0001f600 保留"
         assert sanitize_surrogates(s) == s
 
+    def test_repairs_surrogateescape_sequence_lossless(self):
+        # 不 = E4 B8 8D 被 surrogateescape 拆成 \udce4\udcb8\udc8d → 回环无损还原
+        assert sanitize_surrogates("\udce4\udcb8\udc8d") == "不"
+
+    def test_repairs_whole_sentence_mangled_by_surrogateescape(self):
+        # 整句中文字符全被 surrogateescape 逐字节拆开 → 全部无损还原（原会降级成 �）
+        mangled = "".join(bytes([b]).decode("utf-8", "surrogateescape")
+                          for b in "做一个".encode("utf-8"))
+        assert sanitize_surrogates(mangled) == "做一个"
+
+    def test_isolated_byte_falls_back_to_replacement(self):
+        # 0xE4 孤立（截断的 3 字节序列）→ 无法还原 → 降级 U+FFFD（不崩溃）
+        assert sanitize_surrogates("a\udce4b") == "a�b"
+
 
 class TestBoundarySanitization:
     def test_llm_message_content_sanitized(self):

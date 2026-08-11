@@ -32,6 +32,22 @@ def test_add_message_sanitizes_surrogates():
     assert rows[0].content == "a�b"
 
 
+def test_add_message_repairs_surrogateescape_sequence():
+    """信任边界：完整 surrogateescape 序列经 add_message 无损还原（非 � 降级）。
+
+    用户终端/LLM 输出的中文字符被 surrogateescape 拆成代理序列时，应还原回原
+    字符而非降级成 �（修复优先语义）。
+    """
+    mm = _mm()
+    mangled = "".join(bytes([b]).decode("utf-8", "surrogateescape")
+                      for b in "不".encode("utf-8"))
+    mm.add_message("sess_1", WireMessage(role="user", content="不"))
+    mm.add_message("sess_1", WireMessage(role="user", content=mangled))
+    rows = mm.get_messages_by_agent_id("sess_1")
+    assert rows[0].content == "不"      # 正常输入不变
+    assert rows[1].content == "不"      # 损坏序列无损还原
+
+
 def test_get_in_context_messages_returns_all_persisted():
     mm = _mm()
     mm.add_message("sess_1", WireMessage(role="user", content="a"))
