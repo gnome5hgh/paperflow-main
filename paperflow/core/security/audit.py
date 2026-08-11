@@ -44,6 +44,7 @@ from pathlib import Path
 from paperflow.core.security import (
     SecurityMiddleware, ToolContext, PolicyDenied, SecurityBlocked, ConfirmRequired,
 )
+from paperflow.core.security.text import sanitize_surrogates
 
 #: 敏感键名 → 脱敏替换值 的模式表，按顺序匹配，命中即替换
 SENSITIVE_KEY_PATTERNS = [
@@ -199,7 +200,10 @@ class AuditMiddleware(SecurityMiddleware):
             # 加锁写盘：整段「open + write」在锁内，保证 JSONL 行不会被并发线程分段交叉
             with self._lock:
                 with open(path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(entry.__dict__, ensure_ascii=False) + "\n")
+                    # 写盘前清洗代理码点：入参/结果可能带 surrogate（surrogateescape
+                    # 残留），严格 UTF-8 写文件会炸——清洗后再写，审计不丢行。
+                    f.write(sanitize_surrogates(
+                        json.dumps(entry.__dict__, ensure_ascii=False)) + "\n")
         except Exception as e:
             # 写盘失败（磁盘满/权限）不得中断工具结果返回：打印告警后降级跳过，
             # 与 _run_after_hooks 的哲学一致——审计是横切关注点，失败不该毁掉主流程

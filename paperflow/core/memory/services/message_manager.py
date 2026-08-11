@@ -6,12 +6,14 @@ wire（core/llm.py::Message）→ schemas Message（补 id/created_at）→ mess
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from paperflow.core.llm import Message as WireMessage
 from paperflow.core.memory.orm import message as message_orm
 from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.schemas.message import Message, MessageRole
+from paperflow.core.security.text import sanitize_surrogates
 
 __all__ = ["MessageManager"]
 
@@ -48,6 +50,10 @@ class MessageManager:
         self.agent_manager = agent_manager  # 可选：读 AgentState.message_ids（in-context 窗口）
 
     def add_message(self, agent_id: str, wire: WireMessage) -> Message:
+        # 信任边界：清洗代理码点（surrogateescape 残留）——messages 表严格 UTF-8
+        # 写入，代理会炸。ask_user 回答等路径不经 agent.run 清洗，add_message 是
+        # 全部消息落盘的单点，在此堵漏（replace 生成副本，不改调用方 wire）。
+        wire = replace(wire, content=sanitize_surrogates(wire.content))
         m = _wire_to_schema(wire)
         message_orm.insert_message(self.db, agent_id, m)
         return m

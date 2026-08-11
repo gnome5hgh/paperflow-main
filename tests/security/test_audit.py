@@ -36,6 +36,17 @@ class TestSanitize:
         assert out["content"] == "HIDDEN"
         assert out["query"] == "x"
 
+
+async def test_audit_write_sanitizes_surrogates(tmp_path):
+    """审计落盘清洗代理码点：带 surrogate 的参数不炸 JSONL 写入（原会打爆）。"""
+    mid = AuditMiddleware(audit_dir=str(tmp_path))
+    ctx = make_ctx(args={"question": "a\udce4b"})
+    await mid.before(ctx)
+    files = list(tmp_path.glob("audit_*.jsonl"))
+    assert files, "审计文件应已写出（清洗后不抛写盘失败）"
+    line = files[0].read_text(encoding="utf-8")
+    assert "a�b" in line
+
     def test_paths_kept(self):
         out = _sanitize({"pdf_path": "/abs/paper/pdf/x.pdf", "query": "y"})
         assert "pdf_path" in out

@@ -20,6 +20,18 @@ def test_add_message_converts_and_persists():
     assert len(rows) == 1 and rows[0].content == "hi"
 
 
+def test_add_message_sanitizes_surrogates():
+    """信任边界：带代理码点的消息落盘前清洗，不炸严格 UTF-8 写入。
+
+    ask_user 回答等路径不经 agent.run 清洗，代理（surrogateescape 残留）会在此
+    打爆 sqlite 写入——add_message 是全部消息落盘的单点，在此堵漏。
+    """
+    mm = _mm()
+    mm.add_message("sess_1", WireMessage(role="user", content="a\udce4b"))
+    rows = mm.get_messages_by_agent_id("sess_1")
+    assert rows[0].content == "a�b"
+
+
 def test_get_in_context_messages_returns_all_persisted():
     mm = _mm()
     mm.add_message("sess_1", WireMessage(role="user", content="a"))
