@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from paperflow.core.memory.constants import DEFAULT_PERSONA, DEFAULT_HUMAN
 from paperflow.core.memory.orm import block as block_orm
 from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.schemas.block import Block
@@ -57,6 +58,21 @@ class BlockManager:
     def get_block_by_label(self, label: str) -> Block | None:
         row = block_orm.select_block_by_label(self.db, label)
         return self._to_schema(row) if row else None
+
+    def ensure_default_blocks(self) -> list[str]:
+        """播种默认核心记忆块：persona/human 各自缺失才创建，绝不覆盖已有块。
+
+        返回实际创建的 label 列表（无创建时为空）。persona 是助手身份、human 是
+        用户画像引导占位——两者是 Memory.compile() 每轮渲染的 system/ 块，缺失时
+        记忆系统呈空壳。幂等：已存在的块（含用户经 self-editing 改过的）不动。
+        """
+        created: list[str] = []
+        for label, value in (("persona", DEFAULT_PERSONA),
+                             ("human", DEFAULT_HUMAN)):
+            if self.get_block_by_label(label) is None:
+                self.create_block(label, value)
+                created.append(label)
+        return created
 
     def list_blocks(self) -> list[Block]:
         return [self._to_schema(r) for r in block_orm.select_blocks(self.db)]
