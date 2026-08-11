@@ -145,3 +145,12 @@ async def test_three_failures_advance_cursor():
         except RuntimeError:
             pass
     assert sl._failures >= 3
+
+
+def test_build_prompt_targets_persona_human():
+    """后台整合 prompt 必须定向核心记忆块：否则 LLM 只写 feedback/project/reference。"""
+    sl, _ = _setup()
+    msgs = sl.message_manager.get_messages_by_agent_id("sess_1")
+    prompt = sl._build_prompt(msgs)
+    assert "system/human.md" in prompt
+    assert "system/persona.md" in prompt

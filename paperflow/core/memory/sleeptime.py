@@ -118,6 +118,8 @@ class Sleeptime:
             "你是 paperFlow 的记忆整合器（sleeptime）。分析以下新对话，输出记忆编辑指令。",
             "可编辑：feedback_*.md / project_*.md / reference_*.md / system/*.md。",
             "规则：值得长期记住才写；合并重复；旧条目被推翻时 replace 为新结论。",
+            "定向：从对话学到用户身份/偏好/背景 → append/replace system/human.md；",
+            "助手角色或工作方式认知变化 → replace system/persona.md。",
             "", "新对话：",
         ]
         for m in new_msgs:
