@@ -47,6 +47,8 @@ routes:
   - 有没有 drug-target association prediction 的论文
   - 找一篇 heterogeneous graph transformer 的文章
   - 搜一下 circRNA 鉴定的经典文献
+  - 帮我搜索circRNA关联预测的最新论文
+  - 搜一下circRNA关联预测的最新进展
   score_threshold: 0.0
 - name: generate_note
   utterances:
@@ -149,6 +151,9 @@ routes:
   - 我目前的方向是链路预测
   - 我的课题是图神经网络在生物信息学的应用
   - 我最近在看蛋白互作网络预测
+  - 我的课题是做一个circRNA疾病关联预测框架
+  - 我的课题是同时预测circRNA与疾病药物的关联
+  - 我的目前方向是circRNA关联预测
   score_threshold: 0.0
 - name: analyze_paper
   utterances:
@@ -182,6 +187,7 @@ routes:
   - 现在改成研究图对比学习
   - 转向药物靶点方向
   - 不搞circRNA了看异构图
+  - 换个话题看看图对比学习
   score_threshold: 0.0
 - name: chitchat
   utterances:
