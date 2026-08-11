@@ -169,13 +169,17 @@ def test_eval_covers_new_intents_with_hard_negatives():
 
     硬负样本=与其他意图近形的混淆样本（如「讲讲这篇论文讲的什么」标 analyze_paper
     但形似 ask_question）——否则 per-intent 门槛对新意图无约束，是"自己给自己打分"
-    的漏洞。"""
+    的漏洞。硬负样本比率按**每新意图**单独断言（spec §7.3 Q2）——只断言全局 ≥30%
+    会被既有意图的 hard 标记顶住：删光某新意图的 hard 标记后全局仍绿，Q2 真门槛
+    静默退化。"""
     items = load_eval()                    # 3 元组 (query, label, is_hard)
     labels = [l for _, l, _ in items]
     per = {l: labels.count(l) for l in set(labels)}
+    hard_per = {l: sum(1 for _, ll, h in items if ll == l and h) for l in set(labels)}
     new_intents = {"set_research_topic", "analyze_paper", "refine_query",
                    "switch_topic", "chitchat", "out_of_scope", "help", "feedback"}
     for n in new_intents:
         assert per.get(n, 0) >= 10, f"{n} held-out 样本 <10"
+        assert hard_per.get(n, 0) >= per.get(n, 0) * 0.30, f"{n} 硬负样本占比 <30%"
     hard = sum(1 for _, _, h in items if h)
-    assert hard >= int(len(items) * 0.30), "硬负样本占比 <30%"
+    assert hard >= int(len(items) * 0.30), "全局硬负样本占比 <30%"
