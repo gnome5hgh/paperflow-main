@@ -1,12 +1,14 @@
 # tests/terminal/test_io.py
 from unittest.mock import MagicMock
 
+import pytest
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.keys import Keys
 
 from paperflow.config import PaperFlowConfig
 from paperflow.terminal.io import (
-    FallbackIO, InputIO, PromptToolkitIO, make_input_io,
+    FallbackIO, InputIO, PromptToolkitIO, _session_key_bindings, make_input_io,
 )
 
 
@@ -71,3 +73,48 @@ def test_make_input_io_tty_returns_prompt_toolkit(monkeypatch, tmp_path):
     cfg.workspace = str(tmp_path)
     io = make_input_io(cfg)
     assert isinstance(io, PromptToolkitIO)
+
+
+def _binding(*keys):
+    """按键元组从 _session_key_bindings 中取绑定（每个键恰好一个绑定）。"""
+    kb = _session_key_bindings()
+    return next(b for b in kb.bindings if list(b.keys) == list(keys))
+
+
+def _event(text=""):
+    ev = MagicMock()
+    ev.current_buffer.text = text
+    return ev
+
+
+def test_binding_enter_submits():
+    b = _binding(Keys.ControlM)
+    ev = _event()
+    b.handler(ev)
+    ev.current_buffer.validate_and_handle.assert_called_once_with()
+
+
+def test_binding_alt_enter_inserts_newline():
+    b = _binding(Keys.Escape, Keys.ControlM)
+    ev = _event()
+    b.handler(ev)
+    ev.current_buffer.insert_text.assert_called_once_with("\n")
+
+
+def test_binding_ctrl_c_with_text_clears():
+    b = _binding(Keys.ControlC)
+    ev = _event(text="abc")
+    b.handler(ev)
+    ev.current_buffer.reset.assert_called_once_with()
+
+
+def test_binding_ctrl_c_empty_raises_keyboard_interrupt():
+    b = _binding(Keys.ControlC)
+    with pytest.raises(KeyboardInterrupt):
+        b.handler(_event())
+
+
+def test_binding_ctrl_d_empty_raises_eof():
+    b = _binding(Keys.ControlD)
+    with pytest.raises(EOFError):
+        b.handler(_event())
