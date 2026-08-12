@@ -27,11 +27,12 @@ def test_generate_note_tools_review_via_spawn(agent_registry, agent_env):
 
 
 def test_generate_note_tools_metadata(agent_env, agent_registry):
-    """writer 完整装配：8 工具齐备（5 原子 + spawn_sub_agent + glob/grep）。
+    """writer 完整装配：9 工具齐备（5 原子 + spawn_sub_agent + glob/grep + rag_retrieve）。
 
-    Task 7：review_draft 桥删除 → spawn_sub_agent（共享 SpawnSubAgentTool）替代；
+    review_draft 桥删除 → spawn_sub_agent（共享 SpawnSubAgentTool）替代；
     spawn_sub_agent 是唯一需要 parent 注入的工具（嵌套 spawn 子 agent），其余原子
-    工具不需要——权限最小化。Task 4 加的 glob/grep 保留（文件名定位 + 文本锚点）。"""
+    工具不需要——权限最小化。glob/grep 保留（文件名定位 + 文本锚点），另装
+    rag_retrieve 服务大纲模式的笔记发现与段落回溯。"""
     config = agent_registry.get_config("writer")
     names = [t.name for t in config.tools]
     assert "review_draft" not in names
@@ -208,3 +209,10 @@ def test_writer_has_ask_user_question(agent_registry):
     config = agent_registry.get_config("writer")
     names = {t.name for t in config.tools}
     assert "ask_user_question" in names
+
+
+def test_writer_has_rag_retrieve(agent_registry):
+    """writer 装配 rag_retrieve：大纲模式用 RAG 发现相关笔记、回溯论文段落。"""
+    config = agent_registry.get_config("writer")
+    names = {t.name for t in config.tools}
+    assert "rag_retrieve" in names
