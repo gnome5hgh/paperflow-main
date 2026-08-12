@@ -63,3 +63,32 @@ def test_remove_missing_returns_error():
     t.execute(title="A")
     res = t.execute(action="remove", title="不存在")
     assert "not found" in res.text
+
+
+def test_unread_list_add_format():
+    ctx, bm = _ctx()
+    from paperflow.core.memory.functions.function_sets.list_blocks import (
+        UnreadListAddTool, UnreadListRemoveTool)
+    add = UnreadListAddTool(ctx)
+    res = add.execute(title="某论文标题", source="arxiv:2301.001")
+    assert "Appended" in res.text
+    assert bm.get_block_by_label("unread_list").value == "- 某论文标题 (arxiv:2301.001)"
+
+
+def test_unread_list_add_rejects_missing_title():
+    ctx, _ = _ctx()
+    from paperflow.core.memory.functions.function_sets.list_blocks import UnreadListAddTool
+    res = UnreadListAddTool(ctx).execute(source="arxiv:2301.001")
+    assert "title" in res.text and "required" in res.text.lower()
+
+
+def test_unread_list_remove_by_title():
+    ctx, bm = _ctx()
+    from paperflow.core.memory.functions.function_sets.list_blocks import (
+        UnreadListAddTool, UnreadListRemoveTool)
+    UnreadListAddTool(ctx).execute(title="论文A", source="pdf:/p/a.pdf")
+    UnreadListAddTool(ctx).execute(title="论文B", source="pdf:/p/b.pdf")
+    res = UnreadListRemoveTool(ctx).execute(title="论文A")
+    assert "Removed" in res.text
+    assert "论文A" not in bm.get_block_by_label("unread_list").value
+    assert "论文B" in bm.get_block_by_label("unread_list").value

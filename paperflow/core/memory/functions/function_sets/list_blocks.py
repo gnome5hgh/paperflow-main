@@ -13,8 +13,8 @@ class ListBlockTool(Tool):
 
     append 语义=只追加不改旧（读旧值 + 拼新行）；块缺失时 create_block
     （create_block → sync_block_to_file → regenerate_index，新文件自动进
-    memory_filesystem.md 索引）。remove 按 key 精确匹配行（含该 key 的行），
-    找不到返回明确错误，不静默。
+    memory_filesystem.md 索引）。remove 按行首 `- {key}` 前缀匹配行（标题在
+    条目开头，比子串匹配更精确），找不到返回明确错误，不静默。
     """
 
     block_label = ""
@@ -46,8 +46,12 @@ class ListBlockTool(Tool):
     def remove_line_by_key(self, key: str) -> str:
         self._ensure_block()
         block = self._bm().get_block_by_label(self.block_label)
+        # 空 key 直接拒绝，避免 "- " 前缀误删整块
+        if not key.strip():
+            return f"Error: '{key}' not found in {self.block_label}"
+        prefix = f"- {key}"
         lines = [ln for ln in block.value.splitlines() if ln.strip()]
-        kept = [ln for ln in lines if key not in ln]
+        kept = [ln for ln in lines if not ln.startswith(prefix)]
         if len(kept) == len(lines):
             return f"Error: '{key}' not found in {self.block_label}"
         self._bm().update_block_value(self.block_label, "\n".join(kept))
@@ -64,3 +68,43 @@ class ListBlockTool(Tool):
             key = next(iter(kwargs.values()))
             return ToolResult(text=self.remove_line_by_key(str(key)))
         return ToolResult(text=self.append_line(**kwargs))
+
+
+class UnreadListAddTool(ListBlockTool):
+    """把论文加入未读清单。title 必须来自提取链/用户（禁文件名）。"""
+
+    name = "unread_list_add"
+    block_label = "unread_list"
+    description = "把一篇论文加入未读清单，追加 `- 标题 (来源)` 行"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "论文权威标题（提取链/用户提供，禁文件名）"},
+            "source": {"type": "string", "description": "来源：arxiv:ID / openalex / pdf:路径"},
+        },
+        "required": ["title"],
+    }
+
+    def _format_entry(self, title: str, source: str = "") -> str:
+        return f"- {title} ({source})" if source else f"- {title}"
+
+    def execute(self, title: str = "", source: str = "") -> ToolResult:
+        if not title or not title.strip():
+            return ToolResult(text="Error: title is required (extract from paper, not filename)")
+        return ToolResult(text=self.append_line(title=title, source=source))
+
+
+class UnreadListRemoveTool(ListBlockTool):
+    """把论文移出未读清单（按权威标题精确删行）。"""
+
+    name = "unread_list_remove"
+    block_label = "unread_list"
+    description = "把一篇论文移出未读清单，按权威标题删除对应行"
+    parameters = {
+        "type": "object",
+        "properties": {"title": {"type": "string", "description": "要移除的论文权威标题"}},
+        "required": ["title"],
+    }
+
+    def execute(self, title: str) -> ToolResult:
+        return ToolResult(text=self.remove_line_by_key(title))
