@@ -40,7 +40,7 @@ class SubmitReviewTool(Tool):
     risk_level = "low"                     # 只读格式化，无副作用
     # 审稿流目标是 scratch/note 草稿路径；execute 不读文件内容（只格式化提交字段），
     # 放开 scratch 根零安全影响（与 SuggestEditTool 同款，防真实 WorkspacePolicy 拦截）。
-    allowed_roots = ["note", "scratch"]
+    allowed_roots = ["note", "scratch", "outline"]
 
     def execute(self, path: str, verdict: str, issues: list) -> ToolResult:
         # ① verdict 枚举校验（enum_check 共享，同 submit_download_review）

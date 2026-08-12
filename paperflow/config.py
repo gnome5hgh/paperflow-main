@@ -97,6 +97,10 @@ class PaperFlowConfig:
     #: 或 config.yaml 提供。
     vault_pdf_dir: str = ""
 
+    #: Obsidian vault 大纲目录(数据源 outline/)——同 vault_note_dir,经 .env
+    #: (PAPERFLOW_VAULT_OUTLINE_DIR)或 config.yaml 提供;空则由 factory 回退 workspace/outline。
+    vault_outline_dir: str = ""
+
     #: GROBID 服务地址——RAG PDF 解析与 TitleExtractor 标题提取共用同一端点
     #: （env PAPERFLOW_GROBID_ENDPOINT 覆盖）
     grobid_endpoint: str = "http://localhost:8070"
@@ -165,8 +169,8 @@ class PaperFlowConfig:
 
         # 顶层配置字段(含 vault / RAG 键,均可通过 config.yaml 顶层覆盖默认值)
         for key in ("workspace", "agents_dir", "max_risk",
-                    "vault_note_dir", "vault_pdf_dir", "grobid_endpoint",
-                    "chroma_path", "embed_model", "rerank_model",
+                    "vault_note_dir", "vault_pdf_dir", "vault_outline_dir",
+                    "grobid_endpoint", "chroma_path", "embed_model", "rerank_model",
                     "agent_timeouts", "sleeptime_enable", "sleeptime_agent_frequency"):
             if key in data:
                 setattr(self, key, data[key])
@@ -185,6 +189,7 @@ class PaperFlowConfig:
             PAPERFLOW_MAX_RISK      → max_risk
             PAPERFLOW_VAULT_NOTE_DIR → vault_note_dir
             PAPERFLOW_VAULT_PDF_DIR  → vault_pdf_dir
+            PAPERFLOW_VAULT_OUTLINE_DIR → vault_outline_dir
             PAPERFLOW_GROBID_ENDPOINT → grobid_endpoint
             PAPERFLOW_CHROMA_PATH    → chroma_path
             PAPERFLOW_EMBED_MODEL    → embed_model
@@ -203,6 +208,7 @@ class PaperFlowConfig:
             "PAPERFLOW_MAX_RISK": (None, "max_risk"),
             "PAPERFLOW_VAULT_NOTE_DIR": (None, "vault_note_dir"),
             "PAPERFLOW_VAULT_PDF_DIR": (None, "vault_pdf_dir"),
+            "PAPERFLOW_VAULT_OUTLINE_DIR": (None, "vault_outline_dir"),
             "PAPERFLOW_GROBID_ENDPOINT": (None, "grobid_endpoint"),
             "PAPERFLOW_CHROMA_PATH": (None, "chroma_path"),
             "PAPERFLOW_EMBED_MODEL": (None, "embed_model"),

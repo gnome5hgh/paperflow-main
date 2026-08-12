@@ -2,4 +2,4 @@
 
 #: 可写的目录语义根(笔记可写;PDF 只读是硬边界)。Write/Edit 两个工具共享,
 #: 单一事实来源,防止两个工具各自维护一份导致漂移。
-NOTE_ROOTS = ["note", "memory"]
+NOTE_ROOTS = ["note", "memory", "outline"]

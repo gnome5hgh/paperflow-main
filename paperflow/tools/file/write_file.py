@@ -12,7 +12,7 @@ from paperflow.tools.file._constants import NOTE_ROOTS
 
 class WriteFileTool(Tool):
     name = "write_file"
-    description = "写入或整篇重写笔记（Note，非 Paper）到 note/ 或 memory/ 目录；已存在的文件将被覆盖（小范围修改请用 edit_file 定向替换）"
+    description = "写入或整篇重写笔记（Note，非 Paper）到 note/、memory/、outline/ 目录；已存在的文件将被覆盖（小范围修改请用 edit_file 定向替换）"
     parameters = {
         "type": "object",
         "properties": {

@@ -63,4 +63,4 @@ def test_submit_review_meta():
     tool = _tool()
     assert tool.name == "submit_review"
     assert tool.risk_level == "low"
-    assert tool.allowed_roots == ["note", "scratch"]
+    assert tool.allowed_roots == ["note", "scratch", "outline"]

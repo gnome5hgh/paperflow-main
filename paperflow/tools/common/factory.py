@@ -16,6 +16,7 @@ def _root_map(config: PaperFlowConfig) -> dict[str, str]:
     return {
         "note": config.vault_note_dir,
         "pdf": config.vault_pdf_dir,
+        "outline": config.vault_outline_dir or str(Path(config.workspace) / "outline"),
         "memory": str(Path(config.workspace) / "memory"),
         # 模板与 scratch 统一从 workspace 派生基准(FormatCheckTool 默认同此基准,骨架仅降级)
         "templates": str(Path(config.workspace) / "templates"),
