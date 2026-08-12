@@ -1,12 +1,17 @@
 """reviewer 审稿 agent 测试：mock LLM 驱动 ReAct，工具经真实安全链执行。
 
-reviewer 是 review-note 改造后的两模式 agent（Task 6）：
-- 笔记审查模式（任务前缀「审阅草稿文件…」）：沿用原 review-note 流程，收尾 submit_review；
-- 下载审查模式（任务前缀「审查以下候选论文…」）：下载/推荐前门禁，逐篇核验后
-  submit_download_review 交裁决。
-两个测试分别覆盖：① 装配断言（8 工具并集，含 Task 4/5 新工具）；② 下载模式端到端
-（mock LLM 顺序消费，lookup_venue_rank 走本地映射表——"WWW" 命中，无网络）。
+reviewer 是三模式 agent（Task 6）：由父 agent spawn 时注入的「当前模式」判别——
+- note_review：笔记审查（§A），沿用原 review-note 流程，收尾 submit_review；
+- download_review：下载/推荐前门禁（§B），逐篇核验后 submit_download_review 交裁决；
+- outline_review：大纲审阅（§C），核验「论点 ← 笔记」映射后 submit_review 交裁决。
+
+mock 直接构造 reviewer（未走 spawn）时，按模式给 agent.system_prompt 注入
+「当前模式：…」前缀（镜像 spawn 注入契约）驱动判别。测试覆盖：装配断言（8 工具并集，
+含 Task 4/5 新工具）+ 下载模式端到端（lookup_venue_rank 走本地映射表——"WWW" 命中，
+无网络）+ 大纲审阅端到端。
 """
+from pathlib import Path
+
 import pytest
 
 from paperflow.core.llm import Message
@@ -14,9 +19,10 @@ from tests.conftest import make_mock_llm, _tc, make_agent
 
 
 def test_reviewer_notes_mode_tools_assembled(agent_env, agent_registry):
-    """装配断言：reviewer 两模式工具并集 = 笔记审查（read_file/read_pdf/format_check/submit_review）
+    """装配断言：reviewer 三模式工具并集 = 笔记/大纲审查（read_file/read_pdf/format_check/submit_review）
     + 下载审查（lookup_venue_rank/submit_download_review）+ 定位核对（glob/grep）共 8 工具。
 
+    §C 大纲审查复用 §A 的 read_file/submit_review，不新增工具；本断言锁住三模式工具面。
     Task 4/5 新工具（lookup_venue_rank / submit_download_review）经 paperflow.tools.__init__
     导出后，reviewer.tools.py 才能 import——本断言同时防 Task 4/5 接线回退。"""
     cfg, _ = agent_env
@@ -46,6 +52,7 @@ async def test_reviewer_download_mode_submits_verdict(agent_env, agent_registry)
     ]
     llm = make_mock_llm(responses)
     agent = make_agent(agent_registry, "reviewer", llm, cfg)
+    agent.system_prompt = "当前模式：download_review\n" + agent.system_prompt  # 模拟 spawn 注入
     out = await agent.run(
         "审查以下候选论文：HGT(WWW 2020)。要求：年份≥2026，等级≥Q2，主题=异构图特征提取"
     )
@@ -71,6 +78,7 @@ async def test_reviewer_download_mode_no_rank_constraint(agent_env, agent_regist
     ]
     llm = make_mock_llm(responses)
     agent = make_agent(agent_registry, "reviewer", llm, cfg)
+    agent.system_prompt = "当前模式：download_review\n" + agent.system_prompt  # 模拟 spawn 注入
     out = await agent.run(
         "审查以下候选论文：Quantum negative sampling(arXiv, 2025)。用户约束：年份≥2025、主题=负采样算法"
     )
@@ -85,3 +93,30 @@ def test_reviewer_lacks_ask_user_question(agent_registry):
     config = agent_registry.get_config("reviewer")
     names = {t.name for t in config.tools}
     assert "ask_user_question" not in names
+
+
+@pytest.mark.asyncio
+async def test_reviewer_outline_review_mode(agent_env, agent_registry):
+    """大纲审阅模式：读大纲+被引笔记→faithfulness 缺证据→submit_review fail。"""
+    from tests.conftest import make_mock_llm, _tc, make_agent
+    cfg, _ = agent_env
+    outline = Path(cfg.workspace) / "outline" / "o.md"
+    outline.parent.mkdir(parents=True, exist_ok=True)
+    outline.write_text("# 研究大纲：circRNA\n## 1. 核心论点总览\n论点1 ← 笔记「circRNA机制」\n",
+                       encoding="utf-8")
+    note = Path(cfg.vault_note_dir) / "circRNA机制.md"
+    note.write_text("circRNA 调控机制。", encoding="utf-8")
+
+    task = f"审阅大纲：{outline}。课题：circRNA。相关笔记：[{note}]"
+    llm = make_mock_llm([
+        _tc("read_file", {"path": str(outline)}),
+        _tc("read_file", {"path": str(note)}),
+        _tc("submit_review", {"path": str(outline), "verdict": "fail", "issues": [
+            {"severity": "blocking", "dimension": "faithfulness",
+             "location": "论点1", "action": "补充证据摘录以证明笔记支撑该论点"}]}),
+        Message(role="assistant", content="审查裁决：fail"),
+    ])
+    agent = make_agent(agent_registry, "reviewer", llm, cfg)
+    agent.system_prompt = "当前模式：outline_review\n" + agent.system_prompt  # 模拟 spawn 注入
+    result = await agent.run(task)
+    assert "fail" in result
