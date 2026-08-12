@@ -188,3 +188,32 @@ def test_throttle_skips_rapid_renders():
     s.on_event(StreamEvent("content", "a", "supervisor"))
     s.on_event(StreamEvent("content", "b", "supervisor"))   # 1 秒内 → 跳过
     assert len(block.updates) == 1
+
+
+from unittest.mock import MagicMock
+
+from rich.console import Console
+
+from paperflow.terminal.render import PlainBlock, RichBlock, make_renderer
+
+
+def test_rich_block_update_renders_markdown_and_end_stops():
+    live = MagicMock()
+    block = RichBlock(console=MagicMock(), live=live)
+    block.update("# 标题")
+    live.start.assert_called_once()
+    assert live.update.called                      # 参数是 Markdown 渲染对象
+    block.end("正文")
+    live.stop.assert_called_once()
+
+
+def test_make_renderer_tty_uses_rich():
+    out, fn = _collect()
+    r = make_renderer(fn, "supervisor", is_tty=True, console=Console())
+    assert isinstance(r._block, RichBlock)
+
+
+def test_make_renderer_non_tty_uses_plain():
+    out, fn = _collect()
+    r = make_renderer(fn, "supervisor", is_tty=False)
+    assert isinstance(r._block, PlainBlock)

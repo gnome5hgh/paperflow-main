@@ -13,6 +13,10 @@ should_print / reset / finalize / suspend / interrupt 只在主线程调用。
 import threading
 import time
 
+from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
+
 from paperflow.core.agent import StreamEvent
 
 
@@ -153,3 +157,41 @@ class StreamRenderer:
         if streamed == result:
             return ""                   # 已逐字展示 → print("") 只补换行
         return "\n" + result            # on_finish 改写了（如 SAFE_PROMPT）→ 补打最终版
+
+
+class RichBlock(BlockRenderer):
+    """rich Live 区域：把 markdown 缓冲重绘为富文本块（渐进式渲染）。
+
+    update 重绘 live 区域（每片 Markdown 重渲染）；end 终态渲染并停止 live。
+    live 可注入（测试传 fake 断言 start/update/stop 序列）；生产由 make_renderer
+    用共享 Console 构造——同一 console 的样式（工具行 dim）与 live 区域不打架。
+    """
+
+    def __init__(self, console=None, live=None):
+        self._console = console or Console()
+        self._live = live or Live(console=self._console, refresh_per_second=20)
+        self._started = False
+
+    def update(self, text: str) -> None:
+        self._start()
+        self._live.update(Markdown(text))
+
+    def end(self, text: str) -> None:
+        if self._started or text:
+            self._start()
+            self._live.update(Markdown(text))
+            self._live.stop()
+            self._started = False
+
+    def _start(self) -> None:
+        if not self._started:
+            self._live.start(refresh=False)
+            self._started = True
+
+
+def make_renderer(print_fn, root_agent_type: str, *, is_tty: bool, console=None) -> StreamRenderer:
+    """TTY 装配：is_tty → RichBlock（rich 渐进 markdown）；否则 PlainBlock（等价改造前）。"""
+    if is_tty:
+        return StreamRenderer(print_fn, root_agent_type,
+                              block=RichBlock(console=console))
+    return StreamRenderer(print_fn, root_agent_type, block=PlainBlock(print_fn))
