@@ -38,6 +38,34 @@ class GrobidClient:
         except (httpx.HTTPError, OSError):
             return False
 
+    def extract_title(self, path: str) -> str | None:
+        """提取 PDF 论文标题：走 GROBID header 接口，返回 TEI 里的 <title>。
+
+        GROBID 0.8 按 Accept 头协商输出格式——必须显式要 XML，否则默认回
+        BibTeX（见 /api/processHeaderDocument 的格式协商行为）。
+        标题链里 GROBID 是可降级层：网络/服务/解析任一步失败都返回 None 而不
+        抛错，让 TitleExtractor 落到 LLM 层兜底（与 parse_pdf 抛错的契约不同
+        ——那是解析链路必经步骤，错误必须上抛给调用方决定）。
+        """
+        try:
+            with open(path, "rb") as f:
+                r = self._client.post(
+                    f"{self.url}/api/processHeaderDocument",
+                    files={"input": f},
+                    params={"consolidateHeader": "1"},
+                    headers={"Accept": "application/xml"},
+                )
+            r.raise_for_status()
+            root = ET.fromstring(r.text)
+        except (httpx.HTTPError, OSError, ET.ParseError):
+            return None
+        # 优先取 type="main" 的标题：期刊文章的 header 里 analytic/monogr 都带
+        # title，首个 main 才是论文标题本身；找不到再退到第一个 <title>。
+        title = root.find(".//tei:title[@type='main']", _TEI_NS)
+        if title is None:
+            title = root.find(".//tei:title", _TEI_NS)
+        return title.text.strip() if title is not None and title.text else None
+
     def parse_pdf(self, path: str) -> ParsedDoc:
         """把本地 PDF 文件提交给 GROBID 做全文解析，返回结构化章节。
 

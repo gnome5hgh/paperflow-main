@@ -34,6 +34,7 @@ from paperflow.core.memory.sleeptime import Sleeptime
 from paperflow.core.intent.pipeline import IntentPipeline
 from paperflow.core.intent.hybrid_router import HybridRouter
 from paperflow.rag.embedder import BgeEmbedder, resolve_model_dir
+from paperflow.rag.grobid_client import GrobidClient
 from paperflow.core.intent.route_loader import load_routes
 
 logger = logging.getLogger(__name__)
@@ -268,9 +269,11 @@ def main() -> None:
     structured = StructuredOutput(llm)
 
     # extract_title 工具的标题提取器注入 ctx（LLM 层走 StructuredOutput 真实接线）。
-    # 暂不传 grobid：GrobidClient.extract_title 待后续任务实现，传了会让 GROBID 层
-    # 抛 AttributeError 挡住后续 LLM/pdftitle/PyMuPDF 层；实现后再补 GrobidClient(config.grobid_endpoint)。
-    tool_manager._ctx.title_extractor = TitleExtractor(llm=structured)
+    # GROBID 层用 config.grobid_endpoint 装配：extract_title 走本地 REST header
+    # 接口，不可达或解析失败时返回 None，自动落到 LLM 层兜底。
+    tool_manager._ctx.title_extractor = TitleExtractor(
+        grobid=GrobidClient(config.grobid_endpoint),
+        llm=structured)
 
     # 安全管道：四中间件（经验记忆中间件随 Letta 重构移除——工具调用经验不再注入
     # prompt，改由 Sleeptime 后台整合进核心记忆块）。

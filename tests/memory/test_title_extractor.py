@@ -29,6 +29,17 @@ def test_pymupdf_fallback_not_filename():
     assert "G-Merging" not in (r.title or "")     # 文件名不得当标题
 
 
+def test_grobid_layer_success_source():
+    """GROBID 层命中 → 返回 source=grobid，不再往下走 LLM 层。"""
+    class _G:
+        def extract_title(self, p):
+            return "GROBID 权威标题"
+    ex = TitleExtractor(grobid=_G(), llm=_StubLLM(), use_pdftitle=False,
+                        use_pymupdf=False)
+    r = ex.extract(pdf_path="/tmp/x.pdf")
+    assert r.title == "GROBID 权威标题" and r.source == "grobid"
+
+
 def test_fallback_order_calls_layers_in_sequence():
     calls = []
     class _G:
