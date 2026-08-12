@@ -53,7 +53,7 @@ async def test_search_paper_happy_path(agent_env, agent_registry):
         _tc("web_search", {"query": "link prediction", "source": "openalex", "max_results": 3}),
         # 门禁：候选收敛后 spawn reviewer 下载审查（去重并入池插入逻辑，
         # 筛选并入 reviewer 逐篇核验）
-        _tc("spawn_sub_agent", {"agent_type": "reviewer",
+        _tc("spawn_sub_agent", {"agent_type": "reviewer", "mode": "download_review",
                                 "task": "审查以下候选论文：[...] 用户约束：年份≥2020"}),
         Message(role="assistant", content="审查裁决：pass\n- [PASS] Graph Neural Networks | Q1 | 可下载"),
         Message(role="assistant", content="找到 1 篇论文"),

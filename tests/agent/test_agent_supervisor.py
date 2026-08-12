@@ -40,6 +40,13 @@ def test_supervisor_has_no_glob_grep(supervisor_registry):
     assert not ({"glob", "grep"} & names)
 
 
+def test_supervisor_spawns_writer_outline_mode(agent_registry):
+    """supervisor 工具面含 spawn_sub_agent；write_outline 由 SKILL 指导传 mode=outline（文档断言）。"""
+    config = agent_registry.get_config("supervisor")
+    names = {t.name for t in config.tools}
+    assert "spawn_sub_agent" in names
+
+
 def test_supervisor_dispatch_smoke(supervisor_registry):
     """mock LLM：supervisor 先调 spawn 再返回——验证 ReAct 链路 + 工具真实可跑。"""
     tool_call = Message(role="assistant", content=None, tool_calls=[{

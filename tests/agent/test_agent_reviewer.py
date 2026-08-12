@@ -98,7 +98,6 @@ def test_reviewer_lacks_ask_user_question(agent_registry):
 @pytest.mark.asyncio
 async def test_reviewer_outline_review_mode(agent_env, agent_registry):
     """大纲审阅模式：读大纲+被引笔记→faithfulness 缺证据→submit_review fail。"""
-    from tests.conftest import make_mock_llm, _tc, make_agent
     cfg, _ = agent_env
     outline = Path(cfg.workspace) / "outline" / "o.md"
     outline.parent.mkdir(parents=True, exist_ok=True)

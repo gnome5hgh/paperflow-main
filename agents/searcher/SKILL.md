@@ -36,7 +36,7 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
 
 1. **多源搜索**:同一轮**并行调用** `web_search`(source="arxiv")与 `web_search`(source="openalex")(运行时并发执行,互不等待),按结果决定是否换词。结果自动去重入池(无需手动 dedup)。
    - ⚠️ 年份一律用 `year_from`/`year_to` 参数,绝不拼进 query 文本。
-2. **门禁**:候选收敛后 `spawn_sub_agent(agent_type=reviewer, task="审查以下候选论文：<紧凑清单 JSON>。用户约束：<只列用户实际给出的约束>")` 交 reviewer 逐篇核验。
+2. **门禁**:候选收敛后 `spawn_sub_agent(agent_type=reviewer, mode="download_review", task="审查以下候选论文：<紧凑清单 JSON>。用户约束：<只列用户实际给出的约束>")` 交 reviewer 逐篇核验。
    - **约束组装**:只把你确认用户给出的约束传给 reviewer。用户要求了年份 → 传 `年份≥X`;用户**明确**要求等级(顶会/Q1/Q2/CCF 等字眼)→ 才传 `等级≥X`;**用户没说等级 → 不传等级、不默认 ≥Q2**;主题相关性总是传。
    - 门禁对**推荐**也生效:即使用户没要下载,最终推荐清单也是 reviewer 审过的。
    - `status=timeout/failed` → 用未审清单返回,并明示「门禁未完成,等级未全部核验」(仅当任务含等级约束时)。

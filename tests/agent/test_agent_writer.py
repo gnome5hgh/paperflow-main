@@ -66,7 +66,7 @@ async def test_generate_note_single_round(agent_env, agent_registry):
         _tc("read_file", {"path": str(template)}),
         _tc("read_pdf", {"path": str(pdf)}),
         _tc("write_file", {"path": str(note_out), "content": "# 标题\n## 概述\n## 方法\n"}),   # 草稿 v1 → 最终路径
-        _tc("spawn_sub_agent", {"agent_type": "reviewer", "task": task}),
+        _tc("spawn_sub_agent", {"agent_type": "reviewer", "mode": "note_review", "task": task}),
         Message(role="assistant", content="审查裁决：pass"),   # reviewer 子 agent 首轮即过
         Message(role="assistant", content="笔记已生成"),
     ])
@@ -136,7 +136,7 @@ async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
     mock.add(_tc("read_file", {"path": str(template)}))
     mock.add(_tc("read_pdf", {"path": str(pdf)}))
     mock.add(_tc("write_file", {"path": str(note_out), "content": "# 标题\n## 概述\n## 方法\n"}))   # 草稿 v1
-    mock.add(_tc("spawn_sub_agent", {"agent_type": "reviewer", "task": task}))
+    mock.add(_tc("spawn_sub_agent", {"agent_type": "reviewer", "mode": "note_review", "task": task}))
     # 第 1 轮：子 agent 读草稿 → 裁决 fail（blocking: 缺实验结果）
     mock.add(child_read)
     mock.add(Message(role="assistant", content="审查裁决：fail\n- [BLOCKING] structure | 实验结果 | 补充实验结果章节"))
@@ -145,7 +145,7 @@ async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
                                "old_text": "## 方法\n",
                                "new_text": "## 方法\n## 实验结果\n"}))
     # 第 2 轮：修订后 → 子 agent 读草稿 → 裁决 pass
-    mock.add(_tc("spawn_sub_agent", {"agent_type": "reviewer", "task": task}))
+    mock.add(_tc("spawn_sub_agent", {"agent_type": "reviewer", "mode": "note_review", "task": task}))
     mock.add(child_read)
     mock.add(Message(role="assistant", content="审查裁决：pass"))
     # 定稿
@@ -188,7 +188,7 @@ async def test_generate_note_gives_up_after_three_rounds(agent_env, agent_regist
     mock.add(_tc("read_pdf", {"path": str(pdf)}))
     mock.add(_tc("write_file", {"path": str(note_out), "content": "# 标题\n## 概述\n## 方法\n"}))
     for _ in range(3):
-        mock.add(_tc("spawn_sub_agent", {"agent_type": "reviewer", "task": task}))
+        mock.add(_tc("spawn_sub_agent", {"agent_type": "reviewer", "mode": "note_review", "task": task}))
         mock.add(child_read)
         mock.add(Message(role="assistant", content="审查裁决：fail\n- [BLOCKING] structure | 实验结果 | 补充实验结果章节"))
         mock.add(_tc("edit_file", {"path": str(note_out),
