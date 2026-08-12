@@ -69,6 +69,22 @@ routes:
         assert any("阅读" in u or u.startswith("读") for u in ask.utterances)
 
 
+def test_write_outline_covers_topic_outlines():
+    """write_outline 必须有「主题词+动作」复合句。
+
+    2026-08-12 回归：纯动作句（写一份研究大纲/梳理论点）对「<课题>的研究大纲」类 query
+    匹配不足——检索式路由器按主题词精确命中 search_paper 语料（如「circRNA关联预测」），
+    「帮我整理circRNA关联预测的研究大纲」被误路由为 search_paper。补主题锚点句后纠正。
+    此测试守护数据形状，防主题锚点句被误删。
+    """
+    routes = load_routes()
+    wo = next(r for r in routes if r.name == "write_outline")
+    topic_outlines = [u for u in wo.utterances
+                      if any(t in u for t in ("circRNA", "异构图", "图对比",
+                                              "药物靶点", "链路预测", "miRNA"))]
+    assert topic_outlines, "write_outline 缺主题词复合句（检索式路由会误路由到 search_paper）"
+
+
 def test_save_thresholds_round_trip(tmp_path):
     """标定写回 → load 读回：per-route 阈值不丢、utterances 不丢。"""
     path = tmp_path / "routes.yaml"

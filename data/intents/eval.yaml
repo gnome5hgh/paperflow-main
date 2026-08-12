@@ -255,6 +255,23 @@ eval:
   - query: 把这篇论文的论点梳理成笔记
     intent: write_outline
     hard: true
+  # write_outline 复合 query（主题+动作）——路由是检索式，「<课题>的研究大纲」类 query 靠
+  # 主题锚点匹配，held-out 需覆盖该形态（hard 为与 search_paper/generate_note 近形的混淆样本）
+  - query: 帮我整理一份circRNA关联预测方向的研究大纲
+    intent: write_outline
+  - query: 把异构图相关的阅读笔记写成研究框架
+    intent: write_outline
+    hard: true
+  - query: 帮我给图对比学习这个课题搭个论文骨架
+    intent: write_outline
+    hard: true
+  - query: 药物靶点预测的研究要点帮我梳理成大纲
+    intent: write_outline
+  - query: 链路预测方向想写个开题大纲
+    intent: write_outline
+  - query: 把miRNA研究整理成结构化论点
+    intent: write_outline
+    hard: true
   # manage_memory —— 记忆/阅读记录/收藏/历史查询的多种表述
   - query: 我标记过哪些论文已读
     intent: manage_memory
