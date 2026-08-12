@@ -80,7 +80,7 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
 3. **起草**:按模板结构在上下文中起草笔记(**草稿即 v1**)。
 4. **落盘**:`write_file` 写入笔记绝对路径(工具描述 [目录] note=... 下的 `<论文slug>.md`)——草稿 v1。
 5. **审稿循环(最多 3 轮 = 3 次 spawn_sub_agent 提交)**:
-   - 提交:`spawn_sub_agent(agent_type=reviewer, task="审阅草稿文件 <draft_path>,对照原文 <pdf_path>。"[用户要求:<requirements>])` 交 reviewer 审稿。requirements 取任务文本中用户对笔记的约束(篇幅/语言/侧重/深度等);没有就不拼(跳过要求维度)。
+   - 提交:`spawn_sub_agent(agent_type=reviewer, mode="note_review", task="审阅草稿文件 <draft_path>,对照原文 <pdf_path>。"[用户要求:<requirements>])` 交 reviewer 审稿。requirements 取任务文本中用户对笔记的约束(篇幅/语言/侧重/深度等);没有就不拼(跳过要求维度)。
    - 解析返回的 `SubAgentResult.summary`(首行「审查裁决:pass/fail」+ `[BLOCKING]/[MAJOR]/[MINOR]` 清单)。
    - `status=timeout` → 草稿保持现状,依据现有内容决定是否定稿(不伪装达标)。
    - `status=failed` → 明示「审稿未完成,不伪装达标」,依据现有草稿决定是否定稿并如实说明。

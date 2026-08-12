@@ -2,7 +2,7 @@
 
 审稿由 review_draft 桥（agent 目录内单消费者工具）改为直接 spawn_sub_agent
 （paperflow/tools/orchestration/spawn.py 共享层）——与 supervisor 同款派发。父 writer
-在 ReAct 循环里调用 spawn_sub_agent(agent_type=reviewer, task="审阅草稿文件 <draft>，对照原文 <pdf>")，
+在 ReAct 循环里调用 spawn_sub_agent(agent_type=reviewer, mode="note_review", task="审阅草稿文件 <draft>，对照原文 <pdf>")，
 reviewer 子 agent 返回 SubAgentResult（summary 首行「审查裁决：pass/fail」）。
 """
 import json
@@ -47,7 +47,7 @@ def test_generate_note_tools_metadata(agent_env, agent_registry):
 async def test_generate_note_single_round(agent_env, agent_registry):
     """单轮 happy path：读模板 → 读 PDF → write_file 落盘草稿 v1 → spawn reviewer 审稿通过 → 定稿。
 
-    Task 7：审稿由 review_draft 桥改为 spawn_sub_agent(agent_type=reviewer, task=…)——
+    Task 7：审稿由 review_draft 桥改为 spawn_sub_agent(agent_type=reviewer, mode="note_review", task=…)——
     父 writer 用共享 spawn 工具派发 reviewer 子 agent；子 agent（mock LLM）
     首轮即回「审查裁决：pass」，父不再循环直接定稿。草稿 v1 直接 write_file 到最终
     路径（vault note），spawn 任务文本传 draft_path（不再把整篇草稿塞进工具参数）。
@@ -118,7 +118,7 @@ def child_read(messages):
 async def test_generate_note_two_round_review_loop(agent_env, agent_registry):
     """两轮审稿循环：write_file 草稿 v1 → spawn 审稿 fail → edit_file 修订 → spawn 审稿 pass → 定稿。
 
-    父 writer 两次 spawn_sub_agent(agent_type=reviewer, task="审阅草稿文件 …，
+    父 writer 两次 spawn_sub_agent(agent_type=reviewer, mode="note_review", task="审阅草稿文件 …，
     对照原文 …")；reviewer 子 agent 读草稿后给 fail（缺实验结果）→ 父 edit_file 定向
     search-replace 插入章节 → 再审 pass。草稿自始至终在最终路径（vault note）：
     write_file 落 v1，修订走 edit_file 写回同一路径（不再 in-context 修订 + 另起 scratch）。"""
