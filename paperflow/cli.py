@@ -5,12 +5,18 @@
 跨轮状态由 ConversationState 承载(prev_intent / pending_intent);对话历史经
 MessageManager 落盘 SQL 并在每轮 run 回放,超窗口时 compaction 压缩 in-context
 窗口(不删 SQL 原始消息)——同一 Supervisor 实例复用其内存/消息管理服务。
+
+终端交互经 paperflow/terminal 子包隔离:InputIO(输入适配,TTY=prompt_toolkit,
+非 TTY=FallbackIO)与 StreamRenderer(输出渲染,TTY=rich Live,非 TTY=PlainBlock)。
 """
 import asyncio
 import logging
-import threading
+import signal
+import sys
 import uuid
 from pathlib import Path
+
+from rich.console import Console
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, MaxTurnsExceeded
@@ -36,12 +42,10 @@ from paperflow.core.intent.routing.router import HybridRouter
 from paperflow.rag.encoders.embedder import BgeEmbedder, resolve_model_dir
 from paperflow.rag.parsers.grobid_client import GrobidClient
 from paperflow.core.intent.routing.route_loader import load_routes
+from paperflow.terminal.io import InputIO, make_input_io
+from paperflow.terminal.render import StreamRenderer, make_renderer
 
 logger = logging.getLogger(__name__)
-
-#: stdin 交互串行锁：并行子 agent 可能同时 ConfirmRequired → 并发读 stdin 提示交错
-#: （spec ⚪4，防御性加锁）
-_stdin_lock = threading.Lock()
 
 #: 模块级 embedder 单例：bge 模型首次调用才加载（sentence-transformers 导入数秒），
 #: 进程内只加载一次。RAG/意图管线/记忆服务共享同一实例——各自 new 一个会让同一
@@ -62,99 +66,34 @@ def _rag_embedder(config: PaperFlowConfig) -> "BgeEmbedder":
     return _embedder
 
 
-async def _stdin_confirm(cr) -> bool:
-    """yes/no 确认回调(策略引擎触发需确认时调用)。fail-safe:EOF/空 → False。
+def _make_print_fn(console):
+    """生产 print_fn。console 非 None（TTY）经 rich 输出（style 生效，工具行 dim）；
+    console 为 None（非 TTY）用内置 print（吸收 style，不产生 ANSI）。"""
+    if console is None:
+        def _plain(*args, style=None, **kwargs):
+            print(*args, **kwargs)
+        return _plain
 
-    确认回调必须是可 await 的(Agent 执行器以 await 方式调用)。
-    input() 放到线程执行:确认等待是用户交互,不应冻结共享事件循环——并行派发的
-    所有子 agent 共享同一事件循环,同步 input() 会全部卡死。无限等待不取消:写操作
-    一直等用户确认,确认时间由子 agent 的预算逻辑排除在超时外,不会因等待而误触发
-    超时;无超时 → 无被遗弃的等待线程 → 不会吞掉用户后续输入。
+    def _rich(*args, style=None, end="\n", flush=False):
+        console.print(*args, style=style, end=end, overflow="ignore")
+    return _rich
+
+
+def _make_confirm_callback(io: InputIO):
+    """构造 async 确认回调（Agent 执行器以 await 方式调用）。
+
+    确认等待是用户交互，input()/prompt() 放到线程执行——不应冻结共享事件循环；
+    to_thread 包一层，与改造前 _stdin_confirm 的线程模型一致。fail-safe：EOF 由
+    io.confirm 兜底返回 False；TTY 下 prompt_toolkit 不捕 EOFError，这里再兜一层
+    （两实现可替换）。
     """
-    answer = await asyncio.to_thread(_read_stdin_locked, cr)
-    return answer.strip().lower() in {"y", "yes", "是", "确定"}
-
-
-def _read_stdin_locked(cr) -> str:
-    """持 stdin 锁读一行(在线程内调用)。
-
-    并发确认(多个子 agent 同时要确认)经锁串行化、提示不交错;锁只在读行期间持有
-    (用户输入到达即释放),不阻塞任何事件循环。EOF(Ctrl-D)→ ""(fail-safe 拒绝)。"""
-    with _stdin_lock:
-        print(f"[需要确认] {cr.tool_name} 是否继续？(y/N) ", end="", flush=True)
+    async def _confirm(cr) -> bool:
         try:
-            return input()
+            return await asyncio.to_thread(
+                io.confirm, f"[需要确认] {cr.tool_name} 是否继续？(y/N) ")
         except EOFError:
-            return ""
-
-
-def _stdin_ask(question: str) -> str:
-    """ask_user_question 工具回调：打印问题、读一行返回。"""
-    with _stdin_lock:
-        print(question)
-        try:
-            return input("> ").strip()
-        except EOFError:
-            return ""             # Ctrl-D：返回空串，Supervisor ReAct 自行处理
-
-
-class _ReplStreamer:
-    """把 Agent 流式事件渲染为终端增量输出，并决定最终结果如何打印。
-
-    段模型：root content / tool 两类输出段（child content 段保留为防御性代码——
-    子 agent 内容流式已在上游 _make_child_stream_callback 过滤，不再到达）。
-    root content 额外缓冲，供 should_print 判断最终答案是否已被逐字展示
-    （on_finish 改写如 SAFE_PROMPT 时需要补打最终版）。
-
-    线程安全：on_event 会被并发调用——root content/tool 事件来自主 ReAct 的
-    chat_stream 线程，spawn 子 agent 的 tool 事件来自各子 agent 自己的线程池
-    worker（经 _make_child_stream_callback 加前缀透传），两者可同时到达。
-    _lock 串行化渲染：同一事件的多段输出（补换行、正文、终止换行）整体原子，
-    避免并行子 agent 的工具行交错串字。should_print / reset 只被主线程调用
-    （一轮 run 结束后才取最终答案），不进入 _lock。
-    """
-    def __init__(self, print_fn, root_agent_type: str):
-        self._print = print_fn          # 透传 end=/flush=（简单 lambda 会忽略 kwargs）
-        self._root = root_agent_type
-        self._last_segment = None       # None | "root" | "child" | "tool"
-        self._buffer: list[str] = []    # 仅 root content，用于最终答案比对
-        self._lock = threading.Lock()   # 渲染锁：on_event 跨线程并发调用，锁内串行
-
-    def reset(self) -> None:
-        """每轮 run 前调用：清空上一轮残留（异常/澄清路径不消费 should_print）。"""
-        self._buffer.clear()
-        self._last_segment = None
-
-    def on_event(self, ev) -> None:
-        with self._lock:
-            if ev.kind == "content":
-                seg = "root" if ev.agent_type == self._root else "child"
-                # 段切换（root↔child，或 content→content 换段）才补换行；tool→content
-                # 不补（工具行已显式终止，游标已在行首）；同段续打不换行
-                if self._last_segment in ("root", "child") and self._last_segment != seg:
-                    self._print("\n", end="")
-                self._print(ev.text, end="", flush=True)  # 逐字打字机效果
-                if seg == "root":
-                    self._buffer.append(ev.text)
-                self._last_segment = seg
-            elif ev.kind == "tool":
-                # 工具行：上一段是未自终止的内容（root/child）→ 先补换行结束它；
-                # 上一段是 tool（已终止）或 None → 不补，避免空行
-                if self._last_segment in ("root", "child"):
-                    self._print("\n", end="")
-                self._print(ev.text, end="", flush=True)
-                self._print("\n", end="")  # 工具行显式自终止（不再靠 print 隐式 end）
-                if ev.agent_type == self._root:
-                    self._buffer.clear()   # 工具调用前的中间内容作废，只留最终轮的流式文本
-                self._last_segment = "tool"
-
-    def should_print(self, result: str) -> str:
-        streamed = "".join(self._buffer)
-        if not streamed:
-            return result               # 没流式（澄清早退/纯工具轮）→ 维持现状
-        if streamed == result:
-            return ""                   # 已逐字展示 → print_fn("") 只补换行
-        return "\n" + result            # on_finish 改写了（如 SAFE_PROMPT）→ 补打最终版
+            return False
+    return _confirm
 
 
 def _merge_pending(conversation: ConversationState, raw: str) -> tuple[str, bool]:
@@ -174,54 +113,77 @@ def _merge_pending(conversation: ConversationState, raw: str) -> tuple[str, bool
 
 
 async def _repl(supervisor: Agent, conversation: ConversationState, *,
-                input_fn=input, print_fn=print, sleeptime=None) -> None:
-    """REPL 主循环。input_fn/print_fn 可注入（测试）。
+                io: InputIO, renderer: StreamRenderer, sleeptime=None) -> None:
+    """REPL 主循环。io/renderer 可注入（测试）。
 
-    sleeptime: 每轮循环顶部触发后台记忆整合（run_once_if_due，未到期/未启用立即
-    返回）；None 跳过（测试/无记忆装配）。Sleeptime 失败不打断 REPL——记日志继续。
+    Ctrl+C 三态：输入框空（io.read 抛 KeyboardInterrupt）→ 退出；输入框有内容 →
+    输入框内清空（PromptToolkitIO 键绑定）；agent 运行中 → 临时注册 SIGINT handler
+    取消当前 run 任务 → 捕获 CancelledError → 打印「已中断」回到输入框（不杀 REPL）。
+    SIGINT handler 只在 run 期间存在：prompt_toolkit 提示期间无冲突（Ctrl+C 由其
+    键绑定处理，终端处 raw 模式不产生 SIGINT）。
 
-    澄清挂起：last_intent.clarification 非空且非 force → 存 pending（round 链式累计，
-    用旧值 +1，绝不重置为 0）+ 打印问题，等下一轮；否则打印结果。
+    澄清挂起：last_intent.clarification 非空且非 force → 存 pending（round 链式
+    累计，用旧值 +1，绝不重置为 0）+ 打印问题，等下一轮；否则打印结果。
     """
-    print_fn("🌏 paperFlow 学术助手")
-    # 流式接线：构造渲染器（print_fn 包装透传 end=/flush= kwargs，简单 lambda
-    # 测试也兼容），并把事件回调挂到 supervisor。root_agent_type 用 getattr 兜底
-    # （mock supervisor 的 agent_type 可能是自动创建的 MagicMock，测试须显式设置）。
-    streamer = _ReplStreamer(
-        lambda *a, **k: print_fn(*a, **k),
-        root_agent_type=getattr(supervisor, "agent_type", None) or "supervisor",
-    )
-    supervisor.stream_callback = streamer.on_event
+    renderer.print("🌏 paperFlow 学术助手")
+    supervisor.stream_callback = renderer.on_event
+    loop = asyncio.get_running_loop()
+    can_sigint = (hasattr(loop, "add_signal_handler")
+                  and hasattr(loop, "remove_signal_handler"))
+    run_task = None
+
+    def _cancel_run():
+        if run_task is not None and not run_task.done():
+            run_task.cancel()
+
     while True:
-        # 每轮循环顶部触发后台记忆整合（取代 Dream）——放在读 stdin 之前，让
-        # 用户思考期间累积的对话被整合，整合不阻塞本轮输入。
+        # 每轮循环顶部触发后台记忆整合——放在读 stdin 之前，让用户思考期间累积的
+        # 对话被整合，整合不阻塞本轮输入。
         if sleeptime is not None:
             try:
                 await sleeptime.run_once_if_due()
             except Exception:  # Sleeptime 失败不打断 REPL
                 logger.warning("sleeptime tick failed", exc_info=True)
         try:
-            raw = input_fn("> ")
-        except EOFError:
-            break                # Ctrl-D：与 /exit 同效，优雅退出（不吐 traceback）
+            raw = io.read("> ")
+        except (EOFError, KeyboardInterrupt):
+            break                # Ctrl-D / 空框 Ctrl+C：与 /exit 同效，优雅退出
+        except Exception as e:
+            # prompt_toolkit 等输入适配器故障不杀 REPL（spec §5）：打印后继续
+            renderer.print(f"输入出错：{e}")
+            continue
         if raw.strip() == "/exit":
             break
         p = conversation.pending_intent
         query, force = _merge_pending(conversation, raw)
-        streamer.reset()                    # 每轮清残留：异常/澄清路径不消费 should_print
+        renderer.reset()                    # 每轮清残留：异常/澄清路径不消费 should_print
+        run_task = asyncio.create_task(supervisor.run(query, force_dispatch=force))
+        if can_sigint:
+            try:
+                loop.add_signal_handler(signal.SIGINT, _cancel_run)
+            except (NotImplementedError, RuntimeError):
+                # 信号注册失败（如非主线程/平台不支持）→ 降级为默认 Ctrl+C，不崩 REPL
+                can_sigint = False
         try:
-            result = await supervisor.run(query, force_dispatch=force)
+            result = await run_task
+        except asyncio.CancelledError:
+            # Ctrl+C 优雅中断：渲染器过滤孤儿事件（to_thread 无法真正取消）、打印
+            # 提示、回到输入框。安全阀语义与 MaxTurnsExceeded 一致——不杀 REPL。
+            renderer.interrupt()
+            renderer.print("已中断")
+            continue
         except MaxTurnsExceeded:
-            # 安全阀:LLM 陷入工具调用循环时不杀 REPL——报错并继续,让用户换个更简单
-            # 的说法重试(而不是丢挂起状态/整个进程崩溃)
-            print_fn("任务超过最大轮数，请简化请求后重试")
+            renderer.print("任务超过最大轮数，请简化请求后重试")
             continue
         except Exception as e:
-            # 网络失败等不可恢复异常同样不杀 REPL:打印错误,下一轮照常运行。Supervisor
-            # 内部已把多数错误转为普通文本反馈,到这里的是真正未预期的异常(如客户端
-            # 网络超时)。
-            print_fn(f"执行出错：{e}")
+            renderer.print(f"执行出错：{e}")
             continue
+        finally:
+            if can_sigint:
+                try:
+                    loop.remove_signal_handler(signal.SIGINT)
+                except (NotImplementedError, RuntimeError):
+                    pass
         intent = supervisor.last_intent
         if intent is not None and intent.clarification and not force:
             # 未超轮：挂起澄清，round 链式累计（REPL 重建时用 p.round，不重置为 0）
@@ -229,14 +191,18 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
             conversation.pending_intent = PendingClarification(
                 question=intent.clarification, original_input=query,
                 round=prev_round + 1)
-            print_fn(intent.clarification)
+            renderer.print(intent.clarification)
             continue
-        print_fn(streamer.should_print(result))
+        renderer.finalize()
+        renderer.print(renderer.should_print(result))
 
 
 def main() -> None:
     """装配全部依赖并启动 REPL（__main__ 转调）。"""
     config = PaperFlowConfig.from_env()
+    is_tty = sys.stdin.isatty()
+    io = make_input_io(config)
+    console = Console() if is_tty else None
     llm = LLMClient(config.llm)
     registry = AgentRegistry(config.agents_dir)
 
@@ -295,6 +261,15 @@ def main() -> None:
     pipeline = IntentPipeline(router=router, structured=structured)
 
     conversation = ConversationState()
+
+    # ask_user 回调：io.ask 读开放问题答案。TTY 下 prompt_toolkit 不捕 EOFError，
+    # 包一层兜底返回空串（与非 TTY FallbackIO 行为一致，两实现可替换）。
+    def _ask(question: str) -> str:
+        try:
+            return io.ask(question)
+        except EOFError:
+            return ""
+
     supervisor = Agent(
         llm=llm, agent_registry=registry, agent_type="supervisor",
         memory=agent_state.memory,
@@ -305,8 +280,8 @@ def main() -> None:
         structured=structured,
         security_middleware=middlewares,
         intent_enabled=True, intent_pipeline=pipeline, conversation=conversation,
-        confirm_callback=_stdin_confirm,
-        ask_user_callback=message_manager.make_ask_recorder(_stdin_ask,
+        confirm_callback=_make_confirm_callback(io),
+        ask_user_callback=message_manager.make_ask_recorder(_ask,
                                                             session_id),
         session_id=session_id,
     )
@@ -314,4 +289,14 @@ def main() -> None:
         agent_state, block_manager, passage_manager, message_manager,
         structured, enable=config.sleeptime_enable,
         frequency=config.sleeptime_agent_frequency)
-    asyncio.run(_repl(supervisor, conversation, sleeptime=sleeptime))
+
+    # 终端装配：TTY → prompt_toolkit 输入 + rich Live 渲染；非 TTY（管道/CI/测试）→
+    # FallbackIO + PlainBlock 降级（行为与改造前一致）。renderer 的 root_agent_type
+    # 用于 content 段归属判别（getattr 兜底 mock supervisor）。
+    renderer = make_renderer(
+        _make_print_fn(console),
+        getattr(supervisor, "agent_type", None) or "supervisor",
+        is_tty=is_tty, console=console,
+    )
+    asyncio.run(_repl(supervisor, conversation,
+                      io=io, renderer=renderer, sleeptime=sleeptime))

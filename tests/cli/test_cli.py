@@ -1,13 +1,14 @@
-"""CLI REPL 测试：注入 input_fn/print_fn，验证循环/澄清挂起/超轮终止/EOF 路径。"""
+"""CLI REPL 测试：注入 fake io + 真实 renderer，验证循环/澄清挂起/超轮终止/EOF 路径。"""
 import asyncio
-import threading
 
 import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from paperflow.cli import _repl, _stdin_confirm, _stdin_ask
-from paperflow.core.agent import Agent, MaxTurnsExceeded
+from paperflow.cli import _repl, _make_confirm_callback
+from paperflow.terminal.io import FallbackIO
+from paperflow.terminal.render import make_renderer
+from paperflow.core.agent import Agent, MaxTurnsExceeded, StreamEvent
 from paperflow.core.security import PolicyEngineMiddleware
 from paperflow.core.llm import Message
 from paperflow.core.intent.conversation_state import ConversationState
@@ -29,15 +30,21 @@ class ConfirmWriteTool(Tool):
         return ToolResult(text="written")
 
 
-def _seq_input(values: list[str]):
-    """同步 input_fn（_repl 里 input_fn 是同步调用）：按序返回 values，耗尽后 /exit。"""
+def _seq_io(values: list[str]):
+    """fake InputIO：按序返回 values，耗尽后 /exit。"""
     it = iter(values + ["/exit"])
-    def _fn(prompt=""):
+
+    def read(prompt=""):
         try:
             return next(it)
         except StopIteration:
             return "/exit"
-    return _fn
+    return type("_FakeIO", (), {"read": staticmethod(read)})()
+
+
+def _make_renderer(capture: list):
+    """真实 StreamRenderer（非 TTY PlainBlock），输出捕获到 capture。"""
+    return make_renderer(lambda *a, **k: capture.append(a[0]), "supervisor", is_tty=False)
 
 
 def _make_supervisor(intent_sequence):
@@ -59,8 +66,8 @@ def _make_supervisor(intent_sequence):
 async def test_repl_prints_result_and_exits():
     sv = _make_supervisor([None])
     out = []
-    await _repl(sv, ConversationState(), input_fn=_seq_input(["搜索 circRNA"]),
-                print_fn=lambda *a: out.append(a[0]))
+    await _repl(sv, ConversationState(), io=_seq_io(["搜索 circRNA"]),
+                renderer=_make_renderer(out))
     assert sv._calls == [("搜索 circRNA", False)]
     # 注：out 元素是整行文本（banner 含前缀），用子串匹配而非列表成员判定
     assert any("🌏" in s for s in out)
@@ -70,8 +77,7 @@ async def test_repl_prints_result_and_exits():
 @pytest.mark.asyncio
 async def test_repl_exit_only_no_run():
     sv = _make_supervisor([])
-    await _repl(sv, ConversationState(), input_fn=_seq_input([]),
-                print_fn=lambda *a: None)
+    await _repl(sv, ConversationState(), io=_seq_io([]), renderer=_make_renderer([]))
     assert sv._calls == []
 
 
@@ -91,8 +97,8 @@ async def test_clarification_suspends_then_terminates():
     ])
     conversation = ConversationState()
     out = []
-    await _repl(sv, conversation, input_fn=_seq_input(["搜索", "文献", "再答"]),
-                print_fn=lambda *a: out.append(a[0]))
+    await _repl(sv, conversation, io=_seq_io(["搜索", "文献", "再答"]),
+                renderer=_make_renderer(out))
     assert len(sv._calls) == 3
     assert sv._calls[0] == ("搜索", False)                    # T1 原输入
     assert sv._calls[1][0].startswith("搜索（用户澄清：文献）")  # T2 合并上下文
@@ -107,9 +113,11 @@ async def test_clarification_suspends_then_terminates():
 async def test_repl_ctrl_d_exits_gracefully():
     """Ctrl-D（EOFError）与 /exit 同效，优雅退出不吐 traceback（🟠1）。"""
     sv = _make_supervisor([])
-    def _eof_input(prompt=""):
-        raise EOFError
-    await _repl(sv, ConversationState(), input_fn=_eof_input, print_fn=lambda *a: None)
+
+    class _EofIO:
+        def read(self, prompt=""):
+            raise EOFError
+    await _repl(sv, ConversationState(), io=_EofIO(), renderer=_make_renderer([]))
     assert sv._calls == []
 
 
@@ -118,15 +126,15 @@ async def test_repl_run_guard_max_turns_exceeded():
     """I1 回归：MaxTurnsExceeded 不杀 REPL——打印提示后 continue，能进入下一轮。
 
     D10 降级哲学：LLM 安全阀触发只报错不崩溃，REPL 存活可让用户换说法重试。
-    _seq_input 会在耗尽后发 /exit，故循环必然正常退出（证明 continue 未破坏循环）。"""
+    _seq_io 会在耗尽后发 /exit，故循环必然正常退出（证明 continue 未破坏循环）。"""
     sv = MagicMock()
     async def run(query, force_dispatch=False):
         raise MaxTurnsExceeded("boom")
     sv.run = run
     sv.last_intent = None
     out = []
-    await _repl(sv, ConversationState(), input_fn=_seq_input(["搜索 x"]),
-                print_fn=lambda *a: out.append(a[0]))
+    await _repl(sv, ConversationState(), io=_seq_io(["搜索 x"]),
+                renderer=_make_renderer(out))
     assert any("任务超过最大轮数" in s for s in out)
 
 
@@ -139,29 +147,27 @@ async def test_repl_run_guard_generic_exception():
     sv.run = run
     sv.last_intent = None
     out = []
-    await _repl(sv, ConversationState(), input_fn=_seq_input(["搜索 x"]),
-                print_fn=lambda *a: out.append(a[0]))
+    await _repl(sv, ConversationState(), io=_seq_io(["搜索 x"]),
+                renderer=_make_renderer(out))
     assert any("执行出错：LLM 网络超时" in s for s in out)
 
 
-def test_stdin_confirm_eof_failsafe(monkeypatch):
-    """confirm 回调 Ctrl-D → False（spec §6.3 fail-safe 承诺，🟠1）。
-
-    C1 后 _stdin_confirm 是 async——同步调用拿到的是 coroutine 而非 bool，
-    必须 asyncio.run 包一层（回调本身跑在 Agent 的事件循环里，_repl 外是 sync 测试）。"""
+def test_confirm_callback_eof_failsafe(monkeypatch):
+    """确认回调 Ctrl-D → False（spec §5 fail-safe 承诺，沿用 C1 语义）。"""
     def _eof(*a, **k):
         raise EOFError
     monkeypatch.setattr("builtins.input", _eof)
-    assert asyncio.run(_stdin_confirm(SimpleNamespace(tool_name="write_file"))) is False
+    cb = _make_confirm_callback(FallbackIO())
+    assert asyncio.run(cb(SimpleNamespace(tool_name="write_file"))) is False
 
 
 @pytest.mark.asyncio
 async def test_confirm_callback_async_contract_confirm(monkeypatch):
-    """C1 回归（merge blocker）：confirm_callback=_stdin_confirm（async）+ ConfirmRequired 不崩。
+    """C1 回归（merge blocker）：confirm_callback（async）+ ConfirmRequired 不崩。
 
     agent.py:411 以 `await self.confirm_callback(cr)` 调用——若回调是 sync 的，`await True`
     抛 TypeError，writer 写盘工具（requires_confirm=True）在真实 CLI 永远写不出笔记。
-    构造真实 Agent（真实 PolicyEngineMiddleware + async _stdin_confirm），断言完整 ReAct
+    构造真实 Agent（真实 PolicyEngineMiddleware + async 确认回调），断言完整 ReAct
     走通：输入 y → 确认放行 → 工具执行 → 返回最终答案，全程无 TypeError。
     """
     monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
@@ -177,7 +183,7 @@ async def test_confirm_callback_async_contract_confirm(monkeypatch):
         llm=llm, agent_registry=make_mock_registry([ConfirmWriteTool()]),
         agent_type="test",
         security_middleware=[PolicyEngineMiddleware()],
-        confirm_callback=_stdin_confirm,          # C1 修复点：async 回调
+        confirm_callback=_make_confirm_callback(FallbackIO()),   # C1 修复点：async 回调
     )
     text = await agent.run("写笔记")
     assert text == "已写入"
@@ -202,7 +208,7 @@ async def test_confirm_callback_async_contract_denied(monkeypatch):
         llm=llm, agent_registry=make_mock_registry([ConfirmWriteTool()]),
         agent_type="test",
         security_middleware=[PolicyEngineMiddleware()],
-        confirm_callback=_stdin_confirm,
+        confirm_callback=_make_confirm_callback(FallbackIO()),
     )
     text = await agent.run("写笔记")
     assert text == "已取消"
@@ -211,138 +217,43 @@ async def test_confirm_callback_async_contract_denied(monkeypatch):
                for m in capture[-1])
 
 
-def test_stdin_ask_eof_returns_empty(monkeypatch):
-    """ask_user_question 工具回调 Ctrl-D → 空串（Supervisor ReAct 自行处理，🟠1）。"""
+def test_ask_eof_returns_empty(monkeypatch):
+    """ask_user 回调 Ctrl-D → 空串（Supervisor ReAct 自行处理）。"""
     def _eof(*a, **k):
         raise EOFError
     monkeypatch.setattr("builtins.input", _eof)
-    assert _stdin_ask("要哪个？") == ""
+    assert FallbackIO().ask("要哪个？") == ""
 
 
-from paperflow.cli import _ReplStreamer
-from paperflow.core.agent import StreamEvent
-
-
-def _collect():
-    """返回 (out, print_fn)：print_fn 兼容 end=/flush= kwargs，捕获每次调用首参。"""
+@pytest.mark.asyncio
+async def test_repl_ctrl_c_during_run_interrupts_and_continues():
+    """agent 运行中 Ctrl+C → 打印「已中断」、循环继续（不杀 REPL）。"""
+    sv = MagicMock()
+    async def run(query, force_dispatch=False):
+        raise asyncio.CancelledError("cancelled")
+    sv.run = run
+    sv.last_intent = None
     out = []
+    await _repl(sv, ConversationState(), io=_seq_io(["hi"]),
+                renderer=_make_renderer(out))
+    assert any("已中断" in s for s in out)
 
-    def _fn(*a, **k):
-        out.append(a[0])
-    return out, _fn
 
-
-class TestReplStreamer:
-    def test_content_segments_insert_newlines_on_transition(self):
-        out, fn = _collect()
-        s = _ReplStreamer(fn, root_agent_type="supervisor")
-        s.on_event(StreamEvent("content", "答", "supervisor"))
-        s.on_event(StreamEvent("content", "案", "supervisor"))
-        s.on_event(StreamEvent("content", "推理", "searcher"))   # root → child
-        s.on_event(StreamEvent("content", "续", "searcher"))
-        s.on_event(StreamEvent("content", "总结", "supervisor"))     # child → root
-        assert "".join(out) == "答案\n推理续\n总结"
-
-    def test_root_tool_event_clears_buffer(self):
-        out, fn = _collect()
-        s = _ReplStreamer(fn, "supervisor")
-        s.on_event(StreamEvent("content", "中间想法", "supervisor"))
-        s.on_event(StreamEvent("tool", "调用 search_paper(query=x)", "supervisor"))
-        assert s.should_print("最终答案") == "最终答案"    # buffer 被清 → 走现状
-        s.on_event(StreamEvent("content", "最终答案", "supervisor"))
-        assert s.should_print("最终答案") == ""            # 已逐字展示 → 只补换行
-
-    def test_should_print_rewrite_case(self):
-        out, fn = _collect()
-        s = _ReplStreamer(fn, "supervisor")
-        s.on_event(StreamEvent("content", "原始内容", "supervisor"))
-        assert s.should_print("SAFE_PROMPT") == "\nSAFE_PROMPT"   # on_finish 改写 → 补打
-
-    def test_child_content_does_not_pollute_buffer(self):
-        out, fn = _collect()
-        s = _ReplStreamer(fn, "supervisor")
-        s.on_event(StreamEvent("content", "子agent回答", "searcher"))   # child 不入 buffer
-        assert s.should_print("最终答案") == "最终答案"
-        s.on_event(StreamEvent("content", "最终答案", "supervisor"))
-        assert s.should_print("最终答案") == ""
-
-    def test_reset_clears_stale_buffer(self):
-        out, fn = _collect()
-        s = _ReplStreamer(fn, "supervisor")
-        s.on_event(StreamEvent("content", "残留", "supervisor"))
-        s.reset()
-        assert s.should_print("结果") == "结果"           # 残留被清 → 走现状
-
-    def test_no_double_newline_with_real_print_behavior(self):
-        """回归：真实 print 默认 end="\\n"，_print("\\n") 必须传 end="" 否则多出空行。"""
-        out = []
-        def _fn(*a, **k):
-            out.append(a[0] + k.get("end", "\n"))
-        s = _ReplStreamer(_fn, "supervisor")
-        s.on_event(StreamEvent("content", "答", "supervisor"))
-        s.on_event(StreamEvent("content", "推理", "searcher"))   # root→child 段切换
-        s.on_event(StreamEvent("tool", "调用 search_arxiv(query=x)", "searcher"))
-        joined = "".join(out)
-        assert "\n\n" not in joined
-        assert joined == "答\n推理\n调用 search_arxiv(query=x)\n"
-
-    def test_no_blank_between_tools_or_tool_to_content(self):
-        """回归 OOS#2：连续工具行、工具行后接内容不得有空行（真实 print 模拟）。"""
-        out = []
-        def _fn(*a, **k):
-            out.append(a[0] + k.get("end", "\n"))
-        s = _ReplStreamer(_fn, "supervisor")
-        s.on_event(StreamEvent("tool", "调用 search_arxiv(query=a)", "supervisor"))
-        s.on_event(StreamEvent("tool", "调用 spawn_sub_agent(...)", "supervisor"))
-        s.on_event(StreamEvent("content", "最终答案", "supervisor"))
-        joined = "".join(out)
-        assert "\n\n" not in joined
-        assert joined == "调用 search_arxiv(query=a)\n调用 spawn_sub_agent(...)\n最终答案"
-
-    def test_thread_safe_concurrent_tool_events(self):
-        """线程安全回归：多线程并发调 on_event，无异常、渲染不交错串字。
-
-        并行派发后 on_event 被主线程与各子 agent 的线程池 worker 并发调用（spawn
-        子 agent 的 tool 事件经 _make_child_stream_callback 加前缀透传）。锁缺失时
-        同一事件的多段输出会交错，行内出现两个 [ 前缀。断言：并发跑完无异常；
-        每个完整工具行恰好一个 [childN] 前缀；渲染器状态仍有效。
-        """
-        out = []
-        def _fn(*a, **k):
-            out.append(a[0])
-        s = _ReplStreamer(_fn, root_agent_type="supervisor")
-        # 锁存在性断言（确定性）：锁缺失时直接失败，而非靠概率捕获
-        assert isinstance(s._lock, type(threading.Lock()))
-
-        def _hammer(agent_type, rounds):
-            ev = StreamEvent("tool", f"[{agent_type}] 调用 search_arxiv(query=x)", agent_type)
-            for _ in range(rounds):
-                s.on_event(ev)
-
-        threads = [
-            threading.Thread(target=_hammer, args=(f"child{i}", 200))
-            for i in range(4)
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        # 每个完整工具行（换行之间）恰好一个 [childN] 前缀——锁串行化 → 行内不穿插
-        tool_lines = [ln for ln in "".join(out).split("\n") if ln]
-        assert tool_lines, "并发事件应产生工具行输出"
-        for ln in tool_lines:
-            assert ln.count("[child") == 1, f"工具行交错：{ln!r}"
-        # 渲染器状态仍有效：最后一次是子 agent 的 tool 事件（_last_segment=="tool"，
-        # 子 agent 事件不清 root buffer → buffer 恒空）
-        assert s._last_segment == "tool"
-        assert s._buffer == []
+@pytest.mark.asyncio
+async def test_repl_ctrl_c_on_input_exits():
+    """输入框空、Ctrl+C → 退出（与 /exit、Ctrl-D 同效）。"""
+    class _Fake:
+        def read(self, prompt=""):
+            raise KeyboardInterrupt
+    sv = _make_supervisor([])
+    await _repl(sv, ConversationState(), io=_Fake(), renderer=_make_renderer([]))
+    assert sv._calls == []
 
 
 @pytest.mark.asyncio
 async def test_repl_streams_live_and_no_duplicate_final_print():
     """流式端到端：run() 经 sv.stream_callback 发 content 事件 → 增量实时打到
-    print_fn；最终答案已逐字展示 → 只补空行不重复打印（print_fn 需兼容 kwargs）。"""
+    renderer；最终答案已逐字展示 → 只补空行不重复打印（renderer 捕获每段）。"""
     sv = MagicMock()
     sv.agent_type = "supervisor"
 
@@ -354,8 +265,8 @@ async def test_repl_streams_live_and_no_duplicate_final_print():
     sv.run = run
     sv.last_intent = None
     out = []
-    await _repl(sv, ConversationState(), input_fn=_seq_input(["hi"]),
-                print_fn=lambda *a, **k: out.append(a[0]))
+    await _repl(sv, ConversationState(), io=_seq_io(["hi"]),
+                renderer=_make_renderer(out))
     assert "答" in out and "案" in out          # 增量逐字捕获
     assert "" in out                            # should_print 返回 "" → 补换行
     assert not any(s == "答案" for s in out)    # 完整答案不重复打印
