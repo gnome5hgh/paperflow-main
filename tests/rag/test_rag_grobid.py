@@ -78,6 +78,21 @@ def test_grobid_extract_title_none_when_title_whitespace(tmp_path):
     assert c.extract_title(str(dummy)) is None
 
 
+def test_grobid_extract_title_none_when_no_title_element(tmp_path):
+    """TEI 里无 <title> 元素 → 返回 None 而非抛异常（失败降级合同）。"""
+    tei = """<?xml version="1.0" encoding="UTF-8"?>
+<TEI xmlns="http://www.tei-c.org/ns/1.0">
+  <teiHeader><fileDesc><titleStmt></titleStmt></fileDesc></teiHeader>
+</TEI>
+"""
+    def handler(req):
+        return httpx.Response(200, content=tei.encode("utf-8"))
+    c = GrobidClient(transport=httpx.MockTransport(handler))
+    dummy = tmp_path / "dummy.pdf"
+    dummy.write_bytes(b"dummy")
+    assert c.extract_title(str(dummy)) is None
+
+
 def test_grobid_parse_pdf_extracts_sections(tmp_path):
     # MockTransport 不读取文件内容；实现里 open(path, "rb") 只要求文件存在。
     # 用 tmp_path 写占位文件，避免依赖全局 /tmp/dummy.pdf（brief 原文有此隐患）。

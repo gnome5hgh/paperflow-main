@@ -64,7 +64,7 @@ class GrobidClient:
         title = root.find(".//tei:title[@type='main']", _TEI_NS)
         if title is None:
             title = root.find(".//tei:title", _TEI_NS)
-        return (title.text or "").strip() or None
+        return ((title.text if title is not None else None) or "").strip() or None
 
     def parse_pdf(self, path: str) -> ParsedDoc:
         """把本地 PDF 文件提交给 GROBID 做全文解析，返回结构化章节。
