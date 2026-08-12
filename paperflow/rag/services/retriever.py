@@ -3,7 +3,7 @@
 索引为空时返回空结果。RagRetrieveTool 是暴露给外部调用方的薄封装工具。
 """
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.service import get_rag_service
+from paperflow.rag.services.rag_service import get_rag_service
 
 _RRF_K = 60
 _BM25_TOPK = 30
@@ -55,7 +55,7 @@ class Retriever:
 
     def _chunks_for(self, doc_ids: list[str]):
         """按块 id 列表从向量库取回文档，重建轻量 Chunk（含文本、路径、来源）。"""
-        from paperflow.rag.chunker import Chunk
+        from paperflow.rag.parsers.chunker import Chunk
         # 这里不保留切块时的完整信息，只重建查询结果展示所需的字段；
         # 来源按路径后缀判断（.pdf 视为 PDF，其余视为笔记）。
         vs = self.service._ensure_vector_store()

@@ -107,9 +107,9 @@ def test_subagent_result_cross_turn_visible(supervisor_registry, tmp_path):
 def _make_intent_pipeline():
     """真实意图管线：FakeEmbedder + load_routes（离线可跑，诊断同款）。"""
     from paperflow.core.intent.pipeline import IntentPipeline
-    from paperflow.core.intent.hybrid_router import HybridRouter
-    from paperflow.core.intent.route_loader import load_routes
-    from paperflow.rag.embedder import FakeEmbedder
+    from paperflow.core.intent.routing.router import HybridRouter
+    from paperflow.core.intent.routing.route_loader import load_routes
+    from paperflow.rag.encoders.embedder import FakeEmbedder
     router = HybridRouter(encoder=FakeEmbedder(), routes=load_routes(), alpha=0.6)
     structured = MagicMock()
     async def extract(prompt, schema, fallback=None):
@@ -125,7 +125,7 @@ def _run_supervisor_task(query, supervisor_registry):
     模块级 helper 取不到，直接引用会拿到 pytest 的 fixture 定义对象）。"""
     import asyncio
     from paperflow.core.agent import Agent
-    from paperflow.core.conversation_state import ConversationState
+    from paperflow.core.intent.conversation_state import ConversationState
     from tests.agent.test_agent import make_capture_llm
     capture = []
     llm = make_capture_llm([Message(role="assistant", content="好的")], capture)
@@ -168,7 +168,7 @@ def test_k10_gate_blocks_spawn_for_non_dispatch(supervisor_registry):
     """K10 门禁交叉：chitchat 轮 supervisor 若尝试 spawn 会被工具拒绝（代码级）。"""
     import asyncio
     from paperflow.core.agent import Agent
-    from paperflow.core.conversation_state import ConversationState
+    from paperflow.core.intent.conversation_state import ConversationState
     from tests.agent.test_agent import make_capture_llm
     spawn_call = Message(role="assistant", content=None, tool_calls=[{
         "id": "c1", "type": "function",

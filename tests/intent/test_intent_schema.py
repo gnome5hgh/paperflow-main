@@ -4,7 +4,7 @@
 import pytest
 from pydantic import ValidationError
 
-from paperflow.core.intent.intent_schema import (
+from paperflow.core.intent.schemas.intent import (
     IntentOutput, IntentStep, IntentType, IntentionResult,
 )
 
@@ -122,12 +122,12 @@ def test_intention_result_carries_steps_and_clarification():
 class TestIntentMeta:
     def test_meta_covers_all_intent_types_no_dangling(self):
         """R5：INTENT_META 完整覆盖 13 IntentType，无悬空（枚举=契约=实现集）。"""
-        from paperflow.core.intent.intent_schema import INTENT_META
+        from paperflow.core.intent.schemas.intent import INTENT_META
         assert set(INTENT_META) == set(IntentType)
 
     def test_dispatch_allowed_set(self):
         """派发/非派发集合核对：非派发 7 个，派发 6 个（含 refine 重派入口）。"""
-        from paperflow.core.intent.intent_schema import INTENT_META
+        from paperflow.core.intent.schemas.intent import INTENT_META
         dispatch = {it for it, (_cat, d) in INTENT_META.items() if d}
         assert dispatch == {
             IntentType.SEARCH_PAPER, IntentType.ASK_QUESTION,
@@ -135,7 +135,7 @@ class TestIntentMeta:
             IntentType.MANAGE_MEMORY, IntentType.REFINE_QUERY}
 
     def test_category_mapping(self):
-        from paperflow.core.intent.intent_schema import INTENT_META, IntentCategory
+        from paperflow.core.intent.schemas.intent import INTENT_META, IntentCategory
         assert INTENT_META[IntentType.SET_RESEARCH_TOPIC] == (IntentCategory.BUSINESS, False)
         assert INTENT_META[IntentType.SWITCH_TOPIC] == (IntentCategory.DIALOGUE, False)
         assert INTENT_META[IntentType.REFINE_QUERY] == (IntentCategory.DIALOGUE, True)

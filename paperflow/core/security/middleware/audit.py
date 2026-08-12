@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from paperflow.core.security import (
+from paperflow.core.security.base import (
     SecurityMiddleware, ToolContext, PolicyDenied, SecurityBlocked, ConfirmRequired,
 )
 from paperflow.core.security.text import sanitize_surrogates

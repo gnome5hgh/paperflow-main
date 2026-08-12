@@ -1,5 +1,5 @@
 import numpy as np
-from paperflow.core.intent.dense_encoder import (
+from paperflow.core.intent.encoders.dense import (
     FixedDenseEncoder, DenseEncoder, _deterministic_seed,
 )
 

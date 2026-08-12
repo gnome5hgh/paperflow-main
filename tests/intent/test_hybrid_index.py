@@ -1,5 +1,5 @@
 import numpy as np
-from paperflow.core.intent.hybrid_index import HybridLocalIndex
+from paperflow.core.intent.encoders.index import HybridLocalIndex
 
 
 class TestHybridLocalIndex:

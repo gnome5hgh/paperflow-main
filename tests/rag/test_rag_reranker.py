@@ -1,5 +1,5 @@
 # tests/test_rag_reranker.py
-from paperflow.rag.reranker import FakeReranker
+from paperflow.rag.encoders.reranker import FakeReranker
 
 
 def test_fake_reranker_deterministic():
@@ -10,7 +10,7 @@ def test_fake_reranker_deterministic():
 
 
 def test_fake_reranker_bge_lazy(monkeypatch):
-    import paperflow.rag.reranker as mod
+    import paperflow.rag.encoders.reranker as mod
 
     class FakeCE:
         def __init__(self, *a, **k): pass

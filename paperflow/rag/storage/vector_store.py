@@ -5,7 +5,7 @@
 import numpy as np
 import chromadb
 
-from paperflow.rag.chunker import Chunk
+from paperflow.rag.parsers.chunker import Chunk
 
 
 class VectorStore:

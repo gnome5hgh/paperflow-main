@@ -90,8 +90,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.impl == "ours":
-        from paperflow.core.intent.hybrid_router import HybridRouter   # 约束 ⑤
-        from paperflow.core.intent.schema import Route as RouteCls
+        from paperflow.core.intent.routing.router import HybridRouter   # 约束 ⑤
+        from paperflow.core.intent.schemas.route import Route as RouteCls
         sparse_encoder = FixedSparseEncoder()
     else:
         from semantic_router.routers.hybrid import HybridRouter        # 约束 ⑤

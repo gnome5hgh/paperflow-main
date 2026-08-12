@@ -38,7 +38,7 @@ class PassageManager:
     def _embed(self, text: str) -> list[float] | None:
         if self.embedder is None:
             return None
-        # 代码库 Embedder 协议（paperflow.rag.embedder）是 __call__(list[str]) -> np.ndarray，
+        # 代码库 Embedder 协议（paperflow.rag.encoders.embedder）是 __call__(list[str]) -> np.ndarray，
         # 没有 embed_query；取首行作为该文本的向量，pydantic 会把它归一成 list[float]。
         return self.embedder([text])[0]
 

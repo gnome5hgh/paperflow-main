@@ -1,6 +1,6 @@
 """Stage 1 追问检测测试：ADR 三边界案例 + 词表组合。"""
-from paperflow.core.intent.followup_detector import detect_followup
-from paperflow.core.intent.intent_schema import IntentType
+from paperflow.core.intent.routing.followup import detect_followup
+from paperflow.core.intent.schemas.intent import IntentType
 
 
 class TestAdrBoundaryCases:

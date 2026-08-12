@@ -17,7 +17,7 @@ from paperflow.core.memory.services.passage_manager import PassageManager
 from paperflow.core.memory.services.archive_manager import ArchiveManager
 from paperflow.core.memory.services.tool_manager import ToolManager
 from paperflow.core.memory.services.agent_manager import AgentManager
-from paperflow.rag.embedder import FakeEmbedder
+from paperflow.rag.encoders.embedder import FakeEmbedder
 
 #: 真实 agents 目录（main() 装配用真实 AgentRegistry 扫描）
 _AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"

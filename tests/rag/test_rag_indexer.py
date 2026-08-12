@@ -5,10 +5,10 @@ import time
 from pathlib import Path
 
 from paperflow.config import PaperFlowConfig
-from paperflow.rag.embedder import FakeEmbedder
-from paperflow.rag.indexer import RagIndexer
-from paperflow.rag.reranker import FakeReranker
-from paperflow.rag.service import RAGService
+from paperflow.rag.encoders.embedder import FakeEmbedder
+from paperflow.rag.services.indexer import RagIndexer
+from paperflow.rag.encoders.reranker import FakeReranker
+from paperflow.rag.services.rag_service import RAGService
 
 
 def _make_service(tmp_path, note_dir, pdf_dir):

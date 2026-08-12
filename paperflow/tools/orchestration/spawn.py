@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, StreamEvent
-from paperflow.core.intent.intent_schema import INTENT_META
+from paperflow.core.intent.schemas.intent import INTENT_META
 from paperflow.core.structured import StructuredOutput
 from paperflow.core.tool import Tool, ToolResult
 

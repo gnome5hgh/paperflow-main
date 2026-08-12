@@ -6,7 +6,7 @@
 """
 from dataclasses import dataclass
 
-from paperflow.core.intent.intent_schema import IntentType
+from paperflow.core.intent.schemas.intent import IntentType
 
 
 @dataclass

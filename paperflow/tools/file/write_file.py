@@ -6,7 +6,7 @@ edit 负责定向替换,两者同为 medium 风险并需用户确认。
 from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.service import get_rag_service
+from paperflow.rag.services.rag_service import get_rag_service
 from paperflow.tools.file._constants import NOTE_ROOTS
 
 

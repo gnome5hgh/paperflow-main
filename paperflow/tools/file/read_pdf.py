@@ -5,7 +5,7 @@
 from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.service import get_rag_service
+from paperflow.rag.services.rag_service import get_rag_service
 
 
 def _normalize_path(p: str) -> str:

@@ -8,7 +8,7 @@
 import threading
 
 from paperflow.config import PaperFlowConfig
-from paperflow.rag.chunker import AcademicChunker
+from paperflow.rag.parsers.chunker import AcademicChunker
 
 
 class RAGService:
@@ -41,7 +41,7 @@ class RAGService:
         if self._embedder is None:
             with self.lock:
                 if self._embedder is None:
-                    from paperflow.rag.embedder import BgeEmbedder, resolve_model_dir
+                    from paperflow.rag.encoders.embedder import BgeEmbedder, resolve_model_dir
                     # 模型路径本地优先（工作区 models 目录），否则改用官方模型名
                     self._embedder = BgeEmbedder(resolve_model_dir(
                         self.config.workspace, self.config.embed_model))
@@ -52,8 +52,8 @@ class RAGService:
         if self._reranker is None:
             with self.lock:
                 if self._reranker is None:
-                    from paperflow.rag.reranker import BgeReranker
-                    from paperflow.rag.embedder import resolve_model_dir
+                    from paperflow.rag.encoders.reranker import BgeReranker
+                    from paperflow.rag.encoders.embedder import resolve_model_dir
                     # 模型路径本地优先（工作区 models 目录），否则改用官方模型名
                     self._reranker = BgeReranker(resolve_model_dir(
                         self.config.workspace, self.config.rerank_model))
@@ -64,7 +64,7 @@ class RAGService:
         if self._vector_store is None:
             with self.lock:
                 if self._vector_store is None:
-                    from paperflow.rag.vector_store import VectorStore
+                    from paperflow.rag.storage.vector_store import VectorStore
                     self._vector_store = VectorStore(self.config.chroma_dir)
         return self._vector_store
 
@@ -73,7 +73,7 @@ class RAGService:
         if self._bm25 is None:
             with self.lock:
                 if self._bm25 is None:
-                    from paperflow.rag.bm25_index import Bm25Index
+                    from paperflow.rag.encoders.bm25 import Bm25Index
                     self._bm25 = Bm25Index()
         return self._bm25
 
@@ -82,7 +82,7 @@ class RAGService:
         if self._grobid_available is None:
             with self.lock:
                 if self._grobid_available is None:
-                    from paperflow.rag.grobid_client import GrobidClient
+                    from paperflow.rag.parsers.grobid_client import GrobidClient
                     self._grobid = GrobidClient(self.config.grobid_endpoint)
                     self._grobid_available = self._grobid.available()
         return self._grobid_available
@@ -92,7 +92,7 @@ class RAGService:
         if self.grobid_available():
             return self._grobid
         if self._pymupdf_parser is None:
-            from paperflow.rag.grobid_client import PyMuPDFParser
+            from paperflow.rag.parsers.grobid_client import PyMuPDFParser
             self._pymupdf_parser = PyMuPDFParser()
         return self._pymupdf_parser
 
@@ -121,14 +121,14 @@ class RAGService:
     def get_indexer(self):
         """惰性创建并返回索引器视图。"""
         if self._indexer is None:
-            from paperflow.rag.indexer import RagIndexer
+            from paperflow.rag.services.indexer import RagIndexer
             self._indexer = RagIndexer(self)
         return self._indexer
 
     def get_retriever(self):
         """惰性创建并返回检索器视图。"""
         if self._retriever is None:
-            from paperflow.rag.retriever import Retriever
+            from paperflow.rag.services.retriever import Retriever
             self._retriever = Retriever(self)
         return self._retriever
 

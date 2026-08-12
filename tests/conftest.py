@@ -68,7 +68,7 @@ def make_mock_llm(responses: list[Message]):
 class StubPdfParser:
     """假 PDF 解析器：跳过 GROBID 探测与真实 PyMuPDF，返回固定 sections。"""
     def parse_pdf(self, path):
-        from paperflow.rag.grobid_client import ParsedDoc
+        from paperflow.rag.parsers.grobid_client import ParsedDoc
         return ParsedDoc(
             sections=[("Abstract", "Abstract text."), ("Methods", "Methods text.")],
             tables=[], figures=[],
@@ -92,8 +92,8 @@ def agent_env(tmp_path, monkeypatch):
     monkeypatch.setattr(PaperFlowConfig, "from_env",
                         classmethod(lambda cls, config_path=None: cfg))
 
-    from paperflow.rag.service import RAGService
-    from paperflow.rag.embedder import FakeEmbedder
+    from paperflow.rag.services.rag_service import RAGService
+    from paperflow.rag.encoders.embedder import FakeEmbedder
     svc = RAGService(cfg)
     svc._embedder = FakeEmbedder()          # 假嵌入，避免 2GB 模型下载
     svc._grobid_available = False           # 跳过 GROBID 探测（网络）
@@ -103,7 +103,7 @@ def agent_env(tmp_path, monkeypatch):
     for mod in ("file.read_pdf", "file.write_file", "file.edit_file", "file.format_check",
                 "search.fetch_pdf"):
         monkeypatch.setattr(f"paperflow.tools.{mod}.get_rag_service", lambda: svc)
-    monkeypatch.setattr("paperflow.rag.retriever.get_rag_service", lambda: svc)
+    monkeypatch.setattr("paperflow.rag.services.retriever.get_rag_service", lambda: svc)
     return cfg, svc
 
 

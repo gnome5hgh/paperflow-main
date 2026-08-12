@@ -10,9 +10,9 @@ import random
 
 import numpy as np
 
-from paperflow.core.intent.schema import Route, RouteChoice
-from paperflow.core.intent.bm25_encoder import BM25Encoder
-from paperflow.core.intent.hybrid_index import HybridLocalIndex
+from paperflow.core.intent.schemas.route import Route, RouteChoice
+from paperflow.core.intent.encoders.bm25 import BM25Encoder
+from paperflow.core.intent.encoders.index import HybridLocalIndex
 
 
 class HybridRouter:

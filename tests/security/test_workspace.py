@@ -2,7 +2,7 @@
 import pytest
 from pathlib import Path
 from paperflow.core.security import ToolContext, SecurityBlocked
-from paperflow.core.security.workspace import (
+from paperflow.core.security.middleware.workspace import (
     WorkspacePolicy, WorkspacePolicyMiddleware, is_denied_path,
 )
 from paperflow.core.tool import Tool, ToolResult

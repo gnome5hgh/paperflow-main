@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
-from paperflow.core.intent.schema import Route, RouteChoice
-from paperflow.core.intent.hybrid_router import HybridRouter
-from paperflow.core.intent.dense_encoder import FixedDenseEncoder
-from paperflow.core.intent.bm25_encoder import BM25Encoder
+from paperflow.core.intent.schemas.route import Route, RouteChoice
+from paperflow.core.intent.routing.router import HybridRouter
+from paperflow.core.intent.encoders.dense import FixedDenseEncoder
+from paperflow.core.intent.encoders.bm25 import BM25Encoder
 
 
 def make_router(routes=None, alpha=0.3, top_k=5, thresholds=None):

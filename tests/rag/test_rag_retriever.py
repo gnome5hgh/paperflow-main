@@ -2,15 +2,15 @@
 import numpy as np
 
 from paperflow.config import PaperFlowConfig
-from paperflow.rag.embedder import FakeEmbedder
-from paperflow.rag.reranker import FakeReranker
-from paperflow.rag.retriever import Retriever, RagRetrieveTool
-from paperflow.rag.service import RAGService
+from paperflow.rag.encoders.embedder import FakeEmbedder
+from paperflow.rag.encoders.reranker import FakeReranker
+from paperflow.rag.services.retriever import Retriever, RagRetrieveTool
+from paperflow.rag.services.rag_service import RAGService
 
 
 def _seed_store(svc):
     """填充两条文档：一条含 circRNA，一条含 miRNA。"""
-    from paperflow.rag.chunker import Chunk
+    from paperflow.rag.parsers.chunker import Chunk
     chunks = [
         Chunk(id="d1", text="circRNA 调控机制", path="note/a.md",
               source="note", heading="H", chunk_index=0),

@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from paperflow.core.intent.bm25_encoder import JiebaTokenizer, BM25Encoder
+from paperflow.core.intent.encoders.bm25 import JiebaTokenizer, BM25Encoder
 
 
 class TestJiebaTokenizer:

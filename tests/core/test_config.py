@@ -66,7 +66,7 @@ def test_make_tools_roots_absolute_no_double_prefix(tmp_path):
     且正确绝对模板路径能通过 WorkspacePolicy.check_path（修复前被 data/data 拦）。"""
     from paperflow.config import PaperFlowConfig
     from paperflow.tools.common.factory import _root_map
-    from paperflow.core.security.workspace import WorkspacePolicy
+    from paperflow.core.security.middleware.workspace import WorkspacePolicy
     cfg_path = tmp_path / "c.yaml"
     cfg_path.write_text("workspace: data\n", encoding="utf-8")
     cfg = PaperFlowConfig.from_env(str(cfg_path))

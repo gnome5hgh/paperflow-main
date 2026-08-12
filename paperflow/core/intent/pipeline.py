@@ -10,11 +10,11 @@
 """
 from pydantic import BaseModel
 
-from paperflow.core.intent.intent_schema import (
+from paperflow.core.intent.schemas.intent import (
     IntentOutput, IntentType, IntentStep, IntentionResult,
 )
-from paperflow.core.intent.entities import extract_entities
-from paperflow.core.intent.followup_detector import detect_followup
+from paperflow.core.intent.routing.entities import extract_entities
+from paperflow.core.intent.routing.followup import detect_followup
 
 
 class IntentPipeline:

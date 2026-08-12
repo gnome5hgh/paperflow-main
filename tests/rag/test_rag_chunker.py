@@ -1,5 +1,5 @@
 # tests/test_rag_chunker.py
-from paperflow.rag.chunker import AcademicChunker
+from paperflow.rag.parsers.chunker import AcademicChunker
 
 
 def test_references_dropped():

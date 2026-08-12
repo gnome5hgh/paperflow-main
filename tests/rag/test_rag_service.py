@@ -2,7 +2,7 @@
 import time
 
 from paperflow.config import PaperFlowConfig
-from paperflow.rag.service import get_rag_service
+from paperflow.rag.services.rag_service import get_rag_service
 
 
 def test_get_rag_service_singleton():
@@ -14,7 +14,7 @@ def test_get_rag_service_singleton():
 
 def test_service_has_lock_and_lazy_components():
     from paperflow.config import PaperFlowConfig
-    from paperflow.rag.service import RAGService
+    from paperflow.rag.services.rag_service import RAGService
     s = RAGService(PaperFlowConfig())
     assert hasattr(s, "lock")
     # 惰性：未访问组件前不实例化
@@ -29,7 +29,7 @@ def test_service_index_all_entrypoint_holds_lock(tmp_path):
     # indexer.index_all 的执行（threading.RLock 无公开 locked()，故用包装锁计数）。
     import threading
     from paperflow.config import PaperFlowConfig
-    from paperflow.rag.service import RAGService
+    from paperflow.rag.services.rag_service import RAGService
     note_dir = tmp_path / "note"; note_dir.mkdir(parents=True)
     svc = RAGService(PaperFlowConfig(
         workspace=str(tmp_path / "ws"),
@@ -61,14 +61,14 @@ def test_service_index_all_entrypoint_holds_lock(tmp_path):
 
 
 def _make_svc(tmp_path):
-    from paperflow.rag.service import RAGService
+    from paperflow.rag.services.rag_service import RAGService
     from paperflow.config import PaperFlowConfig
     return RAGService(PaperFlowConfig(workspace=str(tmp_path / "ws")))
 
 
 def test_parse_pdf_cached_parses_once(tmp_path):
     """缓存命中：同 path+mtime+size 二次调用不重新解析。"""
-    from paperflow.rag.grobid_client import ParsedDoc
+    from paperflow.rag.parsers.grobid_client import ParsedDoc
     svc = _make_svc(tmp_path)
     pdf = tmp_path / "p.pdf"
     pdf.write_bytes(b"x" * 100)
@@ -87,7 +87,7 @@ def test_parse_pdf_cached_parses_once(tmp_path):
 
 def test_parse_pdf_cached_invalidates_on_content_change(tmp_path):
     """mtime+size 变化（PDF 替换）→ 缓存失效重解析，零代码维护。"""
-    from paperflow.rag.grobid_client import ParsedDoc
+    from paperflow.rag.parsers.grobid_client import ParsedDoc
     svc = _make_svc(tmp_path)
     pdf = tmp_path / "p.pdf"
     calls = []
@@ -107,7 +107,7 @@ def test_parse_pdf_cached_invalidates_on_content_change(tmp_path):
 def test_parse_pdf_cache_exception_not_cached(tmp_path):
     """GROBID 异常不缓存：下次调用重试（故障不固化，D4）。"""
     import pytest
-    from paperflow.rag.grobid_client import ParsedDoc
+    from paperflow.rag.parsers.grobid_client import ParsedDoc
     svc = _make_svc(tmp_path)
     pdf = tmp_path / "p.pdf"
     pdf.write_bytes(b"x" * 100)
@@ -131,7 +131,7 @@ def test_parse_pdf_cache_exception_not_cached(tmp_path):
 def test_parse_pdf_cached_concurrent_single_parse(tmp_path):
     """双检锁：N 线程并发首 miss → 只解析一次（持锁解析，GROBID 单服务本就串行）。"""
     import threading
-    from paperflow.rag.grobid_client import ParsedDoc
+    from paperflow.rag.parsers.grobid_client import ParsedDoc
     svc = _make_svc(tmp_path)
     pdf = tmp_path / "p.pdf"
     pdf.write_bytes(b"x" * 100)

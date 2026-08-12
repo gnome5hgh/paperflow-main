@@ -1,7 +1,7 @@
 # tests/test_scanner.py
 import pytest
 from paperflow.core.security import ToolContext, SecurityBlocked
-from paperflow.core.security.scanner import scan, has_critical, SecurityScanMiddleware
+from paperflow.core.security.middleware.scanner import scan, has_critical, SecurityScanMiddleware
 from paperflow.core.tool import Tool, ToolResult
 
 

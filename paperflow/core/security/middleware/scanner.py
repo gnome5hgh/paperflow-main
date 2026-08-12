@@ -18,7 +18,7 @@
 
 import re
 
-from paperflow.core.security import SecurityMiddleware, ToolContext, SecurityBlocked
+from paperflow.core.security.base import SecurityMiddleware, ToolContext, SecurityBlocked
 
 
 #: 危险命令白名单：只有这些词在"命令位"出现才判严重级违规。

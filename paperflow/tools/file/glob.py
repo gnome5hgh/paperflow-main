@@ -6,7 +6,7 @@ writer 定位 PDF/笔记、searcher 下载前去重、qa-agent 找论文——�
 """
 from pathlib import Path
 
-from paperflow.core.security.workspace import is_denied_path
+from paperflow.core.security.middleware.workspace import is_denied_path
 from paperflow.core.tool import Tool, ToolResult
 
 

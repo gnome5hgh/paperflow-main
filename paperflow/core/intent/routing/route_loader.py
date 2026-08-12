@@ -4,8 +4,8 @@ from pathlib import Path
 
 import yaml
 
-from paperflow.core.intent.schema import Route
-from paperflow.core.intent.intent_schema import IntentType
+from paperflow.core.intent.schemas.route import Route
+from paperflow.core.intent.schemas.intent import IntentType
 
 
 def load_routes(path: Path = Path("data/intents/routes.yaml")) -> list[Route]:

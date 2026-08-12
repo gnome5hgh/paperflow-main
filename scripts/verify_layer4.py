@@ -15,9 +15,9 @@ from paperflow.core.agent import Agent
 from paperflow.core.agent_registry import AgentRegistry
 from paperflow.core.session import Session
 from paperflow.core.intent.pipeline import IntentPipeline
-from paperflow.core.intent.hybrid_router import HybridRouter
-from paperflow.rag.embedder import BgeEmbedder, resolve_model_dir
-from paperflow.core.intent.route_loader import load_routes
+from paperflow.core.intent.routing.router import HybridRouter
+from paperflow.rag.encoders.embedder import BgeEmbedder, resolve_model_dir
+from paperflow.core.intent.routing.route_loader import load_routes
 
 
 async def _auto_confirm(cr) -> bool:

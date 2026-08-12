@@ -10,9 +10,9 @@ from paperflow.cli import _repl, _stdin_confirm, _stdin_ask
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.security import PolicyEngineMiddleware
 from paperflow.core.llm import Message
-from paperflow.core.conversation_state import ConversationState
+from paperflow.core.intent.conversation_state import ConversationState
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.core.intent.intent_schema import IntentType, IntentOutput, IntentStep
+from paperflow.core.intent.schemas.intent import IntentType, IntentOutput, IntentStep
 from tests.agent.test_agent import make_mock_registry, make_capture_llm
 
 

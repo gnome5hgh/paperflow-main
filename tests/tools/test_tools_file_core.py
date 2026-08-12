@@ -4,8 +4,8 @@ from pathlib import Path
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.security import SecurityBlocked
-from paperflow.core.security.workspace import WorkspacePolicyMiddleware
-from paperflow.core.security.scanner import SecurityScanMiddleware
+from paperflow.core.security.middleware.workspace import WorkspacePolicyMiddleware
+from paperflow.core.security.middleware.scanner import SecurityScanMiddleware
 from paperflow.core.security import ToolContext
 from paperflow.tools.common.factory import make_tools
 from paperflow.tools import ReadFileTool, WriteFileTool, EditFileTool

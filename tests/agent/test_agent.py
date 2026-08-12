@@ -22,9 +22,9 @@ import pytest
 
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.agent_registry import AgentConfig, AgentRegistry
-from paperflow.core.intent.intent_schema import IntentType
+from paperflow.core.intent.schemas.intent import IntentType
 from paperflow.core.llm import Message
-from paperflow.core.conversation_state import ConversationState
+from paperflow.core.intent.conversation_state import ConversationState
 from paperflow.core.tool import Tool, ToolResult
 
 
@@ -396,7 +396,7 @@ def make_capture_llm(responses, capture):
 
 
 def _intent(intent_type, *, clarification=None):
-    from paperflow.core.intent.intent_schema import IntentOutput, IntentStep
+    from paperflow.core.intent.schemas.intent import IntentOutput, IntentStep
     return IntentOutput(intent_type=intent_type, confidence=0.9,
                         source=IntentStep.ROUTER, clarification=clarification)
 
@@ -415,7 +415,7 @@ class TestIntentGate:
         assert not any("INTENT:" in m.content for m in capture[0])
 
     def test_enabled_injects_intent_block(self):
-        from paperflow.core.intent.intent_schema import IntentType
+        from paperflow.core.intent.schemas.intent import IntentType
         capture = []
         pipeline = MockIntentPipeline(result=_intent(IntentType.SEARCH_PAPER))
         conversation = ConversationState()

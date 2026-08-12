@@ -14,7 +14,7 @@ from paperflow.core.llm import Message
 from paperflow.core.memory.compaction import CompactionSettings
 from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.services.message_manager import MessageManager
-from paperflow.core.conversation_state import ConversationState
+from paperflow.core.intent.conversation_state import ConversationState
 from tests.agent.test_agent import make_capture_llm, make_mock_registry, MockIntentPipeline
 
 
@@ -82,7 +82,7 @@ def test_no_message_manager_messages_shape_unchanged():
 
 
 def test_clarification_early_return_not_persisted():
-    from paperflow.core.intent.intent_schema import IntentOutput, IntentStep, IntentType
+    from paperflow.core.intent.schemas.intent import IntentOutput, IntentStep, IntentType
     db = MemoryDB(Path(tempfile.mkdtemp()) / "memory.db")
     mm = MessageManager(db)
     capture = []

@@ -8,7 +8,7 @@ LLM 只需输出变更部分(省 token),且不误伤无关内容。风险为 med
 from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.service import get_rag_service
+from paperflow.rag.services.rag_service import get_rag_service
 from paperflow.tools.file._constants import NOTE_ROOTS
 
 

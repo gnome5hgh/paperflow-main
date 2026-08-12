@@ -1,6 +1,6 @@
 """ConversationState 状态容器测试（Layer 4 跨轮状态）。"""
-from paperflow.core.conversation_state import ConversationState, PendingClarification
-from paperflow.core.intent.intent_schema import IntentType
+from paperflow.core.intent.conversation_state import ConversationState, PendingClarification
+from paperflow.core.intent.schemas.intent import IntentType
 
 
 def test_session_defaults():

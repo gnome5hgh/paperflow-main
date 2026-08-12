@@ -7,7 +7,7 @@ edit_file 的 search-replace 锚点确认、reviewer 事实核对、searcher 下
 import re
 from pathlib import Path
 
-from paperflow.core.security.workspace import is_denied_path
+from paperflow.core.security.middleware.workspace import is_denied_path
 from paperflow.core.tool import Tool, ToolResult
 
 _TEXT_SUFFIXES = (".md", ".txt", ".py", ".jsonl")

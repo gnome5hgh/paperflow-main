@@ -8,7 +8,7 @@ from paperflow.core.agent import Agent
 from paperflow.core.agent_registry import AgentConfig, AgentRegistry
 from paperflow.core.llm import Message
 from paperflow.core.security import ToolContext
-from paperflow.core.security.audit import AuditMiddleware
+from paperflow.core.security.middleware.audit import AuditMiddleware
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
 from tests.conftest import MockEchoTool

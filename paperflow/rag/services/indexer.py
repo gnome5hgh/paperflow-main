@@ -11,7 +11,7 @@
 import json
 from pathlib import Path
 
-from paperflow.rag.chunker import Chunk
+from paperflow.rag.parsers.chunker import Chunk
 
 
 class RagIndexer:

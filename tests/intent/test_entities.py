@@ -1,5 +1,5 @@
 """Stage 0 实体提取测试：确定性正则，五类实体命中/不误报。"""
-from paperflow.core.intent.entities import extract_entities
+from paperflow.core.intent.routing.entities import extract_entities
 
 
 def test_extract_pdf_path():

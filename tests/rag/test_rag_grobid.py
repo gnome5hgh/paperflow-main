@@ -1,6 +1,6 @@
 # tests/test_rag_grobid.py
 import httpx
-from paperflow.rag.grobid_client import GrobidClient, PyMuPDFParser, ParsedDoc
+from paperflow.rag.parsers.grobid_client import GrobidClient, PyMuPDFParser, ParsedDoc
 
 _TEI = """<?xml version="1.0" encoding="UTF-8"?>
 <TEI xmlns="http://www.tei-c.org/ns/1.0">

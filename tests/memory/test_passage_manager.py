@@ -62,7 +62,7 @@ def test_search_semantic_ranking_and_topk():
     # 语义路径回归：embedder 走代码库协议 __call__(list[str]) -> np.ndarray（无 embed_query）。
     # FakeEmbedder 按文本 md5 生成确定性向量——文本与 query 完全相同 → 向量恒等 → cos=1.0
     # （L2 归一化下最大值），必然排第一；top_k 裁剪同时被锁定。
-    from paperflow.rag.embedder import FakeEmbedder
+    from paperflow.rag.encoders.embedder import FakeEmbedder
     pm = PassageManager(MemoryDB(Path(tempfile.mkdtemp()) / "memory.db"),
                         embedder=FakeEmbedder(dim=32))
     p = pm.insert_passage("sess_1", "图对比学习", tags=["reading"])

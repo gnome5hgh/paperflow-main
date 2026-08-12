@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from paperflow.core.agent import Agent, MaxTurnsExceeded, StreamEvent
-from paperflow.core.intent.intent_schema import IntentType
+from paperflow.core.intent.schemas.intent import IntentType
 from paperflow.core.llm import Message
 from paperflow.core.security import PolicyEngineMiddleware
 from paperflow.core.tool import Tool, ToolResult
@@ -178,7 +178,7 @@ class TestSpawnSubAgentTool:
 
     def test_spawn_gate_denies_non_dispatch_intents(self):
         """意图派发门禁：非派发意图 spawn 被拒（代码级，不依赖 LLM 遵循 SKILL）。"""
-        from paperflow.core.intent.intent_schema import IntentOutput, IntentStep
+        from paperflow.core.intent.schemas.intent import IntentOutput, IntentStep
         for it in (IntentType.CHITCHAT, IntentType.OUT_OF_SCOPE, IntentType.HELP,
                    IntentType.FEEDBACK, IntentType.GENERAL,
                    IntentType.SET_RESEARCH_TOPIC, IntentType.SWITCH_TOPIC):
@@ -193,7 +193,7 @@ class TestSpawnSubAgentTool:
 
     def test_spawn_gate_allows_dispatch_intents(self):
         """派发意图放行：search/ask/note/analyze/memory/refine 不被门禁拦。"""
-        from paperflow.core.intent.intent_schema import IntentOutput, IntentStep
+        from paperflow.core.intent.schemas.intent import IntentOutput, IntentStep
         with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(return_value="done")
             for it in (IntentType.SEARCH_PAPER, IntentType.ASK_QUESTION,
@@ -213,7 +213,7 @@ class TestSpawnSubAgentTool:
         LLM 兜底可能产出 GENERAL + 复合意图拆分（pipeline 的 steps 字段），supervisor 按序
         调度各 step 的业务意图——门禁若只按 intent_type 判非派发，每一步 spawn 都会被误拒。
         steps 恒为 LLM 标注的业务意图（非派发意图不会带 steps），故 steps 非空即放行。"""
-        from paperflow.core.intent.intent_schema import IntentOutput, IntentStep
+        from paperflow.core.intent.schemas.intent import IntentOutput, IntentStep
         with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(return_value="done")
             agent = _supervisor([SpawnSubAgentTool()])

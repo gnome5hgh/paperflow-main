@@ -1,14 +1,14 @@
 import pytest
 from unittest.mock import MagicMock
-from paperflow.core.intent.schema import Route, RouteChoice
+from paperflow.core.intent.schemas.route import Route, RouteChoice
 from paperflow.core.intent.pipeline import IntentPipeline
-from paperflow.core.intent.intent_schema import (
+from paperflow.core.intent.schemas.intent import (
     IntentOutput, IntentType, IntentStep, IntentionResult,
 )
-from paperflow.core.intent.hybrid_router import HybridRouter
-from paperflow.core.intent.dense_encoder import FixedDenseEncoder
-from paperflow.core.intent.entities import extract_entities
-from paperflow.core.intent.followup_detector import detect_followup
+from paperflow.core.intent.routing.router import HybridRouter
+from paperflow.core.intent.encoders.dense import FixedDenseEncoder
+from paperflow.core.intent.routing.entities import extract_entities
+from paperflow.core.intent.routing.followup import detect_followup
 
 
 class _MissRouter(HybridRouter):

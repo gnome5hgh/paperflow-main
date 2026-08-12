@@ -14,7 +14,7 @@ from pathlib import Path
 
 from paperflow.core.security.network import resolve_url_target, validate_url_target
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.service import get_rag_service
+from paperflow.rag.services.rag_service import get_rag_service
 
 
 class FetchPdfTool(Tool):

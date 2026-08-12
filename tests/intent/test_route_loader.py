@@ -1,8 +1,8 @@
 # tests/intent/test_route_loader.py
 import pytest
 from pathlib import Path
-from paperflow.core.intent.route_loader import load_routes, load_eval, save_thresholds
-from paperflow.core.intent.schema import Route
+from paperflow.core.intent.routing.route_loader import load_routes, load_eval, save_thresholds
+from paperflow.core.intent.schemas.route import Route
 
 
 def write_routes(tmp_path, content):
@@ -50,7 +50,7 @@ routes:
         含 general route——gate 实证驱动的修订：fit 无 general 负样本收敛到 0.0 阈值
         （pass-all），general 永不产生；加 general route 让 fit 学会拒绝（见 spec §4.7）。
         """
-        from paperflow.core.intent.intent_schema import IntentType
+        from paperflow.core.intent.schemas.intent import IntentType
         routes = load_routes(Path("data/intents/routes.yaml"))
         assert len(routes) == 13
         names = {r.name for r in routes}
@@ -135,7 +135,7 @@ def test_eval_disjoint_from_routes():
 
 def test_eval_covers_all_intents():
     """eval 集契约：覆盖全部 13 类意图 + 规模下限（够统计意义，门槛才可信）。"""
-    from paperflow.core.intent.intent_schema import IntentType
+    from paperflow.core.intent.schemas.intent import IntentType
     eval_items = load_eval()
     labels = {label for _, label, _ in eval_items}
     assert {t.value for t in IntentType} <= labels
@@ -144,7 +144,7 @@ def test_eval_covers_all_intents():
 
 def test_routes_cover_new_taxonomy_13():
     """R1-R4：13 routes，新 route ≥8 语料，general ≤5 占位。"""
-    from paperflow.core.intent.intent_schema import IntentType
+    from paperflow.core.intent.schemas.intent import IntentType
     routes = load_routes()
     names = {r.name for r in routes}
     assert names == {t.value for t in IntentType}          # R1+R2：13 route，名合法

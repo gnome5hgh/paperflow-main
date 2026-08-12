@@ -2,7 +2,7 @@
 import json
 import pytest
 from pathlib import Path
-from paperflow.core.security.audit import AuditMiddleware, _sanitize, _derive_decision, _result_status
+from paperflow.core.security.middleware.audit import AuditMiddleware, _sanitize, _derive_decision, _result_status
 from paperflow.core.security import (
     ToolContext, PolicyDenied, SecurityBlocked, ConfirmRequired,
 )

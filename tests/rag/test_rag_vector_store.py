@@ -1,7 +1,7 @@
 # tests/test_rag_vector_store.py
 import numpy as np
-from paperflow.rag.chunker import Chunk
-from paperflow.rag.vector_store import VectorStore
+from paperflow.rag.parsers.chunker import Chunk
+from paperflow.rag.storage.vector_store import VectorStore
 
 
 def _chunk(i: int, path: str = "note/a.md") -> Chunk:

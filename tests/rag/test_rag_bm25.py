@@ -1,4 +1,4 @@
-from paperflow.rag.bm25_index import Bm25Index, tokenize
+from paperflow.rag.encoders.bm25 import Bm25Index, tokenize
 
 
 def test_tokenize_mixed():

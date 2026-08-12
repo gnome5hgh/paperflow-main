@@ -1,7 +1,7 @@
 # tests/intent/test_route.py
 """Route / RouteChoice 契约测试：字段默认值、per-route 阈值、空 RouteChoice 语义（spec Section 5）。"""
 
-from paperflow.core.intent.schema import Route, RouteChoice
+from paperflow.core.intent.schemas.route import Route, RouteChoice
 
 
 def test_route_required_fields():

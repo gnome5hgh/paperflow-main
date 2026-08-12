@@ -24,7 +24,7 @@
 import os
 from pathlib import Path
 
-from paperflow.core.security import SecurityMiddleware, ToolContext, SecurityBlocked
+from paperflow.core.security.base import SecurityMiddleware, ToolContext, SecurityBlocked
 
 
 def is_denied_path(resolved: Path, workspace: str) -> bool:

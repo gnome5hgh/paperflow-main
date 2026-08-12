@@ -5,7 +5,7 @@ import threading
 from datetime import datetime
 
 from paperflow.core.security import ToolContext
-from paperflow.core.security.audit import AuditMiddleware
+from paperflow.core.security.middleware.audit import AuditMiddleware
 from paperflow.core.tool import ToolResult
 
 

@@ -8,7 +8,7 @@
 """
 import re
 
-from paperflow.core.intent.intent_schema import IntentType
+from paperflow.core.intent.schemas.intent import IntentType
 
 #: 承接标记：出现即可能是追问（含叠词变体）
 FOLLOWUP_MARKERS = frozenset({

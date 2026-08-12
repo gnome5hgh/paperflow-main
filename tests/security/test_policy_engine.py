@@ -1,7 +1,7 @@
 # tests/test_policy_engine.py
 import pytest
 from paperflow.core.security import ToolContext, PolicyDenied, ConfirmRequired
-from paperflow.core.security.policy_engine import PolicyEngineMiddleware
+from paperflow.core.security.middleware.policy_engine import PolicyEngineMiddleware
 from paperflow.core.tool import Tool, ToolResult
 
 

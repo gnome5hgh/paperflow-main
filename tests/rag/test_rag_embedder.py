@@ -1,6 +1,6 @@
 # tests/test_rag_embedder.py
 import numpy as np
-from paperflow.rag.embedder import FakeEmbedder
+from paperflow.rag.encoders.embedder import FakeEmbedder
 
 
 def test_fake_embedder_deterministic():
@@ -24,7 +24,7 @@ def test_fake_embedder_dim():
 
 def test_bge_embedder_lazy_load(monkeypatch):
     # 不加载真实模型：用 stub 替换 sentence_transformers 导入，验证惰性 + 维度读取
-    import paperflow.rag.embedder as mod
+    import paperflow.rag.encoders.embedder as mod
 
     class FakeST:
         def __init__(self, *a, **k):

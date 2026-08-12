@@ -20,10 +20,10 @@ from collections import defaultdict
 from pathlib import Path
 
 from paperflow.config import PaperFlowConfig
-from paperflow.core.intent.hybrid_router import HybridRouter
-from paperflow.core.intent.dense_encoder import FixedDenseEncoder
-from paperflow.core.intent.route_loader import load_routes, load_eval, save_thresholds
-from paperflow.rag.embedder import BgeEmbedder, resolve_model_dir
+from paperflow.core.intent.routing.router import HybridRouter
+from paperflow.core.intent.encoders.dense import FixedDenseEncoder
+from paperflow.core.intent.routing.route_loader import load_routes, load_eval, save_thresholds
+from paperflow.rag.encoders.embedder import BgeEmbedder, resolve_model_dir
 
 OVERALL = 0.85        # 整体准确率门槛 = 效率门槛（spec §4.7.2：miss/歧义 → general 被 Stage 3
                       # LLM 救回，结果仍正确、成本是 LLM 调用；0.90 是对带安全网路由器的过度规格）
