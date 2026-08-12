@@ -647,7 +647,8 @@ def test_mode_injected_into_child_system_prompt():
                    new=AsyncMock(return_value={})):
             agent = _supervisor([SpawnSubAgentTool()], llm=llm)
             asyncio.run(agent.run("带 mode 的派发"))
-    assert MockAgent.return_value.system_prompt.startswith("当前模式：outline")
+    sp = MockAgent.return_value.system_prompt
+    assert isinstance(sp, str) and sp.startswith("当前模式：outline")
 
 
 def test_task_fingerprint_includes_mode():
