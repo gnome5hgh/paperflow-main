@@ -122,7 +122,7 @@ def _format_tool_call(name: str, raw_args: str) -> str:
     """把工具调用格式化为终端一行(claude code 风格:Read(path))。
 
     尽力解析参数;LLM 产出非法 JSON 或参数缺失时只显示工具名——错误路径保持可读,
-    且缓冲清理不依赖参数解析成功(见 _ReplStreamer)。行宽策略:含绝对路径的行不再
+    且缓冲清理不依赖参数解析成功(见 terminal.render.StreamRenderer)。行宽策略:含绝对路径的行不再
     压 80(路径是文件类工具的关键信息,终端可换行展示完整);其余行按"固定前缀后的
     剩余预算"截断参数对;工具名自身过长(预算 ≤0)时退化为纯工具名。
     """
@@ -741,7 +741,7 @@ class Agent:
         name = tool_call["function"]["name"]
 
         # 工具事件放解析前：即使后续 JSON 解析失败 / 未知工具 / 被中间件拦截，
-        # root 的中间内容缓冲也要被清掉（_ReplStreamer 依赖），否则 should_print
+        # root 的中间内容缓冲也要被清掉（terminal.render.StreamRenderer 依赖），否则 should_print
         # 会把中间思考文本误当最终答案。
         # 门控：stream_callback 为 None（非 CLI 调用方）时连 _format_tool_call 的
         # json.loads 也不做——保持“无回调零开销空操作”不变式。
