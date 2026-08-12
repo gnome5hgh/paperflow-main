@@ -1,11 +1,13 @@
 """CLI REPL 测试：注入 fake io + 真实 renderer，验证循环/澄清挂起/超轮终止/EOF 路径。"""
 import asyncio
+import os
+import signal
 
 import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from paperflow.cli import _repl, _make_confirm_callback
+from paperflow.cli import _repl, _make_confirm_callback, _make_ask_callback
 from paperflow.terminal.io import FallbackIO
 from paperflow.terminal.render import make_renderer
 from paperflow.core.agent import Agent, MaxTurnsExceeded, StreamEvent
@@ -161,6 +163,18 @@ def test_confirm_callback_eof_failsafe(monkeypatch):
     assert asyncio.run(cb(SimpleNamespace(tool_name="write_file"))) is False
 
 
+def test_confirm_callback_eof_tty_shim():
+    """TTY 路径 EOF 兜底：io.confirm 抛 EOFError → 回调返回 False（两实现可替换）。
+
+    FallbackIO.confirm 自捕 EOFError 返回 False；PromptToolkitIO 不捕——_confirm 里
+    的 except EOFError 兜底分支只在后者触发，此处用 fake io 直接锁这条分支。"""
+    class _EofConfirmIO:
+        def confirm(self, text):
+            raise EOFError
+    cb = _make_confirm_callback(_EofConfirmIO())
+    assert asyncio.run(cb(SimpleNamespace(tool_name="write_file"))) is False
+
+
 @pytest.mark.asyncio
 async def test_confirm_callback_async_contract_confirm(monkeypatch):
     """C1 回归（merge blocker）：confirm_callback（async）+ ConfirmRequired 不崩。
@@ -225,6 +239,17 @@ def test_ask_eof_returns_empty(monkeypatch):
     assert FallbackIO().ask("要哪个？") == ""
 
 
+def test_ask_callback_eof_tty_shim():
+    """TTY 路径 EOF 兜底：io.ask 抛 EOFError → 回调返回空串（两实现可替换）。
+
+    FallbackIO.ask 自捕 EOFError 返回空串；PromptToolkitIO 不捕——_make_ask_callback
+    里的 except EOFError 兜底分支只在后者触发，此处用 fake io 直接锁这条分支。"""
+    class _EofAskIO:
+        def ask(self, question):
+            raise EOFError
+    assert _make_ask_callback(_EofAskIO())("要哪个？") == ""
+
+
 @pytest.mark.asyncio
 async def test_repl_ctrl_c_during_run_interrupts_and_continues():
     """agent 运行中 Ctrl+C → 打印「已中断」、循环继续（不杀 REPL）。"""
@@ -236,6 +261,43 @@ async def test_repl_ctrl_c_during_run_interrupts_and_continues():
     out = []
     await _repl(sv, ConversationState(), io=_seq_io(["hi"]),
                 renderer=_make_renderer(out))
+    assert any("已中断" in s for s in out)
+
+
+@pytest.mark.asyncio
+async def test_repl_ctrl_c_sigint_cancels_run_and_continues():
+    """真实 SIGINT 链路：OS 信号 → _cancel_run → task.cancel() → 已中断 → 循环继续。
+
+    run 任务挂起在 sleep(30)；trigger 任务等 run 真正启动后 os.kill 发 SIGINT——这样
+    信号必然落在已注册的 add_signal_handler 上（_repl 对不支持的环境降级，故先探测，
+    不支持则 skip——该分支已有直接抛 CancelledError 的用例兜底）。"""
+    loop = asyncio.get_running_loop()
+    try:
+        loop.add_signal_handler(signal.SIGINT, lambda: None)
+        loop.remove_signal_handler(signal.SIGINT)
+    except (NotImplementedError, RuntimeError):
+        pytest.skip("当前事件循环不支持 add_signal_handler")
+
+    sv = MagicMock()
+    started = asyncio.Event()
+
+    async def run(query, force_dispatch=False):
+        started.set()
+        await asyncio.sleep(30)
+        return "结果"
+
+    sv.run = run
+    sv.last_intent = None
+
+    async def _trigger():
+        await started.wait()
+        os.kill(os.getpid(), signal.SIGINT)
+
+    out = []
+    trigger = asyncio.create_task(_trigger())
+    await _repl(sv, ConversationState(), io=_seq_io(["hi"]),
+                renderer=_make_renderer(out))
+    await trigger
     assert any("已中断" in s for s in out)
 
 

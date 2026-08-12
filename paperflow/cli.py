@@ -96,6 +96,20 @@ def _make_confirm_callback(io: InputIO):
     return _confirm
 
 
+def _make_ask_callback(io: InputIO):
+    """构造 ask_user 回调：读开放问题答案，Ctrl-D/EOF → 空串。
+
+    PromptToolkitIO（TTY）的 ask 不捕 EOFError，这里兜底返回空串（与非 TTY
+    FallbackIO 行为一致，两实现可替换）；Supervisor ReAct 收到空串自行处理。
+    """
+    def _ask(question: str) -> str:
+        try:
+            return io.ask(question)
+        except EOFError:
+            return ""
+    return _ask
+
+
 def _merge_pending(conversation: ConversationState, raw: str) -> tuple[str, bool]:
     """合并跨轮澄清输入,返回 (query, force_dispatch)。
 
@@ -262,14 +276,6 @@ def main() -> None:
 
     conversation = ConversationState()
 
-    # ask_user 回调：io.ask 读开放问题答案。TTY 下 prompt_toolkit 不捕 EOFError，
-    # 包一层兜底返回空串（与非 TTY FallbackIO 行为一致，两实现可替换）。
-    def _ask(question: str) -> str:
-        try:
-            return io.ask(question)
-        except EOFError:
-            return ""
-
     supervisor = Agent(
         llm=llm, agent_registry=registry, agent_type="supervisor",
         memory=agent_state.memory,
@@ -281,7 +287,7 @@ def main() -> None:
         security_middleware=middlewares,
         intent_enabled=True, intent_pipeline=pipeline, conversation=conversation,
         confirm_callback=_make_confirm_callback(io),
-        ask_user_callback=message_manager.make_ask_recorder(_ask,
+        ask_user_callback=message_manager.make_ask_recorder(_make_ask_callback(io),
                                                             session_id),
         session_id=session_id,
     )
