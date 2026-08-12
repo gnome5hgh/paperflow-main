@@ -73,6 +73,7 @@ async def test_outline_happy_path(agent_env, agent_registry):
     mock.add(Message(role="assistant", content="大纲已生成"))
 
     agent = make_agent(agent_registry, "writer", mock, cfg)
+    agent.system_prompt = f"当前模式：outline\n{agent.system_prompt}"
     result = await agent.run(task)
     assert "大纲已生成" in result
     assert outline_out.exists()
@@ -88,6 +89,7 @@ async def test_outline_gives_up_when_no_material(agent_env, agent_registry):
     mock.add(Message(role="assistant",
                      content="当前笔记积累不足以支撑大纲，建议先精读以下方向：[缺口方向]"))
     agent = make_agent(agent_registry, "writer", mock, cfg)
+    agent.system_prompt = f"当前模式：outline\n{agent.system_prompt}"
     result = await agent.run(task)
     assert "不足以支撑" in result
     outline_dir = Path(cfg.workspace) / "outline"
@@ -103,5 +105,6 @@ async def test_outline_asks_topic_when_unknown(agent_env, agent_registry):
     mock.add(_tc("ask_user_question", {"question": "请告诉我你想围绕哪个研究方向梳理大纲？"}))
     mock.add(Message(role="assistant", content="已了解课题方向，开始梳理"))
     agent = make_agent(agent_registry, "writer", mock, cfg)
+    agent.system_prompt = f"当前模式：outline\n{agent.system_prompt}"
     result = await agent.run(task)
     assert "课题" in result or "方向" in result
