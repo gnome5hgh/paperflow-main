@@ -3,7 +3,7 @@
 
 任何一级都不取 pdf 文件名——文件名是存储产物，标题是论文原文的权威元数据。
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -65,11 +65,22 @@ class TitleExtractor:
         first_page = self._read_first_page(pdf_path)
         if not first_page:
             return None
-        return ""
+        prompt = ("你是论文标题识别器。从以下论文首页文本（元数据+正文前段）判断论文标题。"
+                  "输出 JSON：{title}。\n首页文本：\n" + first_page[:1200])
+        try:
+            from paperflow.core.intent.intent_schema import IntentionResult  # noqa: 仅类型参考
+        except ImportError:
+            pass
+        import asyncio, json
+        from pydantic import BaseModel
+        class _Title(BaseModel):
+            title: str
+        r = asyncio.run(self.llm.extract(prompt=prompt, schema=_Title))
+        return getattr(r, "title", None) or None
 
     def _read_first_page(self, pdf_path: str) -> str:
-        import fitz
         try:
+            import fitz
             doc = fitz.open(pdf_path)
             text = doc[0].get_text("text")[:1000]
             meta = doc.metadata or {}

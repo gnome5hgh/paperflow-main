@@ -38,3 +38,19 @@ def test_fallback_order_calls_layers_in_sequence():
                         use_pymupdf=False)
     ex.extract(pdf_path="/tmp/x.pdf")
     assert calls == ["grobid"]     # 无搜索元数据 → 只试 GROBID（后续层被禁用则停）
+
+
+def test_llm_layer_uses_structured_output():
+    import asyncio
+    class _R:                       # StructuredOutput stub
+        def __init__(self): self.prompt = None
+        async def extract(self, prompt, schema, fallback=None):
+            self.prompt = prompt
+            class _O: title = "LLM 判断的标题"
+            return _O()
+    llm = _R()
+    ex = TitleExtractor(grobid=None, llm=llm, use_pdftitle=False, use_pymupdf=False)
+    # _read_first_page 依赖真实 PDF——用 stub 替换
+    ex._read_first_page = lambda p: "First page text here"
+    r = ex.extract(pdf_path="/tmp/fake.pdf")
+    assert r.title == "LLM 判断的标题" and r.source == "llm"

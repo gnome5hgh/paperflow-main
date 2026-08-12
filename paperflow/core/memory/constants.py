@@ -3,6 +3,7 @@
 BASE_MEMORY_TOOLS = {
     "memory_replace", "memory_insert", "memory_rethink",
     "memory_finish_edits", "memory", "memory_apply_patch",
+    "unread_list_add", "unread_list_remove", "history_append",
 }
 BASE_SLEEPTIME_TOOLS = {
     "memory_replace", "memory_insert", "memory_rethink", "memory_finish_edits",

@@ -28,6 +28,7 @@ from paperflow.core.memory.services.message_manager import MessageManager
 from paperflow.core.memory.services.passage_manager import PassageManager
 from paperflow.core.memory.services.archive_manager import ArchiveManager
 from paperflow.core.memory.services.tool_manager import ToolManager
+from paperflow.core.memory.services.title_extractor import TitleExtractor
 from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.sleeptime import Sleeptime
 from paperflow.core.intent.pipeline import IntentPipeline
@@ -265,6 +266,11 @@ def main() -> None:
     agent_state = agent_manager.create_agent(session_id)
 
     structured = StructuredOutput(llm)
+
+    # extract_title 工具的标题提取器注入 ctx（LLM 层走 StructuredOutput 真实接线）。
+    # 暂不传 grobid：GrobidClient.extract_title 待后续任务实现，传了会让 GROBID 层
+    # 抛 AttributeError 挡住后续 LLM/pdftitle/PyMuPDF 层；实现后再补 GrobidClient(config.grobid_endpoint)。
+    tool_manager._ctx.title_extractor = TitleExtractor(llm=structured)
 
     # 安全管道：四中间件（经验记忆中间件随 Letta 重构移除——工具调用经验不再注入
     # prompt，改由 Sleeptime 后台整合进核心记忆块）。

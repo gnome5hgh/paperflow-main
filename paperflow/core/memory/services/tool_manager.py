@@ -23,6 +23,7 @@ class MemoryToolsContext:
     block_manager: object = None
     passage_manager: object = None
     message_manager: object = None
+    title_extractor: object = None
 
 
 class _FunctionTool(Tool):
@@ -146,6 +147,33 @@ _DESCRIPTIONS = {
 }
 
 
+# list_blocks 工具函数（ctx 参数风格与既有记忆工具一致）
+def _unread_list_add(ctx, title, source=""):
+    from paperflow.core.memory.functions.function_sets.list_blocks import UnreadListAddTool
+    return UnreadListAddTool(ctx).execute(title=title, source=source).text
+
+
+def _unread_list_remove(ctx, title):
+    from paperflow.core.memory.functions.function_sets.list_blocks import UnreadListRemoveTool
+    return UnreadListRemoveTool(ctx).execute(title=title).text
+
+
+def _history_append(ctx, action, title):
+    from paperflow.core.memory.functions.function_sets.list_blocks import HistoryAppendTool
+    return HistoryAppendTool(ctx).execute(action=action, title=title).text
+
+
+def _extract_title(ctx, pdf_path=None, title=None):
+    if title:            # 用户已给标题 → 直接用（禁文件名的守门在调用方）
+        return f"title: {title}"
+    ex = ctx.title_extractor
+    if ex is None:
+        return "Error: title extractor not available"
+    r = ex.extract(pdf_path=pdf_path)
+    return (f"title: {r.title}\nsource: {r.source}" if r.title
+            else "Error: 标题提取失败，请提供论文标题")
+
+
 class ToolManager:
     def __init__(self, db: MemoryDB):
         self.db = db
@@ -164,10 +192,27 @@ class ToolManager:
         """播种标准记忆工具（BASE_MEMORY_TOOLS + archival + conversation）。"""
         for name in constants.BASE_MEMORY_TOOLS | {
                 "archival_memory_insert", "archival_memory_search", "conversation_search"}:
+            if name not in _FN_MAP:
+                continue   # 清单工具（unread_list_*/history_append）经下方 list_tools 独立注册
             fn = _FN_MAP[name]
             self._tools[name] = _FunctionTool(
                 name=name, description=_DESCRIPTIONS[name],
                 parameters=_BASE_PARAMS[name], fn=fn, ctx=self._ctx)
+        list_tools = [
+            ("unread_list_add", {"title": {"type": "string"}, "source": {"type": "string"}},
+             ["title"], _unread_list_add),
+            ("unread_list_remove", {"title": {"type": "string"}}, ["title"], _unread_list_remove),
+            ("history_append", {"action": {"type": "string"}, "title": {"type": "string"}},
+             ["action", "title"], _history_append),
+            ("extract_title", {"pdf_path": {"type": "string"}, "title": {"type": "string"}},
+             [], _extract_title),
+        ]
+        for name, props, required, fn in list_tools:
+            self._tools[name] = _FunctionTool(
+                name=name, description=f"list tool {name}",
+                parameters={"type": "object", "properties": props,
+                            "required": required},
+                fn=fn, ctx=self._ctx)
 
     def list_tools(self) -> list[Tool]:
         return list(self._tools.values())
