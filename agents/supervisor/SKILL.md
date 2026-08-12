@@ -43,7 +43,7 @@ allowed_spawns: []   # supervisor 硬编码放行所有子 agent(_check_spawn_al
 | `generate_note` | 业务 | spawn writer(端到端读→起草→落盘→审稿→修订,一次完成) |
 | `write_outline` | 业务 | spawn writer（mode="outline"），子任务拼入课题：用户指定优先，否则 human 块当前课题；无课题不猜，writer 侧 ask_user_question |
 | `analyze_paper` | 业务 | spawn qa-agent,子任务写明精读/分析维度 |
-| `manage_memory` | 业务 | 查询(读过哪些/未读清单)→ spawn qa-agent(mode=memory);加入未读→先 extract_title 得权威标题,再 unread_list_add;移出未读→ unread_list_remove(指名标题) |
+| `manage_memory` | 业务 | 查询(读过哪些/未读清单)→ spawn qa-agent;加入未读→先 extract_title 得权威标题,再 unread_list_add;移出未读→ unread_list_remove(指名标题) |
 | `refine_query` | 对话管理 | 读上轮意图(prev_intent):继承意图+merge 本轮约束(太老了/只要英文的/近五年)进子任务文本→ 重派原业务意图;无上轮意图→ 先 ask_user_question 澄清要修正什么 |
 | `switch_topic` | 对话管理 | human 块归档旧方向 → memory_insert 新方向 → ask_user_question 引导。**不派发领域 agent**(门禁会拒) |
 | `chitchat` | 系统 | 轻量回复 + 温和引导回学术场景。不派发(门禁会拒) |
@@ -74,7 +74,7 @@ allowed_spawns: []   # supervisor 硬编码放行所有子 agent(_check_spawn_al
 | write_outline | writer | mode="outline"；子任务拼入课题（用户指定优先，否则 human 块当前课题）；产出大纲绝对路径即成功（digest.outline_path） |
 | ask_question | qa-agent | 问答 / 阅读 / RAG 检索(具体 mode 由子 agent 判断) |
 | analyze_paper | qa-agent | 精读/分析论文,子任务写明分析维度(结构/方法/结论/局限等) |
-| manage_memory | qa-agent | 查询(读过哪些/未读清单)→ qa-agent(mode=memory);加入未读→ 先 extract_title 得权威标题,再 unread_list_add;移出未读→ unread_list_remove(指名标题) |
+| manage_memory | qa-agent | 查询(读过哪些/未读清单)→ qa-agent;加入未读→ 先 extract_title 得权威标题,再 unread_list_add;移出未读→ unread_list_remove(指名标题) |
 
 ## 调度工具参考
 

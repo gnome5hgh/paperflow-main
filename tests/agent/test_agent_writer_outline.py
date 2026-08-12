@@ -58,7 +58,7 @@ async def test_outline_happy_path(agent_env, agent_registry):
                "## 1. 核心论点总览\n"
                "论点1 ← 笔记「circRNA机制」+ 论文「X」§3.2 [来源:论文「X」§3.2]\n")
 
-    task = "任务模式：outline。课题：circRNA 关联预测。请梳理研究大纲。"
+    task = "课题：circRNA 关联预测。请梳理研究大纲。"
     outline_review_task = f"审阅大纲：{outline_out}。课题：circRNA 关联预测。相关笔记：[{list(notes.values())[0]}]"
     mock = LoopMockLLM()
     mock.add(_tc("rag_retrieve", {"query": "circRNA 关联预测"}))
@@ -83,7 +83,7 @@ async def test_outline_happy_path(agent_env, agent_registry):
 async def test_outline_gives_up_when_no_material(agent_env, agent_registry):
     """素材熔断：RAG 无命中 → 不落盘，返回缺口方向。"""
     cfg, _ = agent_env
-    task = "任务模式：outline。课题：某冷门方向。请梳理研究大纲。"
+    task = "课题：某冷门方向。请梳理研究大纲。"
     mock = LoopMockLLM()
     mock.add(_tc("rag_retrieve", {"query": "某冷门方向"}))
     mock.add(Message(role="assistant",
@@ -100,7 +100,7 @@ async def test_outline_gives_up_when_no_material(agent_env, agent_registry):
 async def test_outline_asks_topic_when_unknown(agent_env, agent_registry):
     """无课题 → ask_user_question 问研究方向再继续。"""
     cfg, _ = agent_env
-    task = "任务模式：outline。请梳理研究大纲。"
+    task = "请梳理研究大纲。"
     mock = LoopMockLLM()
     mock.add(_tc("ask_user_question", {"question": "请告诉我你想围绕哪个研究方向梳理大纲？"}))
     mock.add(Message(role="assistant", content="已了解课题方向，开始梳理"))
