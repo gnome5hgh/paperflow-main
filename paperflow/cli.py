@@ -83,21 +83,21 @@ def _make_confirm_callback(io: InputIO):
     """构造 async 确认回调（Agent 执行器以 await 方式调用）。
 
     确认等待是用户交互，input()/prompt() 放到线程执行——不应冻结共享事件循环；
-    to_thread 包一层，与改造前 _stdin_confirm 的线程模型一致。fail-safe：EOF 由
-    io.confirm 兜底返回 False；TTY 下 prompt_toolkit 不捕 EOFError，这里再兜一层
-    （两实现可替换）。
+    to_thread 包一层，与改造前 _stdin_confirm 的线程模型一致。fail-safe：EOF 与
+    Ctrl+C（TTY 下确认框的 c-c 键绑定抛 KeyboardInterrupt）都返回 False——拒绝；
+    TTY 下 prompt_toolkit 不捕 EOFError，这里再兜一层（两实现可替换）。
     """
     async def _confirm(cr) -> bool:
         try:
             return await asyncio.to_thread(
                 io.confirm, f"[需要确认] {cr.tool_name} 是否继续？(y/N) ")
-        except EOFError:
+        except (EOFError, KeyboardInterrupt):
             return False
     return _confirm
 
 
 def _make_ask_callback(io: InputIO):
-    """构造 ask_user 回调：读开放问题答案，Ctrl-D/EOF → 空串。
+    """构造 ask_user 回调：读开放问题答案，Ctrl-D/EOF/Ctrl+C → 空串。
 
     PromptToolkitIO（TTY）的 ask 不捕 EOFError，这里兜底返回空串（与非 TTY
     FallbackIO 行为一致，两实现可替换）；Supervisor ReAct 收到空串自行处理。
@@ -105,7 +105,7 @@ def _make_ask_callback(io: InputIO):
     def _ask(question: str) -> str:
         try:
             return io.ask(question)
-        except EOFError:
+        except (EOFError, KeyboardInterrupt):
             return ""
     return _ask
 
@@ -171,13 +171,17 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
         p = conversation.pending_intent
         query, force = _merge_pending(conversation, raw)
         renderer.reset()                    # 每轮清残留：异常/澄清路径不消费 should_print
-        run_task = asyncio.create_task(supervisor.run(query, force_dispatch=force))
+        # 先注册 SIGINT handler 再 create_task：注册与建任务之间的同步间隙若落一个
+        # SIGINT，默认 handler 会在主线程抛 KeyboardInterrupt 崩 REPL。handler 已就位
+        # 则 _cancel_run 吞掉它（run_task 尚未赋值 → no-op，不崩）。
+        run_task = None
         if can_sigint:
             try:
                 loop.add_signal_handler(signal.SIGINT, _cancel_run)
             except (NotImplementedError, RuntimeError):
                 # 信号注册失败（如非主线程/平台不支持）→ 降级为默认 Ctrl+C，不崩 REPL
                 can_sigint = False
+        run_task = asyncio.create_task(supervisor.run(query, force_dispatch=force))
         try:
             result = await run_task
         except asyncio.CancelledError:

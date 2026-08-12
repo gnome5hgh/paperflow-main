@@ -175,6 +175,19 @@ def test_confirm_callback_eof_tty_shim():
     assert asyncio.run(cb(SimpleNamespace(tool_name="write_file"))) is False
 
 
+def test_confirm_callback_ctrl_c_tty_shim():
+    """TTY 路径 Ctrl+C 兜底：io.confirm 抛 KeyboardInterrupt → 回调返回 False（拒绝）。
+
+    确认框里按 Ctrl+C，prompt_toolkit 的 c-c 键绑定在 worker 线程抛
+    KeyboardInterrupt（经 to_thread 冒出）。不兜底会一路冲到 asyncio.run 崩 REPL
+    ——deny 语义：Ctrl+C = 拒绝，与 EOF fail-safe 同效。"""
+    class _KiConfirmIO:
+        def confirm(self, text):
+            raise KeyboardInterrupt
+    cb = _make_confirm_callback(_KiConfirmIO())
+    assert asyncio.run(cb(SimpleNamespace(tool_name="write_file"))) is False
+
+
 @pytest.mark.asyncio
 async def test_confirm_callback_async_contract_confirm(monkeypatch):
     """C1 回归（merge blocker）：confirm_callback（async）+ ConfirmRequired 不崩。
@@ -250,6 +263,17 @@ def test_ask_callback_eof_tty_shim():
     assert _make_ask_callback(_EofAskIO())("要哪个？") == ""
 
 
+def test_ask_callback_ctrl_c_tty_shim():
+    """TTY 路径 Ctrl+C 兜底：io.ask 抛 KeyboardInterrupt → 回调返回空串。
+
+    提问框里按 Ctrl+C 与 EOF 同语义：中断输入返回空串，由 Supervisor ReAct 自行
+    处理，不崩 REPL。"""
+    class _KiAskIO:
+        def ask(self, question):
+            raise KeyboardInterrupt
+    assert _make_ask_callback(_KiAskIO())("要哪个？") == ""
+
+
 @pytest.mark.asyncio
 async def test_repl_ctrl_c_during_run_interrupts_and_continues():
     """agent 运行中 Ctrl+C → 打印「已中断」、循环继续（不杀 REPL）。"""
@@ -272,6 +296,10 @@ async def test_repl_ctrl_c_sigint_cancels_run_and_continues():
     信号必然落在已注册的 add_signal_handler 上（_repl 对不支持的环境降级，故先探测，
     不支持则 skip——该分支已有直接抛 CancelledError 的用例兜底）。"""
     loop = asyncio.get_running_loop()
+    # 与 _repl 的 hasattr 探测一致：不支持的 loop（缺方法时调用会抛 AttributeError，
+    # 不在 except 范围）直接 skip，而不是误报失败。
+    if not (hasattr(loop, "add_signal_handler") and hasattr(loop, "remove_signal_handler")):
+        pytest.skip("当前事件循环不支持 add_signal_handler")
     try:
         loop.add_signal_handler(signal.SIGINT, lambda: None)
         loop.remove_signal_handler(signal.SIGINT)
