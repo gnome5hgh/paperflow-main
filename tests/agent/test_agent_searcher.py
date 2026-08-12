@@ -96,11 +96,15 @@ def test_search_paper_has_glob_grep(agent_registry):
     assert {"glob", "grep"} <= names
 
 
-def test_searcher_lacks_ask_user_question(agent_registry):
-    """权限最小化：searcher 不装配 ask_user_question（约束由 supervisor 拼入）。"""
+def test_searcher_has_ask_user_question_for_recommendation(agent_registry):
+    """searcher 装配 ask_user_question——推荐后询问用户是否加入未读清单。
+
+    这是推荐询问的既有模式（writer/qa-agent 同款：任务中途向用户提问，in-turn
+    阻塞，答案即回子任务），不是权限回退——工具可问用户但不可直接调度业务子
+    agent（allowed_spawns 仍只放行 reviewer）。"""
     config = agent_registry.get_config("searcher")
     names = {t.name for t in config.tools}
-    assert "ask_user_question" not in names
+    assert "ask_user_question" in names
 
 
 def test_search_paper_tools_without_dedup_filter(agent_registry, agent_env):

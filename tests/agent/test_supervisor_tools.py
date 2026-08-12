@@ -318,7 +318,7 @@ class TestSpawnSubAgentTool:
         """子 agent 继承父 ask_user_callback：writer/qa-agent 中途问用户的依赖。
 
         与 confirm_callback 同款传播——root CLI 注入 → supervisor → 子 agent。
-        searcher/reviewer 也继承回调但不装配工具，权限仍卡在工具面。"""
+        searcher 装配 ask_user_question（推荐询问），reviewer 不装配——权限仍卡在工具面。"""
         with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
             MockAgent.return_value.run = AsyncMock(return_value="done")
             cb = lambda q: "中文笔记"
