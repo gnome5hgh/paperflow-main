@@ -57,8 +57,9 @@ class ReviewerDigest(BaseModel):
 
 
 class WriterDigest(BaseModel):
-    """writer 的结果摘要:note_path 是产物绝对路径(含路径即成功),status 描述写盘结果。"""
-    note_path: str
+    """writer 的结果摘要:note_path/outline_path 是产物绝对路径,status 描述写盘结果。"""
+    note_path: str = ""
+    outline_path: str = ""
     status: str
 
 
@@ -143,14 +144,15 @@ _SPAWN_REUSE_WINDOW_S = 300
 _PATH_RE = re.compile(r"(?<![A-Za-z0-9_])/[^\s，,;:。（）\"']+")
 
 
-def _task_fingerprint(task: str) -> str:
-    """任务文本指纹 = sha256(仅规范化空白后的文本)[:16]。
+def _task_fingerprint(task: str, mode: str | None = None) -> str:
+    """任务文本指纹 = sha256(规范化空白后的文本 + mode)[:16]。
 
-    零 I/O:不读任何文件,同文本恒同指纹。内容变化的正确性由 _task_has_path 门控
-    兜底——有路径任务完成即清条目、永不缓存 done,无路径任务纯文本世界不变可直接缓存。
+    mode 参与指纹,防"同任务文本不同模式"的去重碰撞(同 task 但 run 模式不同,
+    结果不可互换)。
     """
     norm = " ".join(task.split())
-    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+    key = f"{mode or ''}\n{norm}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
 def _task_has_path(task: str) -> bool:
@@ -291,6 +293,10 @@ class SpawnSubAgentTool(Tool):
         "properties": {
             "agent_type": {"type": "string", "description": "目标 SubAgent 类型，如 searcher"},
             "task": {"type": "string", "description": "子任务文本（含实体，已拼入上下文）"},
+            "mode": {"type": "string",
+                     "description": "子 agent 运行模式(可选)。writer: note/outline;"
+                                    "reviewer: note_review/outline_review/download_review;"
+                                    "不传 = 子 agent 默认模式"},
         },
         "required": ["agent_type", "task"],
     }
@@ -310,7 +316,7 @@ class SpawnSubAgentTool(Tool):
         """解析该 agent 生效超时:配置命中优先,否则类默认。"""
         return self._agent_timeouts.get(agent_type, self.timeout)
 
-    def execute(self, agent_type: str, task: str) -> ToolResult:
+    def execute(self, agent_type: str, task: str, mode: str | None = None) -> ToolResult:
         parent = self._parent
         # 意图派发门禁：dispatch_allowed=False 的意图拒绝 spawn（代码级确定性兜底，
         # 不依赖 LLM 遵循 SKILL）。非派发意图=陈述方向/切换/系统类——直接回复或记忆
@@ -336,7 +342,7 @@ class SpawnSubAgentTool(Tool):
         #    - 无路径任务(纯文本,世界不变)→ running 提示 + done 窗口内缓存复用
         #    - 有路径任务(引用真实文件,世界可变)→ 只 running 去重,完成即清条目、
         #      永不缓存 done——子 agent 执行期间文件可能已改,缓存旧结果会交付陈旧裁决
-        fp = _task_fingerprint(task)
+        fp = _task_fingerprint(task, mode)
         has_path = _task_has_path(task)
         with _SPAWN_LOCK:
             reg = _SPAWN_REGISTRY.setdefault(parent.session_id, {})
@@ -367,6 +373,8 @@ class SpawnSubAgentTool(Tool):
                 ask_user_callback=parent.ask_user_callback,
                 stream_callback=_make_child_stream_callback(parent, agent_type),
             )
+            if mode:
+                child.system_prompt = f"当前模式：{mode}\n{child.system_prompt}"
             # 传解析后的超时:_run_child 用实际生效值(config > 类默认)
             result = self._run_child(child, agent_type, task)
         finally:

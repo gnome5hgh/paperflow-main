@@ -623,3 +623,41 @@ class TestMulticallParallelDispatch:
         assert len(tool_msgs) == 3
         statuses = [json.loads(m.content)["status"] for m in tool_msgs]
         assert statuses == ["success", "failed", "success"]   # 顺序 + 逐子隔离
+
+
+# ─── spawn mode 机制（Task 3）─────────────────────────────────────
+# mode 是可选参数：注入子 agent system prompt 前缀 + 参与任务指纹，供 writer 大纲/笔记
+# 判别（outline vs note）、reviewer 判别（note_review/outline_review/download_review）。
+
+
+def test_mode_injected_into_child_system_prompt():
+    """mode 参数 → 子 agent system prompt 前缀注入（writer 大纲/笔记判别依据）。"""
+    tool_call = Message(role="assistant", content=None, tool_calls=[
+        {"id": "c0", "type": "function",
+         "function": {"name": "spawn_sub_agent",
+                      "arguments": json.dumps(
+                          {"agent_type": "writer", "task": "梳理大纲", "mode": "outline"})}},
+    ])
+    llm = make_mock_llm([tool_call, Message(role="assistant", content="done")])
+    with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
+        async def run_ok(task):
+            return "ok"
+        MockAgent.return_value.run = run_ok
+        with patch("paperflow.tools.orchestration.spawn._extract_digest",
+                   new=AsyncMock(return_value={})):
+            agent = _supervisor([SpawnSubAgentTool()], llm=llm)
+            asyncio.run(agent.run("带 mode 的派发"))
+    assert MockAgent.return_value.system_prompt.startswith("当前模式：outline")
+
+
+def test_task_fingerprint_includes_mode():
+    """mode 参与指纹：同文本不同 mode 指纹不同，同 mode 恒同。"""
+    assert _task_fingerprint("t") != _task_fingerprint("t", "outline")
+    assert _task_fingerprint("t", "outline") == _task_fingerprint("t", "outline")
+
+
+def test_writer_digest_carries_outline_path():
+    from paperflow.tools.orchestration.spawn import WriterDigest
+    d = WriterDigest(note_path="", outline_path="/o/x.md", status="ok")
+    assert d.outline_path == "/o/x.md"
+    assert WriterDigest(note_path="/n/y.md", status="ok").outline_path == ""
