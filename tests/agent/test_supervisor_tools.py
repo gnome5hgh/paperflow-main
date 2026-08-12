@@ -662,3 +662,40 @@ def test_writer_digest_carries_outline_path():
     d = WriterDigest(note_path="", outline_path="/o/x.md", status="ok")
     assert d.outline_path == "/o/x.md"
     assert WriterDigest(note_path="/n/y.md", status="ok").outline_path == ""
+
+
+# ─── mode 枚举（单一真相源）────────────────────────────────────────
+# mode 值集中在 tools/orchestration/modes.py 的 SubAgentMode；spawn schema 用 enum
+# 约束 LLM 生成，execute 运行时校验兜底（防拼写错静默错流）。值 = SKILL 判别字符串。
+
+
+def test_sub_agent_mode_enum_defined():
+    """SubAgentMode 值 = SKILL 判别的字符串字面量（单一真相源）。"""
+    from paperflow.tools.orchestration.modes import SubAgentMode, SUB_AGENT_MODES
+    assert {m.value for m in SubAgentMode} == {
+        "note", "outline", "note_review", "outline_review", "download_review"}
+    assert SUB_AGENT_MODES == frozenset(m.value for m in SubAgentMode)
+
+
+def test_spawn_mode_enum_in_schema():
+    """spawn 工具 schema 的 mode 参数带 enum（合法值约束 LLM 生成）。"""
+    tool = SpawnSubAgentTool()
+    mode_props = tool.parameters["properties"]["mode"]
+    assert set(mode_props["enum"]) == {"note", "outline", "note_review",
+                                       "outline_review", "download_review"}
+
+
+def test_spawn_rejects_unknown_mode():
+    """非法 mode → denied（防 LLM 拼写错静默错流）。"""
+    tool_call = Message(role="assistant", content=None, tool_calls=[
+        {"id": "c0", "type": "function",
+         "function": {"name": "spawn_sub_agent",
+                      "arguments": json.dumps(
+                          {"agent_type": "writer", "task": "t", "mode": "outlin_review"})}},
+    ])
+    llm = make_mock_llm([tool_call, Message(role="assistant", content="done")])
+    agent = _supervisor([SpawnSubAgentTool()], llm=llm)
+    asyncio.run(agent.run("非法 mode"))
+    tool_msgs = [m for m in agent._messages if m.role == "tool"]
+    statuses = [json.loads(m.content)["status"] for m in tool_msgs]
+    assert statuses == ["denied"]

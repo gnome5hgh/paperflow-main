@@ -18,6 +18,7 @@ from paperflow.core.agent import Agent, StreamEvent
 from paperflow.core.intent.schemas.intent import INTENT_META
 from paperflow.core.structured import StructuredOutput
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.orchestration.modes import SubAgentMode, SUB_AGENT_MODES
 
 
 class SubAgentResult(BaseModel):
@@ -294,6 +295,7 @@ class SpawnSubAgentTool(Tool):
             "agent_type": {"type": "string", "description": "目标 SubAgent 类型，如 searcher"},
             "task": {"type": "string", "description": "子任务文本（含实体，已拼入上下文）"},
             "mode": {"type": "string",
+                     "enum": [m.value for m in SubAgentMode],
                      "description": "子 agent 运行模式(可选)。writer: note/outline;"
                                     "reviewer: note_review/outline_review/download_review;"
                                     "不传 = 子 agent 默认模式"},
@@ -318,6 +320,12 @@ class SpawnSubAgentTool(Tool):
 
     def execute(self, agent_type: str, task: str, mode: str | None = None) -> ToolResult:
         parent = self._parent
+        # mode 参数校验：非法值直接拒绝（schema enum 约束 LLM 生成层，
+        # 此处兜底防任何漏网之鱼静默错流——拼写错的 mode 注入会让子 agent 走错流程）。
+        if mode is not None and mode not in SUB_AGENT_MODES:
+            result = SubAgentResult(status="denied",
+                                    summary=f"未知 mode: {mode}，合法值: {sorted(SUB_AGENT_MODES)}")
+            return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
         # 意图派发门禁：dispatch_allowed=False 的意图拒绝 spawn（代码级确定性兜底，
         # 不依赖 LLM 遵循 SKILL）。非派发意图=陈述方向/切换/系统类——直接回复或记忆
         # 操作，绝不派发领域 agent。refine_query 放行（它是重派入口）。last_intent
