@@ -92,3 +92,23 @@ def test_unread_list_remove_by_title():
     assert "Removed" in res.text
     assert "论文A" not in bm.get_block_by_label("unread_list").value
     assert "论文B" in bm.get_block_by_label("unread_list").value
+
+
+def test_history_append_format():
+    ctx, bm = _ctx("history_list")
+    from paperflow.core.memory.functions.function_sets.list_blocks import HistoryAppendTool
+    res = HistoryAppendTool(ctx).execute(action="精读", title="论文A")
+    assert "Appended" in res.text
+    value = bm.get_block_by_label("history_list").value
+    assert "精读" in value and "论文A" in value and "《" in value
+
+
+def test_history_append_multiple_events_append_only():
+    ctx, bm = _ctx("history_list")
+    from paperflow.core.memory.functions.function_sets.list_blocks import HistoryAppendTool
+    HistoryAppendTool(ctx).execute(action="精读", title="论文A")
+    HistoryAppendTool(ctx).execute(action="写笔记", title="论文A")
+    lines = bm.get_block_by_label("history_list").value.splitlines()
+    assert len(lines) == 2          # 同论文两次追加 = 两行，各含动作
+    assert any("精读" in ln for ln in lines)
+    assert any("写笔记" in ln for ln in lines)

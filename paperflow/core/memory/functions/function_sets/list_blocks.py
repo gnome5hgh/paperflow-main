@@ -4,6 +4,8 @@
 两个清单共用同一套「给块追加行 / 按 key 删行 / 块缺失先建」逻辑，
 抽成 ListBlockTool 基类，子类只声明 name/description/parameters 与条目格式。
 """
+from datetime import datetime
+
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.core.memory.services.tool_manager import MemoryToolsContext
 
@@ -108,3 +110,29 @@ class UnreadListRemoveTool(ListBlockTool):
 
     def execute(self, title: str) -> ToolResult:
         return ToolResult(text=self.remove_line_by_key(title))
+
+
+class HistoryAppendTool(ListBlockTool):
+    """把一次论文消费事件追加进浏览历史（只追加不改旧）。
+
+    条目格式 `[{时间}] {action}《{title}》`——同论文可多次追加，靠时间/动作区分。
+    """
+
+    name = "history_append"
+    block_label = "history_list"
+    description = "把一次论文消费事件（精读/写笔记）追加进浏览历史，只追加不改旧"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "description": "动作：精读 / 写笔记"},
+            "title": {"type": "string", "description": "论文权威标题"},
+        },
+        "required": ["action", "title"],
+    }
+
+    def _format_entry(self, action: str, title: str) -> str:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        return f"[{now}] {action}《{title}》"
+
+    def execute(self, action: str, title: str) -> ToolResult:
+        return ToolResult(text=self.append_line(action=action, title=title))
