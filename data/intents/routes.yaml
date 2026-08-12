@@ -85,6 +85,19 @@ routes:
   - 把研究结论记录下来
   - 给这篇论文做一份内容摘要
   score_threshold: 0.0
+- name: write_outline
+  utterances:
+  - 写一份研究大纲
+  - 帮我梳理一下论点
+  - 把笔记整理成研究骨架
+  - 为我的课题写研究大纲
+  - 基于笔记写个研究大纲
+  - 帮我组织一下研究框架
+  - 梳理一下这个方向的核心论点
+  - 把阅读笔记串成研究大纲
+  - 帮我搭一个开题报告的骨架
+  - 整理一份这个课题的论点脉络
+  score_threshold: 0.0
 - name: ask_question
   utterances:
   - circRNA 的机制是什么

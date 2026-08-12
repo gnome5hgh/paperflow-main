@@ -1,5 +1,5 @@
 # data/intents/eval.yaml —— held-out 评估集（验收契约，与 routes 严格逐字不相交）
-# 规模：13 意图 ≈ 234 条（8 个新意图各 10 条 held-out；整体硬负样本 ≥30%）
+# 规模：14 意图 ≈ 248 条（9 个新意图各 ≥10 条 held-out；整体硬负样本 ≥30%）
 # 构成：近义改写 + 边界案例（复合意图取主意图 / 追问无 prev 上下文归 general / chitchat）
 # 硬负样本：hard: true 标记——与其他意图近形的混淆样本（如「讲讲这篇论文讲的什么」标
 #   analyze_paper 但形似 ask_question），让 per-intent 门槛对新意图有约束（Q2，防"自己给自己打分"）
@@ -220,6 +220,40 @@ eval:
     hard: true
   - query: 通读一下这篇论文
     intent: ask_question
+    hard: true
+  # write_outline —— 大纲/论点梳理（business，派发）
+  - query: 帮我写一份这个方向的研究大纲
+    intent: write_outline
+  - query: 把零散笔记整理成结构化大纲
+    intent: write_outline
+  - query: 帮我梳理一下已有笔记的核心论点
+    intent: write_outline
+  - query: 基于我的阅读积累搭研究框架
+    intent: write_outline
+  - query: 写一份开题报告的要点骨架
+    intent: write_outline
+  - query: 帮我整理这个课题的论点结构
+    intent: write_outline
+  - query: 根据笔记生成研究大纲
+    intent: write_outline
+  - query: 梳理一下我读过内容里的关键论点
+    intent: write_outline
+  - query: 帮我构建研究的问题-方法-验证框架
+    intent: write_outline
+    hard: true
+  - query: 把碎片笔记串联成完整研究思路
+    intent: write_outline
+  - query: 帮我写一份摘要式的论点清单
+    intent: write_outline
+    hard: true
+  - query: 总结成笔记形式的大纲
+    intent: write_outline
+    hard: true
+  - query: 整理成一份带引用的阅读笔记
+    intent: write_outline
+    hard: true
+  - query: 把这篇论文的论点梳理成笔记
+    intent: write_outline
     hard: true
   # manage_memory —— 记忆/阅读记录/收藏/历史查询的多种表述
   - query: 我标记过哪些论文已读

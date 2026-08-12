@@ -52,7 +52,7 @@ routes:
         """
         from paperflow.core.intent.schemas.intent import IntentType
         routes = load_routes(Path("data/intents/routes.yaml"))
-        assert len(routes) == 13
+        assert len(routes) == 14
         names = {r.name for r in routes}
         assert names == {t.value for t in IntentType}
 
@@ -124,7 +124,7 @@ def test_eval_disjoint_from_routes():
     """held-out 泛化保证：eval 查询不得与 routes 例句重复（否则测的是记忆不是泛化）。
 
     用生产文件默认路径断言——这是版本化验收契约的一部分（spec §4.7.1）。
-    13 路由全参与（含 general）：Task 4 改写与 general 占位语料逐字重合的负样本
+    14 路由全参与（含 general）：Task 4 改写与 general 占位语料逐字重合的负样本
     （「好的」「嗯嗯」→ 非重合表述），恢复 general 也严格逐字不相交的完整契约。
     """
     route_utterances = {u for r in load_routes() for u in r.utterances}
@@ -134,7 +134,7 @@ def test_eval_disjoint_from_routes():
 
 
 def test_eval_covers_all_intents():
-    """eval 集契约：覆盖全部 13 类意图 + 规模下限（够统计意义，门槛才可信）。"""
+    """eval 集契约：覆盖全部 14 类意图 + 规模下限（够统计意义，门槛才可信）。"""
     from paperflow.core.intent.schemas.intent import IntentType
     eval_items = load_eval()
     labels = {label for _, label, _ in eval_items}
@@ -142,15 +142,16 @@ def test_eval_covers_all_intents():
     assert len(eval_items) >= 100          # 规模下限：够统计意义
 
 
-def test_routes_cover_new_taxonomy_13():
-    """R1-R4：13 routes，新 route ≥8 语料，general ≤5 占位。"""
+def test_routes_cover_new_taxonomy():
+    """R1-R4：14 routes，新 route ≥8 语料，general ≤5 占位。"""
     from paperflow.core.intent.schemas.intent import IntentType
     routes = load_routes()
     names = {r.name for r in routes}
-    assert names == {t.value for t in IntentType}          # R1+R2：13 route，名合法
+    assert names == {t.value for t in IntentType}          # R1+R2：14 route，名合法
     utt = {r.name: len(r.utterances) for r in routes}
     new_intents = {"set_research_topic", "analyze_paper", "refine_query",
-                   "switch_topic", "chitchat", "out_of_scope", "help", "feedback"}
+                   "switch_topic", "chitchat", "out_of_scope", "help", "feedback",
+                   "write_outline"}
     for n in new_intents:
         assert utt[n] >= 8, f"{n} 语料不足 8 条"             # R3
     assert utt["general"] <= 5                               # R4
@@ -165,7 +166,7 @@ def test_manage_memory_covers_reading_list():
 
 
 def test_eval_covers_new_intents_with_hard_negatives():
-    """Q2：8 个新意图各有 ≥10 条 held-out；硬负样本（hard: true 标记）占比 ≥30%。
+    """Q2：9 个新意图各有 ≥10 条 held-out；硬负样本（hard: true 标记）占比 ≥30%。
 
     硬负样本=与其他意图近形的混淆样本（如「讲讲这篇论文讲的什么」标 analyze_paper
     但形似 ask_question）——否则 per-intent 门槛对新意图无约束，是"自己给自己打分"
@@ -177,7 +178,8 @@ def test_eval_covers_new_intents_with_hard_negatives():
     per = {l: labels.count(l) for l in set(labels)}
     hard_per = {l: sum(1 for _, ll, h in items if ll == l and h) for l in set(labels)}
     new_intents = {"set_research_topic", "analyze_paper", "refine_query",
-                   "switch_topic", "chitchat", "out_of_scope", "help", "feedback"}
+                   "switch_topic", "chitchat", "out_of_scope", "help", "feedback",
+                   "write_outline"}
     for n in new_intents:
         assert per.get(n, 0) >= 10, f"{n} held-out 样本 <10"
         assert hard_per.get(n, 0) >= per.get(n, 0) * 0.30, f"{n} 硬负样本占比 <30%"

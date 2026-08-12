@@ -13,9 +13,9 @@ class TestIntentType:
     def test_current_set(self):
         values = {t.value for t in IntentType}
         assert values == {
-            "search_paper", "generate_note", "ask_question", "manage_memory",
-            "set_research_topic", "analyze_paper", "refine_query", "switch_topic",
-            "chitchat", "out_of_scope", "help", "feedback", "general"}
+            "search_paper", "generate_note", "write_outline", "ask_question",
+            "manage_memory", "set_research_topic", "analyze_paper", "refine_query",
+            "switch_topic", "chitchat", "out_of_scope", "help", "feedback", "general"}
 
     def test_str_enum(self):
         # 继承 str，value 可被 YAML / JSON 直接序列化
@@ -121,18 +121,19 @@ def test_intention_result_carries_steps_and_clarification():
 
 class TestIntentMeta:
     def test_meta_covers_all_intent_types_no_dangling(self):
-        """R5：INTENT_META 完整覆盖 13 IntentType，无悬空（枚举=契约=实现集）。"""
+        """R5：INTENT_META 完整覆盖 14 IntentType，无悬空（枚举=契约=实现集）。"""
         from paperflow.core.intent.schemas.intent import INTENT_META
         assert set(INTENT_META) == set(IntentType)
 
     def test_dispatch_allowed_set(self):
-        """派发/非派发集合核对：非派发 7 个，派发 6 个（含 refine 重派入口）。"""
+        """派发/非派发集合核对：非派发 7 个，派发 7 个（含 refine 重派入口）。"""
         from paperflow.core.intent.schemas.intent import INTENT_META
         dispatch = {it for it, (_cat, d) in INTENT_META.items() if d}
         assert dispatch == {
             IntentType.SEARCH_PAPER, IntentType.ASK_QUESTION,
-            IntentType.GENERATE_NOTE, IntentType.ANALYZE_PAPER,
-            IntentType.MANAGE_MEMORY, IntentType.REFINE_QUERY}
+            IntentType.GENERATE_NOTE, IntentType.WRITE_OUTLINE,
+            IntentType.ANALYZE_PAPER, IntentType.MANAGE_MEMORY,
+            IntentType.REFINE_QUERY}
 
     def test_category_mapping(self):
         from paperflow.core.intent.schemas.intent import INTENT_META, IntentCategory

@@ -5,7 +5,7 @@
 输入/输出）职责不同。识别管线分四级：实体提取 / 追问检测 / 混合路由 /
 LLM 兜底，这里的四个类型是它们共同使用的产出契约：
 
-- ``IntentType``: 13 类意图枚举（枚举值即路由名，对应 routes.yaml 的 route 名集合）。
+- ``IntentType``: 14 类意图枚举（枚举值即路由名，对应 routes.yaml 的 route 名集合）。
 - ``IntentCategory``: 意图类别（business/dialogue/system）——消费分组，非路由层级。
 - ``INTENT_META``: intent → (category, dispatch_allowed) 单一真相源映射。
 - ``IntentStep``: 产出阶段枚举——审计/监控据此区分"这条意图是路由层定的
@@ -26,13 +26,14 @@ class IntentType(str, Enum):
     """意图类型枚举，value 与路由名一致（routes.yaml 中的 name）。
 
     枚举 = 契约 = 当前实现集——不允许"枚举允许但系统无处理路径"的悬空值。
-    13 值按三类组织（category 见 INTENT_META），类别是消费分组不是路由层级。
+    14 值按三类组织（category 见 INTENT_META），类别是消费分组不是路由层级。
     """
 
     SET_RESEARCH_TOPIC = "set_research_topic"  # 设定研究方向（业务；记录+引导，不派发）
     SEARCH_PAPER = "search_paper"              # 搜索/查找论文（业务；槽位 query/source/year/download）
     ASK_QUESTION = "ask_question"              # 具体问答（业务）
     GENERATE_NOTE = "generate_note"            # 撰写笔记（业务）
+    WRITE_OUTLINE = "write_outline"            # 撰写研究大纲（业务）
     ANALYZE_PAPER = "analyze_paper"            # 精读/分析论文（业务）
     MANAGE_MEMORY = "manage_memory"            # 记忆查询 + 待读清单操作（业务）
     REFINE_QUERY = "refine_query"              # 修正上轮查询（对话管理；重派入口）
@@ -53,13 +54,14 @@ class IntentCategory(str, Enum):
 
 
 #: 意图 → (category, dispatch_allowed)——单一真相源。枚举=契约=实现集：
-#: 13 值全覆盖、无悬空；dispatch_allowed=False 的意图由 spawn 门禁代码级拒绝派发
+#: 14 值全覆盖、无悬空；dispatch_allowed=False 的意图由 spawn 门禁代码级拒绝派发
 #: （set_research_topic 是业务但非派发——记录+引导；refine_query 是对话管理但派发——重派入口）。
 INTENT_META: dict[IntentType, tuple[IntentCategory, bool]] = {
     IntentType.SET_RESEARCH_TOPIC: (IntentCategory.BUSINESS, False),
     IntentType.SEARCH_PAPER:       (IntentCategory.BUSINESS, True),
     IntentType.ASK_QUESTION:       (IntentCategory.BUSINESS, True),
     IntentType.GENERATE_NOTE:      (IntentCategory.BUSINESS, True),
+    IntentType.WRITE_OUTLINE:      (IntentCategory.BUSINESS, True),
     IntentType.ANALYZE_PAPER:      (IntentCategory.BUSINESS, True),
     IntentType.MANAGE_MEMORY:      (IntentCategory.BUSINESS, True),
     IntentType.REFINE_QUERY:       (IntentCategory.DIALOGUE, True),
