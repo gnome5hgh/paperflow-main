@@ -67,11 +67,7 @@ class TitleExtractor:
             return None
         prompt = ("你是论文标题识别器。从以下论文首页文本（元数据+正文前段）判断论文标题。"
                   "输出 JSON：{title}。\n首页文本：\n" + first_page[:1200])
-        try:
-            from paperflow.core.intent.intent_schema import IntentionResult  # noqa: 仅类型参考
-        except ImportError:
-            pass
-        import asyncio, json
+        import asyncio
         from pydantic import BaseModel
         class _Title(BaseModel):
             title: str
@@ -110,7 +106,9 @@ class TitleExtractor:
             doc.close()
             if not spans:
                 return None
-            top = min(spans, key=lambda s: -s[1])      # 最大字号
+            max_size = max(s[1] for s in spans)
+            # 最大字号里取最靠顶部的（bbox y 最小）——标题通常既大又近页首
+            top = min((s for s in spans if s[1] == max_size), key=lambda s: s[2])
             return top[0].strip() or None
         except Exception:
             return None

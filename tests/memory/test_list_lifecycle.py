@@ -2,7 +2,6 @@
 """清单生命周期集成：加入→精读→history+询问→移除。"""
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from paperflow.core.memory.functions.function_sets.list_blocks import (
     UnreadListAddTool, UnreadListRemoveTool, HistoryAppendTool)

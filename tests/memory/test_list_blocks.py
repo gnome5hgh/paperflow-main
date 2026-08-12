@@ -1,5 +1,6 @@
 # tests/memory/test_list_blocks.py
 """ListBlockTool 基类：清单块通用操作（追加行/删行/缺失建块）。"""
+import re
 import tempfile
 from pathlib import Path
 
@@ -65,6 +66,15 @@ def test_remove_missing_returns_error():
     assert "not found" in res.text
 
 
+def test_remove_missing_block_does_not_create():
+    """块缺失时 remove 直接返回 not found，不物化空块（避免 MemFS 污染）。"""
+    ctx, bm = _ctx()
+    t = _DemoTool(ctx)
+    res = t.execute(action="remove", title="A")
+    assert "not found" in res.text
+    assert bm.get_block_by_label("demo_list") is None
+
+
 def test_unread_list_add_format():
     ctx, bm = _ctx()
     from paperflow.core.memory.functions.function_sets.list_blocks import (
@@ -100,6 +110,8 @@ def test_history_append_format():
     res = HistoryAppendTool(ctx).execute(action="精读", title="论文A")
     assert "Appended" in res.text
     value = bm.get_block_by_label("history_list").value
+    # 条目带时间戳前缀 `[YYYY-MM-DD ...]`，靠时间区分同论文多次消费
+    assert re.match(r"^\[\d{4}-\d{2}-\d{2}", value)
     assert "精读" in value and "论文A" in value and "《" in value
 
 

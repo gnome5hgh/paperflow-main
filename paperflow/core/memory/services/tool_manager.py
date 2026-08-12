@@ -144,6 +144,10 @@ _DESCRIPTIONS = {
     "archival_memory_insert": "写入长期记忆（archival passage，可带 tags）",
     "archival_memory_search": "检索长期记忆（语义 + tags 过滤）",
     "conversation_search": "检索完整对话历史（Recall）",
+    "unread_list_add": "把一篇论文加入未读清单，追加 `- 标题 (来源)` 行",
+    "unread_list_remove": "把一篇论文移出未读清单，按权威标题删除对应行",
+    "history_append": "把一次论文消费事件（精读/写笔记）追加进浏览历史，只追加不改旧",
+    "extract_title": "提取论文权威标题（PDF 提取链或用户直接提供，禁文件名）",
 }
 
 
@@ -165,7 +169,7 @@ def _history_append(ctx, action, title):
 
 def _extract_title(ctx, pdf_path=None, title=None):
     if title:            # 用户已给标题 → 直接用（禁文件名的守门在调用方）
-        return f"title: {title}"
+        return f"title: {title}\nsource: search"
     ex = ctx.title_extractor
     if ex is None:
         return "Error: title extractor not available"
@@ -209,7 +213,7 @@ class ToolManager:
         ]
         for name, props, required, fn in list_tools:
             self._tools[name] = _FunctionTool(
-                name=name, description=f"list tool {name}",
+                name=name, description=_DESCRIPTIONS[name],
                 parameters={"type": "object", "properties": props,
                             "required": required},
                 fn=fn, ctx=self._ctx)

@@ -67,6 +67,17 @@ def test_grobid_extract_title_none_when_title_empty(tmp_path):
     assert c.extract_title(str(dummy)) is None
 
 
+def test_grobid_extract_title_none_when_title_whitespace(tmp_path):
+    """TEI 里 title 为纯空白 → 返回 None 而非空串（契约 str|None）。"""
+    tei = _HEADER_TEI.replace("异构图神经网络的权威标题", "   ")
+    def handler(req):
+        return httpx.Response(200, content=tei.encode("utf-8"))
+    c = GrobidClient(transport=httpx.MockTransport(handler))
+    dummy = tmp_path / "dummy.pdf"
+    dummy.write_bytes(b"dummy")
+    assert c.extract_title(str(dummy)) is None
+
+
 def test_grobid_parse_pdf_extracts_sections(tmp_path):
     # MockTransport 不读取文件内容；实现里 open(path, "rb") 只要求文件存在。
     # 用 tmp_path 写占位文件，避免依赖全局 /tmp/dummy.pdf（brief 原文有此隐患）。

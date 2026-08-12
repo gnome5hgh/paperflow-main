@@ -1,7 +1,7 @@
 # paperflow/core/memory/functions/function_sets/list_blocks.py
 """清单块工具：未读清单 / 浏览历史的确定性增删。
 
-两个清单共用同一套「给块追加行 / 按 key 删行 / 块缺失先建」逻辑，
+两个清单共用同一套「给块追加行（缺失先建）/ 按 key 删行」逻辑，
 抽成 ListBlockTool 基类，子类只声明 name/description/parameters 与条目格式。
 """
 from datetime import datetime
@@ -16,7 +16,8 @@ class ListBlockTool(Tool):
     append 语义=只追加不改旧（读旧值 + 拼新行）；块缺失时 create_block
     （create_block → sync_block_to_file → regenerate_index，新文件自动进
     memory_filesystem.md 索引）。remove 按行首 `- {key}` 前缀匹配行（标题在
-    条目开头，比子串匹配更精确），找不到返回明确错误，不静默。
+    条目开头，比子串匹配更精确），找不到返回明确错误，不静默；块缺失时
+    不建块直接返回 not found（remove 是清理动作，不该留下空块残留）。
     """
 
     block_label = ""
@@ -46,10 +47,17 @@ class ListBlockTool(Tool):
         return f"Appended to {self.block_label}"
 
     def remove_line_by_key(self, key: str) -> str:
-        self._ensure_block()
-        block = self._bm().get_block_by_label(self.block_label)
+        """按行首 `- {key}` 前缀匹配删行，找不到返回明确错误，不静默。
+
+        局限：只做行首前缀匹配，标题互为前缀时仍可能误删（如 "Attention"
+        命中 "Attention Is All You Need"）；权威长标题罕见。块缺失时直接
+        返回 not found，不物化空块——remove 只是清理，不该产生残留空块。
+        """
         # 空 key 直接拒绝，避免 "- " 前缀误删整块
         if not key.strip():
+            return "Error: empty title for removal"
+        block = self._bm().get_block_by_label(self.block_label)
+        if block is None:
             return f"Error: '{key}' not found in {self.block_label}"
         prefix = f"- {key}"
         lines = [ln for ln in block.value.splitlines() if ln.strip()]
@@ -67,7 +75,7 @@ class ListBlockTool(Tool):
         返回带 "not found" 的错误文本，不抛异常。
         """
         if action == "remove":
-            key = next(iter(kwargs.values()))
+            key = next(iter(kwargs.values()), "")
             return ToolResult(text=self.remove_line_by_key(str(key)))
         return ToolResult(text=self.append_line(**kwargs))
 
