@@ -97,10 +97,8 @@ class PaperFlowConfig:
     #: 或 config.yaml 提供。
     vault_pdf_dir: str = ""
 
-    #: GROBID Docker 服务地址（PDF 结构解析）
-    grobid_url: str = "http://127.0.0.1:8070"
-
-    #: GROBID 标题提取端点（TitleExtractor 的 GROBID 层用它；env PAPERFLOW_GROBID_ENDPOINT 覆盖）
+    #: GROBID 服务地址——RAG PDF 解析与 TitleExtractor 标题提取共用同一端点
+    #: （env PAPERFLOW_GROBID_ENDPOINT 覆盖）
     grobid_endpoint: str = "http://localhost:8070"
 
     #: ChromaDB 持久化路径；空 = 从 workspace 推导 <workspace>/chromadb/
@@ -167,8 +165,7 @@ class PaperFlowConfig:
 
         # 顶层配置字段(含 vault / RAG 键,均可通过 config.yaml 顶层覆盖默认值)
         for key in ("workspace", "agents_dir", "max_risk",
-                    "vault_note_dir", "vault_pdf_dir", "grobid_url",
-                    "grobid_endpoint",
+                    "vault_note_dir", "vault_pdf_dir", "grobid_endpoint",
                     "chroma_path", "embed_model", "rerank_model",
                     "agent_timeouts", "sleeptime_enable", "sleeptime_agent_frequency"):
             if key in data:
@@ -188,7 +185,6 @@ class PaperFlowConfig:
             PAPERFLOW_MAX_RISK      → max_risk
             PAPERFLOW_VAULT_NOTE_DIR → vault_note_dir
             PAPERFLOW_VAULT_PDF_DIR  → vault_pdf_dir
-            PAPERFLOW_GROBID_URL     → grobid_url
             PAPERFLOW_GROBID_ENDPOINT → grobid_endpoint
             PAPERFLOW_CHROMA_PATH    → chroma_path
             PAPERFLOW_EMBED_MODEL    → embed_model
@@ -207,7 +203,6 @@ class PaperFlowConfig:
             "PAPERFLOW_MAX_RISK": (None, "max_risk"),
             "PAPERFLOW_VAULT_NOTE_DIR": (None, "vault_note_dir"),
             "PAPERFLOW_VAULT_PDF_DIR": (None, "vault_pdf_dir"),
-            "PAPERFLOW_GROBID_URL": (None, "grobid_url"),
             "PAPERFLOW_GROBID_ENDPOINT": (None, "grobid_endpoint"),
             "PAPERFLOW_CHROMA_PATH": (None, "chroma_path"),
             "PAPERFLOW_EMBED_MODEL": (None, "embed_model"),

@@ -83,7 +83,7 @@ class RAGService:
             with self.lock:
                 if self._grobid_available is None:
                     from paperflow.rag.grobid_client import GrobidClient
-                    self._grobid = GrobidClient(self.config.grobid_url)
+                    self._grobid = GrobidClient(self.config.grobid_endpoint)
                     self._grobid_available = self._grobid.available()
         return self._grobid_available
 
