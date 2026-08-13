@@ -175,7 +175,7 @@ def test_confirm_callback_eof_failsafe(monkeypatch):
         raise EOFError
     monkeypatch.setattr("builtins.input", _eof)
     cb = _make_confirm_callback(FallbackIO(),
-                                SimpleNamespace(print_diff=lambda d: None))
+                                SimpleNamespace(print_diff=lambda d: None, suspend=lambda: None))
     assert asyncio.run(cb(SimpleNamespace(tool_name="write_file"))) is False
 
 
@@ -188,7 +188,7 @@ def test_confirm_callback_eof_tty_shim():
         def confirm(self, text):
             raise EOFError
     cb = _make_confirm_callback(_EofConfirmIO(),
-                                SimpleNamespace(print_diff=lambda d: None))
+                                SimpleNamespace(print_diff=lambda d: None, suspend=lambda: None))
     assert asyncio.run(cb(SimpleNamespace(tool_name="write_file"))) is False
 
 
@@ -202,7 +202,7 @@ def test_confirm_callback_ctrl_c_tty_shim():
         def confirm(self, text):
             raise KeyboardInterrupt
     cb = _make_confirm_callback(_KiConfirmIO(),
-                                SimpleNamespace(print_diff=lambda d: None))
+                                SimpleNamespace(print_diff=lambda d: None, suspend=lambda: None))
     assert asyncio.run(cb(SimpleNamespace(tool_name="write_file"))) is False
 
 
@@ -229,7 +229,7 @@ async def test_confirm_callback_async_contract_confirm(monkeypatch):
         agent_type="test",
         security_middleware=[PolicyEngineMiddleware()],
         confirm_callback=_make_confirm_callback(   # C1 修复点：async 回调
-            FallbackIO(), SimpleNamespace(print_diff=lambda d: None)),
+            FallbackIO(), SimpleNamespace(print_diff=lambda d: None, suspend=lambda: None)),
     )
     text = await agent.run("写笔记")
     assert text == "已写入"
@@ -255,7 +255,7 @@ async def test_confirm_callback_async_contract_denied(monkeypatch):
         agent_type="test",
         security_middleware=[PolicyEngineMiddleware()],
         confirm_callback=_make_confirm_callback(
-            FallbackIO(), SimpleNamespace(print_diff=lambda d: None)),
+            FallbackIO(), SimpleNamespace(print_diff=lambda d: None, suspend=lambda: None)),
     )
     text = await agent.run("写笔记")
     assert text == "已取消"
@@ -272,12 +272,27 @@ def test_confirm_callback_shows_diff_preview_for_write(monkeypatch, tmp_path):
     target.write_text("old line", encoding="utf-8")
     io = SimpleNamespace(confirm=lambda text: True)
     rendered = []
-    renderer = SimpleNamespace(print_diff=lambda d: rendered.append(d))
+    renderer = SimpleNamespace(print_diff=lambda d: rendered.append(d), suspend=lambda: None)
     cr = SimpleNamespace(tool_name="write_file",
                          params={"path": str(target), "content": "new line"})
     cb = _make_confirm_callback(io, renderer)
     assert asyncio.run(cb(cr)) is True
     assert rendered and "-old line" in rendered[0] and "+new line" in rendered[0]
+
+
+def test_confirm_callback_suspends_renderer_before_prompt():
+    """确认框前必须停 live（renderer.suspend）——rich Live 与 prompt_toolkit 提示框并发
+    会互相干扰（V2 实测：方向键不响应）。无 diff 预览（非文件工具）也必须 suspend。"""
+    from paperflow.cli import _make_confirm_callback
+    from types import SimpleNamespace
+    calls = []
+    io = SimpleNamespace(confirm=lambda text: True)
+    renderer = SimpleNamespace(print_diff=lambda d: None,
+                               suspend=lambda: calls.append("suspend"))
+    cr = SimpleNamespace(tool_name="read_file", params={})   # 非文件工具 → 无预览
+    cb = _make_confirm_callback(io, renderer)
+    assert asyncio.run(cb(cr)) is True
+    assert calls == ["suspend"]
 
 
 def test_edit_preview_only_when_edit_applies(tmp_path):

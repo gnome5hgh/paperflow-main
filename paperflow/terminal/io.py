@@ -94,9 +94,11 @@ def _toggle_confirm(state: list) -> None:
 
 
 def _confirm_key_bindings(state: list):
-    """confirm 选择器键绑定：←/→ 切换、Enter 以所选结果退出。
+    """confirm 选择器键绑定：←/→ 切换、Enter 确认所选、y/n 立即接受/拒绝。
 
-    注意 `@kb.add("left")` / `@kb.add("right")` 是**两个**绑定——`kb.add("left","right")`
+    y/n 直答是对齐 claude-code 的确认交互——方向键在某些终端/环境可能不响应
+    （实测只在部分终端复现），键入 y/n 是保证可用的兜底路径。注意
+    `@kb.add("left")` / `@kb.add("right")` 是**两个**绑定——`kb.add("left","right")`
     会被当成「先左后右」的按键序列而非二选一。
     """
     kb = KeyBindings()
@@ -105,6 +107,16 @@ def _confirm_key_bindings(state: list):
     @kb.add("right")
     def _toggle(event):
         _toggle_confirm(state)
+
+    @kb.add("y")
+    @kb.add("Y")
+    def _yes(event):
+        event.app.exit(result=True)
+
+    @kb.add("n")
+    @kb.add("N")
+    def _no(event):
+        event.app.exit(result=False)
 
     @kb.add("enter")
     def _accept(event):
@@ -133,11 +145,12 @@ class PromptToolkitIO(InputIO):
         return self._session.prompt(prompt)
 
     def confirm(self, text: str) -> bool:
-        """方向键 Yes/No 选择器：←/→ 切换高亮项、Enter 确认（默认 No）。
+        """方向键/键入 Yes/No 选择器：←/→ 切换高亮项、Enter 确认、y/n 立即接受/拒绝。
 
-        Ctrl+C/EOF 由 _repl 捕获（fail-safe 拒绝）。独立 PromptSession 与主输入
-        session 隔离——主 session 是多行 Enter=提交，选择器需 Enter=以结果退出。
-        默认选 No：与 FallbackIO 的 (y/N) 默认拒绝一致（两实现可替换）。
+        y/n 直答对齐 claude-code（方向键在某些终端不响应时的保证路径）。Ctrl+C/EOF
+        由 _repl 捕获（fail-safe 拒绝）。独立 PromptSession 与主输入 session 隔离——
+        主 session 是多行 Enter=提交，选择器需 Enter=以结果退出。默认选 No：与
+        FallbackIO 的 (y/N) 默认拒绝一致（两实现可替换）。
         """
         with _confirm_lock:
             state = [False]
@@ -147,7 +160,8 @@ class PromptToolkitIO(InputIO):
             def _toolbar():
                 yes = ("class:sel", " Yes ") if state[0] else ("", " Yes ")
                 no = ("class:sel", " No ") if not state[0] else ("", " No ")
-                return [("", f"{text}   "), yes, ("", "   "), no]
+                return [("", f"{text}   "), yes, ("", "   "), no,
+                        ("dim", "   ←/→ or y/n")]
 
             result = _pt_prompt(
                 "", key_bindings=_confirm_key_bindings(state),

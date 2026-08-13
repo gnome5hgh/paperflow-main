@@ -122,6 +122,9 @@ def _make_confirm_callback(io: InputIO, renderer: StreamRenderer):
         preview = _confirm_diff_preview(cr.tool_name, getattr(cr, "params", None))
         if preview:
             renderer.print_diff(preview)
+        # 确认框前停 live（spinner/残留内容块）：rich Live 与 prompt_toolkit 提示框并发
+        # 会互相干扰（V2 实测：方向键不响应）。print_diff 已停一次，这里无条件兜底。
+        renderer.suspend()
         try:
             return await asyncio.to_thread(
                 io.confirm, f"[Confirm] {cr.tool_name}?")
