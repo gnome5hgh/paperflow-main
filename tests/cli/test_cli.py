@@ -341,6 +341,40 @@ async def test_repl_ctrl_c_on_input_exits():
 
 
 @pytest.mark.asyncio
+async def test_repl_reads_input_in_worker_thread():
+    """回归：io.read 必须经 to_thread 在 worker 线程执行——主事件循环线程直接调
+    PromptToolkitIO.read（session.prompt 内部 asyncio.run）会抛
+    "asyncio.run() cannot be called from a running event loop"（用户实测复现）。
+    断言 read 运行线程 ≠ 事件循环所在线程。"""
+    import threading
+    main_tid = threading.get_ident()
+    read_tids = []
+
+    class _FakeIO:
+        def read(self, prompt=""):
+            read_tids.append(threading.get_ident())
+            return "/exit"
+    sv = _make_supervisor([])
+    await _repl(sv, ConversationState(), io=_FakeIO(), renderer=_make_renderer([]))
+    assert read_tids and read_tids[0] != main_tid
+
+
+@pytest.mark.asyncio
+async def test_repl_input_persistent_failure_exits():
+    """连续输入故障（输入适配器彻底不可用）不无限刷错误——3 次后退出（D10 变体：
+    持久故障下放弃比空转好）。"""
+    class _BrokenIO:
+        def read(self, prompt=""):
+            raise RuntimeError("boom")
+    sv = _make_supervisor([])
+    out = []
+    await _repl(sv, ConversationState(), io=_BrokenIO(), renderer=_make_renderer(out))
+    assert len([s for s in out if "输入出错" in s]) == 3
+    assert any("连续输入失败" in s for s in out)
+    assert sv._calls == []
+
+
+@pytest.mark.asyncio
 async def test_repl_streams_live_and_no_duplicate_final_print():
     """流式端到端：run() 经 sv.stream_callback 发 content 事件 → 增量实时打到
     renderer；最终答案已逐字展示 → 只补空行不重复打印（renderer 捕获每段）。"""

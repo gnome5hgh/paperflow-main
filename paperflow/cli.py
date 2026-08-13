@@ -145,6 +145,7 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
     can_sigint = (hasattr(loop, "add_signal_handler")
                   and hasattr(loop, "remove_signal_handler"))
     run_task = None
+    read_failures = 0
 
     def _cancel_run():
         if run_task is not None and not run_task.done():
@@ -159,13 +160,23 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
             except Exception:  # Sleeptime 失败不打断 REPL
                 logger.warning("sleeptime tick failed", exc_info=True)
         try:
-            raw = io.read("> ")
+            # io.read 必须经 to_thread 在 worker 线程执行：PromptToolkitIO.read 内部
+            # session.prompt() 会自建事件循环（asyncio.run），而 _repl 跑在主事件循环
+            # 线程——直接同步调用抛 "asyncio.run() cannot be called from a running
+            # event loop"（实测复现）。confirm/ask 回调已是 to_thread，read 对齐之。
+            raw = await asyncio.to_thread(io.read, "> ")
         except (EOFError, KeyboardInterrupt):
             break                # Ctrl-D / 空框 Ctrl+C：与 /exit 同效，优雅退出
         except Exception as e:
-            # prompt_toolkit 等输入适配器故障不杀 REPL（spec §5）：打印后继续
+            # 输入适配器故障不杀 REPL（spec §5）：打印后继续；但连续失败说明故障是
+            # 持久的，无限刷错误比退出更糟——3 次后放弃。
+            read_failures += 1
             renderer.print(f"输入出错：{e}")
+            if read_failures >= 3:
+                renderer.print("连续输入失败，退出")
+                break
             continue
+        read_failures = 0
         if raw.strip() == "/exit":
             break
         p = conversation.pending_intent
