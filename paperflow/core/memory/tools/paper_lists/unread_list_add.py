@@ -10,8 +10,8 @@ class UnreadListAddTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "title": {"type": "string", "description": "论文权威标题（提取链/用户提供，禁文件名）"},
-            "source": {"type": "string", "description": "来源：arxiv:ID / openalex / pdf:路径"},
+            "title": {"type": "string"},
+            "source": {"type": "string"},
         },
         "required": ["title"],
     }

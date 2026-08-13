@@ -7,6 +7,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from paperflow.cli import main
 from paperflow.config import PaperFlowConfig
 from paperflow.core.memory.orm import block as block_orm
@@ -25,6 +27,12 @@ from paperflow.rag.encoders.embedder import FakeEmbedder
 _AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
 
 
+@pytest.fixture(autouse=True)
+def _reset_memory_context():
+    yield
+    set_memory_context(None)
+
+
 def test_assembly_chain():
     tmp = Path(tempfile.mkdtemp())
     db = MemoryDB(tmp / "memory.db")
@@ -40,7 +48,6 @@ def test_assembly_chain():
     assert {t.name for t in get_memory_tools()} >= {"memory_replace", "conversation_search"}
     # MemFS 投影目录已建
     assert (tmp / "memory").exists()
-    set_memory_context(None)
 
 
 def test_main_assembly_no_typeerror(monkeypatch):

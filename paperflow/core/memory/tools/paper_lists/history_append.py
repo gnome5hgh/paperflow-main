@@ -15,8 +15,8 @@ class HistoryAppendTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "description": "动作：精读 / 写笔记"},
-            "title": {"type": "string", "description": "论文权威标题"},
+            "action": {"type": "string"},
+            "title": {"type": "string"},
         },
         "required": ["action", "title"],
     }

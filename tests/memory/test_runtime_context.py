@@ -1,6 +1,14 @@
 """runtime_context：未绑定返回 None；set 后 get 返回同一上下文。"""
+import pytest
+
 from paperflow.core.memory.tools.runtime_context import (
     MemoryToolsContext, set_memory_context, get_memory_context)
+
+
+@pytest.fixture(autouse=True)
+def _reset_ctx():
+    yield
+    set_memory_context(None)
 
 
 def test_unbound_returns_none():

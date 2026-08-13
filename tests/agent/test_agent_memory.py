@@ -13,7 +13,7 @@ from paperflow.core.memory.compaction import CompactionSettings
 from paperflow.core.memory.schemas.memory import Memory
 from paperflow.core.memory.tools import (
     MemoryReplaceTool, get_memory_tools,
-    set_memory_context, get_memory_context, MemoryToolsContext)
+    set_memory_context, MemoryToolsContext)
 
 
 class _Registry:

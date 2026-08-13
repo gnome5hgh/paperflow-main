@@ -27,8 +27,7 @@ def test_supervisor_config_loads_with_supervisor_tools(supervisor_registry):
     """supervisor 工具面 = 2 调度工具 + 13 记忆工具（Task 8 后经 get_memory_tools 注入）。"""
     cfg = supervisor_registry.get_config("supervisor")
     names = {t.name for t in cfg.tools}
-    assert {"spawn_sub_agent", "ask_user_question"} <= names
-    assert {t.name for t in get_memory_tools()} <= names
+    assert names == {"spawn_sub_agent", "ask_user_question"} | {t.name for t in get_memory_tools()}
     assert "INTENT" in cfg.system_prompt          # 消费规则注入系统提示词
 
 

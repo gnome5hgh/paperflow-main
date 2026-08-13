@@ -14,8 +14,10 @@ def test_returns_all_13_tools():
     assert names == EXPECTED
 
 
-def test_singleton_returns_same_instances():
-    assert get_memory_tools() is get_memory_tools()
+def test_singleton_returns_same_tool_instances():
+    a, b = get_memory_tools(), get_memory_tools()
+    assert a is not b                 # fresh list each call
+    assert all(x is y for x, y in zip(a, b))   # same tool instances (stateless)
 
 
 def test_sleeptime_tools_subset_of_base_memory_tools():

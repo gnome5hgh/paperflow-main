@@ -9,7 +9,7 @@ class UnreadListRemoveTool(Tool):
     description = "把一篇论文移出未读清单，按权威标题删除对应行"
     parameters = {
         "type": "object",
-        "properties": {"title": {"type": "string", "description": "要移除的论文权威标题"}},
+        "properties": {"title": {"type": "string"}},
         "required": ["title"],
     }
     risk_level = "medium"

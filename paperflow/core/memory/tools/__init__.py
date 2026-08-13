@@ -45,10 +45,14 @@ _tools_lock = threading.Lock()
 
 
 def get_memory_tools() -> list[Tool]:
-    """惰性构建并返回 13 个记忆工具实例（模块级单例，双重检查加锁）。"""
+    """惰性构建并返回 13 个记忆工具实例（模块级单例，双重检查加锁）。
+
+    每次调用返回新列表（共享同一批无状态工具实例），防止调用方就地增删工具
+    污染进程级单例。
+    """
     global _tools
     if _tools is None:
         with _tools_lock:
             if _tools is None:
                 _tools = [cls() for cls in _TOOL_CLASSES]
-    return _tools
+    return list(_tools)
