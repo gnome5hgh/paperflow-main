@@ -33,7 +33,7 @@ from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
 from paperflow.core.memory.services.message_manager import MessageManager
 from paperflow.core.memory.services.passage_manager import PassageManager
 from paperflow.core.memory.services.archive_manager import ArchiveManager
-from paperflow.core.memory.services.tool_manager import ToolManager
+from paperflow.core.memory.tools import set_memory_context, MemoryToolsContext
 from paperflow.core.memory.services.title_extractor import TitleExtractor
 from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.sleeptime import Sleeptime
@@ -290,9 +290,9 @@ def main() -> None:
     # 都挂在它下面，三者对不上会各自读到空数据。
     session_id = uuid.uuid4().hex[:8]
 
-    # Letta 服务层组装：MemoryDB → managers → 记忆工具播种 → agent 状态。
-    # 装配顺序即依赖方向：先 DB，再块/消息/段落管理，再归档（依赖段落管理）、
-    # 工具管理（bind 注入服务上下文）、agent 管理（依赖块+消息）。
+    # Letta 服务层组装：MemoryDB → managers → set_memory_context 绑定记忆工具
+    # 运行时上下文 → agent 状态。装配顺序即依赖方向：先 DB，再块/消息/段落管理，
+    # 再归档（依赖段落管理）、agent 管理（依赖块+消息）。
     memory_dir = Path(config.workspace) / "memory"
     db = MemoryDB(memory_dir / "memory.db")
     block_manager = GitEnabledBlockManager(db, memfs_dir=memory_dir)
@@ -301,10 +301,6 @@ def main() -> None:
     message_manager = MessageManager(db, embedder=embedder)
     passage_manager = PassageManager(db, embedder=embedder)
     archive_manager = ArchiveManager(db, passage_manager)
-    tool_manager = ToolManager(db)
-    tool_manager.bind(block_manager, passage_manager, message_manager,
-                      agent_id=session_id)
-    tool_manager.upsert_base_tools()
     agent_manager = AgentManager(db, block_manager, message_manager)
     # MessageManager 经 agent_manager 读 AgentState.message_ids（in-context 窗口），
     # 让压缩后的摘要/尾部跨轮回放（评审 I-3）——装配顺序上 agent_manager 后置，故在此回填。
@@ -313,12 +309,18 @@ def main() -> None:
 
     structured = StructuredOutput(llm)
 
-    # extract_title 工具的标题提取器注入 ctx（LLM 层走 StructuredOutput 真实接线）。
-    # GROBID 层用 config.grobid_endpoint 装配：extract_title 走本地 REST header
-    # 接口，不可达或解析失败时返回 None，自动落到 LLM 层兜底。
-    tool_manager._ctx.title_extractor = TitleExtractor(
-        grobid=GrobidClient(config.grobid_endpoint),
-        llm=structured)
+    # extract_title 工具的标题提取器注入记忆工具运行时上下文（LLM 层走
+    # StructuredOutput 真实接线）。GROBID 层用 config.grobid_endpoint 装配：
+    # extract_title 走本地 REST header 接口，不可达或解析失败时返回 None，
+    # 自动落到 LLM 层兜底。
+    set_memory_context(MemoryToolsContext(
+        agent_id=session_id,
+        block_manager=block_manager,
+        passage_manager=passage_manager,
+        message_manager=message_manager,
+        title_extractor=TitleExtractor(grobid=GrobidClient(config.grobid_endpoint),
+                                       llm=structured),
+    ))
 
     # 安全管道：四中间件（经验记忆中间件随 Letta 重构移除——工具调用经验不再注入
     # prompt，改由 Sleeptime 后台整合进核心记忆块）。
@@ -346,7 +348,6 @@ def main() -> None:
         memory=agent_state.memory,
         agent_manager=agent_manager, block_manager=block_manager,
         message_manager=message_manager, passage_manager=passage_manager,
-        memory_tools=tool_manager.list_tools(),
         compaction=config.compaction,
         structured=structured,
         security_middleware=middlewares,

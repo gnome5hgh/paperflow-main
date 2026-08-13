@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from paperflow.core.agent import Agent
 from paperflow.core.agent_registry import AgentRegistry
 from paperflow.core.llm import Message
+from paperflow.core.memory.tools import get_memory_tools
 from tests.agent.test_agent import make_mock_llm
 
 
@@ -23,9 +24,11 @@ def supervisor_registry(tmp_path, monkeypatch):
 
 
 def test_supervisor_config_loads_with_supervisor_tools(supervisor_registry):
+    """supervisor 工具面 = 2 调度工具 + 13 记忆工具（Task 8 后经 get_memory_tools 注入）。"""
     cfg = supervisor_registry.get_config("supervisor")
     names = {t.name for t in cfg.tools}
-    assert names == {"spawn_sub_agent", "ask_user_question"}
+    assert {"spawn_sub_agent", "ask_user_question"} <= names
+    assert {t.name for t in get_memory_tools()} <= names
     assert "INTENT" in cfg.system_prompt          # 消费规则注入系统提示词
 
 
@@ -33,8 +36,9 @@ def test_supervisor_has_no_glob_grep(supervisor_registry):
     """Task 4：supervisor 不含 glob/grep——只调度不碰文件。
 
     文件访问（读/写/搜索）全部下放到文件型 agent（searcher/writer/
-    qa-agent/reviewer）；supervisor 仅 2 个调度工具，权限最小化。
-    此断言防将来向 supervisor 误加文件工具（它有 spawn 权限，绝不能有文件路径暴露）。"""
+    qa-agent/reviewer）；supervisor 的调度工具仅 spawn/ask_user（另注入 13 个
+    记忆工具，无文件访问），权限最小化。此断言防将来向 supervisor 误加文件工具
+    （它有 spawn 权限，绝不能有文件路径暴露）。"""
     config = supervisor_registry.get_config("supervisor")
     names = {t.name for t in config.tools}
     assert not ({"glob", "grep"} & names)

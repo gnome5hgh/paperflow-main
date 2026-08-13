@@ -194,7 +194,6 @@ class Agent:
         block_manager=None,         # BlockManager | None
         message_manager=None,       # MessageManager | None
         passage_manager=None,       # PassageManager | None
-        memory_tools=None,          # list[Tool] | None
         compaction=None,            # CompactionSettings | None
         structured=None,            # StructuredOutput | None
         max_turns: int = 20,
@@ -227,8 +226,6 @@ class Agent:
             in-context 跨轮回放;None 时记忆相关路径零开销跳过
         :param passage_manager: PassageManager 实例(可选),长期记忆(archival)
             检索服务句柄
-        :param memory_tools: 记忆工具列表(list[Tool] | None),框架级注入进
-            self.tools 与 _tool_schemas(LLM 通过 function calling 直接读写记忆)
         :param compaction: CompactionSettings 实例(可选),触发时只压缩 in-context
             窗口(驱逐旧对话 + 插摘要),不删 SQL 原始消息
         :param structured: StructuredOutput 实例(可选),compaction 摘要生成路径
@@ -318,15 +315,6 @@ class Agent:
         self.ask_user_callback = ask_user_callback
         #: 本轮 run 的 IntentOutput（CLI 读 clarification 判定 + 跨轮 prev_intent）
         self.last_intent = None
-
-        # 记忆工具合并进工具面（框架级注入）：LLM 通过 function calling 直接读写
-        # 记忆。追加到 self.tools（_exec_tool 查找面）与 _tool_schemas（LLM 工具
-        # 描述面），与注册表装载的原子工具同等待遇——needs_parent 默认 False，
-        # 无需 attach_agent，故在 opt-in 注入之前放置。
-        if memory_tools:
-            for t in memory_tools:
-                self.tools[t.name] = t
-                self._tool_schemas.append(tool_to_openai_schema(t))
 
         # opt-in 注入：仅对声明 needs_parent 的工具注入父引用。
         # 原子工具不需要 parent；只有嵌套子 agent 的工具声明——权限最小化。
