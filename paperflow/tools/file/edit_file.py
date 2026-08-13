@@ -10,6 +10,7 @@ from pathlib import Path
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.rag.services.rag_service import get_rag_service
 from paperflow.tools.file._constants import NOTE_ROOTS
+from paperflow.tools.file.atomic import atomic_write
 
 
 class EditFileTool(Tool):
@@ -47,6 +48,6 @@ class EditFileTool(Tool):
             return ToolResult(text="未找到要替换的文本，请先用 read_file/grep 确认当前内容")
         if count > 1:
             return ToolResult(text=f"待替换文本出现 {count} 次，请提供更长的唯一锚点")
-        p.write_text(content.replace(old_text, new_text), encoding="utf-8")
+        atomic_write(p, content.replace(old_text, new_text))
         get_rag_service().index_document(str(p))
-        return ToolResult(text=f"已编辑 {path}")
+        return ToolResult(text=f"已编辑 {path}", completion=f"File edited: {path}")

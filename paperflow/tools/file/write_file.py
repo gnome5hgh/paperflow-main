@@ -8,6 +8,7 @@ from pathlib import Path
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.rag.services.rag_service import get_rag_service
 from paperflow.tools.file._constants import NOTE_ROOTS
+from paperflow.tools.file.atomic import atomic_write
 
 
 class WriteFileTool(Tool):
@@ -29,8 +30,6 @@ class WriteFileTool(Tool):
     def execute(self, path: str, content: str) -> ToolResult:
         """写入/覆盖笔记文件,并做索引热更新使其立即可检索。"""
         p = Path(path)
-        # 支持新建与覆盖:父目录不存在则先创建。整篇写/重写用本工具,小范围改动用 edit_file。
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-        get_rag_service().index_document(str(p))   # 热更新钩子：会话内立即可检索
-        return ToolResult(text=f"已写入 {path}")
+        atomic_write(p, content)
+        get_rag_service().index_document(str(p))
+        return ToolResult(text=f"已写入 {path}", completion=f"File written: {path}")

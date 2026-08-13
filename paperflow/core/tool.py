@@ -24,18 +24,12 @@ RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
 @dataclass
 class ToolResult:
-    """
-    工具执行结果:包含给 LLM 看的文本和给记忆系统用的结构化摘要。
-
-    ``summary`` 默认空 dict,字段已预留——记忆系统通过它提取可沉淀的结构化信息,
-    避免后续改动所有 Tool 的 execute 签名。
-    """
-
-    #: 给 LLM 看的完整结果文本,直接拼接到 ReAct 循环的 tool message 中
+    """工具执行结果：text 给 LLM、summary 给记忆系统、completion 给 CLI 渲染完成行。"""
     text: str
-
-    #: 结构化摘要,供记忆/归档后台消费(默认占位,当前可能为空)
     summary: dict = field(default_factory=dict)
+    #: 终端完成摘要（如 "File written: <path>"），_exec_tool 见非空则发完成状态行；
+    #: 与 LLM 面的 text 解耦（text 保持既有语言语义）
+    completion: str | None = None
 
 
 class Tool(ABC):
