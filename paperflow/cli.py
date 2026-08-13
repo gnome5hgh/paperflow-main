@@ -161,14 +161,14 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
 
     Ctrl+C 三态：输入框空（io.read 抛 KeyboardInterrupt）→ 退出；输入框有内容 →
     输入框内清空（PromptToolkitIO 键绑定）；agent 运行中 → 临时注册 SIGINT handler
-    取消当前 run 任务 → 捕获 CancelledError → 打印「已中断」回到输入框（不杀 REPL）。
+    取消当前 run 任务 → 捕获 CancelledError → 打印 "Cancelled" 回到输入框（不杀 REPL）。
     SIGINT handler 只在 run 期间存在：prompt_toolkit 提示期间无冲突（Ctrl+C 由其
     键绑定处理，终端处 raw 模式不产生 SIGINT）。
 
     澄清挂起：last_intent.clarification 非空且非 force → 存 pending（round 链式
     累计，用旧值 +1，绝不重置为 0）+ 打印问题，等下一轮；否则打印结果。
     """
-    renderer.print("🌏 paperFlow 学术助手")
+    renderer.print("🌏 paperFlow Academic Assistant")
     supervisor.stream_callback = renderer.on_event
     loop = asyncio.get_running_loop()
     can_sigint = (hasattr(loop, "add_signal_handler")
@@ -200,9 +200,9 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
             # 输入适配器故障不杀 REPL（spec §5）：打印后继续；但连续失败说明故障是
             # 持久的，无限刷错误比退出更糟——3 次后放弃。
             read_failures += 1
-            renderer.print(f"输入出错：{e}")
+            renderer.print(f"Input error: {e}")
             if read_failures >= 3:
-                renderer.print("连续输入失败，退出")
+                renderer.print("Input failing repeatedly. Exiting.")
                 break
             continue
         read_failures = 0
@@ -228,13 +228,13 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
             # Ctrl+C 优雅中断：渲染器过滤孤儿事件（to_thread 无法真正取消）、打印
             # 提示、回到输入框。安全阀语义与 MaxTurnsExceeded 一致——不杀 REPL。
             renderer.interrupt()
-            renderer.print("已中断")
+            renderer.print("Cancelled")
             continue
         except MaxTurnsExceeded:
-            renderer.print("任务超过最大轮数，请简化请求后重试")
+            renderer.print("Task exceeded max turns. Please rephrase and retry.")
             continue
         except Exception as e:
-            renderer.print(f"执行出错：{e}")
+            renderer.print(f"Error: {e}")
             continue
         finally:
             if can_sigint:

@@ -124,6 +124,21 @@ async def test_repl_ctrl_d_exits_gracefully():
 
 
 @pytest.mark.asyncio
+async def test_repl_output_english():
+    """终端文案全英文：banner、run-guard、中断提示。"""
+    sv = MagicMock()
+    async def run(query, force_dispatch=False):
+        raise MaxTurnsExceeded("boom")
+    sv.run = run
+    sv.last_intent = None
+    out = []
+    await _repl(sv, ConversationState(), io=_seq_io(["hi"]),
+                renderer=_make_renderer(out))
+    assert any("max turns" in s.lower() for s in out)
+    assert not any("任务超过" in s for s in out)
+
+
+@pytest.mark.asyncio
 async def test_repl_run_guard_max_turns_exceeded():
     """I1 回归：MaxTurnsExceeded 不杀 REPL——打印提示后 continue，能进入下一轮。
 
@@ -137,7 +152,7 @@ async def test_repl_run_guard_max_turns_exceeded():
     out = []
     await _repl(sv, ConversationState(), io=_seq_io(["搜索 x"]),
                 renderer=_make_renderer(out))
-    assert any("任务超过最大轮数" in s for s in out)
+    assert any("Task exceeded max turns. Please rephrase and retry." in s for s in out)
 
 
 @pytest.mark.asyncio
@@ -151,7 +166,7 @@ async def test_repl_run_guard_generic_exception():
     out = []
     await _repl(sv, ConversationState(), io=_seq_io(["搜索 x"]),
                 renderer=_make_renderer(out))
-    assert any("执行出错：LLM 网络超时" in s for s in out)
+    assert any("Error: LLM 网络超时" in s for s in out)
 
 
 def test_confirm_callback_eof_failsafe(monkeypatch):
@@ -306,7 +321,7 @@ async def test_repl_ctrl_c_during_run_interrupts_and_continues():
     out = []
     await _repl(sv, ConversationState(), io=_seq_io(["hi"]),
                 renderer=_make_renderer(out))
-    assert any("已中断" in s for s in out)
+    assert any("Cancelled" in s for s in out)
 
 
 @pytest.mark.asyncio
@@ -347,7 +362,7 @@ async def test_repl_ctrl_c_sigint_cancels_run_and_continues():
     await _repl(sv, ConversationState(), io=_seq_io(["hi"]),
                 renderer=_make_renderer(out))
     await trigger
-    assert any("已中断" in s for s in out)
+    assert any("Cancelled" in s for s in out)
 
 
 @pytest.mark.asyncio
@@ -390,8 +405,8 @@ async def test_repl_input_persistent_failure_exits():
     sv = _make_supervisor([])
     out = []
     await _repl(sv, ConversationState(), io=_BrokenIO(), renderer=_make_renderer(out))
-    assert len([s for s in out if "输入出错" in s]) == 3
-    assert any("连续输入失败" in s for s in out)
+    assert len([s for s in out if "Input error" in s]) == 3
+    assert any("Input failing repeatedly. Exiting." in s for s in out)
     assert sv._calls == []
 
 

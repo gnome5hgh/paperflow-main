@@ -653,6 +653,43 @@ class TestToolEvent:
         assert tool_events[0].text == "Calling echo(message=hi)"
         assert tool_events[0].agent_type == "test"
 
+    @pytest.mark.asyncio
+    async def test_exec_tool_emits_completion_status(self):
+        """写工具完成摘要经 tool 事件发到渲染器（挂 stream_callback 时）。
+
+        工具返回 ToolResult.completion（如 File written: <path>）→ _exec_tool 在
+        after 钩子后、返回前发一条 "tool" kind 的 StreamEvent，复用工具行通道无需
+        新 kind。断言完成文本出现在 tool 事件流中。"""
+        events = []
+
+        class DoneTool(Tool):
+            name = "write_file"
+            description = "w"
+            parameters = {"type": "object", "properties": {}}
+
+            def execute(self):
+                return ToolResult(text="ok", completion="File written: /tmp/a.md")
+
+        responses = [
+            Message(role="assistant", content=None, tool_calls=[{
+                "id": "c1", "type": "function",
+                "function": {"name": "write_file", "arguments": "{}"}}]),
+            Message(role="assistant", content="done"),
+        ]
+        llm = MagicMock()
+
+        async def chat_stream(messages, tools=None, tool_choice="auto",
+                              on_delta=None, telemetry_callback=None):
+            return responses.pop(0)
+
+        llm.chat_stream = chat_stream
+        llm.model = "mock"
+        agent = Agent(llm=llm, agent_registry=make_mock_registry([DoneTool()]),
+                      agent_type="writer", stream_callback=lambda ev: events.append(ev))
+        await agent.run("write")
+        assert any(getattr(e, "kind", None) == "tool" and "File written:" in e.text
+                   for e in events)
+
 
 # ─── 截断续写（writer-fix Task 3）：半截回答不当作最终结果 ─────
 

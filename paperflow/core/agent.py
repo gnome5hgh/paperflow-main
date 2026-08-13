@@ -856,6 +856,10 @@ class Agent:
 
         # 8. after 阶段（逆序 = 洋葱模型，后注册的中间件先看到结果）
         await self._run_after_hooks(ctx)
+        # 完成摘要（写/编辑工具）经 tool 事件发到渲染器——用户看到 File written/edited
+        # 完成行；门控 stream_callback（非 CLI 调用方零开销）。复用 "tool" kind 无需新 kind。
+        if ctx.result.completion and self.stream_callback is not None:
+            self._emit(StreamEvent("tool", ctx.result.completion, self.agent_type))
         return ctx.result
 
     async def _run_after_hooks(self, ctx: ToolContext) -> None:
