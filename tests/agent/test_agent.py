@@ -564,22 +564,22 @@ class TestFormatToolCall:
         from paperflow.core.agent import _format_tool_call
         assert _format_tool_call(
             "search_paper", '{"query": "circRNA", "max_results": 5}'
-        ) == "调用 search_paper(query=circRNA, max_results=5)"
+        ) == "Calling search_paper(query=circRNA, max_results=5)"
 
     def test_falls_back_on_invalid_json(self):
         from paperflow.core.agent import _format_tool_call
-        assert _format_tool_call("echo", "{bad json") == "调用 echo"
+        assert _format_tool_call("echo", "{bad json") == "Calling echo"
 
     def test_empty_or_missing_args_just_name(self):
         from paperflow.core.agent import _format_tool_call
-        assert _format_tool_call("echo", "{}") == "调用 echo"
-        assert _format_tool_call("echo", "") == "调用 echo"
+        assert _format_tool_call("echo", "{}") == "Calling echo"
+        assert _format_tool_call("echo", "") == "Calling echo"
 
     def test_none_args_tolerated(self):
         """回归（final review）：provider 返回 arguments=None 时不得 AttributeError
         ——raw_args.strip() 前须 (raw_args or "") 兜底，退化显示工具名。"""
         from paperflow.core.agent import _format_tool_call
-        assert _format_tool_call("echo", None) == "调用 echo"
+        assert _format_tool_call("echo", None) == "Calling echo"
 
     def test_args_truncated_to_line_budget(self):
         """回归（final review）：“整行 ≤80”须按“固定前缀后的剩余预算”截断 pairs——
@@ -590,22 +590,22 @@ class TestFormatToolCall:
                 '"sort": "relevance", "year": "2024", "extra": 1}')
         line = _format_tool_call(long_name, args)
         assert len(line) <= 80
-        assert line.startswith(f"调用 {long_name}(")
+        assert line.startswith(f"Calling {long_name}(")
         assert "…" in line                       # D1：行宽截断处有 "…" 标记
         # 工具名长到剩余预算 ≤0 → 只显示工具名（宁可超宽也不截断名字）
         mega = "tool_" + "x" * 100
-        assert _format_tool_call(mega, args).startswith("调用")
+        assert _format_tool_call(mega, args).startswith("Calling")
 
-    def test_path_arg_shown_in_full(self):
-        """2026-08-05 回归：绝对路径参数完整展示不截断——真实冒烟反馈路径被截成
-        .../Obsidian V... 看不出在读哪个文件。含路径的行也不压 80（终端可换行）。"""
+    def test_path_arg_truncated_middle(self):
+        """2026-08-05 回归更新：绝对路径参数头尾中间截断（不再全展示，避免被终端
+        宽度硬切）——路径仍在行宽预算内时头尾各留一段可辨认。"""
         from paperflow.core.agent import _format_tool_call
         path = ("/Users/gnomeshgh/Documents/Obsidian Vault/paper/pdf/"
                 "link prediction/circRNA-disease/GMNN2CD.pdf")
         line = _format_tool_call("read_pdf", f'{{"path": "{path}"}}')
-        assert path in line            # 完整路径在行内
-        assert "..." not in line       # 未被截断
-        assert line.startswith("调用 read_pdf(path=")
+        assert path not in line        # 不再全展示
+        assert "…" in line             # 头尾截断标记
+        assert line.startswith("Calling read_pdf(path=")
 
     def test_marks_truncation(self):
         """D1：截断处补 "…" 标记。两处截断都应有标记——_compact 值级截断
@@ -619,7 +619,7 @@ class TestFormatToolCall:
         line = _format_tool_call("arxiv_search", json.dumps(
             {"query": long_query, "max_results": 10}))
         assert "…" in line                       # 截断处有标记
-        assert "调用 arxiv_search(query=" in line
+        assert "Calling arxiv_search(query=" in line
 
         # 短值不截断 → 无标记
         short = _format_tool_call("echo", json.dumps({"message": "hi"}))
@@ -650,7 +650,7 @@ class TestToolEvent:
         assert await agent.run("hi") == "done"
         tool_events = [e for e in events if e.kind == "tool"]
         assert len(tool_events) == 1
-        assert tool_events[0].text == "调用 echo(message=hi)"
+        assert tool_events[0].text == "Calling echo(message=hi)"
         assert tool_events[0].agent_type == "test"
 
 
@@ -814,3 +814,38 @@ def test_confirm_calls_serialized_under_concurrent_tools():
     assert state["max_active"] == 1, (
         f"confirm_callback 被并发调用（max_active={state['max_active']}）——"
         "_confirm_lock 未生效")
+
+
+# ─── 工具行格式化（Task 2）：Calling 英文 + 长值/长路径头尾中间截断 ─────
+
+
+def test_format_tool_call_english_and_middle_truncation():
+    """动词 Calling + 长值头尾中间截断 + 超长标注字符数。"""
+    from paperflow.core.agent import _format_tool_call
+    # 长 task（中文）→ 头尾截断
+    long_task = "请为论文 PDF 生成一篇高质量学术笔记（端到端流程：阅读原文 → 提炼 → 成稿）"
+    s = _format_tool_call("spawn_sub_agent",
+                          '{"agent_type":"writer","task":"%s"}' % long_task)
+    assert s.startswith("Calling spawn_sub_agent(")
+    assert "…" in s                                   # 中间截断标记
+    # 短值完整展示
+    s2 = _format_tool_call("read_file", '{"path":"/tmp/a.md"}')
+    assert s2 == "Calling read_file(path=/tmp/a.md)"
+
+
+def test_format_tool_call_long_path_middle_truncated():
+    """超长路径头尾截断（不再全展示，避免被终端宽度硬切）。"""
+    from paperflow.core.agent import _compact, _format_tool_call
+    long_path = "/Users/me/Documents/Obsidian Vault/paper/note/classifier/" \
+                "DRC- Discrete Representation Classifier With Salient Features via Fixed-Prototype.pdf"
+    # 值级头尾截断（_compact 直接验证）：头尾各留一段可辨认，超长标注字符数
+    c = _compact(long_path)
+    assert "…(142 chars)…" in c                        # 超长值标注字符数
+    assert c.startswith(long_path[:40])                # 头部保留（可辨认目录前缀）
+    assert "Fixed-Prototype" in c                      # 尾部保留（可辨认文件）
+    assert len(c) < len(long_path)                     # 确实被压缩而非全展示
+    # 行级：Calling 前缀 + 路径不再全展示（行宽预算内截断）
+    s = _format_tool_call("read_pdf", '{"path":"%s"}' % long_path)
+    assert s.startswith("Calling read_pdf(path=")
+    assert "…" in s                                    # 截断标记
+    assert long_path not in s                          # 不再全展示

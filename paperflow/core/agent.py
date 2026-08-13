@@ -106,42 +106,41 @@ class StreamEvent:
 
 
 def _compact(v) -> str:
-    """参数值压缩为单行:绝对路径(/ 开头)完整展示,其余值截断到 40 字符。
+    """参数值压缩为单行：头尾中间截断，超长标注字符数。
 
-    路径是文件类工具(read_pdf/write_file 等)的关键信息,截断会让人看不出
-    在读哪个文件,故路径不截断。截断处用单个 "…" 标记——三个点语义不清,用户看不出
-    内容被截断。len(s) <= 40 时整值展示(40 是完整展示的阈值,不是截断后的长度)。
+    路径(/ 开头)在行宽预算内也头尾截断——超长路径全展示会被终端宽度硬切
+    (overflow 兜底见渲染层)，头尾各留一段可辨认。截断统一用 "…" 标记。
     """
     s = str(v).replace("\n", " ")
-    if s.lstrip().startswith("/"):
+    n = len(s)
+    if n <= 40:
         return s
-    return s if len(s) <= 40 else s[:37] + "…"
+    if n <= 120:
+        return s[:35] + "…" + s[-10:]
+    return s[:40] + "…(%d chars)…" % n + s[-20:]
 
 
 def _format_tool_call(name: str, raw_args: str) -> str:
-    """把工具调用格式化为终端一行(claude code 风格:Read(path))。
+    """把工具调用格式化为终端一行(claude code 风格:Calling Read(path))。
 
     尽力解析参数;LLM 产出非法 JSON 或参数缺失时只显示工具名——错误路径保持可读,
-    且缓冲清理不依赖参数解析成功(见 terminal.render.StreamRenderer)。行宽策略:含绝对路径的行不再
-    压 80(路径是文件类工具的关键信息,终端可换行展示完整);其余行按"固定前缀后的
-    剩余预算"截断参数对;工具名自身过长(预算 ≤0)时退化为纯工具名。
+    且缓冲清理不依赖参数解析成功(见 terminal.render.StreamRenderer)。行宽预算:
+    固定前缀后的剩余空间截断参数对;每个值经 _compact 头尾截断,超长自动标注字符数。
     """
     try:
         args = json.loads(raw_args) if (raw_args or "").strip() else {}
     except json.JSONDecodeError:
-        return f"调用 {name}"
+        return f"Calling {name}"
     if not isinstance(args, dict) or not args:
-        return f"调用 {name}"
+        return f"Calling {name}"
     pairs = ", ".join(f"{k}={_compact(v)}" for k, v in args.items())
-    if any(str(v).lstrip().startswith("/") for v in args.values()):
-        return f"调用 {name}({pairs})"
-    budget = max(0, 80 - len(f"调用 {name}()"))
+    budget = max(0, 80 - len(f"Calling {name}()"))
     if budget <= 0:
-        return f"调用 {name}()"
+        return f"Calling {name}()"
     # 行宽截断处补 "…" 标记(留 1 字符给标记),截断后整行仍 ≤80。
     if len(pairs) > budget:
         pairs = pairs[:max(0, budget - 1)] + "…"
-    return f"调用 {name}({pairs})"
+    return f"Calling {name}({pairs})"
 
 
 class Agent:
