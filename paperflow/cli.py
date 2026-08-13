@@ -42,6 +42,7 @@ from paperflow.core.intent.routing.router import HybridRouter
 from paperflow.rag.encoders.embedder import BgeEmbedder, resolve_model_dir
 from paperflow.rag.parsers.grobid_client import GrobidClient
 from paperflow.core.intent.routing.route_loader import load_routes
+from paperflow.terminal.diff import compute_diff, truncate_diff
 from paperflow.terminal.io import InputIO, make_input_io
 from paperflow.terminal.render import StreamRenderer, make_renderer
 
@@ -79,18 +80,46 @@ def _make_print_fn(console):
     return _rich
 
 
-def _make_confirm_callback(io: InputIO):
+def _confirm_diff_preview(tool_name: str, params: dict) -> str | None:
+    """写/编辑工具的确认 diff 预览：读旧内容、算 would-be 差异；算不出返回 None。
+
+    非文件工具/缺参数/读失败都返回 None（走纯确认，无预览）。edit 场景先对旧内容
+    应用替换再 diff。复用 terminal.diff 的计算与截断。
+    """
+    if tool_name not in {"write_file", "edit_file"}:
+        return None
+    path = params.get("path") if isinstance(params, dict) else None
+    if not path:
+        return None
+    p = Path(path)
+    try:
+        old = p.read_text(encoding="utf-8") if p.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        return None
+    if tool_name == "write_file":
+        new = params.get("content", "")
+    else:  # edit_file
+        old_text, new_text = params.get("old_text"), params.get("new_text")
+        if old_text is None or new_text is None:
+            return None
+        new = old.replace(old_text, new_text)
+    return truncate_diff(compute_diff(old, new, fromfile=str(p), tofile=str(p)))
+
+
+def _make_confirm_callback(io: InputIO, renderer: StreamRenderer):
     """构造 async 确认回调（Agent 执行器以 await 方式调用）。
 
-    确认等待是用户交互，input()/prompt() 放到线程执行——不应冻结共享事件循环；
-    to_thread 包一层，与改造前 _stdin_confirm 的线程模型一致。fail-safe：EOF 与
-    Ctrl+C（TTY 下确认框的 c-c 键绑定抛 KeyboardInterrupt）都返回 False——拒绝；
-    TTY 下 prompt_toolkit 不捕 EOFError，这里再兜一层（两实现可替换）。
+    写/编辑工具确认前先渲染 diff 预览（_confirm_diff_preview 读旧内容 vs 新内容），
+    用户看清将改动什么再 Yes/No。确认等待放 worker 线程（to_thread），不冻结事件
+    循环；fail-safe：EOF 与 Ctrl+C 都返回 False（拒绝）。
     """
     async def _confirm(cr) -> bool:
+        preview = _confirm_diff_preview(cr.tool_name, getattr(cr, "params", None))
+        if preview:
+            renderer.print_diff(preview)
         try:
             return await asyncio.to_thread(
-                io.confirm, f"[需要确认] {cr.tool_name} 是否继续？(y/N) ")
+                io.confirm, f"[Confirm] {cr.tool_name}?")
         except (EOFError, KeyboardInterrupt):
             return False
     return _confirm
@@ -235,6 +264,16 @@ def main() -> None:
     llm = LLMClient(config.llm)
     registry = AgentRegistry(config.agents_dir)
 
+    # 终端装配：TTY → prompt_toolkit 输入 + rich Live 渲染；非 TTY（管道/CI/测试）→
+    # FallbackIO + PlainBlock 降级（行为与改造前一致）。renderer 须在 supervisor
+    # 前构造——confirm_callback（写/编辑确认 diff 预览）是 supervisor 构造参数。
+    # root_agent_type 恒为 "supervisor"（根 agent 的 agent_type 见 supervisor 构造处）。
+    renderer = make_renderer(
+        _make_print_fn(console),
+        "supervisor",
+        is_tty=is_tty, console=console,
+    )
+
     # 会话标识：本次进程启动即一个会话。AgentManager.create_agent 的 agent_id 与
     # Agent.session_id 必须一致——记忆工具（SQL 按 agent_id 键控）与 Sleeptime
     # 都挂在它下面，三者对不上会各自读到空数据。
@@ -301,7 +340,7 @@ def main() -> None:
         structured=structured,
         security_middleware=middlewares,
         intent_enabled=True, intent_pipeline=pipeline, conversation=conversation,
-        confirm_callback=_make_confirm_callback(io),
+        confirm_callback=_make_confirm_callback(io, renderer),
         ask_user_callback=message_manager.make_ask_recorder(_make_ask_callback(io),
                                                             session_id),
         session_id=session_id,
@@ -311,13 +350,5 @@ def main() -> None:
         structured, enable=config.sleeptime_enable,
         frequency=config.sleeptime_agent_frequency)
 
-    # 终端装配：TTY → prompt_toolkit 输入 + rich Live 渲染；非 TTY（管道/CI/测试）→
-    # FallbackIO + PlainBlock 降级（行为与改造前一致）。renderer 的 root_agent_type
-    # 用于 content 段归属判别（getattr 兜底 mock supervisor）。
-    renderer = make_renderer(
-        _make_print_fn(console),
-        getattr(supervisor, "agent_type", None) or "supervisor",
-        is_tty=is_tty, console=console,
-    )
     asyncio.run(_repl(supervisor, conversation,
                       io=io, renderer=renderer, sleeptime=sleeptime))

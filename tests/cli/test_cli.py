@@ -159,7 +159,8 @@ def test_confirm_callback_eof_failsafe(monkeypatch):
     def _eof(*a, **k):
         raise EOFError
     monkeypatch.setattr("builtins.input", _eof)
-    cb = _make_confirm_callback(FallbackIO())
+    cb = _make_confirm_callback(FallbackIO(),
+                                SimpleNamespace(print_diff=lambda d: None))
     assert asyncio.run(cb(SimpleNamespace(tool_name="write_file"))) is False
 
 
@@ -171,7 +172,8 @@ def test_confirm_callback_eof_tty_shim():
     class _EofConfirmIO:
         def confirm(self, text):
             raise EOFError
-    cb = _make_confirm_callback(_EofConfirmIO())
+    cb = _make_confirm_callback(_EofConfirmIO(),
+                                SimpleNamespace(print_diff=lambda d: None))
     assert asyncio.run(cb(SimpleNamespace(tool_name="write_file"))) is False
 
 
@@ -184,7 +186,8 @@ def test_confirm_callback_ctrl_c_tty_shim():
     class _KiConfirmIO:
         def confirm(self, text):
             raise KeyboardInterrupt
-    cb = _make_confirm_callback(_KiConfirmIO())
+    cb = _make_confirm_callback(_KiConfirmIO(),
+                                SimpleNamespace(print_diff=lambda d: None))
     assert asyncio.run(cb(SimpleNamespace(tool_name="write_file"))) is False
 
 
@@ -210,7 +213,8 @@ async def test_confirm_callback_async_contract_confirm(monkeypatch):
         llm=llm, agent_registry=make_mock_registry([ConfirmWriteTool()]),
         agent_type="test",
         security_middleware=[PolicyEngineMiddleware()],
-        confirm_callback=_make_confirm_callback(FallbackIO()),   # C1 修复点：async 回调
+        confirm_callback=_make_confirm_callback(   # C1 修复点：async 回调
+            FallbackIO(), SimpleNamespace(print_diff=lambda d: None)),
     )
     text = await agent.run("写笔记")
     assert text == "已写入"
@@ -235,13 +239,30 @@ async def test_confirm_callback_async_contract_denied(monkeypatch):
         llm=llm, agent_registry=make_mock_registry([ConfirmWriteTool()]),
         agent_type="test",
         security_middleware=[PolicyEngineMiddleware()],
-        confirm_callback=_make_confirm_callback(FallbackIO()),
+        confirm_callback=_make_confirm_callback(
+            FallbackIO(), SimpleNamespace(print_diff=lambda d: None)),
     )
     text = await agent.run("写笔记")
     assert text == "已取消"
     # 工具未执行（拒绝）：denial 结果在最后一轮 LLM 输入里（当前 task 恒末位，结果在其前）
     assert any(m.role == "tool" and "User denied: confirm_write" in m.content
                for m in capture[-1])
+
+
+def test_confirm_callback_shows_diff_preview_for_write(monkeypatch, tmp_path):
+    """write_file 确认前渲染 diff 预览：旧文件 vs 新 content。"""
+    from paperflow.cli import _make_confirm_callback
+    from types import SimpleNamespace
+    target = tmp_path / "note.md"
+    target.write_text("old line", encoding="utf-8")
+    io = SimpleNamespace(confirm=lambda text: True)
+    rendered = []
+    renderer = SimpleNamespace(print_diff=lambda d: rendered.append(d))
+    cr = SimpleNamespace(tool_name="write_file",
+                         params={"path": str(target), "content": "new line"})
+    cb = _make_confirm_callback(io, renderer)
+    assert asyncio.run(cb(cr)) is True
+    assert rendered and "-old line" in rendered[0] and "+new line" in rendered[0]
 
 
 def test_ask_eof_returns_empty(monkeypatch):
