@@ -118,3 +118,32 @@ def test_binding_ctrl_d_empty_raises_eof():
     b = _binding(Keys.ControlD)
     with pytest.raises(EOFError):
         b.handler(_event())
+
+
+def test_prompt_toolkit_confirm_bindings_toggle_and_accept():
+    """confirm 选择器键绑定：←/→ 切换选择、Enter 以所选结果退出（结构性测试，真 TTY 人工冒烟）。"""
+    from paperflow.terminal.io import _confirm_key_bindings
+    state = [True]
+    kb = _confirm_key_bindings(state)
+    binds = {tuple(b.keys): b for b in kb.bindings}
+    assert (Keys.Left,) in binds and (Keys.Right,) in binds and (Keys.Enter,) in binds
+
+    # ←/→ 翻转 state 闭包
+    ev = MagicMock(); ev.current_buffer = MagicMock()
+    binds[(Keys.Left,)].handler(ev)
+    assert state == [False]
+    binds[(Keys.Right,)].handler(ev)
+    assert state == [True]
+
+    # Enter → app.exit(result=state[0])——先切到 No 再 Enter
+    binds[(Keys.Left,)].handler(ev)
+    ev2 = MagicMock(); ev2.app = MagicMock()
+    binds[(Keys.Enter,)].handler(ev2)
+    ev2.app.exit.assert_called_once_with(result=False)
+
+
+def test_fallback_confirm_keeps_text_y_n(monkeypatch, capsys):
+    """FallbackIO 确认文案带 (y/N) 提示（英文兜底）。"""
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+    FallbackIO().confirm("Continue?")
+    assert "(y/N)" in capsys.readouterr().out

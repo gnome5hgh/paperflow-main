@@ -44,7 +44,7 @@ class FallbackIO(InputIO):
 
     def confirm(self, text: str) -> bool:
         with _confirm_lock:
-            print(text, end="", flush=True)
+            print(f"{text} (y/N) ", end="", flush=True)
             try:
                 return input().strip().lower() in {"y", "yes", "是", "确定"}
             except EOFError:
@@ -88,6 +88,30 @@ def _session_key_bindings() -> KeyBindings:
     return kb
 
 
+def _toggle_confirm(state: list) -> None:
+    """翻转确认选择（Yes↔No）。state 是 [bool] 闭包容器。"""
+    state[0] = not state[0]
+
+
+def _confirm_key_bindings(state: list):
+    """confirm 选择器键绑定：←/→ 切换、Enter 以所选结果退出。
+
+    注意 `@kb.add("left")` / `@kb.add("right")` 是**两个**绑定——`kb.add("left","right")`
+    会被当成「先左后右」的按键序列而非二选一。
+    """
+    kb = KeyBindings()
+
+    @kb.add("left")
+    @kb.add("right")
+    def _toggle(event):
+        _toggle_confirm(state)
+
+    @kb.add("enter")
+    def _accept(event):
+        event.app.exit(result=state[0])
+    return kb
+
+
 class PromptToolkitIO(InputIO):
     """TTY 实现：PromptSession 多行编辑、光标自由移动、历史落盘、自动建议。
 
@@ -109,9 +133,26 @@ class PromptToolkitIO(InputIO):
         return self._session.prompt(prompt)
 
     def confirm(self, text: str) -> bool:
+        """方向键 Yes/No 选择器：←/→ 切换高亮项、Enter 确认（默认 Yes）。
+
+        Ctrl+C/EOF 由 _repl 捕获（fail-safe 拒绝）。独立 PromptSession 与主输入
+        session 隔离——主 session 是多行 Enter=提交，选择器需 Enter=以结果退出。
+        """
         with _confirm_lock:
-            answer = self._session.prompt(text)
-            return answer.strip().lower() in {"y", "yes", "是", "确定"}
+            state = [True]
+            from prompt_toolkit.shortcuts import prompt as _pt_prompt
+            from prompt_toolkit.styles import Style
+
+            def _toolbar():
+                yes = ("class:sel", " Yes ") if state[0] else ("", " Yes ")
+                no = ("class:sel", " No ") if not state[0] else ("", " No ")
+                return [("", f"{text}   "), yes, ("", "   "), no]
+
+            result = _pt_prompt(
+                "", key_bindings=_confirm_key_bindings(state),
+                bottom_toolbar=_toolbar,
+                style=Style([("sel", "reverse")]))
+            return bool(result)
 
     def ask(self, question: str) -> str:
         with _confirm_lock:
