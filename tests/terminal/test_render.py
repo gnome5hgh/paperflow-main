@@ -193,6 +193,7 @@ def test_throttle_skips_rapid_renders():
 from unittest.mock import MagicMock
 
 from rich.console import Console
+from rich.syntax import Syntax
 
 from paperflow.terminal.render import PlainBlock, RichBlock, make_renderer
 
@@ -217,3 +218,28 @@ def test_make_renderer_non_tty_uses_plain():
     out, fn = _collect()
     r = make_renderer(fn, "supervisor", is_tty=False)
     assert isinstance(r._block, PlainBlock)
+
+
+def test_print_diff_ends_active_block_and_prints_capped_diff():
+    """print_diff（确认预览）：先终态渲染当前块；console=None 时纯文本打印截断后的 diff。"""
+    block = FakeBlock()
+    out, fn = _collect()
+    s = StreamRenderer(fn, "supervisor", block=block, render_interval=0)
+    s.on_event(StreamEvent("content", "abc", "supervisor"))
+    diff = "\n".join(f"line{i}" for i in range(300))
+    s.print_diff(diff)
+    assert block.ends == ["abc"]
+    assert len(out[-1].splitlines()) == 201          # 200 行 + 1 行省略标记
+    assert out[-1].endswith("… +100 lines")
+
+
+def test_print_diff_uses_rich_console_when_available():
+    """TTY 装配：console 非 None 时 diff 经 rich Syntax 着色输出。"""
+    console = MagicMock()
+    out, fn = _collect()
+    s = StreamRenderer(fn, "supervisor", block=PlainBlock(fn), render_interval=0, console=console)
+    s.print_diff("-old\n+new")
+    console.print.assert_called_once()
+    rendered = console.print.call_args[0][0]
+    assert isinstance(rendered, Syntax)             # Syntax(diff) 经 rich 着色
+    assert rendered.lexer.name == "Diff"

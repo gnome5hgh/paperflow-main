@@ -16,8 +16,10 @@ import time
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
+from rich.syntax import Syntax
 
 from paperflow.core.agent import StreamEvent
+from .diff import truncate_diff
 
 
 class BlockRenderer:
@@ -60,11 +62,13 @@ class PlainBlock(BlockRenderer):
 class StreamRenderer:
     """把 Agent 流式事件渲染为终端输出，并决定最终结果如何打印。"""
 
-    def __init__(self, print_fn, root_agent_type: str, *, block, render_interval: float = 0.08):
+    def __init__(self, print_fn, root_agent_type: str, *, block, render_interval: float = 0.08,
+                 console=None):
         self._print = print_fn
         self._root = root_agent_type
         self._block = block
         self._render_interval = render_interval
+        self._console = console       # TTY rich console（print_diff 着色用）；非 TTY None
         self._last_segment = None        # None | "root" | "child" | "tool"
         self._root_buffer: list[str] = []   # 仅 root content，用于 should_print 比对
         self._block_text = ""            # 当前 live 块的流式文本
@@ -150,6 +154,17 @@ class StreamRenderer:
             self._end_block()
             self._print(text, end="\n", flush=True, style=style)
 
+    def print_diff(self, diff_text: str) -> None:
+        """打印彩色 unified diff（确认预览用）。TTY 经 rich Syntax(diff) 着色、超长截断；
+        非 TTY 纯文本直打（无 ANSI）。线程安全：确认期间无并发流式事件，锁内打印。"""
+        with self._lock:
+            self._end_block()
+            capped = truncate_diff(diff_text)
+            if self._console is not None:
+                self._console.print(Syntax(capped, "diff", line_numbers=False), overflow="fold")
+            else:
+                self._print(capped, end="\n", flush=True)
+
     def should_print(self, result: str) -> str:
         streamed = "".join(self._root_buffer)
         if not streamed:
@@ -193,5 +208,5 @@ def make_renderer(print_fn, root_agent_type: str, *, is_tty: bool, console=None)
     """TTY 装配：is_tty → RichBlock（rich 渐进 markdown）；否则 PlainBlock（等价改造前）。"""
     if is_tty:
         return StreamRenderer(print_fn, root_agent_type,
-                              block=RichBlock(console=console))
+                              block=RichBlock(console=console), console=console)
     return StreamRenderer(print_fn, root_agent_type, block=PlainBlock(print_fn))
