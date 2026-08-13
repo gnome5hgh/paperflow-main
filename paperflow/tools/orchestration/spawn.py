@@ -264,13 +264,12 @@ async def _run_child_with_budget(coro, timeout: float, clock: _UserWaitClock):
     return task.result()
 
 
-def _make_child_stream_callback(parent,
-                                agent_type: str) -> Callable[[StreamEvent], None] | None:
-    """构造子 agent 的流式回调：不流 content，tool 事件加 [agent_type] 前缀。
+def _make_child_stream_callback(parent) -> Callable[[StreamEvent], None] | None:
+    """构造子 agent 的流式回调：不流 content，tool 事件透传（前缀由渲染器统一加）。
 
     对齐 OpenAI / Claude Code：子 agent 推理内容不向终端流式输出（多路并发会串字），
-    只透传工具行并加前缀标识来源。父无 stream_callback（非 CLI 调用方）时返回
-    None——子 agent 零流式，零开销。
+    只透传工具行；渲染层按 ev.agent_type 统一加 [{agent}] 前缀（root 也带 supervisor）。
+    父无 stream_callback（非 CLI 调用方）时返回 None——子 agent 零流式，零开销。
     """
     pcb = getattr(parent, "stream_callback", None)
     if pcb is None:
@@ -278,7 +277,7 @@ def _make_child_stream_callback(parent,
 
     def child_cb(ev: StreamEvent) -> None:
         if ev.kind == "tool":
-            pcb(StreamEvent("tool", f"[{agent_type}] {ev.text}", ev.agent_type))
+            pcb(ev)          # 前缀由渲染器统一加，此处不再拼 agent_type
     return child_cb
 
 
@@ -379,7 +378,7 @@ class SpawnSubAgentTool(Tool):
                 agent_type=agent_type, security_middleware=parent.security_middleware,
                 session_id=parent.session_id, confirm_callback=parent.confirm_callback,
                 ask_user_callback=parent.ask_user_callback,
-                stream_callback=_make_child_stream_callback(parent, agent_type),
+                stream_callback=_make_child_stream_callback(parent),
             )
             if mode:
                 child.system_prompt = f"当前模式：{mode}\n{child.system_prompt}"

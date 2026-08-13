@@ -76,7 +76,7 @@ def _make_print_fn(console):
         return _plain
 
     def _rich(*args, style=None, end="\n", flush=False):
-        console.print(*args, style=style, end=end, overflow="ignore")
+        console.print(*args, style=style, end=end, overflow="fold")   # ignore → fold：长行换行不硬切
     return _rich
 
 

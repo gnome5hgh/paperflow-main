@@ -93,7 +93,7 @@ def test_no_double_newline_with_real_print_behavior():
     s.on_event(StreamEvent("tool", "调用 search_arxiv(query=x)", "searcher"))
     joined = "".join(out)
     assert "\n\n" not in joined
-    assert joined == "答\n推理\n调用 search_arxiv(query=x)\n"
+    assert joined == "答\n推理\n[searcher] 调用 search_arxiv(query=x)\n"
 
 
 def test_no_blank_between_tools_or_tool_to_content():
@@ -108,7 +108,8 @@ def test_no_blank_between_tools_or_tool_to_content():
     s.on_event(StreamEvent("content", "最终答案", "supervisor"))
     joined = "".join(out)
     assert "\n\n" not in joined
-    assert joined == "调用 search_arxiv(query=a)\n调用 spawn_sub_agent(...)\n最终答案"
+    assert joined == ("[supervisor] 调用 search_arxiv(query=a)\n"
+                      "[supervisor] 调用 spawn_sub_agent(...)\n最终答案")
 
 
 def test_thread_safe_concurrent_tool_events():
@@ -118,7 +119,8 @@ def test_thread_safe_concurrent_tool_events():
     assert isinstance(s._lock, type(threading.Lock()))
 
     def _hammer(agent_type, rounds):
-        ev = StreamEvent("tool", f"[{agent_type}] 调用 search_arxiv(query=x)", agent_type)
+        # 事件文本不带前缀——前缀由渲染器按 ev.agent_type 统一加
+        ev = StreamEvent("tool", "Calling search_arxiv(query=x)", agent_type)
         for _ in range(rounds):
             s.on_event(ev)
 
@@ -278,3 +280,14 @@ def test_spinner_noop_for_plain_block():
     s = StreamRenderer(fn, "supervisor", block=PlainBlock(fn), render_interval=0)
     s.reset()                                          # 不抛、无输出变化
     assert "".join(out) == ""
+
+
+def test_tool_lines_prefixed_with_agent():
+    """工具行统一 [{agent}] 前缀（root 也带 [supervisor]，子 agent 带自己名字）。"""
+    out, fn = _collect()
+    s = _renderer(fn)
+    s.on_event(StreamEvent("tool", "Calling spawn_sub_agent(...)", "supervisor"))
+    s.on_event(StreamEvent("tool", "Calling read_file(path=/a.md)", "writer"))
+    joined = "".join(out)
+    assert "[supervisor] Calling spawn_sub_agent(...)" in joined
+    assert "[writer] Calling read_file(path=/a.md)" in joined

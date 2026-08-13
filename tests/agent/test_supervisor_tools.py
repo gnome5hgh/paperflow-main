@@ -349,10 +349,11 @@ class TestAskUserQuestionTool:
 
 class TestStreamCallbackPropagation:
     def test_spawn_child_streams_only_tool_events(self):
-        """统一流式：spawn 子 agent 收到包装回调——content 丢弃、tool 加 [agent_type] 前缀。
+        """统一流式：spawn 子 agent 收到包装回调——content 丢弃、tool 原样透传。
 
         对齐 OpenAI / Claude Code：子 agent 推理内容不向终端流式（多路并发会串字），
-        只透传工具行并加前缀标识来源。子 agent 拿到的不是父回调原样，而是包装后的。"""
+        只透传工具行；[{agent}] 前缀由渲染层统一加（root 也带），spawn 层不再拼。
+        子 agent 拿到的不是父回调原样，而是包装后的。"""
         received = []
         parent_cb = received.append
         with patch("paperflow.tools.orchestration.spawn.Agent") as MockAgent:
@@ -363,8 +364,8 @@ class TestStreamCallbackPropagation:
         assert child_cb is not parent_cb              # 子 agent 拿到的是包装回调
         child_cb(StreamEvent("content", "推理文本", "a"))              # content 被丢弃
         assert received == []
-        child_cb(StreamEvent("tool", "调用 search_arxiv(query=x)", "a"))  # tool 加前缀透传
-        assert received == [StreamEvent("tool", "[a] 调用 search_arxiv(query=x)", "a")]
+        child_cb(StreamEvent("tool", "调用 search_arxiv(query=x)", "a"))  # tool 原样透传（前缀由渲染器加）
+        assert received == [StreamEvent("tool", "调用 search_arxiv(query=x)", "a")]
 
 # ─── 确认等待排除在超时外（2026-08-07 用户决策）───────────────────────
 # 用户确认是交互等待，不应计入子 agent 的执行预算：预算 = 基础 timeout + 累积用户等待。

@@ -129,7 +129,7 @@ class StreamRenderer:
         if self._last_segment in ("root", "child"):
             self._end_block()
             self._print("\n", end="", flush=True)
-        self._print(ev.text, end="", flush=True, style="dim")
+        self._print(f"[{ev.agent_type}] {ev.text}", end="", flush=True, style="dim")
         self._print("\n", end="")
         if ev.agent_type == self._root:
             self._root_buffer.clear()   # 工具调用前的中间内容作废，只留最终轮的流式文本
