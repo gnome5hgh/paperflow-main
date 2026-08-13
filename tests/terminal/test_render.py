@@ -18,6 +18,9 @@ class FakeBlock:
     def end(self, text):
         self.ends.append(text)
 
+    def spinner(self, label):
+        pass
+
 
 def _collect():
     """返回 (out, print_fn)：print_fn 兼容 end=/flush=/style= kwargs，捕获每次调用首参。"""
@@ -243,3 +246,35 @@ def test_print_diff_uses_rich_console_when_available():
     rendered = console.print.call_args[0][0]
     assert isinstance(rendered, Syntax)             # Syntax(diff) 经 rich 着色
     assert rendered.lexer.name == "Diff"
+
+
+def test_spinner_shown_between_tools_replaced_by_content():
+    """空闲段显示 spinner、content 到达被 markdown 替换（FakeBlock 记录 renderable 类型）。"""
+    class SpyBlock(FakeBlock):
+        def __init__(self):
+            super().__init__()
+            self.spinners = []
+            self.renderables = []      # 每次 update/end/spinner 的类型标记
+        def update(self, text): super().update(text); self.renderables.append("content")
+        def end(self, text): super().end(text); self.renderables.append("end")
+        def spinner(self, label): self.spinners.append(label); self.renderables.append("spinner")
+
+    block = SpyBlock()
+    out, fn = _collect()
+    s = StreamRenderer(fn, "supervisor", block=block, render_interval=0)
+    s.reset()                                          # run 开始 → spinner
+    assert block.renderables and block.renderables[0] == "spinner"
+    assert block.spinners == ["supervisor"]
+    s.on_event(StreamEvent("tool", "调用 search_paper(query=x)", "supervisor"))
+    s.on_event(StreamEvent("tool", "调用 read_pdf(path=/a.pdf)", "searcher"))   # 子 agent 工具行
+    assert block.spinners[-1] == "searcher"            # spinner 显示最近工具行 agent
+    s.on_event(StreamEvent("content", "答案", "supervisor"))
+    assert block.renderables[-1] == "content"          # content 替换 spinner
+
+
+def test_spinner_noop_for_plain_block():
+    """PlainBlock.spinner 是 no-op（非 TTY 无动画）。"""
+    out, fn = _collect()
+    s = StreamRenderer(fn, "supervisor", block=PlainBlock(fn), render_interval=0)
+    s.reset()                                          # 不抛、无输出变化
+    assert "".join(out) == ""

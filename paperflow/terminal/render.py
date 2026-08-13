@@ -16,20 +16,26 @@ import time
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
+from rich.spinner import Spinner
 from rich.syntax import Syntax
+from rich.text import Text
 
 from paperflow.core.agent import StreamEvent
 from .diff import truncate_diff
 
 
 class BlockRenderer:
-    """live 块渲染通道。update(text)=实时重绘；end(text)=终态渲染并收尾。"""
+    """live 块渲染通道。update(text)=实时重绘；end(text)=终态渲染并收尾；spinner(label)=空闲指示。"""
 
     def update(self, text: str) -> None:
         raise NotImplementedError
 
     def end(self, text: str) -> None:
         raise NotImplementedError
+
+    def spinner(self, label: str) -> None:
+        """空闲段工作指示（非 TTY 实现为 no-op）。"""
+        pass
 
 
 class PlainBlock(BlockRenderer):
@@ -74,6 +80,7 @@ class StreamRenderer:
         self._block_text = ""            # 当前 live 块的流式文本
         self._last_render = 0.0
         self._cancelled = False
+        self._current_agent = root_agent_type   # spinner 显示的 agent（最近工具行 agent 或 root）
         self._lock = threading.Lock()    # 渲染锁：on_event 跨线程并发调用，锁内串行
 
     def reset(self) -> None:
@@ -84,6 +91,9 @@ class StreamRenderer:
             self._last_segment = None
             self._last_render = 0.0
             self._cancelled = False
+            self._current_agent = self._root
+            if self._block is not None:
+                self._block.spinner(self._current_agent)   # run 开始 → 空闲指示
 
     def interrupt(self) -> None:
         """Ctrl+C 中断当前 run：置「已中断」标志过滤孤儿事件。to_thread 线程无法真正
@@ -124,6 +134,9 @@ class StreamRenderer:
         if ev.agent_type == self._root:
             self._root_buffer.clear()   # 工具调用前的中间内容作废，只留最终轮的流式文本
         self._last_segment = "tool"
+        self._current_agent = ev.agent_type
+        if self._block is not None:
+            self._block.spinner(self._current_agent)   # 工具行打印后恢复空闲指示
 
     def _end_block(self) -> None:
         text, self._block_text = self._block_text, ""
@@ -197,6 +210,12 @@ class RichBlock(BlockRenderer):
             self._live.update(Markdown(text))
             self._live.stop()
             self._started = False
+
+    def spinner(self, label: str) -> None:
+        """Live 显示 dim spinner「label working」，content update 到达即被替换。"""
+        self._start()
+        self._live.update(Spinner("dots", text=Text(f" {label} working", style="dim"),
+                                  style="dim"))
 
     def _start(self) -> None:
         if not self._started:
