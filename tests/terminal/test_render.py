@@ -162,16 +162,16 @@ def test_finalize_ends_last_block():
 
 
 def test_finalize_stops_live_on_empty_text():
-    """F1 回归：空文本块（纯工具轮/澄清轮）结束也必须调 block.end——Live 不残留
-    spinner 动画在确认 diff 打印与下个输入提示下（end("") 即停止 live）。"""
+    """F1 回归：空文本块（纯工具轮/澄清轮）结束必须调 block.end——Live 不残留
+    spinner 动画。工具行打印前已 end("") 停 live，finalize 幂等地再停一次。"""
     block = FakeBlock()
     out, fn = _collect()
     s = StreamRenderer(fn, "supervisor", block=block, render_interval=0)
     s.reset()                                          # run 开始 → spinner
     s.on_event(StreamEvent("tool", "调用 search_paper(query=x)", "supervisor"))
-    assert not block.ends                              # 工具行只起 spinner，无内容块
+    assert block.ends == [""]                          # 工具行打印前 end("") 停 live
     s.finalize()                                       # 纯工具轮结束：无 content
-    assert block.ends == [""]                          # 空文本也终态渲染（Live 停止）
+    assert block.ends == ["", ""]                      # finalize 幂等再停（Live 必不残留）
 
 
 def test_suspend_ends_current_block():
@@ -293,6 +293,20 @@ def test_spinner_noop_for_plain_block():
     s = StreamRenderer(fn, "supervisor", block=PlainBlock(fn), render_interval=0)
     s.reset()                                          # 不抛、无输出变化
     assert "".join(out) == ""
+
+
+def test_tool_line_stops_live_before_print():
+    """回归：工具行打印前必须停 live——rich Live 对 end="" 的部分行打印会重绘吞掉
+    （V2 spinner 引入后实测：中间日志消失、只剩空行与 spinner）。tool→tool 连续工具行
+    时，第二个工具行前也必须 block.end("") 停 spinner live。"""
+    block = FakeBlock()
+    out, fn = _collect()
+    s = StreamRenderer(fn, "supervisor", block=block, render_interval=0)
+    s.on_event(StreamEvent("tool", "Calling read_pdf(path=/a.pdf)", "writer"))
+    s.on_event(StreamEvent("tool", "Calling read_pdf(path=/b.pdf)", "writer"))
+    # 两个工具行都在打印前调了 _end_block → block.end("")（停 live）
+    assert block.ends.count("") >= 2
+    assert any("Calling read_pdf(path=/b.pdf)" in t for t in out)
 
 
 def test_tool_lines_prefixed_with_agent():

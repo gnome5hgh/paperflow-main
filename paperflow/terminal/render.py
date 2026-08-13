@@ -124,11 +124,15 @@ class StreamRenderer:
         self._last_segment = seg
 
     def _on_tool(self, ev) -> None:
-        # 工具行：上一段是未自终止的内容（root/child）→ 先终态渲染该块并补换行；
-        # 上一段是 tool（已终止）或 None → 不补，避免空行
+        # 工具行必须在无 live 活动下打印：rich Live 对 end="" 的部分行打印会重绘吞掉
+        # （V2 spinner 引入后实测：中间日志消失、只剩空行与 spinner）。故无论上一段是
+        # content 还是 tool，打印前先 _end_block() 停 live——spinner 经 end("") 清行、
+        # content 块经终态渲染。content→tool 补换行；tool→tool 不补（避免空行）。
         if self._last_segment in ("root", "child"):
             self._end_block()
             self._print("\n", end="", flush=True)
+        else:
+            self._end_block()
         self._print(f"[{ev.agent_type}] {ev.text}", end="", flush=True, style="dim")
         self._print("\n", end="")
         if ev.agent_type == self._root:
