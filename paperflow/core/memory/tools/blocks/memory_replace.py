@@ -4,7 +4,7 @@ from paperflow.core.memory.tools.runtime_context import get_memory_context
 
 
 def _memory_replace(ctx, label: str, old_string: str, new_string: str) -> str:
-    """逻辑原样迁自 function_sets/base.py memory_replace。"""
+    """逻辑原样迁自旧记忆层 memory_replace。"""
     bm = ctx.block_manager
     block = bm.get_block_by_label(label)
     if block is None:

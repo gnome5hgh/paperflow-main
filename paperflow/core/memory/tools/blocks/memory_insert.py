@@ -4,7 +4,7 @@ from paperflow.core.memory.tools.runtime_context import get_memory_context
 
 
 def _memory_insert(ctx, label: str, new_string: str, insert_line: int = -1) -> str:
-    """逻辑原样迁自 function_sets/base.py memory_insert。"""
+    """逻辑原样迁自旧记忆层 memory_insert。"""
     bm = ctx.block_manager
     block = bm.get_block_by_label(label)
     if block is None:

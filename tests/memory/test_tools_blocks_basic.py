@@ -59,3 +59,7 @@ def test_unbound_context_degrades():
     set_memory_context(None)
     res = MemoryReplaceTool().execute(label="x", old_string="a", new_string="b")
     assert "记忆服务未装配" in res.text
+
+
+def test_memory_replace_risk_medium():
+    assert MemoryReplaceTool().risk_level == "medium"

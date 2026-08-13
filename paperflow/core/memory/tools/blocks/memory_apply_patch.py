@@ -8,7 +8,7 @@ def _apply_diff(value: str, patch: str) -> str:
 
     patch 行逐行处理：@@ 头跳到 hunk 起始（中间未改动行原样复制）；' ' 上下文
     行必须匹配目标当前行；'-' 删行从当前位置向后找首个匹配；'+' 增行插入到当前
-    删除点。原样迁自 function_sets/base.py _apply_diff。
+    删除点。原样迁自旧记忆层 _apply_diff。
     """
     import re
     lines = value.splitlines()
@@ -49,7 +49,7 @@ def _apply_diff(value: str, patch: str) -> str:
 
 
 def _memory_apply_patch(ctx, label: str, patch: str) -> str:
-    """逻辑原样迁自 function_sets/base.py memory_apply_patch。"""
+    """逻辑原样迁自旧记忆层 memory_apply_patch。"""
     bm = ctx.block_manager
     block = bm.get_block_by_label(label)
     if block is None:

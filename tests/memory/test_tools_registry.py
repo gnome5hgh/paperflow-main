@@ -16,3 +16,7 @@ def test_returns_all_13_tools():
 
 def test_singleton_returns_same_instances():
     assert get_memory_tools() is get_memory_tools()
+
+
+def test_sleeptime_tools_subset_of_base_memory_tools():
+    assert constants.BASE_SLEEPTIME_TOOLS <= constants.BASE_MEMORY_TOOLS
