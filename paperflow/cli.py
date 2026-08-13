@@ -133,13 +133,16 @@ def _make_confirm_callback(io: InputIO, renderer: StreamRenderer):
     return _confirm
 
 
-def _make_ask_callback(io: InputIO):
+def _make_ask_callback(io: InputIO, renderer: StreamRenderer):
     """构造 ask_user 回调：读开放问题答案，Ctrl-D/EOF/Ctrl+C → 空串。
 
     PromptToolkitIO（TTY）的 ask 不捕 EOFError，这里兜底返回空串（与非 TTY
     FallbackIO 行为一致，两实现可替换）；Supervisor ReAct 收到空串自行处理。
+    ask 提示框前先 renderer.suspend() 停 live——rich Live 与 prompt_toolkit 提示框
+    并发会互相干扰（V2 实测：ask 问题后卡在 spinner，用户无法作答）。
     """
     def _ask(question: str) -> str:
+        renderer.suspend()
         try:
             return io.ask(question)
         except (EOFError, KeyboardInterrupt):
@@ -349,7 +352,7 @@ def main() -> None:
         security_middleware=middlewares,
         intent_enabled=True, intent_pipeline=pipeline, conversation=conversation,
         confirm_callback=_make_confirm_callback(io, renderer),
-        ask_user_callback=message_manager.make_ask_recorder(_make_ask_callback(io),
+        ask_user_callback=message_manager.make_ask_recorder(_make_ask_callback(io, renderer),
                                                             session_id),
         session_id=session_id,
     )

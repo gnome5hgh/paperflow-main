@@ -335,7 +335,8 @@ def test_ask_callback_eof_tty_shim():
     class _EofAskIO:
         def ask(self, question):
             raise EOFError
-    assert _make_ask_callback(_EofAskIO())("要哪个？") == ""
+    _renderer = SimpleNamespace(suspend=lambda: None)
+    assert _make_ask_callback(_EofAskIO(), _renderer)("要哪个？") == ""
 
 
 def test_ask_callback_ctrl_c_tty_shim():
@@ -346,7 +347,21 @@ def test_ask_callback_ctrl_c_tty_shim():
     class _KiAskIO:
         def ask(self, question):
             raise KeyboardInterrupt
-    assert _make_ask_callback(_KiAskIO())("要哪个？") == ""
+    _renderer = SimpleNamespace(suspend=lambda: None)
+    assert _make_ask_callback(_KiAskIO(), _renderer)("要哪个？") == ""
+
+
+def test_ask_callback_suspends_renderer_before_prompt():
+    """ask 提示框前必须停 live（renderer.suspend）——rich Live 与 prompt_toolkit 提示框
+    并发会互相干扰（V2 实测：ask 问题后卡在 spinner，用户无法作答）。"""
+    from paperflow.cli import _make_ask_callback
+    from types import SimpleNamespace
+    calls = []
+    io = SimpleNamespace(ask=lambda q: "答案")
+    renderer = SimpleNamespace(suspend=lambda: calls.append("suspend"))
+    cb = _make_ask_callback(io, renderer)
+    assert cb("问题") == "答案"
+    assert calls == ["suspend"]
 
 
 @pytest.mark.asyncio

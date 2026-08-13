@@ -146,9 +146,12 @@ class PromptToolkitIO(InputIO):
             return bool(result)
 
     def ask(self, question: str) -> str:
+        """读开放问题答案。独立一次性 prompt（与 confirm 一致）——复用主 session 在多线程
+        worker 下不可靠（实测 EOF/卡住）；独立 session 也不把 ask 问答混进主输入历史。"""
         with _confirm_lock:
             print(question)
-            return self._session.prompt("> ")
+            from prompt_toolkit.shortcuts import prompt as _pt_prompt
+            return _pt_prompt("> ")
 
 
 def make_input_io(config) -> InputIO:
