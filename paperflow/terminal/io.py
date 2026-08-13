@@ -88,25 +88,13 @@ def _session_key_bindings() -> KeyBindings:
     return kb
 
 
-def _toggle_confirm(state: list) -> None:
-    """翻转确认选择（Yes↔No）。state 是 [bool] 闭包容器。"""
-    state[0] = not state[0]
+def _confirm_key_bindings():
+    """confirm 键绑定：y/Y → Yes、n/N → No、Enter → 默认 No。
 
-
-def _confirm_key_bindings(state: list):
-    """confirm 选择器键绑定：←/→ 切换、Enter 确认所选、y/n 立即接受/拒绝。
-
-    y/n 直答是对齐 claude-code 的确认交互——方向键在某些终端/环境可能不响应
-    （实测只在部分终端复现），键入 y/n 是保证可用的兜底路径。注意
-    `@kb.add("left")` / `@kb.add("right")` 是**两个**绑定——`kb.add("left","right")`
-    会被当成「先左后右」的按键序列而非二选一。
+    对齐 claude-code 的确认交互——键入 y/n 立即接受/拒绝，无需方向键（方向键在
+    部分终端不响应，故不依赖）。Enter 默认拒绝：与非 TTY 的 (y/N) 空输入拒绝一致。
     """
     kb = KeyBindings()
-
-    @kb.add("left")
-    @kb.add("right")
-    def _toggle(event):
-        _toggle_confirm(state)
 
     @kb.add("y")
     @kb.add("Y")
@@ -120,7 +108,7 @@ def _confirm_key_bindings(state: list):
 
     @kb.add("enter")
     def _accept(event):
-        event.app.exit(result=state[0])
+        event.app.exit(result=False)
     return kb
 
 
@@ -145,28 +133,16 @@ class PromptToolkitIO(InputIO):
         return self._session.prompt(prompt)
 
     def confirm(self, text: str) -> bool:
-        """方向键/键入 Yes/No 选择器：←/→ 切换高亮项、Enter 确认、y/n 立即接受/拒绝。
+        """y/n 键入确认：y/Y → Yes、n/N → No、Enter → 默认 No。
 
-        y/n 直答对齐 claude-code（方向键在某些终端不响应时的保证路径）。Ctrl+C/EOF
-        由 _repl 捕获（fail-safe 拒绝）。独立 PromptSession 与主输入 session 隔离——
-        主 session 是多行 Enter=提交，选择器需 Enter=以结果退出。默认选 No：与
-        FallbackIO 的 (y/N) 默认拒绝一致（两实现可替换）。
+        对齐 claude-code（键入立即接受/拒绝，不依赖方向键）。Ctrl+C/EOF 由 _repl
+        捕获（fail-safe 拒绝）。独立 PromptSession 与主输入 session 隔离。默认拒绝
+        与非 TTY 的 (y/N) 空输入拒绝一致（两实现可替换）。
         """
         with _confirm_lock:
-            state = [False]
             from prompt_toolkit.shortcuts import prompt as _pt_prompt
-            from prompt_toolkit.styles import Style
-
-            def _toolbar():
-                yes = ("class:sel", " Yes ") if state[0] else ("", " Yes ")
-                no = ("class:sel", " No ") if not state[0] else ("", " No ")
-                return [("", f"{text}   "), yes, ("", "   "), no,
-                        ("dim", "   ←/→ or y/n")]
-
-            result = _pt_prompt(
-                "", key_bindings=_confirm_key_bindings(state),
-                bottom_toolbar=_toolbar,
-                style=Style([("sel", "reverse")]))
+            result = _pt_prompt(f"{text} (y/N) ",
+                                key_bindings=_confirm_key_bindings())
             return bool(result)
 
     def ask(self, question: str) -> str:

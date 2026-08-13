@@ -120,38 +120,30 @@ def test_binding_ctrl_d_empty_raises_eof():
         b.handler(_event())
 
 
-def test_prompt_toolkit_confirm_bindings_toggle_and_accept():
-    """confirm 选择器键绑定：←/→ 切换、Enter 确认、y/n 立即接受/拒绝（结构性测试，真 TTY 人工冒烟）。
+def test_prompt_toolkit_confirm_bindings_y_n():
+    """confirm 键绑定：y/Y → Yes、n/N → No、Enter → 默认 No（结构性测试，真 TTY 人工冒烟）。
 
-    state 初始 False = 默认选 No（与 FallbackIO 的 (y/N) 默认拒绝一致）。y/n 直答是
-    方向键不响应时的保证路径（对齐 claude-code）。"""
+    只保留 y/n 键入（用户要求取消方向键交互；方向键在部分终端不响应）。"""
     from paperflow.terminal.io import _confirm_key_bindings
-    state = [False]
-    kb = _confirm_key_bindings(state)
+    kb = _confirm_key_bindings()
     binds = {tuple(b.keys): b for b in kb.bindings}
-    assert (Keys.Left,) in binds and (Keys.Right,) in binds and (Keys.Enter,) in binds
+    # 无方向键绑定
+    assert (Keys.Left,) not in binds and (Keys.Right,) not in binds
     assert ("y",) in binds and ("Y",) in binds and ("n",) in binds and ("N",) in binds
+    assert (Keys.Enter,) in binds
 
-    # ←/→ 翻转 state 闭包
-    ev = MagicMock(); ev.current_buffer = MagicMock()
-    binds[(Keys.Right,)].handler(ev)
-    assert state == [True]
-    binds[(Keys.Left,)].handler(ev)
-    assert state == [False]
-
-    # Enter → app.exit(result=state[0])——切到 Yes 再 Enter 放行
-    binds[(Keys.Right,)].handler(ev)
+    # y → 立即 Yes；n → 立即 No
+    ev = MagicMock(); ev.app = MagicMock()
+    binds[("y",)].handler(ev)
+    ev.app.exit.assert_called_once_with(result=True)
     ev2 = MagicMock(); ev2.app = MagicMock()
-    binds[(Keys.Enter,)].handler(ev2)
-    ev2.app.exit.assert_called_once_with(result=True)
+    binds[("n",)].handler(ev2)
+    ev2.app.exit.assert_called_once_with(result=False)
 
-    # y → 立即 Yes（不依赖方向键）；n → 立即 No
+    # Enter → 默认拒绝（与非 TTY (y/N) 空输入一致）
     ev3 = MagicMock(); ev3.app = MagicMock()
-    binds[("y",)].handler(ev3)
-    ev3.app.exit.assert_called_once_with(result=True)
-    ev4 = MagicMock(); ev4.app = MagicMock()
-    binds[("n",)].handler(ev4)
-    ev4.app.exit.assert_called_once_with(result=False)
+    binds[(Keys.Enter,)].handler(ev3)
+    ev3.app.exit.assert_called_once_with(result=False)
 
 
 def test_fallback_confirm_keeps_text_y_n(monkeypatch, capsys):
