@@ -9,9 +9,11 @@ from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.services.block_manager import BlockManager
 from paperflow.core.memory.services.message_manager import MessageManager
 from paperflow.core.memory.services.passage_manager import PassageManager
-from paperflow.core.memory.services.tool_manager import ToolManager
 from paperflow.core.memory.compaction import CompactionSettings
 from paperflow.core.memory.schemas.memory import Memory
+from paperflow.core.memory.tools import (
+    MemoryReplaceTool, get_memory_tools,
+    set_memory_context, get_memory_context, MemoryToolsContext)
 
 
 class _Registry:
@@ -41,15 +43,19 @@ def _agent(replies=("完成",)):
     bm = BlockManager(db)
     mm = MessageManager(db)
     pm = PassageManager(db)
-    tm = ToolManager(db)
-    tm.bind(bm, pm, mm, agent_id="sess_1")
-    tm.upsert_base_tools()
+    set_memory_context(MemoryToolsContext(
+        agent_id="sess_1", block_manager=bm, passage_manager=pm, message_manager=mm))
     memory = Memory(blocks=[bm.create_block("persona", "身份")])
     return Agent(llm=_FakeLLM(list(replies)), agent_registry=_Registry(),
                  agent_type="_demo", memory=memory, block_manager=bm,
                  message_manager=mm, passage_manager=pm,
-                 memory_tools=tm.list_tools(),
                  compaction=CompactionSettings(), session_id="sess_1")
+
+
+@pytest.fixture(autouse=True)
+def _reset_ctx():
+    yield
+    set_memory_context(None)
 
 
 @pytest.mark.asyncio
@@ -80,9 +86,8 @@ def test_conversation_persisted_to_message_manager():
     assert agent.message_manager.size("sess_1") == 1
 
 
-def test_memory_tools_injected():
-    agent = _agent()
-    names = set(agent.tools.keys())
+def test_memory_tools_registered_via_get_memory_tools():
+    names = {t.name for t in get_memory_tools()}
     assert "memory_replace" in names and "conversation_search" in names
 
 
@@ -98,22 +103,20 @@ def test_compaction_triggers_when_over_threshold():
 async def test_memory_self_edit_reflected_in_next_head():
     """评审 I-1：memory_replace 编辑块后，下一轮 _build_head 从 BlockManager 重建
     memory——会话内 self-edit 即进 system prompt，无需重启。"""
-    from paperflow.core.memory.services.tool_manager import ToolManager
     tmp = Path(tempfile.mkdtemp())
     db = MemoryDB(tmp / "memory.db")
     bm = BlockManager(db)
     mm = MessageManager(db)
     bm.create_block("persona", "旧身份")
     memory = Memory(blocks=[bm.get_block_by_label("persona")])
-    tm = ToolManager(db)
-    tm.bind(bm, None, mm, agent_id="sess_1")
-    tm.upsert_base_tools()
+    set_memory_context(MemoryToolsContext(
+        agent_id="sess_1", block_manager=bm, message_manager=mm))
     agent = Agent(llm=_FakeLLM(["完成"]), agent_registry=_Registry(), agent_type="_demo",
                   memory=memory, block_manager=bm, message_manager=mm,
-                  memory_tools=tm.list_tools(), session_id="sess_1")
+                  session_id="sess_1")
     # 会话内 LLM 调 memory_replace 改 persona 块
-    res = tm.execute_tool("memory_replace", {
-        "label": "persona", "old_string": "旧身份", "new_string": "新身份"}, "tc1")
+    res = MemoryReplaceTool().execute(
+        label="persona", old_string="旧身份", new_string="新身份")
     assert "Updated" in res.text
     head = await agent._build_head("task")
     sys_texts = "".join(m.content for m in head if m.role == "system")
@@ -124,22 +127,20 @@ async def test_memory_self_edit_reflected_in_next_head():
 def test_memory_self_edit_visible_in_same_run_next_turn():
     """评审 I-1：同一轮 ReAct 内 memory 工具编辑后，下一轮 LLM 调用的 head 即含新块。"""
     import asyncio
-    from paperflow.core.memory.services.tool_manager import ToolManager
     tmp = Path(tempfile.mkdtemp())
     db = MemoryDB(tmp / "memory.db")
     bm = BlockManager(db)
     mm = MessageManager(db)
     bm.create_block("persona", "旧身份")
     memory = Memory(blocks=[bm.get_block_by_label("persona")])
-    tm = ToolManager(db)
-    tm.bind(bm, None, mm, agent_id="sess_1")
-    tm.upsert_base_tools()
+    set_memory_context(MemoryToolsContext(
+        agent_id="sess_1", block_manager=bm, message_manager=mm))
     agent = Agent(llm=_FakeLLM(["完成"]), agent_registry=_Registry(), agent_type="_demo",
                   memory=memory, block_manager=bm, message_manager=mm,
-                  memory_tools=tm.list_tools(), session_id="sess_1")
+                  session_id="sess_1")
     head = asyncio.run(agent._build_head("task"))
-    tm.execute_tool("memory_replace", {
-        "label": "persona", "old_string": "旧身份", "new_string": "新身份"}, "tc1")
+    MemoryReplaceTool().execute(
+        label="persona", old_string="旧身份", new_string="新身份")
     agent._refresh_head_memory(head)   # 下一轮 LLM 调用前刷新
     sys_texts = "".join(m.content for m in head if m.role == "system")
     assert "新身份" in sys_texts

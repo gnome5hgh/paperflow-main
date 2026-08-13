@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from paperflow.core.agent import Agent
 from paperflow.core.llm import Message
 from paperflow.core.memory.compaction import CompactionSettings, SummarySchema
@@ -19,7 +21,9 @@ from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
 from paperflow.core.memory.services.message_manager import MessageManager
 from paperflow.core.memory.services.passage_manager import PassageManager
-from paperflow.core.memory.services.tool_manager import ToolManager
+from paperflow.core.memory.tools import get_memory_tools
+from paperflow.core.memory.tools.runtime_context import (
+    MemoryToolsContext, set_memory_context)
 from tests.agent.test_agent import make_capture_llm, make_mock_registry
 
 
@@ -47,11 +51,10 @@ def _services():
     block_manager = GitEnabledBlockManager(db, memfs_dir=tmp / "memory")
     message_manager = MessageManager(db)
     passage_manager = PassageManager(db)
-    tool_manager = ToolManager(db)
     agent_manager = AgentManager(db, block_manager, message_manager)
     message_manager.agent_manager = agent_manager   # 窗口追踪（评审 I-3）
     return (tmp, db, block_manager, message_manager, passage_manager,
-            tool_manager, agent_manager)
+            agent_manager)
 
 
 def _preload(mm: MessageManager, n: int) -> None:
@@ -60,27 +63,32 @@ def _preload(mm: MessageManager, n: int) -> None:
 
 
 def _mem_agent(llm, block_manager, message_manager, passage_manager,
-               tool_manager, agent_manager, memory, *, structured=None,
-               compaction=None):
-    tool_manager.bind(block_manager, passage_manager, message_manager,
-                      agent_id="sess_1")
-    tool_manager.upsert_base_tools()
-    return Agent(llm=llm, agent_registry=make_mock_registry([]), agent_type="test",
-                 memory=memory, block_manager=block_manager,
+               agent_manager, memory, *, structured=None, compaction=None):
+    set_memory_context(MemoryToolsContext(
+        agent_id="sess_1", block_manager=block_manager,
+        passage_manager=passage_manager, message_manager=message_manager))
+    return Agent(llm=llm, agent_registry=make_mock_registry(get_memory_tools()),
+                 agent_type="test", memory=memory, block_manager=block_manager,
                  message_manager=message_manager, passage_manager=passage_manager,
-                 agent_manager=agent_manager, memory_tools=tool_manager.list_tools(),
+                 agent_manager=agent_manager,
                  compaction=compaction, structured=structured, session_id="sess_1")
+
+
+@pytest.fixture(autouse=True)
+def _reset_ctx():
+    yield
+    set_memory_context(None)
 
 
 def test_conversation_persists_and_recall_searches():
     """全链路：run 落盘 → Recall conversation_search 能查到全部对话。"""
-    (tmp, db, bm, mm, pm, tm, am) = _services()
+    (tmp, db, bm, mm, pm, am) = _services()
     am.create_agent("sess_1")
     memory = Memory(blocks=[bm.create_block("persona", "身份")])
     capture = []
     llm = make_capture_llm([Message(role="assistant", content="回答1"),
                             Message(role="assistant", content="回答2")], capture)
-    agent = _mem_agent(llm, bm, mm, pm, tm, am, memory)
+    agent = _mem_agent(llm, bm, mm, pm, am, memory)
     asyncio.run(agent.run("搜索 GraphCL"))
     asyncio.run(agent.run("整理笔记"))
     # 对话全量落盘 SQL（Recall）：两轮各 user+assistant
@@ -95,7 +103,7 @@ def test_conversation_persists_and_recall_searches():
 def test_memory_tools_edit_block_and_archival_in_loop():
     """全链路：ReAct 循环内 memory_replace 改核心块、archival 写长期记忆；
     self-edit 后下一轮 system 即反映新块（I-1），索引注入 system（I-2）。"""
-    (tmp, db, bm, mm, pm, tm, am) = _services()
+    (tmp, db, bm, mm, pm, am) = _services()
     am.create_agent("sess_1")
     bm.create_block("persona", "旧身份")
     memory = Memory(blocks=[bm.get_block_by_label("persona")])
@@ -109,7 +117,7 @@ def test_memory_tools_edit_block_and_archival_in_loop():
                        content="GraphCL 结论", tags=["reading"])]),
         Message(role="assistant", content="完成"),
     ], capture)
-    agent = _mem_agent(llm, bm, mm, pm, tm, am, memory)
+    agent = _mem_agent(llm, bm, mm, pm, am, memory)
     result = asyncio.run(agent.run("记住我的身份"))
     assert result == "完成"
     # memory_replace 经 agent 工具面执行：核心块已更新
@@ -130,7 +138,7 @@ def test_memory_tools_edit_block_and_archival_in_loop():
 def test_compaction_summary_across_runs_recall_complete():
     """全链路：超阈值历史触发压缩 → 摘要落盘跨轮回放；被驱逐旧消息不回放但
     SQL 全量保留（Recall 完整）。"""
-    (tmp, db, bm, mm, pm, tm, am) = _services()
+    (tmp, db, bm, mm, pm, am) = _services()
     am.create_agent("sess_1")
     _preload(mm, 30)
     memory = Memory(blocks=[bm.create_block("persona", "身份")])
@@ -138,7 +146,7 @@ def test_compaction_summary_across_runs_recall_complete():
     llm = make_capture_llm([Message(role="assistant", content="回答1"),
                             Message(role="assistant", content="回答2")], capture)
     agent = _mem_agent(
-        llm, bm, mm, pm, tm, am, memory,
+        llm, bm, mm, pm, am, memory,
         structured=_structured(result=SummarySchema(
             task_overview="T", current_state="S", important_discoveries="D",
             next_steps="N", context_to_preserve="C")),

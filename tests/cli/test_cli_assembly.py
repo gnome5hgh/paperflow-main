@@ -15,8 +15,10 @@ from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
 from paperflow.core.memory.services.message_manager import MessageManager
 from paperflow.core.memory.services.passage_manager import PassageManager
 from paperflow.core.memory.services.archive_manager import ArchiveManager
-from paperflow.core.memory.services.tool_manager import ToolManager
 from paperflow.core.memory.services.agent_manager import AgentManager
+from paperflow.core.memory.tools import get_memory_tools
+from paperflow.core.memory.tools.runtime_context import (
+    MemoryToolsContext, set_memory_context)
 from paperflow.rag.encoders.embedder import FakeEmbedder
 
 #: 真实 agents 目录（main() 装配用真实 AgentRegistry 扫描）
@@ -30,15 +32,15 @@ def test_assembly_chain():
     mm = MessageManager(db)
     pm = PassageManager(db)
     arm = ArchiveManager(db, pm)
-    tm = ToolManager(db)
-    tm.bind(bm, pm, mm, agent_id="sess_1")
-    tm.upsert_base_tools()
+    set_memory_context(MemoryToolsContext(
+        agent_id="sess_1", block_manager=bm, passage_manager=pm, message_manager=mm))
     am = AgentManager(db, bm, mm)
     st = am.create_agent("sess_1")
     assert st.agent_id == "sess_1"
-    assert {t.name for t in tm.list_tools()} >= {"memory_replace", "conversation_search"}
+    assert {t.name for t in get_memory_tools()} >= {"memory_replace", "conversation_search"}
     # MemFS 投影目录已建
     assert (tmp / "memory").exists()
+    set_memory_context(None)
 
 
 def test_main_assembly_no_typeerror(monkeypatch):
