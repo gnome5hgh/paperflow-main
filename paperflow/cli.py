@@ -102,6 +102,11 @@ def _confirm_diff_preview(tool_name: str, params: dict) -> str | None:
         old_text, new_text = params.get("old_text"), params.get("new_text")
         if old_text is None or new_text is None:
             return None
+        # 只在替换确实会应用时预览：edit_file 要求 old_text 在文件里恰好出现一次
+        # （count==1 才写盘）。count>1 / count==0 / 空 old_text 时旧内容不变——
+        # 预览与纯确认无异反而干扰，直接返回 None 走纯确认。
+        if old.count(old_text) != 1:
+            return None
         new = old.replace(old_text, new_text)
     return truncate_diff(compute_diff(old, new, fromfile=str(p), tofile=str(p)))
 

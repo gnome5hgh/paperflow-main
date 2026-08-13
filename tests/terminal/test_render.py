@@ -161,6 +161,19 @@ def test_finalize_ends_last_block():
     assert block.ends == ["答案"]
 
 
+def test_finalize_stops_live_on_empty_text():
+    """F1 回归：空文本块（纯工具轮/澄清轮）结束也必须调 block.end——Live 不残留
+    spinner 动画在确认 diff 打印与下个输入提示下（end("") 即停止 live）。"""
+    block = FakeBlock()
+    out, fn = _collect()
+    s = StreamRenderer(fn, "supervisor", block=block, render_interval=0)
+    s.reset()                                          # run 开始 → spinner
+    s.on_event(StreamEvent("tool", "调用 search_paper(query=x)", "supervisor"))
+    assert not block.ends                              # 工具行只起 spinner，无内容块
+    s.finalize()                                       # 纯工具轮结束：无 content
+    assert block.ends == [""]                          # 空文本也终态渲染（Live 停止）
+
+
 def test_suspend_ends_current_block():
     """suspend（弹输入/确认框前）终态渲染当前块——输入不画在未完块上。"""
     block = FakeBlock()

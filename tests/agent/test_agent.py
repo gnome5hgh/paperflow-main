@@ -614,7 +614,7 @@ class TestFormatToolCall:
         import json
         from paperflow.core.agent import _format_tool_call
 
-        # _compact 值级截断：100 字符 query → 37 内容 + "…"
+        # _compact 值级截断：100 字符 query → 头 35 + "…" + 尾 10
         long_query = "q" * 100
         line = _format_tool_call("arxiv_search", json.dumps(
             {"query": long_query, "max_results": 10}))
@@ -871,7 +871,7 @@ def test_format_tool_call_english_and_middle_truncation():
 
 
 def test_format_tool_call_long_path_middle_truncated():
-    """超长路径头尾截断（不再全展示，避免被终端宽度硬切）。"""
+    """超长路径头尾截断（不再全展示）+ 路径行豁免行宽预算（尾部文件名存活，宽度交给 fold）。"""
     from paperflow.core.agent import _compact, _format_tool_call
     long_path = "/Users/me/Documents/Obsidian Vault/paper/note/classifier/" \
                 "DRC- Discrete Representation Classifier With Salient Features via Fixed-Prototype.pdf"
@@ -881,8 +881,9 @@ def test_format_tool_call_long_path_middle_truncated():
     assert c.startswith(long_path[:40])                # 头部保留（可辨认目录前缀）
     assert "Fixed-Prototype" in c                      # 尾部保留（可辨认文件）
     assert len(c) < len(long_path)                     # 确实被压缩而非全展示
-    # 行级：Calling 前缀 + 路径不再全展示（行宽预算内截断）
+    # 行级：Calling 前缀 + 路径不再全展示；路径行豁免 80 列预算 → _compact 尾部存活
     s = _format_tool_call("read_pdf", '{"path":"%s"}' % long_path)
     assert s.startswith("Calling read_pdf(path=")
     assert "…" in s                                    # 截断标记
     assert long_path not in s                          # 不再全展示
+    assert "Fixed-Prototype" in s                      # 文件名尾部存活——不被 80 列再切一刀

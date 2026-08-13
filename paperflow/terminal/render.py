@@ -139,8 +139,11 @@ class StreamRenderer:
             self._block.spinner(self._current_agent)   # 工具行打印后恢复空闲指示
 
     def _end_block(self) -> None:
+        """终态渲染当前块并停 live。空文本（纯工具轮/澄清轮）也必须调 end——
+        否则 Live 残留 spinner 动画，在确认 diff 打印与下个输入提示下继续转
+        （RichBlock.end 对未启动的 live 是 no-op；PlainBlock.end("") 只补打空增量）。"""
         text, self._block_text = self._block_text, ""
-        if text and self._block:
+        if self._block:
             self._block.end(text)
 
     def _maybe_render(self) -> None:

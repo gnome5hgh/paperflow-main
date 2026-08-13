@@ -121,25 +121,27 @@ def test_binding_ctrl_d_empty_raises_eof():
 
 
 def test_prompt_toolkit_confirm_bindings_toggle_and_accept():
-    """confirm 选择器键绑定：←/→ 切换选择、Enter 以所选结果退出（结构性测试，真 TTY 人工冒烟）。"""
+    """confirm 选择器键绑定：←/→ 切换选择、Enter 以所选结果退出（结构性测试，真 TTY 人工冒烟）。
+
+    state 初始 False = 默认选 No（与 FallbackIO 的 (y/N) 默认拒绝一致）。"""
     from paperflow.terminal.io import _confirm_key_bindings
-    state = [True]
+    state = [False]
     kb = _confirm_key_bindings(state)
     binds = {tuple(b.keys): b for b in kb.bindings}
     assert (Keys.Left,) in binds and (Keys.Right,) in binds and (Keys.Enter,) in binds
 
     # ←/→ 翻转 state 闭包
     ev = MagicMock(); ev.current_buffer = MagicMock()
-    binds[(Keys.Left,)].handler(ev)
-    assert state == [False]
     binds[(Keys.Right,)].handler(ev)
     assert state == [True]
-
-    # Enter → app.exit(result=state[0])——先切到 No 再 Enter
     binds[(Keys.Left,)].handler(ev)
+    assert state == [False]
+
+    # Enter → app.exit(result=state[0])——切到 Yes 再 Enter 放行
+    binds[(Keys.Right,)].handler(ev)
     ev2 = MagicMock(); ev2.app = MagicMock()
     binds[(Keys.Enter,)].handler(ev2)
-    ev2.app.exit.assert_called_once_with(result=False)
+    ev2.app.exit.assert_called_once_with(result=True)
 
 
 def test_fallback_confirm_keeps_text_y_n(monkeypatch, capsys):

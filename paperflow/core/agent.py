@@ -124,8 +124,10 @@ def _format_tool_call(name: str, raw_args: str) -> str:
     """把工具调用格式化为终端一行(claude code 风格:Calling Read(path))。
 
     尽力解析参数;LLM 产出非法 JSON 或参数缺失时只显示工具名——错误路径保持可读,
-    且缓冲清理不依赖参数解析成功(见 terminal.render.StreamRenderer)。行宽预算:
-    固定前缀后的剩余空间截断参数对;每个值经 _compact 头尾截断,超长自动标注字符数。
+    且缓冲清理不依赖参数解析成功(见 terminal.render.StreamRenderer)。每个值经
+    _compact 头尾截断,超长自动标注字符数。含路径参数(值以 / 开头)的行豁免行宽
+    预算:超长路径已头尾截断,再被 80 列切一刀会把文件名尾部切没——宽度交给渲染层
+    overflow="fold" 兜底(见 _compact 与 terminal.render 的溢出说明)。
     """
     try:
         args = json.loads(raw_args) if (raw_args or "").strip() else {}
@@ -134,6 +136,9 @@ def _format_tool_call(name: str, raw_args: str) -> str:
     if not isinstance(args, dict) or not args:
         return f"Calling {name}"
     pairs = ", ".join(f"{k}={_compact(v)}" for k, v in args.items())
+    # 路径参数豁免行宽预算:返回 _compact 后的完整 pairs,尾部(文件名)存活。
+    if any(str(v).lstrip().startswith("/") for v in args.values()):
+        return f"Calling {name}({pairs})"
     budget = max(0, 80 - len(f"Calling {name}()"))
     if budget <= 0:
         return f"Calling {name}()"

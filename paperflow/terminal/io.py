@@ -133,13 +133,14 @@ class PromptToolkitIO(InputIO):
         return self._session.prompt(prompt)
 
     def confirm(self, text: str) -> bool:
-        """方向键 Yes/No 选择器：←/→ 切换高亮项、Enter 确认（默认 Yes）。
+        """方向键 Yes/No 选择器：←/→ 切换高亮项、Enter 确认（默认 No）。
 
         Ctrl+C/EOF 由 _repl 捕获（fail-safe 拒绝）。独立 PromptSession 与主输入
         session 隔离——主 session 是多行 Enter=提交，选择器需 Enter=以结果退出。
+        默认选 No：与 FallbackIO 的 (y/N) 默认拒绝一致（两实现可替换）。
         """
         with _confirm_lock:
-            state = [True]
+            state = [False]
             from prompt_toolkit.shortcuts import prompt as _pt_prompt
             from prompt_toolkit.styles import Style
 

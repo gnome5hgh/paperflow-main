@@ -280,6 +280,30 @@ def test_confirm_callback_shows_diff_preview_for_write(monkeypatch, tmp_path):
     assert rendered and "-old line" in rendered[0] and "+new line" in rendered[0]
 
 
+def test_edit_preview_only_when_edit_applies(tmp_path):
+    """F6 回归：edit_file 预览只在替换确实会应用（count==1）时渲染。
+
+    edit_file 仅在 old_text 在文件中恰好出现一次时写盘；count>1 / count==0 /
+    空 old_text 都拿不到新内容 → 返回 None 走纯确认，不打印无意义的 diff。"""
+    from paperflow.cli import _confirm_diff_preview
+    target = tmp_path / "note.md"
+    target.write_text("line one\nline two\nline one", encoding="utf-8")  # "line one" 出现 2 次
+    params = {"path": str(target), "old_text": "line one", "new_text": "changed"}
+    assert _confirm_diff_preview("edit_file", params) is None            # count>1 → 无预览
+
+    target.write_text("line one\nline two", encoding="utf-8")
+    params["old_text"] = "missing anchor"
+    assert _confirm_diff_preview("edit_file", params) is None            # count==0 → 无预览
+
+    params["old_text"] = ""
+    assert _confirm_diff_preview("edit_file", params) is None            # 空 old_text → 无预览
+
+    params["old_text"] = "line one"                                       # count==1 → 有预览
+    preview = _confirm_diff_preview("edit_file", params)
+    assert preview is not None
+    assert "-line one" in preview and "+changed" in preview
+
+
 def test_ask_eof_returns_empty(monkeypatch):
     """ask_user 回调 Ctrl-D → 空串（Supervisor ReAct 自行处理）。"""
     def _eof(*a, **k):
