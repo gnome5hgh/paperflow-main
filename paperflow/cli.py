@@ -166,8 +166,33 @@ def _merge_pending(conversation: ConversationState, raw: str) -> tuple[str, bool
     return f"{p.original_input}（用户澄清：{raw}）", False
 
 
+def _shorten_path(p: str) -> str:
+    """路径 home 前缀缩写为 ~（对齐 Codex 的 directory 展示）。"""
+    home = str(Path.home())
+    return "~" + p[len(home):] if str(p).startswith(home) else str(p)
+
+
+def _render_banner(model: str, workspace: str) -> str:
+    """Codex 风格启动横幅：方框 + >_ 名称 + model/workspace，无 emoji/版本/标语。
+
+    框宽随最长内容行自适应；box-drawing 字符 TTY/非 TTY 通用。
+    """
+    lines = [
+        ">_ paperFlow Academic Assistant",
+        "",
+        f"model:     {model}",
+        f"workspace: {workspace}",
+    ]
+    inner = max(len(l) for l in lines)
+    top = "╭" + "─" * (inner + 2) + "╮"
+    body = "\n".join(f"│ {l:<{inner}} │" for l in lines)
+    bottom = "╰" + "─" * (inner + 2) + "╯"
+    return f"{top}\n{body}\n{bottom}"
+
+
 async def _repl(supervisor: Agent, conversation: ConversationState, *,
-                io: InputIO, renderer: StreamRenderer, sleeptime=None) -> None:
+                io: InputIO, renderer: StreamRenderer, sleeptime=None,
+                config: PaperFlowConfig | None = None) -> None:
     """REPL 主循环。io/renderer 可注入（测试）。
 
     Ctrl+C 三态：输入框空（io.read 抛 KeyboardInterrupt）→ 退出；输入框有内容 →
@@ -178,8 +203,12 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
 
     澄清挂起：last_intent.clarification 非空且非 force → 存 pending（round 链式
     累计，用旧值 +1，绝不重置为 0）+ 打印问题，等下一轮；否则打印结果。
+
+    :param config: 仅供启动横幅展示 model/workspace；None 回退 PaperFlowConfig.from_env()
     """
-    renderer.print("🌏 paperFlow Academic Assistant")
+    cfg = config or PaperFlowConfig.from_env()
+    renderer.print(_render_banner(cfg.llm.model, _shorten_path(cfg.workspace)))
+    renderer.print("\n  Tip: Type a research task to begin, or /exit to quit")
     supervisor.stream_callback = renderer.on_event
     loop = asyncio.get_running_loop()
     can_sigint = (hasattr(loop, "add_signal_handler")
@@ -363,4 +392,5 @@ def main() -> None:
         frequency=config.sleeptime_agent_frequency)
 
     asyncio.run(_repl(supervisor, conversation,
-                      io=io, renderer=renderer, sleeptime=sleeptime))
+                      io=io, renderer=renderer, sleeptime=sleeptime,
+                      config=config))

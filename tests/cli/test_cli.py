@@ -72,7 +72,7 @@ async def test_repl_prints_result_and_exits():
                 renderer=_make_renderer(out))
     assert sv._calls == [("搜索 circRNA", False)]
     # 注：out 元素是整行文本（banner 含前缀），用子串匹配而非列表成员判定
-    assert any("🌏" in s for s in out)
+    assert any(">_" in s for s in out)
     assert "结果" in out
 
 
