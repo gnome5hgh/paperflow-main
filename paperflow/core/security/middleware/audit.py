@@ -55,13 +55,17 @@ SENSITIVE_KEY_PATTERNS = [
 PATH_KEYS = frozenset({"path", "pdf_path", "file_path", "note_path", "source"})
 
 #: 审计 span 栈：当前工具调用上下文。值 = {"span_id": str, "depth": int} 或 None。
-#: 父链传播机制（对齐 OTel/LangSmith 的 contextvar 方案）——AuditMiddleware.before
-#: 压栈，after 弹栈；子 agent（spawn 工具在 to_thread + asyncio.run 内执行）自动继承。
+#: 用 contextvar 传播父链——before 压栈、after 弹栈；子 agent（spawn 工具在
+#: to_thread + asyncio.run 内执行）自动继承父链，各并发任务持独立副本互不串扰。
 _span_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar("audit_span", default=None)
 
 
 @dataclass
 class AuditEntry:
+    """一条审计事件的可序列化快照：五类事件（tool_started / tool_ended /
+    approval_requested / approval_decided / llm_call）共用同一结构，按事件
+    类型取用不同字段组。写盘时整体 json.dumps 为一行 JSONL。"""
+
     event_type: str
     span_id: str
     trace_id: str
@@ -112,7 +116,12 @@ def _sanitize(args: dict) -> dict:
 
 
 def _derive_decision(ctx: ToolContext) -> str:
-    """从调用结果推导策略决策值：无异常时按是否用户确认区分，异常时按其类型区分。"""
+    """从调用结果推导策略决策值：无异常按是否用户确认区分，异常按其类型区分。
+
+    语义是「未确认即未发生」：抛 ConfirmRequired 的调用无论最终是否放行，
+    只要走到这里（错误路径）一律记为 user_denied；只有通过确认分支、置了
+    user_confirmed 并成功执行（无异常）的调用才记为 user_confirmed。
+    """
     if ctx.error is None:
         return "user_confirmed" if ctx.user_confirmed else "auto_allowed"
     if isinstance(ctx.error, ConfirmRequired):
@@ -183,16 +192,23 @@ class AuditMiddleware(SecurityMiddleware):
     """审计中间件：把工具调用与审批/LLM 事件追加写入当日 JSONL 文件。"""
 
     def __init__(self, audit_dir: str = "data/audit"):
+        """指定审计日志目录；默认落在工作区 data/audit 下。
+
+        初始化时建好线程写锁——子 agent 的工具调用可能在不同线程并发写入，
+        后面每次追加写都在锁内完成。
+        """
         self.audit_dir = audit_dir
         # 并发写锁：多个子代理的工具调用可能在不同线程并发写入，JSONL 追加写
         # 不加锁会出现行与行互相穿插、污染审计记录；加锁保证逐行原子写入。
         self._lock = threading.Lock()
 
     def _current_path(self) -> Path:
+        """返回当日审计文件的绝对路径：每天一个 audit_YYYYMMDD.jsonl。"""
         # 跨日滚动：每次写盘按当天文件名解析（修复长驻进程跨零点写错文件）
         return Path(self.audit_dir) / f"audit_{datetime.now():%Y%m%d}.jsonl"
 
     def _write_event(self, entry: AuditEntry) -> None:
+        """把一条事件追加写入当日 JSONL 文件；失败降级为 stderr 告警，不抛异常。"""
         # 跨日滚动：mkdir 与 open 共用同一次路径解析，避免跨零点时两者解析出不同文件名
         path = self._current_path()
         try:
@@ -210,6 +226,10 @@ class AuditMiddleware(SecurityMiddleware):
             print(f"[audit] write failed: {e}", file=sys.stderr)
 
     async def before(self, ctx: ToolContext) -> None:
+        """工具执行前：为本次调用建立审计 span 并落盘 tool_started 起始事件。
+
+        只观察不拦截，是管道里最先执行的一层——后续任何中间件拦截，调用已留痕。
+        """
         # 生成当前 span_id，读栈顶作父链；先写 tool_started 再压 contextvar——
         # 保证任何子事件（spawn 的子 agent 跑在 execute 内）落盘前，父 span 的
         # 起始事件已存在，中断也不会把子树写成孤儿。
@@ -235,6 +255,12 @@ class AuditMiddleware(SecurityMiddleware):
         ctx._audit_token = _span_ctx.set({"span_id": span_id, "depth": ctx.depth})
 
     async def after(self, ctx: ToolContext) -> None:
+        """工具执行后：收口当前 span 并落盘 tool_ended 收尾事件。
+
+        before 正常执行过则弹栈；early-return 路径（JSON 解析失败 / 未知工具）
+        只走 after，此处防御性补建 span 并补写 tool_started，保住「每个 span
+        必有起始事件」的树不变量。
+        """
         # 防御：early-return 路径（JSON 解析失败/未知工具）只走 after，before 未执行
         # → ctx.span_id 为 None，则此处补一个 span 并补写 tool_started（树不变量：
         # 每个 span 必有起始事件）；未压栈则一律不弹栈。
@@ -289,6 +315,11 @@ class AuditMiddleware(SecurityMiddleware):
         ))
 
     async def on_approval(self, ctx: ToolContext, phase: str, approval_outcome: str | None = None) -> None:
+        """审批生命周期回调：requested 与 decided 各落盘一条独立审计事件。
+
+        请求与决策是两条事件，decided 通过 causation_id 回溯到 requested
+        （合规要求：请求 ≠ 决策）。
+        """
         # 审批生命周期：requested（发起确认时）与 decided（决策后）是两条独立事件，
         # decided 通过 causation_id 回溯 requested（合规要求：请求≠决策）。
         # 守卫：phase 只允许两值，拦截笔误（如 "reuested"）写入日志，避免污染审计。
@@ -325,6 +356,10 @@ class AuditMiddleware(SecurityMiddleware):
     def record_llm_call(self, *, trace_id, session_id, agent_type, turn, model,
                         prompt_tokens, completion_tokens, total_tokens,
                         started_at, duration_ms, finish_reason) -> None:
+        """记录一次 LLM 调用元数据（模型 / token 数 / 耗时），不记 content。
+
+        同步方法——LLM 流式回调可能跑在线程池线程，不能 await。
+        """
         # 同步（LLM 流式回调可能跑在线程池线程）：元数据 only，不记 content。
         # ended_at 由 started_at + duration_ms 推算，与调用方记录的起点一致；
         # started_at 格式无法解析时兜底为写入时刻。

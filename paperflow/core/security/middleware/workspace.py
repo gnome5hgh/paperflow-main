@@ -87,6 +87,7 @@ class WorkspacePolicyMiddleware(SecurityMiddleware):
     """工作区路径边界中间件：在工具执行前校验路径类参数不越界。"""
 
     def __init__(self, workspace: str):
+        """指定工作区根目录；所有路径参数都相对它做白名单归属判断。"""
         self.workspace = workspace
 
     def _path_param_names(self, parameters: dict) -> set[str]:

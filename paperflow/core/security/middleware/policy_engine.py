@@ -26,6 +26,11 @@ class PolicyEngineMiddleware(SecurityMiddleware):
     """策略检查中间件：默认禁止、风险阈值、确认放行三级检查。"""
 
     def __init__(self, max_risk: str = "medium"):
+        """指定会话风险阈值；非法阈值在构造期即 fail-fast。
+
+        初始化已确认集合——存放本会话内用户放行过的 (工具名, 目标路径)，
+        同一键不再重复询问。
+        """
         if max_risk not in RISK_ORDER:
             raise ValueError(
                 f"非法风险阈值: {max_risk}，合法值: {sorted(RISK_ORDER.keys())}"

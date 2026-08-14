@@ -63,6 +63,9 @@ SHELL_COMMAND_RE = re.compile(
 )
 
 
+#: 内置扫描规则集。severity 决定处理方式：critical（命令执行/提示注入/密钥泄露）
+#: 在写入前拦截或替换最终回复；important（路径泄露/邮箱）仅记录不拦截；
+#: warning（高重复率）只提示。
 SCAN_RULES = [
     {
         "id": "shell_command",
