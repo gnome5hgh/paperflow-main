@@ -1,4 +1,4 @@
-# paperflow/core/intent/dense_encoder.py
+# paperflow/core/intent/encoders/dense.py
 """稠密编码器接口协议 + 确定性伪实现。
 
 当前提供接口协议与一个用于路由逻辑验证的确定性伪编码器；

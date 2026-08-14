@@ -1,4 +1,4 @@
-# paperflow/core/intent/route_loader.py
+# paperflow/core/intent/routing/route_loader.py
 """意图知识库加载器——routes.yaml 是唯一知识库源（测试与生产共用路径）。"""
 from pathlib import Path
 
@@ -48,9 +48,9 @@ def save_thresholds(path: Path, routes: list[Route]) -> None:
 def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, str, bool]]:
     """eval.yaml → [(query, intent_label, is_hard)]。
 
-    独立评估样本集。is_hard 标记 query 为与其他意图近形的硬负样本（Q2 要求
-    每个新意图的 held-out 中 ≥30% 为混淆/硬负样本——否则 per-intent 门槛对
-    新意图无约束，是"自己给自己打分"的漏洞）。
+    独立评估样本集。is_hard 标记 query 为与其他意图近形的硬负样本：
+    要求每个意图的 held-out 中硬负样本占比 ≥30%——否则 per-intent 阈值对
+    混淆样本毫无约束力，是"自己给自己打分"的漏洞。
     """
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)

@@ -1,9 +1,9 @@
-# paperflow/core/intent/intent_schema.py
+# paperflow/core/intent/schemas/intent.py
 """意图识别输出契约——识别管线各阶段产出的统一数据结构。
 
-这是"输出契约"：定义识别结果的形态，与 schema.py 的"路由契约"（路由器
+这是"输出契约"：定义识别结果的形态，与 schemas/route.py 的"路由契约"（路由器
 输入/输出）职责不同。识别管线分四级：实体提取 / 追问检测 / 混合路由 /
-LLM 兜底，这里的四个类型是它们共同使用的产出契约：
+LLM 兜底，本模块定义的几个类型是它们共同使用的产出契约：
 
 - ``IntentType``: 14 类意图枚举（枚举值即路由名，对应 routes.yaml 的 route 名集合）。
 - ``IntentCategory``: 意图类别（business/dialogue/system）——消费分组，非路由层级。

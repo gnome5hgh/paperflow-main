@@ -26,6 +26,6 @@ class PendingClarification:
 @dataclass
 class ConversationState:
     """跨轮会话状态。prev_* 由 run() 结束后更新;pending_intent 由 CLI 维护。"""
-    prev_intent: IntentType | None = None
-    prev_user_input: str = ""
-    pending_intent: PendingClarification | None = None
+    prev_intent: IntentType | None = None                    # 上一轮意图（追问检测消费）
+    prev_user_input: str = ""                                # 上一轮输入（追问分支重跑实体提取用）
+    pending_intent: PendingClarification | None = None       # 跨轮澄清挂起（CLI 维护，最多 2 轮）

@@ -25,7 +25,12 @@ QUANTIFIER = re.compile(r"(?:这|那)(?:篇|个|本|份|些|条|张)")
 
 
 def detect_followup(query: str, prev_intent: IntentType | None) -> bool:
-    """判定 query 是否是对上轮意图的追问（继承 prev_intent）。"""
+    """判定 query 是否是对上轮意图的追问（是则继承 prev_intent）。
+
+    三元判定缺一不可：① 有承接标记；② 无动作动词（有任一即视为新请求）；
+    ③ 未引入新指代实体（"这篇/那个"+量词指向列表新对象，不算承接上轮对象）。
+    prev_intent 为空（首轮）时直接判定不是追问。
+    """
     if prev_intent is None:
         return False
     if not any(m in query for m in FOLLOWUP_MARKERS):

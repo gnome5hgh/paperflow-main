@@ -1,4 +1,4 @@
-"""对齐 semantic_router/index/hybrid_local.py 的 HybridLocalIndex。"""
+"""稠密 + 稀疏双路融合索引（内存版），服务混合路由的向量查询。"""
 import numpy as np
 from numpy.linalg import norm
 
@@ -18,10 +18,11 @@ class HybridLocalIndex:
         self.utterances: np.ndarray | None = None
 
     def add(self, embeddings, routes, utterances, sparse_embeddings) -> None:
-        """对齐 add()：首次初始化或 concat 追加。
+        """加入一批样本：首次调用直接初始化，之后 np.concatenate 追加。
 
-        首次 add 直接赋值；后续 add 用 np.concatenate 追加（保持 index 是
-        单一 ndarray，query 里 norm/dot 向量化一次性算完，不逐行循环）。"""
+        追加保持 index 是单一 ndarray，query 里的 norm/dot 可向量化一次性算完，
+        不逐行循环。"""
+
         embeds = np.array(embeddings)
         routes_arr = np.array(routes)
         utts_arr = np.array(utterances)
@@ -39,7 +40,7 @@ class HybridLocalIndex:
     def query(self, vector, top_k: int = 5,
               sparse_vector: dict[int, float] | None = None
               ) -> tuple[np.ndarray, list[str]]:
-        """对齐 query()：sim_d（余弦）+ sim_s（稀疏点积）→ argpartition top_k。
+        """融合查询：sim_d（余弦）+ sim_s（稀疏点积）→ argpartition 取 top_k。
 
         sim_d：余弦相似度，除以各行范数 * query 范数（防止 query 未归一化）。
         sim_s：稀疏点积（BM25 类稀疏向量间交集求和），与 sim_d 同量纲相加。
@@ -60,7 +61,7 @@ class HybridLocalIndex:
         return total_sim[idx], list(self.routes[idx])
 
     def _sparse_index_dot_product(self, xq_s: dict[int, float] | None) -> list[float]:
-        """对齐同名方法：query 稀疏向量与每个 doc 稀疏向量点积。
+        """query 稀疏向量与每个 doc 稀疏向量的点积。
 
         逐 doc 遍历 query 的 token 取 doc 权重求和——query 稀疏向量通常
         远短于 doc 向量，以 query 为外循环只遍历命中 token，更快。"""

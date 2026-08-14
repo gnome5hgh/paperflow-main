@@ -1,10 +1,8 @@
-# paperflow/core/intent/hybrid_router.py
+# paperflow/core/intent/routing/router.py
 """混合路由器：稀疏（BM25）+ 稠密双路召回、按路由阈值裁决。
 
-实现参考 semantic_router/routers/hybrid.py 与 routers/base.py，只保留静态路由场景：
-不支持 async 调用、远端索引、动态路由（function_schemas / LLM 兜底）、
-auto_sync/hash、tqdm 进度条。__call__ 返回单个 RouteChoice
-（评估场景下源码取 choice[0]，这里直接返回单个结果）。
+只做静态意图路由：本地内存索引、同步调用，一次查询返回单个 RouteChoice
+（命中返回路由名与融合分数；未命中返回 None，交由管线走 LLM 兜底）。
 """
 import random
 
@@ -16,9 +14,11 @@ from paperflow.core.intent.encoders.index import HybridLocalIndex
 
 
 class HybridRouter:
-    """混合路由器：稠密与稀疏按 alpha 凸组合打分。
+    """混合路由器：稠密与稀疏按 alpha 凸组合打分、按路由阈值裁决。
 
-    alpha=0.3 为默认稠密权重（稀疏权重为 1-alpha）；fit 只调阈值，不调 alpha。"""
+    alpha=0.3 为默认稠密权重（稀疏权重为 1-alpha）；fit 只调阈值，不调 alpha。
+    打分完全确定（无随机性）——路由未命中时，管线会把本路由器的近失候选分数
+    注入 LLM 兜底 prompt，让 LLM 在路由先验上确认或改判，而非盲猜。"""
 
     def __init__(self, encoder, sparse_encoder: BM25Encoder | None = None,
                  routes: list[Route] | None = None,
@@ -35,17 +35,19 @@ class HybridRouter:
             self.add(routes)
 
     def add(self, routes) -> None:
-        """对齐源码 hybrid.py add()：
-        ① fit 用全部累积 routes（self.routes）
-        ② 编码入索引只用新增 routes（参数）——维度匹配：新增 utterances 数 == 新增 route 名数
-        若入索引用全部累积而 route 名只给新增，第二次 add 时 np.concatenate 长度不匹配崩溃。"""
+        """加入一批路由并编码入索引。
+
+        ① fit 用全部累积路由（self.routes）——语料统计要覆盖历史所有样本；
+        ② 编码入索引只用本次新增路由——维度匹配：新增 utterances 数 == 新增
+        route 名数。若入索引用全部累积而 route 名只给新增，第二次 add 时
+        np.concatenate 长度不匹配崩溃。"""
         if isinstance(routes, Route):
             routes = [routes]
         self.routes.extend(routes)
-        # ① fit：全部累积（对齐源码 self.routes）
+        # ① fit：用全部累积路由，语料统计覆盖历史所有样本
         all_utterances = [u for r in self.routes for u in r.utterances]
         self.sparse_encoder.fit(all_utterances)
-        # ② 编码入索引：只新增（对齐源码 _extract_routes_details(routes)）
+        # ② 编码入索引：只用本次新增，与新增 route 名一一对应（维度匹配）
         new_utterances = [u for r in routes for u in r.utterances]
         dense_emb = np.array(self.encoder(new_utterances))
         sparse_emb = self.sparse_encoder.encode_documents(new_utterances)
@@ -58,7 +60,7 @@ class HybridRouter:
         )
 
     def _convex_scaling(self, dense, sparse):
-        """对齐 _convex_scaling()：dense × alpha，sparse × (1-alpha)。"""
+        """按 alpha 凸组合缩放：dense × alpha，sparse × (1-alpha)。"""
         scaled_dense = np.array(dense) * self.alpha
         scaled_sparse = [{k: v * (1 - self.alpha) for k, v in d.items()}
                          for d in sparse]
@@ -106,7 +108,7 @@ class HybridRouter:
         return [(name, float(score)) for name, score, _ in scored[:k]]
 
     def _score_routes(self, query_results: list[dict]) -> list[tuple[str, float, list[float]]]:
-        """对齐 _score_routes()：按 route 分组，aggregation=mean，降序。"""
+        """按 route 分组聚合：取 mean 作为该路由的融合分数，按分数降序排列。"""
         scores_by_class: dict[str, list[float]] = {}
         for r in query_results:
             scores_by_class.setdefault(r["route"], []).append(r["score"])
@@ -116,8 +118,11 @@ class HybridRouter:
         return total
 
     def _pass_routes(self, scored_routes, simulate_static: bool) -> RouteChoice | None:
-        """对齐 _pass_routes() 静态部分：阈值裁决（route 阈值优先，否则全局）。
-        :param simulate_static: 预留，静态路由下无分支。"""
+        """阈值裁决：按分数降序遍历，返回第一个过阈值的路由。
+
+        route 自身阈值优先，否则用全局 score_threshold；全部未过阈值返回 None
+        （未命中，交由管线走 LLM 兜底）。simulate_static 是预留参数，静态路由
+        下无分支。"""
         for route_name, total_score, _scores in scored_routes:
             route = self.get(route_name)
             if route is None:
@@ -147,8 +152,11 @@ class HybridRouter:
 
     def fit(self, X: list[str], y: list[str],
             batch_size: int = 500, max_iter: int = 500) -> None:
-        """对齐 HybridRouter.fit + base.py threshold_random_search：
-        迭代 max_iter 次：阈值随机搜索 ±0.8/100 采样，保留最佳 accuracy。"""
+        """在给定样本上训练路由阈值：迭代 max_iter 次阈值随机搜索，保留最佳准确率。
+
+        每轮对每个路由的当前阈值在 ±0.8 范围内 100 等分随机采样一个新阈值，
+        用样本评估准确率，最终写回准确率最高的一组阈值（阈值是每路由独立的，
+        见 load_eval 对硬负样本占比的要求）。"""
         Xq_d = np.concatenate([self.encoder(X[i:i + batch_size])
                                for i in range(0, len(X), batch_size)]) if X else np.array([])
         Xq_s = [s for b in [self.sparse_encoder(X[i:i + batch_size])
@@ -165,7 +173,7 @@ class HybridRouter:
         self._update_thresholds(best_thresholds)
 
     def _threshold_random_search(self, search_range: float) -> dict[str, float]:
-        """对齐 base.py threshold_random_search()。"""
+        """对每个路由在当前阈值附近 ±search_range 范围内 100 等分随机采样一个新阈值。"""
         result = {}
         for route, threshold in self.get_thresholds().items():
             values = np.linspace(max(threshold - search_range, 0.0),
@@ -182,7 +190,7 @@ class HybridRouter:
         return self._vec_evaluate(Xq_d, Xq_s, y)
 
     def _vec_evaluate(self, Xq_d, Xq_s, y: list[str]) -> float:
-        """对齐 _vec_evaluate()：simulate_static 路由 vs 真值。"""
+        """批量评估路由准确率：逐样本用 simulate_static 路由判定，与真值标签比对，返回一致比例。"""
         correct = 0
         for xq_d, xq_s, target in zip(Xq_d, Xq_s, y):
             choice = self(vector=xq_d, sparse_vector=xq_s, simulate_static=True)

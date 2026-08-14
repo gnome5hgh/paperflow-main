@@ -84,7 +84,7 @@ class IntentPipeline:
         return extract_entities(query)
 
     def _detect_followup(self, query: str, prev_intent) -> bool:
-        """追问检测（委托 followup_detector.detect_followup）。"""
+        """追问检测（委托 followup.detect_followup；保留方法形态便于测试替换）。"""
         return detect_followup(query, prev_intent)
 
     def _build_llm_prompt(self, query: str, near_miss: list[tuple[str, float]]) -> str:
