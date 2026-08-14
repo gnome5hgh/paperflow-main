@@ -1,4 +1,4 @@
-# paperflow/tools/submit_download_review.py
+# paperflow/tools/review/submit_download_review.py
 """SubmitDownloadReviewTool：汇总下载审查裁决（reviewer 下载审查模式返回）。
 
 与 SubmitReviewTool 同款校验哲学：decision/verdict 枚举 + 一致性 + 可行动理由，
@@ -33,6 +33,13 @@ class SubmitDownloadReviewTool(Tool):
     risk_level = "low"                     # 只读格式化，无副作用（同 SubmitReviewTool）
 
     def execute(self, verdict: str, items: list) -> ToolResult:
+        """校验并格式化下载审查裁决;非法输入返回可行动报错文本。
+
+        pass 语义是「存在可下载/推荐项」:pass + 混合列表(如 2 pass + 7 fail)合法,
+        但 pass + 空 items、pass 却无 pass 条目、fail 却含 pass 条目都判自相矛盾;
+        fail + 空 items 合法(空清单正是「无任何合格项」的极端情况)。校验通过后渲染
+        verdict 行 + 每条目 PASS/FAIL 标签。
+        """
         # ① verdict 枚举校验（enum_check 共享，同 submit_review）
         bad = enum_check(verdict, VERDICTS, "verdict")
         if bad:

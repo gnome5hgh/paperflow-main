@@ -28,11 +28,18 @@ def _normalize_arxiv_query(query: str) -> str:
 
 class ArxivClient(_HttpClientMixin):
     def __init__(self, transport=None, ssrf_check=None):
+        """建 httpx 同步客户端;transport/ssrf_check 供测试注入 MockTransport 与 SSRF 桩。"""
         self.client = httpx.Client(transport=transport, timeout=30.0)
         self.ssrf_check = ssrf_check or validate_url_target
 
     def search(self, query: str, max_results: int = 5,
                year_from: int | None = None, year_to: int | None = None) -> list[dict]:
+        """调 arXiv API 搜索论文,返回论文 dict 列表。
+
+        年份用官方 submittedDate 区间过滤,绝不拼进自由文本 query;裸多词 + 日期过滤
+        时先转 all: 前缀(arXiv 已知缺陷,见 _normalize_arxiv_query)。预印本一律标记
+        downloadable=True,venue/issn 为 None(等级由 reviewer 后查)。
+        """
         # 年份用 arXiv 原生 submittedDate 区间过滤,绝不拼进自由文本 query——拼进去会被
         # arXiv 当关键词模糊匹配,且易被注入改写检索语义。submittedDate 是官方字段,
         # [lo TO hi] 是标准 Lucene 区间语法;缺侧边界用全开(0000 年起 / 9999 年止)。

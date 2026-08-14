@@ -119,6 +119,10 @@ class LookupVenueRankTool(Tool):
         return _VenueClient(transport=transport, ssrf_check=ssrf_check)
 
     def _rank_text(self, rank: dict, source: str, evidence: str) -> str:
+        """把等级 dict 渲染成 LLM 可见文本:等级、判定(≥Q2)、来源与证据链接。
+
+        等级键用大写形式(CCF-A / JCR-Q1 / CAS-一区),便于 LLM 与测试按该形式断言。
+        """
         # 等级展示用 "CCF-A" / "JCR-Q1" / "CAS-一区" 大写键-值形式，
         # 便于 LLM 与 brief 测试按 "CCF-A" 断言（小写 "ccf=A" 无法命中该断言）
         parts = [f"{k.upper()}-{v}" for k, v in rank.items() if v]
@@ -135,6 +139,11 @@ class LookupVenueRankTool(Tool):
             RANK_CACHE.popitem(last=False)
 
     def execute(self, venue: str, issn: str | None = None) -> ToolResult:
+        """查询 venue 等级并返回渲染文本;全链路 fail-closed,绝不静默回退成「通过」。
+
+        查询链:缓存 → 本地映射 → LetPub(优先按 ISSN 精确查,避开同名歧义)→ SJR →
+        全未命中。网络/解析异常显式报错,未命中显式「请人工核验,不默认通过」。
+        """
         # ① 缓存命中（LRU：命中即视为最近使用，move_to_end）
         ckey = (normalize_venue(venue), issn)
         cached = RANK_CACHE.get(ckey)
@@ -180,6 +189,9 @@ class LookupVenueRankTool(Tool):
 
 
 def _venue_passes(rank: dict) -> bool:
-    """等价表 B 判定（避免 _venue_rank 与工具循环 import，本地再导一次）。"""
+    """按「期刊 JCR Q1/Q2、中科院一/二区、会议 CCF-A/B」判定是否通过。
+
+    本地再导一次 passes_q2,避免与 _venue_rank 模块循环 import。
+    """
     from paperflow.tools.rank._venue_rank import passes_q2
     return passes_q2(rank)

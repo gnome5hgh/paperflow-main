@@ -14,11 +14,18 @@ from paperflow.tools.common._http import _HttpClientMixin
 
 class OpenAlexClient(_HttpClientMixin):
     def __init__(self, transport=None, ssrf_check=None):
+        """建 httpx 同步客户端;transport/ssrf_check 供测试注入 MockTransport 与 SSRF 桩。"""
         self.client = httpx.Client(transport=transport, timeout=30.0)
         self.ssrf_check = ssrf_check or validate_url_target
 
     def search(self, query: str, max_results: int = 5,
                year_from: int | None = None, year_to: int | None = None) -> list[dict]:
+        """调 OpenAlex API 搜索论文,返回论文 dict 列表。
+
+        年份用 publication_year filter 区间过滤(半开区间,缺侧开放),与检索词分离;
+        DOI 是跨源去重最高优先级键(openalex 常带而 arxiv 不带)。可下载 = 有开放获取
+        位置,否则 downloadable=False(下载门禁据此静默跳过)。
+        """
         params = {"search": query, "per-page": max_results}
         # 年份用 publication_year filter 区间过滤(半开区间,缺侧开放),不拼进自由文本
         # search——结构与关键词分离,避免过滤词被当成检索词。

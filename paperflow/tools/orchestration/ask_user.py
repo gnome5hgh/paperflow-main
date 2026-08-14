@@ -24,6 +24,11 @@ class AskUserQuestionTool(Tool):
     risk_level = "low"
 
     def execute(self, question: str) -> ToolResult:
+        """向用户提问并返回其回答;无回调时返回 fail-safe 提示,不阻塞挂死。
+
+        callback 为空(程序化/测试环境)时明示无法交互,由调用 agent 基于已有信息
+        自行决策;有回调时经 worker 线程读 stdin,不冻结事件循环。
+        """
         cb = getattr(self._parent, "ask_user_callback", None)
         if cb is None:
             # fail-safe：无法交互时明确告知,调用 agent 依据已有信息自行决策(不挂死)

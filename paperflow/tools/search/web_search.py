@@ -77,6 +77,12 @@ class WebSearchTool(Tool):
     def execute(self, query: str, source: str, max_results: int = 5,
                 year_from: int | None = None, year_to: int | None = None,
                 _run_state=None) -> ToolResult:
+        """按 source 搜索论文,结果入去重池并渲染成文本行返回。
+
+        流程:source 合法性校验 → 数量兜底钳制 → 查询缓存命中即回 → 源熔断短路 →
+        客户端搜索(成功记成功、SSRF 违规不计熔断、其他异常记失败)→ 结果入每轮共享
+        去重池 → 仅非空结果写缓存。SSRF 拦截与源故障分开处理,见各分支注释。
+        """
         # 未知 source 直接报错并列合法源，不触网——LLM 可据此改传参
         if source not in _SOURCE_REGISTRY:
             return ToolResult(text=f"未知搜索源: {source}，可用: {', '.join(_SOURCE_REGISTRY)}")

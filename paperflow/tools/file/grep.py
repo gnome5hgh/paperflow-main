@@ -1,4 +1,4 @@
-# paperflow/tools/grep.py
+# paperflow/tools/file/grep.py
 """GrepTool：在文件/目录内按正则搜文本（只读）。
 
 edit_file 的 search-replace 锚点确认、reviewer 事实核对、searcher 下载校验。

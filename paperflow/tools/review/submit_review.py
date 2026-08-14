@@ -43,6 +43,11 @@ class SubmitReviewTool(Tool):
     allowed_roots = ["note", "scratch", "outline"]
 
     def execute(self, path: str, verdict: str, issues: list) -> ToolResult:
+        """校验并格式化审查裁决;非法输入返回可行动报错文本。
+
+        三步校验:verdict 枚举 → 逐 issue 枚举/必需字段 → verdict 与 issues 一致性
+        (pass 当且仅当无 blocking)。通过后按 severity 分组渲染,供 writer 确定性读取。
+        """
         # ① verdict 枚举校验（enum_check 共享，同 submit_download_review）
         bad = enum_check(verdict, VERDICTS, "verdict")
         if bad:
