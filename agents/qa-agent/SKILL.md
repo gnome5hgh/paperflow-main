@@ -46,6 +46,8 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
 | "我之前的笔记里…" | `notes` | `read_file` 读指定笔记 |
 | "我读过哪些/阅读记录/记忆里…" | `memory` | 用 `conversation_search` / `archival_memory_search` 检索（不再读 MEMORY.md/history.jsonl） |
 
+**精读/分析任务**(analyze_paper 派发,子任务写"精读/分析维度")：读完并分析后 → `history_append(精读, 论文标题)` 记入浏览历史 → `ask_user_question("《{title}》已精读，要移出未读清单吗?")`，确认→ `unread_list_remove(title)`（谁干活谁记录）。
+
 ## 回答规则
 
 - **引用依据**:RAG 命中时给出段落来源(工具结果含 `[source:path]`);read_pdf 时注明论文路径。

@@ -57,13 +57,15 @@ allowed_spawns: []   # supervisor 硬编码放行所有子 agent(_check_spawn_al
 
 ## 清单消费规则(未读清单 unread_list / 浏览历史 history_list)
 
-- **加入未读**：用户「把这篇加入未读」或 searcher 推荐后用户确认 → 先 `extract_title`(pdf 或搜索元数据) 得**权威标题**，再 `unread_list_add(title, source)`。标题必须来自论文原文，**禁止用文件名**。
-- **精读/分析后**(analyze_paper 消耗了某篇待读论文)：先 `history_append(精读, title)`，再 `ask_user_question("《{title}》已精读，要移出未读清单吗?")`，确认→ `unread_list_remove(title)`。
-- **笔记落盘后**(generate_note 消耗了某篇待读论文)：`history_append(写笔记, title)`，再 `ask_user_question("《{title}》笔记已生成，还要保留在未读清单吗?")`，确认移除→ `unread_list_remove(title)`。
-- **切换方向**(switch_topic)：`ask_user_question("旧方向的未读清单怎么处理?")`，选项 保留/归档/清空，按选择执行。
-- **显式移除**：用户直接说移出 → `unread_list_remove(title)`，不再询问。
+记忆副作用由**干活者**在各自流程记录(supervisor 只调度、不直接执行清单操作——见铁律 1):
+
+- **加入未读**：searcher 推荐后用户确认 → searcher 自己 `extract_title` 得**权威标题**再 `unread_list_add(title, source)`(标题必须来自论文原文,禁文件名)。用户直接要求「把这篇加未读」→ manage_memory 意图派发 qa-agent 执行加入。
+- **精读/分析后**(analyze_paper 消耗了某篇待读论文)：qa-agent 先 `history_append(精读, title)`,再 `ask_user_question("《{title}》已精读，要移出未读清单吗?")`,确认→ `unread_list_remove(title)`。
+- **笔记落盘后**(generate_note 消耗了某篇待读论文)：writer 先 `history_append(写笔记, title)`,再 `ask_user_question("《{title}》笔记已生成，还要保留在未读清单吗?")`,确认移除→ `unread_list_remove(title)`。
+- **显式加入/移除**：用户直接说加入/移出 → manage_memory 意图派发 qa-agent(子任务写明权威标题与动作)。
 - **ask_question 不触发**：问答不算精读，不追加 history、不移出未读。
-- **查询**：「我读过哪些论文」→ qa-agent 读 history_list 去重；「最近在读什么」→ 按时间取最近几条。
+- **查询**：「我读过哪些论文」→ manage_memory 派发 qa-agent 读 history_list 去重;「最近在读什么」→ 按时间取最近几条。
+- **切换方向**(switch_topic)：`ask_user_question("旧方向的未读清单怎么处理?")` 询问用户;若需移出/加入,再按 manage_memory 派发 qa-agent 执行。
 
 ## 意图 → 子 agent 对照
 
@@ -74,7 +76,7 @@ allowed_spawns: []   # supervisor 硬编码放行所有子 agent(_check_spawn_al
 | write_outline | writer | mode="outline"；子任务拼入课题（用户指定优先，否则 human 块当前课题）；产出大纲绝对路径即成功（digest.outline_path） |
 | ask_question | qa-agent | 问答 / 阅读 / RAG 检索(具体 mode 由子 agent 判断) |
 | analyze_paper | qa-agent | 精读/分析论文,子任务写明分析维度(结构/方法/结论/局限等) |
-| manage_memory | qa-agent | 查询(读过哪些/未读清单)→ qa-agent;加入未读→ 先 extract_title 得权威标题,再 unread_list_add;移出未读→ unread_list_remove(指名标题) |
+| manage_memory | qa-agent | 记忆查询/清单管理:查询(读过哪些/未读清单)、加入未读(extract_title → unread_list_add)、移出未读(unread_list_remove);子任务写明具体动作与权威标题 |
 
 ## 调度工具参考
 
