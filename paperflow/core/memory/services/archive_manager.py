@@ -1,6 +1,7 @@
-"""ArchiveManager：可共享的 passage 集合（Letta services/archive_manager.py）。
+"""ArchiveManager：可共享的 passage 集合（把长期记忆按主题归档）。
 
-paperFlow 单用户下按需使用，保留 Letta 接口。archive 存 SQLite（archives 表）。
+单用户场景下按需使用。archive 存 SQLite 的 archives 表：一行一个归档，
+passage_ids 是该归档包含的 passage id 列表（JSON 序列化）。
 """
 from __future__ import annotations
 
@@ -17,6 +18,8 @@ __all__ = ["Archive", "ArchiveManager"]
 
 @dataclass
 class Archive:
+    """一个归档：id/name/description + 包含的 passage id 列表。"""
+
     id: str
     name: str
     description: str | None = None
@@ -24,6 +27,8 @@ class Archive:
 
 
 class ArchiveManager:
+    """归档业务层：建/列归档，并把 passage 加入归档（只记录 id，不复制内容）。"""
+
     def __init__(self, db: MemoryDB, passage_manager: PassageManager,
                  vector_db_provider: str = "NATIVE"):
         self.db = db
@@ -33,6 +38,7 @@ class ArchiveManager:
                    "passage_ids TEXT, created_at TEXT)")
 
     def create_archive(self, name: str, description: str | None = None) -> Archive:
+        """新建归档（初始 passage_ids 为空列表）。"""
         arch = Archive(id=f"archive-{uuid.uuid4().hex}", name=name,
                        description=description)
         self.db.execute(
@@ -42,6 +48,7 @@ class ArchiveManager:
         return arch
 
     def list_archives(self) -> list[Archive]:
+        """列出全部归档（passage_ids 从 JSON 还原）。"""
         cur = self.db.execute("SELECT * FROM archives")
         out = []
         for r in cur.fetchall():
@@ -53,6 +60,7 @@ class ArchiveManager:
         return out
 
     def add_passage(self, archive_id: str, passage: Passage) -> Passage:
+        """把 passage 加入归档：归档不存在抛 KeyError；只追加 id 不复制内容。"""
         import json
         cur = self.db.execute("SELECT * FROM archives WHERE id=?", (archive_id,))
         row = cur.fetchone()

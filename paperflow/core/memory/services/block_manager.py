@@ -1,7 +1,9 @@
-"""BlockManager：记忆块 CRUD + 乐观锁 + checkpoint_block 快照（撤销/重做）。
+"""BlockManager：记忆块 CRUD + 写前快照 + 单调版本号（撤销/重做的历史链）。
 
-对应 Letta services/block_manager.py。GitEnabledBlockManager（git 变体）在
-Task 4（memfs）中叠加。
+更新块前把旧值整体快照进 block_history、版本号 +1——版本列只做写入标注与
+历史链排序，不做比较交换（单用户 + 全局写锁下并发写已被串行化，无需 CAS）。
+GitEnabledBlockManager 是其 git 变体：块变更同步写 markdown 投影 + git commit，
+语义是「SQL 是源、markdown 是投影」。
 """
 from __future__ import annotations
 
@@ -19,10 +21,13 @@ _LIMIT = "Exceeds {limit} character limit"
 
 
 class BlockManager:
+    """核心块业务层：持有 read_only / limit 不变式，维护写前快照历史链。"""
+
     def __init__(self, db: MemoryDB):
         self.db = db
 
     def _to_schema(self, row: dict) -> Block:
+        """把 DB 行转回 Block 模型（metadata_ / read_only 从 JSON/整型还原）。"""
         import json
         return Block(
             id=row["id"], label=row["label"], value=row["value"], limit=row["limit"],
@@ -42,6 +47,7 @@ class BlockManager:
     def create_block(self, label: str, value: str, limit: int = 2000,
                      description: str | None = None,
                      read_only: bool = False) -> Block:
+        """新建块并落盘（初始版本号 1）。"""
         b = Block.new(label, value)
         b.limit = limit
         b.description = description
@@ -50,12 +56,14 @@ class BlockManager:
         return b
 
     def get_block(self, block_id: str) -> Block:
+        """按 id 取块；不存在抛 KeyError（变异工具硬失败的来源）。"""
         row = block_orm.select_block(self.db, block_id)
         if row is None:
             raise KeyError(f"block {block_id} not found")
         return self._to_schema(row)
 
     def get_block_by_label(self, label: str) -> Block | None:
+        """按 label 取块；不存在返回 None（工具层据此判断「该建还是该报错」）。"""
         row = block_orm.select_block_by_label(self.db, label)
         return self._to_schema(row) if row else None
 
@@ -75,9 +83,16 @@ class BlockManager:
         return created
 
     def list_blocks(self) -> list[Block]:
+        """返回全部块（按创建时间排序），供 Memory 重建与 head 编译。"""
         return [self._to_schema(r) for r in block_orm.select_blocks(self.db)]
 
     def update_block_value(self, label: str, value: str) -> Block:
+        """更新块值：先校验（存在 / read_only / 长度），再快照旧值进历史并 +1 版本。
+
+        这是「乐观锁非 CAS」的核心：每次更新把当前版本写进 block_history 快照，
+        版本号单调 +1——版本列只做写入标注与历史链排序，不做「读时≠写时拒绝」
+        的比较交换。单用户 + 全局写锁下并发已被串行化，比较交换没有用武之地。
+        """
         row = block_orm.select_block_by_label(self.db, label)
         if row is None:
             raise KeyError(f"block {label} not found")
@@ -107,11 +122,13 @@ class BlockManager:
         block_orm.delete_block(self.db, block_id)
 
     def checkpoint_block(self, block_id: str) -> None:
+        """手动快照：把当前块状态写进 block_history（version 记为 0，表示非更新前快照）。"""
         b = self.get_block(block_id)
         block_orm.checkpoint_block(self.db, b.id, b.label, b.value, b.limit,
                                    b.description, b.metadata_, 0)
 
     def restore_block(self, block_history_id: int) -> Block:
+        """按历史快照回滚块：把快照的值与版本写回 blocks 行，返回回滚后的块。"""
         snap = block_orm.restore_block_history(self.db, block_history_id)
         block_orm.update_block(self.db, snap["block_id"], snap["value"], snap["version"])
         return self.get_block(snap["block_id"])
@@ -120,8 +137,9 @@ class BlockManager:
 class GitEnabledBlockManager(BlockManager):
     """BlockManager 的 git 变体：块变更同步到 MemFS markdown 投影并 git commit。
 
-    对应 Letta GitEnabledBlockManager。原 paperFlow GitStore 由此保留——
-    语义从「markdown 是源」变为「markdown 是 blocks 的投影」。
+    语义是「SQL 是源、markdown 是投影」：权威数据在 blocks 表，.md 文件只是
+    给人看/给人手改的可读投影，git 只做可审计历史（每写必 commit，无变更不
+    产生空 commit）。
     """
 
     def __init__(self, db, memfs_dir: Path | None = None):
@@ -141,6 +159,7 @@ class GitEnabledBlockManager(BlockManager):
         self._repo = Repo(str(self._memfs_dir))
 
     def _git_log(self) -> list[str]:
+        """返回最近最多 50 条 commit 的 sha（无提交历史时返回空列表）。"""
         from dulwich.repo import Repo
         repo = Repo(str(self._memfs_dir))
         try:

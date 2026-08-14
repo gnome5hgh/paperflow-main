@@ -1,7 +1,9 @@
 """MessageManager：完整对话落盘（Recall）+ 检索。
 
 wire（core/llm.py::Message）→ schemas Message（补 id/created_at）→ messages 表。
-双写向量由 embedder 参数提供（复用 RAG bge）；None 时仅 SQL 检索。
+add_message 是全部消息持久化的唯一漏斗：在此清洗 surrogateescape 残留、
+并让 ask_recorder 捕获子 agent 的 Q&A。embedder 可选（复用 RAG bge 做语义
+检索）；None 时仅 SQL 检索。
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def _wire_to_schema(wire: WireMessage) -> Message:
+    """把 OpenAI wire 消息转成持久化 Message：补 role 枚举 / 空 tool_calls / 时间戳。"""
     return Message(
         role=MessageRole(wire.role),
         content=wire.content,
@@ -31,10 +34,14 @@ def _wire_to_schema(wire: WireMessage) -> Message:
 
 
 def _row_to_schema(row: dict) -> Message:
+    """把 DB 行转回持久化 Message（tool_calls 从 JSON 还原）。
+
+    content 落盘恒为字符串（_wire_to_schema 只产出 str；schema content 为
+    str|None），直接原样回放即可——不能对以 {/[ 开头的字符串内容做 json.loads，
+    否则会把它变成 dict/list，Message.content 类型校验（str|None）直接抛
+    ValidationError。
+    """
     import json
-    # content 落盘恒为字符串（_wire_to_schema 只产出 str；schema content 为 str|None），
-    # 直接原样回放即可——不能对以 {/[ 开头的字符串内容做 json.loads，否则会把它
-    # 变成 dict/list，Message.content 类型校验（str|None）直接抛 ValidationError。
     return Message(
         id=row["id"], role=MessageRole(row["role"]), content=row["content"],
         tool_calls=json.loads(row["tool_calls"]) if row["tool_calls"] else [],
@@ -44,15 +51,20 @@ def _row_to_schema(row: dict) -> Message:
 
 
 class MessageManager:
+    """对话消息的落盘与查询单点：负责清洗、记录与 in-context 回放。"""
+
     def __init__(self, db: MemoryDB, embedder=None, agent_manager=None):
         self.db = db
         self.embedder = embedder          # 可选：bge embedder（语义检索）
         self.agent_manager = agent_manager  # 可选：读 AgentState.message_ids（in-context 窗口）
 
     def add_message(self, agent_id: str, wire: WireMessage) -> Message:
-        # 信任边界：清洗代理码点（surrogateescape 残留）——messages 表严格 UTF-8
-        # 写入，代理会炸。ask_user 回答等路径不经 agent.run 清洗，add_message 是
-        # 全部消息落盘的单点，在此堵漏（replace 生成副本，不改调用方 wire）。
+        """落盘一条消息并返回持久化版本（全部消息持久化的唯一漏斗）。
+
+        信任边界：清洗代理码点（surrogateescape 残留）——messages 表严格 UTF-8
+        写入，代理会炸。ask_user 回答等路径不经 agent.run 清洗，add_message 是
+        它们共同必经的单点，在此堵漏最稳（replace 生成副本，不改调用方 wire）。
+        """
         wire = replace(wire, content=sanitize_surrogates(wire.content))
         m = _wire_to_schema(wire)
         message_orm.insert_message(self.db, agent_id, m)
@@ -77,6 +89,7 @@ class MessageManager:
 
     def get_messages_by_agent_id(self, agent_id: str,
                                  limit: int | None = None) -> list[Message]:
+        """按 agent 取全部消息（升序）；limit 可选。"""
         rows = message_orm.select_messages_by_agent(self.db, agent_id, limit=limit)
         return [_row_to_schema(r) for r in rows]
 
@@ -102,14 +115,17 @@ class MessageManager:
                         roles: list[str] | None = None, limit: int = 5,
                         start_date: str | None = None,
                         end_date: str | None = None) -> list[Message]:
+        """按内容 LIKE 检索消息（供 conversation_search 工具使用）。"""
         rows = message_orm.search_messages(self.db, agent_id, query, roles=roles,
                                            limit=limit, start_date=start_date,
                                            end_date=end_date)
         return [_row_to_schema(r) for r in rows]
 
     def size(self, agent_id: str) -> int:
+        """返回该 agent 已落盘消息总数（Sleeptime 游标与进度判断的数据源）。"""
         return message_orm.count_messages(self.db, agent_id)
 
     def list_user_messages_for_agent(self, agent_id: str) -> list[Message]:
+        """返回该 agent 的全部 user 消息（供需要「只看用户说了什么」的场景）。"""
         rows = message_orm.select_messages_by_agent(self.db, agent_id)
         return [_row_to_schema(r) for r in rows if r["role"] == "user"]

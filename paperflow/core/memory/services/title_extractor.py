@@ -1,13 +1,19 @@
-# paperflow/core/memory/services/title_extractor.py
 """权威标题提取：五级降级链（搜索元数据 > GROBID > LLM > pdftitle > PyMuPDF）。
 
-任何一级都不取 pdf 文件名——文件名是存储产物，标题是论文原文的权威元数据。
+任何一级都不取 pdf 文件名——文件名是存储产物（下载时可能是乱码/编号），
+标题必须是论文原文的权威元数据，否则会污染 unread_list/history_list，
+后续按标题去重/移除全部失准。
 """
 from dataclasses import dataclass
 
 
 @dataclass
 class TitleResult:
+    """标题提取结果：title + 命中的来源（search/grobid/llm/pdftitle/pymupdf）。
+
+    全失败时 title 为 None，由调用方提示用户提供标题。
+    """
+
     title: str | None = None
     source: str = ""
 
@@ -20,6 +26,7 @@ class TitleExtractor:
     """
 
     def __init__(self, grobid=None, llm=None, use_pdftitle=True, use_pymupdf=True):
+        """注入各层依赖；use_* 控制可选层是否启用。"""
         self.grobid = grobid
         self.llm = llm
         self.use_pdftitle = use_pdftitle
@@ -27,6 +34,7 @@ class TitleExtractor:
 
     def extract(self, pdf_path: str | None = None,
                 search_meta: dict | None = None) -> TitleResult:
+        """按五级降级链提取标题，首个命中即返回；全失败返回空 TitleResult。"""
         # ① 搜索元数据（最权威、免费）
         if search_meta and search_meta.get("title"):
             return TitleResult(title=search_meta["title"],
@@ -75,6 +83,7 @@ class TitleExtractor:
         return getattr(r, "title", None) or None
 
     def _read_first_page(self, pdf_path: str) -> str:
+        """读 PDF 首页前 1000 字 + 元数据标题；读取失败返回空字符串（降级到下一层）。"""
         try:
             import fitz
             doc = fitz.open(pdf_path)
@@ -86,6 +95,7 @@ class TitleExtractor:
             return ""
 
     def _pdftitle_extract(self, pdf_path: str) -> str | None:
+        """用 pdftitle 库提取标题；依赖未装/提取失败返回 None（跳过这一层）。"""
         try:
             import pdftitle
             return pdftitle.get_title_from_pdf(pdf_path) or None

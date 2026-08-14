@@ -1,8 +1,9 @@
-"""Sleeptime 记忆整合后台（取代 Dream，对齐 Letta sleeptime compute）。
+"""Sleeptime 记忆整合后台：把对话增量沉淀进核心记忆块。
 
-CLI REPL 每轮循环顶部 run_once_if_due()。读取未消费历史 → LLM 用
-BASE_SLEEPTIME_TOOLS 语义输出编辑指令（memory_replace/memory_insert/
-memory_rethink）→ 经 BlockManager 应用 → 结束（memory_finish_edits 语义）。
+CLI REPL 每轮循环顶部调 run_once_if_due()：读取未消费历史 → LLM 用记忆编辑
+工具语义输出编辑指令（append/replace/delete）→ 全量预验证 → 经 BlockManager
+应用进核心块。写入前必须过白名单并禁止删除 system/ 块，因为 LLM 输出不可信；
+应用期连败 3 次强制推进游标，防止同一批坏编辑被无限重放。
 """
 from __future__ import annotations
 
@@ -25,6 +26,11 @@ _EDIT_FILE_PATTERN = re.compile(
 
 
 class MemoryEdit(BaseModel):
+    """单条记忆编辑指令：目标文件 + 动作 + 内容/钩子。
+
+    content 与 hook 都带长度上限（防 LLM 输出爆炸）；file 须命中白名单。
+    """
+
     file: str
     action: Literal["append", "replace", "delete"]
     content: str = Field(default="", max_length=8000)
@@ -32,6 +38,8 @@ class MemoryEdit(BaseModel):
 
 
 class MemoryEditBatch(BaseModel):
+    """一次整合会话的编辑指令集合（上限 20 条，防单轮过量写入）。"""
+
     edits: list[MemoryEdit] = Field(default_factory=list, max_length=20)
 
 
@@ -45,6 +53,8 @@ class MemoryEditValidationError(ValueError):
 
 
 class Sleeptime:
+    """后台记忆整合器：游标即 messages 表行数，重启后从正确位置自愈。"""
+
     def __init__(self, agent_state, block_manager, passage_manager, message_manager,
                  structured, enable: bool = False, frequency: int = 50,
                  min_interval_s: float = 60.0, max_entries: int = 20):
@@ -64,7 +74,11 @@ class Sleeptime:
         self._cursor = self.message_manager.size(agent_state.agent_id) if message_manager else 0
 
     async def run_once_if_due(self) -> None:
-        """快速判定是否该运行整合；全部廉价检查，大多立即返回。"""
+        """快速判定是否该运行整合；全部廉价检查，大多立即返回。
+
+        任一条件不满足（未启用 / 已在跑 / 新增消息不足 frequency / 距上次
+        不足 min_interval_s）都直接返回——每轮 REPL 的开销极小。
+        """
         if not self.enable or self._running:
             return
         size = self.message_manager.size(self.agent_state.agent_id)
@@ -114,6 +128,11 @@ class Sleeptime:
                 self._cursor = self.message_manager.size(self.agent_state.agent_id)
 
     def _build_prompt(self, new_msgs: list) -> str:
+        """构造整合指令生成提示：声明可编辑文件、规则与定向建议。
+
+        定向建议是让 LLM 把「用户身份/偏好」写到 system/human.md、把「助手
+        角色认知变化」写到 system/persona.md——与两个默认块的定位一致。
+        """
         parts = [
             "你是 paperFlow 的记忆整合器（sleeptime）。分析以下新对话，输出记忆编辑指令。",
             "可编辑：feedback_*.md / project_*.md / reference_*.md / system/*.md。",
@@ -127,6 +146,12 @@ class Sleeptime:
         return "\n".join(parts)
 
     def _validate_edit(self, edit: MemoryEdit) -> None:
+        """阶段 1 校验：目标必须命中白名单，且禁止删除 system/ 块。
+
+        白名单之外的写入路径一律拒绝——LLM 输出不可信，防止它把编辑指令
+        指向任意记忆文件。system/ 块（persona/human）是身份与画像，删了
+        记忆系统呈空壳，任何情况下都不可删除。
+        """
         if not _EDIT_FILE_PATTERN.match(edit.file):
             raise MemoryEditValidationError(f"非法编辑目标: {edit.file}")
         if edit.action == "delete" and edit.file.startswith("system/"):
@@ -135,8 +160,8 @@ class Sleeptime:
     def _apply_edit(self, edit: MemoryEdit) -> None:
         """把编辑指令映射到 BlockManager（file → block label）。
 
-        追加/替换的目标块不存在时创建（对应 Dream 的 open "a"/"w" 即新建语义）；
-        删除只作用于已存在块。
+        追加/替换的目标块不存在时创建（append/replace 都允许「写新块」的
+        意图自动建块）；删除只作用于已存在块，缺失时静默跳过。
         """
         label = edit.file.removesuffix(".md").replace("system/", "")
         if edit.action == "delete":
