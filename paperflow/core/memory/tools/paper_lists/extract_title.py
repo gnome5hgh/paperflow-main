@@ -14,9 +14,10 @@ class ExtractTitleTool(Tool):
         },
         "required": [],
     }
-    risk_level = "medium"    # 对齐现状 _FunctionTool：仅检索工具为 low，其余 medium
+    risk_level = "medium"    # 变异/信号类工具一律 medium；只有检索类工具为 low
 
     def execute(self, pdf_path: str | None = None, title: str | None = None) -> ToolResult:
+        """返回权威标题；用户直供 title 直接采用（禁文件名的守门在调用方）。"""
         if title:    # 用户已给标题 → 直接用（禁文件名的守门在调用方）
             return ToolResult(text=f"title: {title}\nsource: search")
         ctx = get_memory_context()

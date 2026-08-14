@@ -4,7 +4,12 @@ from paperflow.core.memory.tools.runtime_context import get_memory_context
 
 
 def _memory_replace(ctx, label: str, old_string: str, new_string: str) -> str:
-    """逻辑原样迁自旧记忆层 memory_replace。"""
+    """在块内替换子串：old_string 必须唯一出现才替换，0 次或 >1 次都报错。
+
+    强制唯一是因为不明确的子串替换会静默改错位置或重复改；显式要求唯一逼
+    LLM 补足上下文。块缺失返回显式「no block」——改既有块的意图不该被静默
+    创建掩盖拼错（与 append 的自动建块刻意不对称）。
+    """
     bm = ctx.block_manager
     block = bm.get_block_by_label(label)
     if block is None:

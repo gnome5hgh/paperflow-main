@@ -15,10 +15,11 @@ class ArchivalMemorySearchTool(Tool):
         },
         "required": ["query"],
     }
-    risk_level = "low"
+    risk_level = "low"    # 纯只读检索
 
     def execute(self, query: str, tags: list[str] | None = None,
                 top_k: int = 10) -> ToolResult:
+        """按语义 + tags 检索长期记忆，命中的 passage 以列表形式返回。"""
         ctx = get_memory_context()
         if ctx is None:
             return ToolResult(text="记忆服务未装配，记忆工具不可用")

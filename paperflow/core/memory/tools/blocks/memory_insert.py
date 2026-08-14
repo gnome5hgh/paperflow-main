@@ -4,7 +4,11 @@ from paperflow.core.memory.tools.runtime_context import get_memory_context
 
 
 def _memory_insert(ctx, label: str, new_string: str, insert_line: int = -1) -> str:
-    """逻辑原样迁自旧记忆层 memory_insert。"""
+    """把 new_string 插入块的指定行号；insert_line=-1 表示追加到末尾。
+
+    块缺失返回显式「no block」——改既有块的意图不该被静默创建掩盖拼错。
+    行号超出末尾时按末尾处理（splitlines 后 insert 会就地落在末尾）。
+    """
     bm = ctx.block_manager
     block = bm.get_block_by_label(label)
     if block is None:

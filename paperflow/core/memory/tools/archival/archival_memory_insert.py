@@ -17,6 +17,7 @@ class ArchivalMemoryInsertTool(Tool):
     risk_level = "medium"
 
     def execute(self, content: str, tags: list[str] | None = None) -> ToolResult:
+        """把内容写入 archival 长期记忆；成功返回 passage id。"""
         ctx = get_memory_context()
         if ctx is None:
             return ToolResult(text="记忆服务未装配，记忆工具不可用")

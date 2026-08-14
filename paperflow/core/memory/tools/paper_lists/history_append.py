@@ -23,6 +23,7 @@ class HistoryAppendTool(Tool):
     risk_level = "medium"
 
     def execute(self, action: str, title: str) -> ToolResult:
+        """以 `[{时间}] {action}《{title}》` 格式追加到 history_list 块。"""
         ctx = get_memory_context()
         if ctx is None:
             return ToolResult(text="记忆服务未装配，记忆工具不可用")

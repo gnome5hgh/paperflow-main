@@ -15,6 +15,7 @@ class MemoryRethinkTool(Tool):
     risk_level = "medium"
 
     def execute(self, label: str, new_memory: str) -> ToolResult:
+        """整块重写：read_only 报错由 rewrite_block 吞掉；缺失块抛 KeyError 落到外层降级。"""
         ctx = get_memory_context()
         if ctx is None:
             return ToolResult(text="记忆服务未装配，记忆工具不可用")

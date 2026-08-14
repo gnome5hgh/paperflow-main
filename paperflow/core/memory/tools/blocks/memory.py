@@ -20,13 +20,14 @@ class MemoryTool(Tool):
 
     def execute(self, action: str, label: str, value: str | None = None,
                 **kwargs) -> ToolResult:
+        """按 action 分发到块的增改删查；错误一律降级为文本返回（errors-as-data）。"""
         ctx = get_memory_context()
         if ctx is None:
             return ToolResult(text="记忆服务未装配，记忆工具不可用")
         try:
             bm = ctx.block_manager
             # label 在 blocks 表无 UNIQUE 约束——create/rename 必须先查重，
-            # 否则重复 label 会静默建出不可达的幽灵块（逻辑原样迁自 base.py memory）。
+            # 否则重复 label 会静默建出「查得到却取不到」的不可达幽灵块。
             if action == "create":
                 if bm.get_block_by_label(label) is not None:
                     return ToolResult(text=f"Error: label '{label}' already exists")

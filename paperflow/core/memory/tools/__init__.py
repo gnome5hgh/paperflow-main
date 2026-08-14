@@ -1,8 +1,8 @@
 """记忆工具包：一工具一文件，按功能分组（blocks/archival/recall/paper_lists）。
 
-get_memory_tools() 惰性构建全部 13 个记忆工具（模块级单例，照 rag 的
-get_rag_service）；工具执行时经 runtime_context.get_memory_context() 取运行时
-上下文。任意 agent 的 tools.py 可 `TOOLS = [...] + get_memory_tools()`。
+get_memory_tools() 惰性构建全部 13 个记忆工具（模块级单例）；工具执行时经
+runtime_context.get_memory_context() 取运行时上下文。任意 agent 的 tools.py 可
+`TOOLS = [...] + get_memory_tools()`。
 """
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ __all__ = [
     "UnreadListRemoveTool", "HistoryAppendTool", "ExtractTitleTool",
 ]
 
+#: 13 个工具类的装配清单（顺序即 get_memory_tools 返回顺序）
 _TOOL_CLASSES = [
     MemoryReplaceTool, MemoryInsertTool, MemoryRethinkTool, MemoryFinishEditsTool,
     MemoryTool, MemoryApplyPatchTool, ArchivalMemoryInsertTool, ArchivalMemorySearchTool,

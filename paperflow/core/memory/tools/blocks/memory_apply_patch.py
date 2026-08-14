@@ -1,4 +1,4 @@
-"""MemoryApplyPatchTool：就地应用简化 unified diff（Letta 同款，仅单块模式）。"""
+"""MemoryApplyPatchTool：就地应用简化 unified diff（仅单块模式）。"""
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.core.memory.tools.runtime_context import get_memory_context
 
@@ -8,7 +8,11 @@ def _apply_diff(value: str, patch: str) -> str:
 
     patch 行逐行处理：@@ 头跳到 hunk 起始（中间未改动行原样复制）；' ' 上下文
     行必须匹配目标当前行；'-' 删行从当前位置向后找首个匹配；'+' 增行插入到当前
-    删除点。原样迁自旧记忆层 _apply_diff。
+    删除点。
+
+    删行用前向扫描宽容匹配（'-' 行从当前位置向后找首个匹配并复制中间行），而
+    ' ' 上下文行仍精确位置匹配——LLM 生成的 patch 与实际内容常有漂移，宽容删行
+    吸收漂移、精确上下文守住边界。
     """
     import re
     lines = value.splitlines()
@@ -49,7 +53,7 @@ def _apply_diff(value: str, patch: str) -> str:
 
 
 def _memory_apply_patch(ctx, label: str, patch: str) -> str:
-    """逻辑原样迁自旧记忆层 memory_apply_patch。"""
+    """对指定块应用 patch；块缺失返回显式「no block」，多块 patch 直接拒绝。"""
     bm = ctx.block_manager
     block = bm.get_block_by_label(label)
     if block is None:

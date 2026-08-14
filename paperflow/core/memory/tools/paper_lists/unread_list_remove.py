@@ -15,6 +15,7 @@ class UnreadListRemoveTool(Tool):
     risk_level = "medium"
 
     def execute(self, title: str) -> ToolResult:
+        """按权威标题删行；块缺失或行不命中时返回显式错误（不物化空块）。"""
         ctx = get_memory_context()
         if ctx is None:
             return ToolResult(text="记忆服务未装配，记忆工具不可用")

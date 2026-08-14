@@ -18,6 +18,7 @@ class UnreadListAddTool(Tool):
     risk_level = "medium"
 
     def execute(self, title: str = "", source: str = "") -> ToolResult:
+        """追加 `- 标题 (来源)` 行到 unread_list 块；title 为空直接拒绝（禁文件名）。"""
         if not title or not title.strip():
             return ToolResult(text="Error: title is required (extract from paper, not filename)")
         ctx = get_memory_context()
