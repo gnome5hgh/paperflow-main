@@ -49,8 +49,9 @@ def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, st
     """eval.yaml → [(query, intent_label, is_hard)]。
 
     独立评估样本集。is_hard 标记 query 为与其他意图近形的硬负样本：
-    要求每个意图的 held-out 中硬负样本占比 ≥30%——否则 per-intent 阈值对
-    混淆样本毫无约束力，是"自己给自己打分"的漏洞。
+    约束要求每个新增意图的 held-out 中硬负样本占比 ≥30%（既有意图可低于
+    该值，整体占比约 32%）——否则 per-intent 阈值对混淆样本毫无约束力，
+    是"自己给自己打分"的漏洞。
     """
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
