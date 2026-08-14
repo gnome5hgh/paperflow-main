@@ -1,4 +1,10 @@
-"""记忆工具集常量（对齐 Letta constants.py 的 BASE_MEMORY_TOOLS）。"""
+"""记忆工具集常量：记忆编辑工具名集合 + 首启播种的默认核心块文案。
+
+BASE_MEMORY_TOOLS 是装配在 supervisor 上的记忆编辑工具名；BASE_SLEEPTIME_TOOLS
+是 Sleeptime 后台整合允许生成的编辑工具子集（Sleeptime 只做块级增改，不做
+unread_list/history_append 这类清单维护）。两者都只声明「工具名集合」，供
+装配与校验读取。
+"""
 
 BASE_MEMORY_TOOLS = {
     "memory_replace", "memory_insert", "memory_rethink",

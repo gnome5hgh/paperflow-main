@@ -1,9 +1,8 @@
-"""paperflow 核心记忆子系统（Letta 忠实移植）。
+"""paperflow 核心记忆子系统。
 
-对外统一导出新记忆栈组件：schema 数据模型、SQLite ORM、服务层
+对外统一导出记忆栈组件：schema 数据模型、SQLite ORM、服务层
 （块/消息/passage/agent/archive/tool 管理器 + MemFS）、压缩配置、
-Sleeptime 后台整合与常量。旧文件式记忆（MemoryStore/ContextCompressor/
-GitStore/Dream 等）已随 Letta 重构移除。
+Sleeptime 后台整合与常量。四层结构依赖单向：schemas → orm → services → tools。
 """
 from paperflow.core.memory.schemas.block import BaseBlock, Block
 from paperflow.core.memory.schemas.memory import Memory

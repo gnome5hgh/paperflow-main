@@ -1,7 +1,9 @@
 """SQLite 连接与建表（sqlite3 标准库，零新增依赖）。
 
-Letta 用 SQLAlchemy；paperFlow 保持轻量——单例连接 check_same_thread=False +
-threading.Lock 包裹写事务（Layer 4 同一轮多 spawn 调用并发安全）。
+整库唯一连接单例：check_same_thread=False 允许多线程共享一条连接 + 一把
+threading.Lock 串行化所有写事务并立即 commit——同轮多个并发子 agent 各自
+线程写记忆时不会互踩。持久化只有「一张表一个主键、一次写一条」的量级，
+裸 sqlite3 足够，不需要 ORM 层。
 """
 from __future__ import annotations
 
@@ -42,6 +44,7 @@ class MemoryDB:
     """SQLite 连接单例：建库建表 + 线程安全的写事务。"""
 
     def __init__(self, path: Path):
+        """建库：自动创建父目录，连接用 Row 工厂（orm 函数依赖列名取值）。"""
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
@@ -50,16 +53,19 @@ class MemoryDB:
         self.init_schema()
 
     def init_schema(self) -> None:
+        """执行建表脚本（IF NOT EXISTS，幂等）。"""
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        """持锁执行单条写/读 SQL 并立即 commit，保证每次写原子落盘。"""
         with self._lock:
             cur = self._conn.execute(sql, params)
             self._conn.commit()
             return cur
 
     def executemany(self, sql: str, seq: list[tuple]) -> None:
+        """持锁批量执行（同样立即 commit）。"""
         with self._lock:
             self._conn.executemany(sql, seq)
             self._conn.commit()

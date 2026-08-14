@@ -1,8 +1,8 @@
-"""上下文压缩：CompactionSettings + sliding_window 执行（取代 ContextCompressor）。
+"""上下文压缩：对话超窗时压缩 in-context 窗口（驱逐旧对话 + 插摘要）。
 
-作用于 agent.messages（in-context 窗口）。触发保留 paperFlow 主动阈值；
-压缩语义对齐 Letta sliding_window——驱逐旧对话 + index 1 插摘要。只改
-in-context 窗口，绝不删 SQL 原始消息（Recall 完整保留可追溯）。
+作用于 agent.messages（in-context 窗口），用 sliding_window 模式把窗口压回
+预算内：保留 head system 消息 + 结构化摘要 + 近期尾部。只改 in-context
+窗口，绝不删 SQL 原始消息（Recall 完整保留可追溯）。
 """
 from __future__ import annotations
 
@@ -16,7 +16,11 @@ __all__ = ["CompactionSettings", "SummarySchema", "should_compress", "run_compac
 
 
 class SummarySchema(BaseModel):
-    """模型输出的结构化摘要字段（压缩时提取对话要点）。"""
+    """模型输出的结构化摘要字段（压缩时提取对话要点）。
+
+    五个字段分别捕捉：用户核心请求、已完成进度、关键技术约束/决策/错误、
+    待办优先级、以及必须保留的用户偏好与领域细节。
+    """
 
     task_overview: str              # 用户核心请求与成功标准
     current_state: str              # 已完成进度
@@ -26,6 +30,12 @@ class SummarySchema(BaseModel):
 
 
 class CompactionSettings:
+    """压缩触发与保留预算配置。
+
+    trigger_ratio 决定「多满才触发压缩」，reserve_ratio 决定「尾部保留多少
+    预算」；context_size 显式给出时覆盖 model_window 的默认推导。
+    """
+
     mode: Literal["sliding_window", "all_messages",
                   "self_compact_all", "self_compact_sliding_window"] = "sliding_window"
     trigger_ratio: float = 0.8
@@ -40,6 +50,11 @@ class CompactionSettings:
         self.context_size = context_size
 
     def resolve_context_size(self, model_window: int) -> int:
+        """返回实际使用的上下文窗口预算：显式配置优先，否则取模型窗口的一半。
+
+        取一半是安全默认——LLM 上下文窗口还包含 system prompt 与记忆头等
+        固定开销，全部按 model_window 预算会在估算时过早触发压缩。
+        """
         if self.context_size > 0:
             return self.context_size
         return model_window // 2
@@ -58,6 +73,7 @@ def _get_encoder():
 
 
 def _estimate_tokens(messages: list[WireMessage]) -> int:
+    """粗估消息 token 总量：每条内容 token 数 + 4 的协议开销常数。"""
     total = 0
     enc = _get_encoder()
     for m in messages:
@@ -67,6 +83,10 @@ def _estimate_tokens(messages: list[WireMessage]) -> int:
 
 def should_compress(messages: list[WireMessage], settings: CompactionSettings,
                     context_window: int) -> bool:
+    """判断当前窗口是否该压缩：估算 token × 1.1 > trigger_ratio × 预算。
+
+    1.1 是触发裕量：token 估算有误差，预留 10% 安全边际防撞硬窗口上限。
+    """
     ctx_size = settings.resolve_context_size(context_window)
     estimate = _estimate_tokens(messages)
     return estimate * 1.1 > settings.trigger_ratio * ctx_size
@@ -93,9 +113,11 @@ def _recent_tail(messages: list[WireMessage], settings: CompactionSettings,
                  context_window: int | None = None) -> list[WireMessage]:
     """从后往前保留对话到 reserve_ratio × context_size 预算。
 
-    带工具调用的 assistant 消息与其 tool 结果成对保留（不允许孤立 tool 消息——
-    tool_call_id 无对应调用会触发 API 报错）。成对逻辑之外再做一次孤儿清理兜底：
-    极端轨迹（tool 引用的 id 在向前无任何 assistant 携带）下丢弃该 tool 消息。
+    两个关键约束：
+    - 携带工具调用的 assistant 消息与其 tool 结果必须成对保留——孤立 tool 消息
+      的 tool_call_id 无对应调用会触发 API 报错。
+    - 成对逻辑之后再做一次孤儿清理兜底：tool 消息的 tool_call_id 必须在保留的
+      assistant(tool_calls) 里找得到，否则丢弃（覆盖极端轨迹）。
     """
     ctx_size = settings.context_size
     if ctx_size <= 0:
