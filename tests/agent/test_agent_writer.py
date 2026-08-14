@@ -39,6 +39,7 @@ def test_generate_note_tools_metadata(agent_env, agent_registry):
     assert "spawn_sub_agent" in names
     assert "read_file" in names and "write_file" in names
     assert "glob" in names and "grep" in names      # Task 4：文件名定位 + 文本锚点
+    assert "history_append" in names and "unread_list_remove" in names  # 谁干活谁记录：写笔记后记历史/移除
     spawn = next(t for t in config.tools if t.name == "spawn_sub_agent")
     assert spawn.needs_parent is True
 

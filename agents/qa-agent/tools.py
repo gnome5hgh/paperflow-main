@@ -7,6 +7,10 @@
 钩子统一兜底。
 """
 from paperflow.config import PaperFlowConfig
+from paperflow.core.memory.tools import (
+    ConversationSearchTool, ArchivalMemorySearchTool, ArchivalMemoryInsertTool,
+    ExtractTitleTool, UnreadListAddTool, UnreadListRemoveTool, HistoryAppendTool,
+)
 from paperflow.tools.common.factory import make_tools
 from paperflow.tools import (
     ReadFileTool, ReadPdfTool, GlobTool, GrepTool, AskUserQuestionTool,
@@ -15,4 +19,6 @@ from paperflow.rag.services.retriever import RagRetrieveTool
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
     RagRetrieveTool, ReadPdfTool, ReadFileTool, GlobTool, GrepTool, AskUserQuestionTool,
+    ConversationSearchTool, ArchivalMemorySearchTool, ArchivalMemoryInsertTool,
+    ExtractTitleTool, UnreadListAddTool, UnreadListRemoveTool, HistoryAppendTool,
 ])

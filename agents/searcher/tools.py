@@ -8,6 +8,7 @@ searcher 用它派发 reviewer 子 agent，对候选论文逐篇核验「年份/
 工具实例而非类;allowed_spawns 声明放行 reviewer。
 """
 from paperflow.config import PaperFlowConfig
+from paperflow.core.memory.tools import ExtractTitleTool, UnreadListAddTool
 from paperflow.tools.common.factory import make_tools
 from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
 from paperflow.tools import (
@@ -16,4 +17,5 @@ from paperflow.tools import (
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
     WebSearchTool, FetchPdfTool, GlobTool, GrepTool, AskUserQuestionTool,
+    ExtractTitleTool, UnreadListAddTool,
 ]) + [SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agent_timeouts)]

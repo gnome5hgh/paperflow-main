@@ -70,6 +70,10 @@ def test_answer_question_has_glob_grep(agent_registry):
     config = agent_registry.get_config("qa-agent")
     names = {t.name for t in config.tools}
     assert {"glob", "grep"} <= names
+    # 谁干活谁记录：memory 查询 + 清单管理（manage_memory 意图）+ 精读记录
+    assert {"conversation_search", "archival_memory_search", "archival_memory_insert",
+            "extract_title", "unread_list_add", "unread_list_remove",
+            "history_append"} <= names
 
 
 def test_qa_agent_has_ask_user_question(agent_registry):

@@ -117,6 +117,7 @@ def test_search_paper_tools_without_dedup_filter(agent_registry, agent_env):
     agent = make_agent(agent_registry, "searcher", make_mock_llm([]), cfg)
     names = set(agent.tools)
     assert {"web_search", "fetch_pdf", "glob", "grep", "spawn_sub_agent"} <= names
+    assert {"extract_title", "unread_list_add"} <= names   # 谁干活谁记录：推荐确认后记未读
     assert "arxiv_search" not in names and "openalex_search" not in names
     assert "dedup_papers" not in names and "filter_papers" not in names
     cfg2 = agent.agent_registry.get_config("searcher")

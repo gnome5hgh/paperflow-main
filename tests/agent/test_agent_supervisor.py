@@ -24,10 +24,14 @@ def supervisor_registry(tmp_path, monkeypatch):
 
 
 def test_supervisor_config_loads_with_supervisor_tools(supervisor_registry):
-    """supervisor 工具面 = 2 调度工具 + 13 记忆工具（Task 8 后经 get_memory_tools 注入）。"""
+    """supervisor 工具面 = 2 调度工具 + 8 记忆工具（核心块编辑 + 检索，清单/写入下放）。"""
     cfg = supervisor_registry.get_config("supervisor")
     names = {t.name for t in cfg.tools}
-    assert names == {"spawn_sub_agent", "ask_user_question"} | {t.name for t in get_memory_tools()}
+    memory_names = {t.name for t in get_memory_tools()
+                    if t.name in {"memory_replace", "memory_insert", "memory_rethink",
+                                  "memory_finish_edits", "memory", "memory_apply_patch",
+                                  "conversation_search", "archival_memory_search"}}
+    assert names == {"spawn_sub_agent", "ask_user_question"} | memory_names
     assert "INTENT" in cfg.system_prompt          # 消费规则注入系统提示词
 
 
