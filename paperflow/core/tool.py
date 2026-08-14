@@ -24,11 +24,16 @@ RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
 @dataclass
 class ToolResult:
-    """工具执行结果：text 给 LLM、summary 给记忆系统、completion 给 CLI 渲染完成行。"""
+    """一次工具执行的结果对象，被三个消费者各取所需（三通道互不污染）：
+    - ``text``：完整语义文本，给 LLM 读（进入 ReAct 对话流）
+    - ``summary``：结构化副作用摘要，给记忆系统写（默认空 dict，为记忆层预留的前瞻钩子）
+    - ``completion``：终端完成摘要，给 CLI 渲染完成行；与 LLM 面 text 解耦，
+      LLM 读不到这一行，避免语义污染
+    ``summary`` 用 ``field(default_factory=dict)`` 保证每个实例拿到独立 dict，
+    不共享同一个可变默认值。"""
     text: str
     summary: dict = field(default_factory=dict)
-    #: 终端完成摘要（如 "File written: <path>"），_exec_tool 见非空则发完成状态行；
-    #: 与 LLM 面的 text 解耦（text 保持既有语言语义）
+    #: 终端完成摘要（如 "File written: <path>"），_exec_tool 见非空则发完成状态行
     completion: str | None = None
 
 
@@ -100,5 +105,10 @@ class Tool(ABC):
         ...
 
     def attach_agent(self, agent) -> None:
-        """注入父 Agent 引用（opt-in）。默认存 self._parent。"""
+        """注入父 Agent 引用（opt-in，权限最小化）。
+
+        只有声明 ``needs_parent`` 的工具（如嵌套子 agent 的 spawn 工具）才会被
+        ``Agent.__init__`` 调用；原子工具不声明、不持有父引用。默认实现只存
+        ``self._parent``，子类可覆写为访问器（如读父 agent 的 session_id）。
+        """
         self._parent = agent

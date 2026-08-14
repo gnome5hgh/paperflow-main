@@ -83,6 +83,9 @@ class AgentRegistry:
     def __init__(self, agents_dir: str = "agents"):
         """
         :param agents_dir: Agent 插件根目录路径，默认为项目根下的 agents/
+
+        构造即触发全量扫描（_discover 遍历目录 + 动态导入 tools.py）——属于有
+        副作用的构造，进程内只应构造一次（由装配层持有并传给所有 Agent）。
         """
         #: agent_type → AgentConfig 的映射字典
         self._agents: dict[str, AgentConfig] = {}

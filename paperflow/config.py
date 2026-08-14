@@ -80,7 +80,7 @@ class PaperFlowConfig:
     #: 取值 ∈ RISK_ORDER 的键，如 "medium" / "high"）
     max_risk: str = "medium"
 
-    #: 上下文压缩配置（Letta CompactionSettings，取代原 ContextConfig；惰性工厂见 _default_compaction）
+    #: 上下文压缩配置（惰性工厂见 _default_compaction——延迟导入切断循环依赖）
     compaction: "CompactionSettings" = field(default_factory=_default_compaction)
 
     #: Sleeptime 后台整合开关

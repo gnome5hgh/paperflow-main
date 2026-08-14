@@ -121,7 +121,7 @@ def _compact(v) -> str:
 
 
 def _format_tool_call(name: str, raw_args: str) -> str:
-    """把工具调用格式化为终端一行(claude code 风格:Calling Read(path))。
+    """把工具调用格式化为终端一行(如 Calling Read(path))。
 
     尽力解析参数;LLM 产出非法 JSON 或参数缺失时只显示工具名——错误路径保持可读,
     且缓冲清理不依赖参数解析成功(见 terminal.render.StreamRenderer)。每个值经
@@ -229,7 +229,7 @@ class Agent:
         :param compaction: CompactionSettings 实例(可选),触发时只压缩 in-context
             窗口(驱逐旧对话 + 插摘要),不删 SQL 原始消息
         :param structured: StructuredOutput 实例(可选),compaction 摘要生成路径
-            消费;None 时压缩不触发(降级,由 Task 12 CLI 接线)
+            消费;None 时压缩不触发(降级,CLI 接线后恢复)
         :param max_turns: ReAct 循环最大轮数,防止死循环
         :param stream_callback: 流式事件回调(CLI 渲染器消费);None = 非流式路径
             ——run() 保持调 chat(),mock/无 UI 调用方零影响
@@ -290,13 +290,14 @@ class Agent:
         #: 结构化输出（StructuredOutput | None）：compaction 摘要生成路径消费
         self.structured = structured
 
-        #: in-context 消息缓冲区（Letta 同款：内部 _messages，外部 messages 只读视图）。
-        #: run() 每轮从 MessageManager 重新加载，跨轮消息经 SQL 持久化回放。
+        #: in-context 消息缓冲区（内部 _messages 是真实缓冲区，外部 messages 是
+        #: 只读 wire 视图）。run() 每轮从 MessageManager 重新加载，跨轮消息经 SQL
+        #: 持久化回放，不在内存里跨 run 累积。
         self._messages: list[Message] = []
 
-        #: in-context 窗口的消息 id 追踪（对应 AgentState.message_ids，Letta Message
-        #: Buffer）。与 self._messages 并行维护：加载/落盘/压缩都同步。agent_manager
-        #: 为 None（无记忆装配）时不参与持久化，窗口回退为「全量回放」。
+        #: in-context 窗口的消息 id 追踪（对应 AgentState.message_ids）。与
+        #: self._messages 并行维护：加载/落盘/压缩都同步。agent_manager 为 None
+        #: （无记忆装配）时不参与持久化，窗口回退为「全量回放」。
         self._message_ids: list[str] = []
 
         #: 当前 run 的追踪 ID，每次 run 开始时重新生成，注入 ToolContext
@@ -320,7 +321,7 @@ class Agent:
         # 原子工具不需要 parent；只有嵌套子 agent 的工具声明——权限最小化。
         # 必须放在所有 __init__ 属性赋值之后：attach_agent 可能被工具覆写为
         # 读取父 Agent 属性（如 session_id）的访问器，提前注入则构造期父引用
-        # 不完整——被攻陷工具此时读到的 session_id 等仍是缺省值（T1 前瞻坑位）。
+        # 不完整——被攻陷工具此时读到的 session_id 等仍是缺省值（安全前瞻坑位）。
         for t in self.tools.values():
             if getattr(t, "needs_parent", False):
                 t.attach_agent(self)
@@ -335,14 +336,14 @@ class Agent:
         if cb is not None:
             cb(ev)
 
-    #: messages 只读 property（OpenAI wire 格式视图，Letta 同款）。
+    #: messages 只读 property（OpenAI wire 格式视图）。
     #: 只读：外部（CLI/测试）可观察但不可改，写入统一走 _append_to_messages。
     @property
     def messages(self) -> list[dict]:
         return [_message_to_openai(m) for m in self._messages]
 
     def _append_to_messages(self, added_messages: "list[Message] | Message") -> None:
-        """唯一的消息追加入口（Letta 同名）：把消息追加进 in-context 缓冲区。
+        """唯一的消息追加入口：把消息追加进 in-context 缓冲区。
 
         接受单条 Message 或 Message 列表(run() 各分支混用两种风格,测试多用列表),
         统一归一为列表后追加。
@@ -371,7 +372,7 @@ class Agent:
 
         有 block_manager 时先从 BlockManager 重建 memory（Memory(blocks=...）——
         记忆工具（memory_replace 等）在会话内编辑块后，下一轮 LLM 调用即见新内容
-        （spec §13 块变更即时生效，而非重启才可见）。
+        （块变更即时生效，而非重启才可见）。
         """
         if self.memory is None:
             return None
@@ -545,7 +546,7 @@ class Agent:
             return head[0].content
 
         #: in-context 窗口每轮重建:跨轮回放统一经 MessageManager(SQL) 加载,避免
-        #: self._messages 跨 run 残留导致下一轮重复加载(Letta 同款:每步重新 load)。
+        #: self._messages 跨 run 残留导致下一轮重复加载(每步都从权威源重新 load)。
         self._messages = []
         self._load_in_context()
         #: 当前 user task 落盘(Recall),下轮经 _load_in_context 回放
@@ -559,26 +560,25 @@ class Agent:
             # 记录当前轮次:spawn 摘要提取的 LLM 调用据此归属父 agent 的当前轮
             self._current_turn = turn
             # 记忆块会话内即时生效:memory 工具编辑后,下一轮 LLM 调用即见新块
-            # (spec §13;head 是本地列表,_refresh_head_memory 就地替换记忆消息)。
+            # (head 是本地列表,_refresh_head_memory 就地替换记忆消息)。
             self._refresh_head_memory(head)
             #: LLM 输入 = head 前段(system/memory/INTENT) + in-context 回放历史 +
-            #: 末尾当前 user task(恒末位,与旧版「历史在前、当前任务在末」一致——否则
-            #: LLM 会把回放历史里的旧任务误当当前任务)。
+            #: 末尾当前 user task(恒末位——否则 LLM 会把回放历史里的旧任务误当当前任务)。
             messages = list(head[:-1]) + self._messages + [head[-1]]
             # 压缩检查:只改 in-context 窗口(驱逐旧对话 + 插摘要),SQL 原始消息由
             # MessageManager 保留(Recall 可追溯)。structured 未注入(摘要生成器缺失)
-            # 时压缩不触发——避免 None.extract 崩溃,Task 12 CLI 接线后恢复。
+            # 时压缩不触发——避免 None.extract 崩溃,CLI 接线后恢复。
             if self._needs_compaction(messages) and self.structured is not None:
                 # 截断续写与压缩重建互斥:压缩可能驱逐"半截+续写提示"(in-context
                 # 重建),先弃掉累积器里的半截——续写无参照即完整重答,避免
-                # 「半截 + 完整重答」重复交付(与旧版 accumulated.clear 语义一致)。
+                # 「半截 + 完整重答」重复交付。
                 accumulated.clear()
                 from paperflow.core.memory.compaction import run_compaction
                 new_window = await run_compaction(
                     self._messages, self.compaction, self.llm, self.structured)
                 # 摘要落盘 + message_ids 更新为「摘要 + 保留尾部」——压缩产物跨轮
                 # 持久,下轮 _load_in_context 按 message_ids 回放摘要、不回放被驱逐
-                # 旧消息(评审 I-3;SQL 原始消息仍全量保留,Recall 完整)。
+                # 旧消息(SQL 原始消息仍全量保留,Recall 完整)。
                 self._persist_compacted_window(new_window)
                 self._messages = new_window
                 messages = list(head[:-1]) + self._messages + [head[-1]]
@@ -661,9 +661,9 @@ class Agent:
                 self._persist_conversation([tool_msg])
 
         # 安全阀触发：LLM 陷入了无法在限定轮数内退出的循环。
-        # 失败残渣随消息逐条落盘（Recall 完整原始记录，含失败轮——Letta 语义）；
-        # MaxTurnsExceeded 只中断本轮回放，不回滚已落盘消息。下轮 _load_in_context
-        # 会看到失败残渣，由调用方（CLI）决定是否重试。
+        # 失败残渣随消息逐条落盘（Recall 保留原始记录含失败轮）；MaxTurnsExceeded
+        # 只中断本轮回放，不回滚已落盘消息。下轮 _load_in_context 会看到失败残渣，
+        # 由调用方（CLI）决定是否重试。
         raise MaxTurnsExceeded(
             f"ReAct loop did not finish within {self.max_turns} turns"
         )

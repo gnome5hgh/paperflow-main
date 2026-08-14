@@ -81,6 +81,8 @@ class LLMClient:
     def __init__(self, config: LLMConfig):
         """
         :param config: LLMConfig 实例，包含 base_url / api_key / model 等参数
+        :raises RuntimeError: api_key 为空时 fail-fast——留空会触发 SDK 晦涩报错，
+            这里提前抛出带配置指引的可行动错误（密钥不从代码硬编码默认值）
         """
         #: key 守卫:api_key 不再有代码默认值,留空时 OpenAI(api_key="") 抛晦涩的
         #: SDK 错误——此处提前 fail-fast,给出可行动的配置指引。
