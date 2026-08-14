@@ -27,6 +27,11 @@ class GrobidClient:
     """GROBID 服务的 HTTP 客户端，负责可用性探测与 PDF 全文解析。"""
 
     def __init__(self, url: str = "http://127.0.0.1:8070", transport=None, timeout: float = 60.0):
+        """配置服务地址并创建 HTTP 客户端。
+
+        transport 供测试注入自定义传输层（如 MockTransport）；timeout 是
+        请求超时秒数，健康检查与解析共用。
+        """
         self.url = url.rstrip("/")
         self._client = httpx.Client(transport=transport, timeout=timeout)
 

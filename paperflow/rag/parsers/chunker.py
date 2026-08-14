@@ -1,4 +1,9 @@
-"""AcademicChunker：按章节把文档切成检索块；超长章节再按 token 数二次切分并带重叠。"""
+"""AcademicChunker：把带章节结构的文档切成检索块。
+
+两级切分：先按章节切，超长章节再按 token 数二次切分并带重叠。块 id 由
+「相对路径 + 块序号」哈希而来、与内容无关，同一位置编辑后重切得到同一个
+id，保证索引写入的幂等覆盖（对应 indexer 里的「先删后建」）。
+"""
 import hashlib
 from dataclasses import dataclass
 
@@ -28,6 +33,13 @@ class AcademicChunker:
     """
 
     def __init__(self, max_tokens: int = 512, overlap_tokens: int = 64):
+        """配置分块参数并准备 token 计数器。
+
+        max_tokens 是单块上限、overlap_tokens 是相邻块重叠量，两个默认值都
+        有讲究：bge-small-zh-v1.5 的输入上限正好是 512，顶满有截断风险，
+        留出余量；重叠让跨块语义连贯。token 计数用 cl100k_base 近似即可，
+        不必精确。
+        """
         self.max_tokens = max_tokens
         self.overlap_tokens = overlap_tokens
         # cl100k_base：GPT-4 系列的 tokenizer，这里只需近似计数，不必精确

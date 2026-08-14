@@ -5,6 +5,8 @@
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.rag.services.rag_service import get_rag_service
 
+# 混合检索参数：两路各取 30 个粗候选；RRF 融合常数 k=60（排名倒数累加时的
+# 分母，值越大越平滑）；融合后取融合分最高的 2×top_k 个候选交给精排模型。
 _RRF_K = 60
 _BM25_TOPK = 30
 _VECTOR_TOPK = 30
@@ -18,6 +20,7 @@ class Retriever:
     """
 
     def __init__(self, service):
+        """绑定门面服务：底层组件（向量库/BM25/编码器/重排器）都经 service 惰性获取。"""
         self.service = service
 
     def retrieve(self, query: str, top_k: int = 5):
@@ -88,6 +91,7 @@ class RagRetrieveTool(Tool):
     risk_level = "low"
 
     def __init__(self):
+        """创建检索工具；_service 延迟到首次 execute 时取全局单例（也支持测试注入）。"""
         super().__init__()
         self._service = None
 

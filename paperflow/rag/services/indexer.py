@@ -18,6 +18,11 @@ class RagIndexer:
     """索引器：维护"文档路径 → 修改时间"的状态文件，据此做增量索引。"""
 
     def __init__(self, service):
+        """绑定门面服务，并定位索引状态文件（工作区下的 index_state.json）。
+
+        service 必须是 RAGService 单例——索引器是它的一个视图，底层向量库 /
+        BM25 / 编码器都经 service 惰性获取，与检索器共享同一批组件。
+        """
         self.service = service
         # 状态文件放在工作区下，记录每个已索引文档的修改时间
         self._state_path = Path(service.config.workspace) / "index_state.json"

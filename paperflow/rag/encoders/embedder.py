@@ -41,6 +41,7 @@ class FakeEmbedder:
     """
 
     def __init__(self, dim: int = 64):
+        """构造假编码器：指定伪向量维度，并把已编码文本数清零。"""
         self.dim = dim
         self.calls = 0
 
@@ -81,11 +82,17 @@ class BgeEmbedder:
     """
 
     def __init__(self, model_name: str = "BAAI/bge-small-zh-v1.5"):
+        """记下模型名并预留惰性加载槽位（模型首次使用才真正加载）。"""
         self._model_name = model_name
         self._model = None
         self._dim: int | None = None
 
     def _load(self) -> None:
+        """首次使用才加载模型：惰性导入权重、临时关掉加载进度条、读取向量维度。
+
+        向量维度从模型读取而非硬编码（不同 bge 型号维度不同），新老版本
+        sentence-transformers 的方法名不同，这里兼容两者。
+        """
         # 惰性导入：sentence-transformers 导入耗时数秒，首次使用才加载。
         # global + 模块级占位符：把类名解析交给模块属性，测试的 monkeypatch
         # 替换即生效；真实环境首次走到这里才 import 并回填缓存。

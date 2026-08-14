@@ -20,7 +20,7 @@ class FakeReranker:
     """测试用的假重排器：按文档原文的 md5 稳定排序，与真实模型无关。"""
 
     def __call__(self, query: str, docs: list[str], top_k: int) -> list[int]:
-        """返回按 md5 排序后的前 top_k 个文档下标（结果确定、可复现）。"""
+        """返回按 md5 排序后的前 top_k 个文档下标（结果确定、可重复）。"""
         # 用 md5 对文档原文排序：同一语料在任何环境/进程下重排结果一致，
         # 便于测试断言确定性与 top_k 截断行为（不依赖真实模型或随机性）。
         order = sorted(range(len(docs)),
@@ -32,10 +32,12 @@ class BgeReranker:
     """bge-reranker-v2-m3 Cross-encoder 重排模型，惰性加载，CPU 推理。"""
 
     def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3"):
+        """记下模型名并预留惰性加载槽位（模型首次使用才真正加载）。"""
         self._model_name = model_name
         self._model = None
 
     def _load(self) -> None:
+        """首次使用才加载 Cross-encoder 模型（导入耗时数秒）。"""
         # 惰性导入：sentence-transformers 导入耗时数秒，首次使用才加载。
         # global + 模块级占位符：把类名解析交给模块属性，测试的 monkeypatch
         # 替换即生效；真实环境首次走到这里才 import 并回填缓存。
