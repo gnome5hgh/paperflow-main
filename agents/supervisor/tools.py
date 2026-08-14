@@ -5,7 +5,7 @@ SpawnSubAgentTool 在共享层 paperflow/tools/orchestration/spawn.py 定义,
 (权限最小化:子 agent 不能递归调度)。spawn 结果自带结构化摘要 digest,
 supervisor 直接读各结果的 digest + needs_attention 组织最终回答。
 记忆工具经 paperflow.core.memory.tools 的 get_memory_tools 惰性注入——supervisor
-与子 agent 走同一注册表机制,LLM 工具面与旧版一致(同 13 个记忆工具)。
+与子 agent 走同一注册表机制,LLM 工具面即这 13 个记忆工具。
 """
 from paperflow.config import PaperFlowConfig
 from paperflow.core.memory.tools import get_memory_tools
