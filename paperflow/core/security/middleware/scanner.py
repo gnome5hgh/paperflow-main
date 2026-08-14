@@ -1,4 +1,4 @@
-# paperflow/core/security/scanner.py
+# paperflow/core/security/middleware/scanner.py
 """
 内容扫描中间件：对文本做正则规则扫描与重复率检测，按严重度分级处理。
 

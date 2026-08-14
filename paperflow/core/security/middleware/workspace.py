@@ -1,4 +1,4 @@
-# paperflow/core/security/workspace.py
+# paperflow/core/security/middleware/workspace.py
 """
 工作区路径边界检查中间件。
 

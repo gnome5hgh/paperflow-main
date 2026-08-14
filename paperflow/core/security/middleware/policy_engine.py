@@ -1,4 +1,4 @@
-# paperflow/core/security/policy_engine.py
+# paperflow/core/security/middleware/policy_engine.py
 """
 策略引擎中间件：在工具执行前做三级检查。
 

@@ -1,4 +1,4 @@
-# paperflow/core/security/audit.py
+# paperflow/core/security/middleware/audit.py
 """
 审计中间件：把所有可追溯事件写进当天的 JSONL 日志文件。
 
