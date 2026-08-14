@@ -1,4 +1,4 @@
-"""CLI REPL：交互式 readline,无子命令,/exit 退出。
+"""CLI REPL：交互式终端,无子命令,/exit 退出。
 
 每轮:读 stdin → 合并挂起的澄清(若有)→ supervisor.run(query, force_dispatch) →
 若产生澄清问题且未超轮 → 挂起打印问题;否则打印结果。
@@ -122,8 +122,8 @@ def _make_confirm_callback(io: InputIO, renderer: StreamRenderer):
         preview = _confirm_diff_preview(cr.tool_name, getattr(cr, "params", None))
         if preview:
             renderer.print_diff(preview)
-        # 确认框前停 live（spinner/残留内容块）：rich Live 与 prompt_toolkit 提示框并发
-        # 会互相干扰（V2 实测：方向键不响应）。print_diff 已停一次，这里无条件兜底。
+        # 确认框前无条件停 live（spinner/残留内容块）：rich Live 与 prompt_toolkit
+        # 提示框并发会互相干扰（方向键不响应）。print_diff 已停一次，这里兜底。
         renderer.suspend()
         try:
             return await asyncio.to_thread(
@@ -139,7 +139,7 @@ def _make_ask_callback(io: InputIO, renderer: StreamRenderer):
     PromptToolkitIO（TTY）的 ask 不捕 EOFError，这里兜底返回空串（与非 TTY
     FallbackIO 行为一致，两实现可替换）；Supervisor ReAct 收到空串自行处理。
     ask 提示框前先 renderer.suspend() 停 live——rich Live 与 prompt_toolkit 提示框
-    并发会互相干扰（V2 实测：ask 问题后卡在 spinner，用户无法作答）。
+    并发会互相干扰（ask 后卡在 spinner，用户无法作答）。
     """
     def _ask(question: str) -> str:
         renderer.suspend()
@@ -167,13 +167,13 @@ def _merge_pending(conversation: ConversationState, raw: str) -> tuple[str, bool
 
 
 def _shorten_path(p: str) -> str:
-    """路径 home 前缀缩写为 ~（对齐 Codex 的 directory 展示）。"""
+    """路径 home 前缀缩写为 ~（banner 里 workspace 显示更紧凑）。"""
     home = str(Path.home())
     return "~" + p[len(home):] if str(p).startswith(home) else str(p)
 
 
 def _render_banner(model: str, workspace: str) -> str:
-    """Codex 风格启动横幅：方框 + >_ 名称 + model/workspace，无 emoji/版本/标语。
+    """启动横幅：方框 + >_ 名称 + model/workspace，无 emoji/版本/标语。
 
     框宽随最长内容行自适应；box-drawing 字符 TTY/非 TTY 通用。
     """
@@ -231,14 +231,14 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
         try:
             # io.read 必须经 to_thread 在 worker 线程执行：PromptToolkitIO.read 内部
             # session.prompt() 会自建事件循环（asyncio.run），而 _repl 跑在主事件循环
-            # 线程——直接同步调用抛 "asyncio.run() cannot be called from a running
-            # event loop"（实测复现）。confirm/ask 回调已是 to_thread，read 对齐之。
+            # 线程——直接同步调用会抛 "asyncio.run() cannot be called from a running
+            # event loop"。confirm/ask 回调已是 to_thread，read 对齐之。
             raw = await asyncio.to_thread(io.read, "> ")
         except (EOFError, KeyboardInterrupt):
             break                # Ctrl-D / 空框 Ctrl+C：与 /exit 同效，优雅退出
         except Exception as e:
-            # 输入适配器故障不杀 REPL（spec §5）：打印后继续；但连续失败说明故障是
-            # 持久的，无限刷错误比退出更糟——3 次后放弃。
+            # 输入适配器故障不杀 REPL：打印后继续；但连续失败说明故障是持久的，
+            # 无限刷错误比退出更糟——3 次后放弃。
             read_failures += 1
             renderer.print(f"Input error: {e}")
             if read_failures >= 3:
@@ -305,8 +305,8 @@ def main() -> None:
     registry = AgentRegistry(config.agents_dir)
 
     # 终端装配：TTY → prompt_toolkit 输入 + rich Live 渲染；非 TTY（管道/CI/测试）→
-    # FallbackIO + PlainBlock 降级（行为与改造前一致）。renderer 须在 supervisor
-    # 前构造——confirm_callback（写/编辑确认 diff 预览）是 supervisor 构造参数。
+    # FallbackIO + PlainBlock 降级。renderer 须在 supervisor 前构造——confirm_callback
+    # （写/编辑确认 diff 预览）是 supervisor 构造参数。
     # root_agent_type 恒为 "supervisor"（根 agent 的 agent_type 见 supervisor 构造处）。
     renderer = make_renderer(
         _make_print_fn(console),
@@ -319,7 +319,7 @@ def main() -> None:
     # 都挂在它下面，三者对不上会各自读到空数据。
     session_id = uuid.uuid4().hex[:8]
 
-    # Letta 服务层组装：MemoryDB → managers → set_memory_context 绑定记忆工具
+    # 记忆服务层组装：MemoryDB → managers → set_memory_context 绑定记忆工具
     # 运行时上下文 → agent 状态。装配顺序即依赖方向：先 DB，再块/消息/段落管理，
     # 再归档（依赖段落管理）、agent 管理（依赖块+消息）。
     memory_dir = Path(config.workspace) / "memory"
@@ -332,7 +332,7 @@ def main() -> None:
     archive_manager = ArchiveManager(db, passage_manager)
     agent_manager = AgentManager(db, block_manager, message_manager)
     # MessageManager 经 agent_manager 读 AgentState.message_ids（in-context 窗口），
-    # 让压缩后的摘要/尾部跨轮回放（评审 I-3）——装配顺序上 agent_manager 后置，故在此回填。
+    # 压缩后的摘要/尾部要跨轮回放——装配顺序上 agent_manager 后置，故在此回填。
     message_manager.agent_manager = agent_manager
     agent_state = agent_manager.create_agent(session_id)
 
@@ -351,8 +351,8 @@ def main() -> None:
                                        llm=structured),
     ))
 
-    # 安全管道：四中间件（经验记忆中间件随 Letta 重构移除——工具调用经验不再注入
-    # prompt，改由 Sleeptime 后台整合进核心记忆块）。
+    # 安全管道：四中间件（经验记忆中间件已移除——工具调用经验不再注入 prompt，
+    # 改由 Sleeptime 后台整合进核心记忆块）。
     middlewares = [
         AuditMiddleware(),
         WorkspacePolicyMiddleware(workspace=config.workspace),
