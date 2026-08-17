@@ -40,6 +40,10 @@ docs/
 !.claude/DECISIONS.md
 !.claude/MEMORY_BANK.md
 
+# 测试和脚本
+./tests
+./scripts
+
 # Environment
 .env
 .env.local
