@@ -41,8 +41,8 @@ docs/
 !.claude/MEMORY_BANK.md
 
 # 测试和脚本
-./tests
-./scripts
+/tests/
+/scripts/
 
 # Environment
 .env
