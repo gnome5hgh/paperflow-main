@@ -108,6 +108,13 @@ class PaperFlowConfig:
     #: ChromaDB 持久化路径；空 = 从 workspace 推导 <workspace>/chromadb/
     chroma_path: str = ""
 
+    #: Milvus 连接地址。本地文件路径 → Milvus Lite（内嵌，单测用）；
+    #: ``http://host:19530`` → Milvus Standalone（生产默认）。
+    milvus_uri: str = "http://localhost:19530"
+
+    #: Milvus 集合名（单一集合，对应原 ChromaDB collection）
+    milvus_collection: str = "paperflow"
+
     #: 嵌入模型（真实 bge 落地，维度从模型读取不硬编码）
     #: 实际加载路径由 resolve_model_dir 解析：`<workspace>/models/<name>/` 存在则用本地
     #:（HF 权威权重存 data/models/，gitignored），否则回退此 HF 名（首次使用自动下载）。
@@ -170,7 +177,8 @@ class PaperFlowConfig:
         # 顶层配置字段(含 vault / RAG 键,均可通过 config.yaml 顶层覆盖默认值)
         for key in ("workspace", "agents_dir", "max_risk",
                     "vault_note_dir", "vault_pdf_dir", "vault_outline_dir",
-                    "grobid_endpoint", "chroma_path", "embed_model", "rerank_model",
+                    "grobid_endpoint", "chroma_path", "milvus_uri", "milvus_collection",
+                    "embed_model", "rerank_model",
                     "agent_timeouts", "sleeptime_enable", "sleeptime_agent_frequency"):
             if key in data:
                 setattr(self, key, data[key])
@@ -211,6 +219,8 @@ class PaperFlowConfig:
             "PAPERFLOW_VAULT_OUTLINE_DIR": (None, "vault_outline_dir"),
             "PAPERFLOW_GROBID_ENDPOINT": (None, "grobid_endpoint"),
             "PAPERFLOW_CHROMA_PATH": (None, "chroma_path"),
+            "PAPERFLOW_MILVUS_URI": (None, "milvus_uri"),
+            "PAPERFLOW_MILVUS_COLLECTION": (None, "milvus_collection"),
             "PAPERFLOW_EMBED_MODEL": (None, "embed_model"),
             "PAPERFLOW_RERANK_MODEL": (None, "rerank_model"),
             "PAPERFLOW_SLEEPTIME_ENABLE": (None, "sleeptime_enable"),
