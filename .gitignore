@@ -44,6 +44,9 @@ docs/
 /tests/
 /scripts/
 
+# 执行工作区（SDD 账本等临时产物）
+.superpowers/
+
 # Environment
 .env
 .env.local
