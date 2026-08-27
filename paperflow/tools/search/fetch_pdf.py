@@ -74,5 +74,10 @@ class FetchPdfTool(Tool):
         except Exception as e:
             # 含 SSRF 拦截、重定向未解析完整、响应非 PDF 等情况
             return ToolResult(text=f"下载失败: {e}")
-        get_rag_service().index_document(str(dest))   # 写盘后做索引热更新
-        return ToolResult(text=f"已下载 PDF: {dest}")
+        note = ""
+        try:
+            get_rag_service().index_document(str(dest))   # 写盘后做索引热更新
+        except Exception as e:
+            # Milvus 是外部服务可能未启动：索引失败只降级为提示，不掩盖下载成功
+            note = f"（索引失败：{e}）"
+        return ToolResult(text=f"已下载 PDF: {dest}{note}")

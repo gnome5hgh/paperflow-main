@@ -49,5 +49,10 @@ class EditFileTool(Tool):
         if count > 1:
             return ToolResult(text=f"待替换文本出现 {count} 次，请提供更长的唯一锚点")
         atomic_write(p, content.replace(old_text, new_text))
-        get_rag_service().index_document(str(p))
-        return ToolResult(text=f"已编辑 {path}", completion=f"File edited: {path}")
+        note = ""
+        try:
+            get_rag_service().index_document(str(p))
+        except Exception as e:
+            # Milvus 是外部服务可能未启动：索引失败只降级为提示，不掩盖已成功的编辑
+            note = f"（索引失败：{e}）"
+        return ToolResult(text=f"已编辑 {path}{note}", completion=f"File edited: {path}")

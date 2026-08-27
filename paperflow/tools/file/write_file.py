@@ -31,5 +31,10 @@ class WriteFileTool(Tool):
         """写入/覆盖笔记文件,并做索引热更新使其立即可检索。"""
         p = Path(path)
         atomic_write(p, content)
-        get_rag_service().index_document(str(p))
-        return ToolResult(text=f"已写入 {path}", completion=f"File written: {path}")
+        note = ""
+        try:
+            get_rag_service().index_document(str(p))
+        except Exception as e:
+            # Milvus 是外部服务可能未启动：索引失败只降级为提示，不掩盖已成功的写入
+            note = f"（索引失败：{e}）"
+        return ToolResult(text=f"已写入 {path}{note}", completion=f"File written: {path}")

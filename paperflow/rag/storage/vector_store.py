@@ -114,16 +114,19 @@ class VectorStore:
             output_fields=["text", "path", "mtime"],
             batch_size=self._batch_size,
         )
-        while True:
-            try:
-                batch = it.next()
-            except StopIteration:
-                break
-            if not batch:
-                break
-            for row in batch:
-                out.append((row["id"], row["text"], row["path"], float(row["mtime"])))
-        it.close()
+        try:
+            while True:
+                try:
+                    batch = it.next()
+                except StopIteration:
+                    break
+                if not batch:
+                    break
+                for row in batch:
+                    out.append((row["id"], row["text"], row["path"], float(row["mtime"])))
+        finally:
+            # 分页中途抛非 StopIteration 异常也要关闭迭代器，避免游标泄漏
+            it.close()
         return out
 
     def count(self) -> int:
