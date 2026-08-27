@@ -14,6 +14,9 @@ conda run -n paperflow python -m pytest tests/ -v
 # Run a single test
 conda run -n paperflow python -m pytest tests/agent/test_agent.py::TestExecTool -v
 
+# Start Milvus Standalone（RAG 向量库，etcd+minio+milvus）；单测用 Milvus Lite 内嵌，无需此服务
+docker compose up -d
+
 # Run the app — 交互式 REPL（⚠️ 不能经 conda run）
 # conda run 不转发 stdin 给子进程 → 交互式 REPL 的 input() 立即 EOF 退出。
 # 必须先在激活的 env 里跑，或用 env 的 python 直接跑：
@@ -136,7 +139,7 @@ Every agent lives in `agents/<name>/` with two files:
 CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 1. **AuditMiddleware** — 每次工具调用 + LLM 调用落 SQLite 审计（含 approval requested/decided 两条独立事件、`record_llm_call` 元数据）。after 钩子失败不中断结果返回
-2. **WorkspacePolicyMiddleware** — 路径边界：校验 `format="path"` 参数为绝对路径、落在工具 `allowed_paths` 白名单内（相对路径直接拒绝；`Path.relative_to` 天然阻断目录穿越）；敏感路径黑名单（workspace/audit、workspace/chroma、`.git`、`.claude`、`config.yaml`/`.env`）硬拦截
+2. **WorkspacePolicyMiddleware** — 路径边界：校验 `format="path"` 参数为绝对路径、落在工具 `allowed_paths` 白名单内（相对路径直接拒绝；`Path.relative_to` 天然阻断目录穿越）；敏感路径黑名单（workspace/audit、workspace/milvus、`.git`、`.claude`、`config.yaml`/`.env`）硬拦截
 3. **SecurityScanMiddleware** — 工具输出扫描（`output_scan="mark"` 的工具标注关键内容）
 4. **PolicyEngineMiddleware** — 三级检查：`blocked_by_default` 直接拒；`risk_level` 超过会话阈值 `max_risk`（默认 "medium"）拒；`requires_confirm` 抛 `ConfirmRequired` → 用户确认后同一（工具名, 目标路径）不再重复询问
 
@@ -189,10 +192,10 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 `paperflow/rag/` — 检索增强栈，`RAGService` 是唯一门面（indexer 与 retriever 是同一实例的两个视图，共享一把锁，增量写入对查询立即可见）。**懒加载单例**：`get_rag_service(config=None)`（双重检查加锁），所有重量组件（embedder/reranker/grobid/vector_store/bm25）首次访问才构造——`rag/__init__.py` 因此在包导入期不拉重型依赖。
 
-端到端链路：**解析**（`GrobidClient` HTTP 解析 TEI XML → `ParsedDoc`；GROBID 不可达时回退 `PyMuPDFParser` 字体启发式分节；按 (path, mtime, size) 缓存）→ **分块**（`AcademicChunker` 两段式：按节 → 长节按 token 512/overlap 64 重切，跳过参考文献；Chunk id = sha1(path:index) 幂等）→ **索引**（`RagIndexer` 增量扫描，state 文件 `index_state.json`；文档级「删旧建新」，Chroma upsert + BM25 同步；含一致性恢复）→ **检索**（`Retriever` 混合：BM25 top-30 + 向量 top-30 → RRF 融合 → `BgeReranker` 重排 → 有序 Chunks）。
+端到端链路：**解析**（`GrobidClient` HTTP 解析 TEI XML → `ParsedDoc`；GROBID 不可达时回退 `PyMuPDFParser` 字体启发式分节；按 (path, mtime, size) 缓存）→ **分块**（`AcademicChunker` 两段式：按节 → 长节按 token 512/overlap 64 重切，跳过参考文献；Chunk id = sha1(path:index) 幂等）→ **索引**（`RagIndexer` 增量扫描，state 文件 `index_state.json`；文档级「删旧建新」，Milvus upsert + BM25 同步；含一致性恢复）→ **检索**（`Retriever` 混合：BM25 top-30 + 向量 top-30 → RRF 融合 → `BgeReranker` 重排 → 有序 Chunks）。
 
 存储与模型：
-- `VectorStore` — ChromaDB `PersistentClient`（`config.chroma_dir` = `workspace/chromadb/`），单 collection "paperflow"
+- `VectorStore` — Milvus（`pymilvus.MilvusClient`，单 collection `config.milvus_collection`="paperflow"）；`config.milvus_uri` 默认 `http://localhost:19530` 连 Standalone（`docker compose up -d` 起 etcd+minio+milvus，gRPC 19530 / 健康检查 9091，数据落 `data/milvus/`）；传本地文件路径则走 Milvus Lite 内嵌（单测用，无需常驻服务）
 - `Bm25Index` — rank_bm25 + jieba；是向量库文本的**投影**，启动时从 `store.all_documents()` 重建
 - `BgeEmbedder` — `BAAI/bge-small-zh-v1.5`（CPU，L2 归一化，维度从模型读取）；`BgeReranker` — `BAAI/bge-reranker-v2-m3` CrossEncoder
 - 加载路径 `resolve_model_dir(workspace, model_name)`：本地优先（`<workspace>/models/<name>/` 存在用本地），否则回退 HF 名自动下载
@@ -244,17 +247,17 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | 字段 | 说明 |
 |---|---|
 | `llm` (`LLMConfig`) | base_url / api_key / model / max_tokens(393216，给足防长草稿截断) / temperature(0.0) / context_window(1M) |
-| `workspace` | 运行时数据根（`data/`）：memory/chromadb/intents/models/audit/templates 等 |
+| `workspace` | 运行时数据根（`data/`）：milvus/memory/intents/models/audit/templates 等 |
 | `agents_dir` | 插件扫描目录，默认 `agents` |
 | `max_risk` | 策略引擎风险阈值，默认 "medium" |
 | `compaction` | `CompactionSettings`（惰性工厂避免 config→compaction→llm→config 循环导入） |
 | `sleeptime_enable` / `sleeptime_agent_frequency` | 后台整合开关 / 每 N 条新消息检查一次（默认 50） |
 | `vault_note_dir` / `vault_pdf_dir` / `vault_outline_dir` | Obsidian vault 数据源根（个人绝对路径，**无默认值**，须经 .env/config.yaml） |
 | `grobid_endpoint` | GROBID 服务地址，默认 `http://localhost:8070` |
-| `chroma_path` / `embed_model` / `rerank_model` | ChromaDB 路径 / bge 嵌入 / 重排模型 |
+| `milvus_uri` / `milvus_collection` / `embed_model` / `rerank_model` | Milvus 地址（默认 `http://localhost:19530`）/ 集合名（默认 `paperflow`）/ bge 嵌入 / 重排模型 |
 | `agent_timeouts` | 子 agent 超时覆盖表（writer 600 / searcher 300 / reviewer 180） |
 
-环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_VAULT_NOTE_DIR` / `PAPERFLOW_VAULT_PDF_DIR` / `PAPERFLOW_VAULT_OUTLINE_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_CHROMA_PATH` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY`。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
+环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_VAULT_NOTE_DIR` / `PAPERFLOW_VAULT_PDF_DIR` / `PAPERFLOW_VAULT_OUTLINE_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY`。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
 
 ### Key design decisions
 
