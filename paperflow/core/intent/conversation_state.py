@@ -17,6 +17,14 @@ class PendingClarification:
     终止时以它为最佳猜测调度,比裸原输入更准。
     round:已询问的澄清轮数,链式累计——重建时从旧值 +1,绝不重置为 0,否则轮数上限
     形同虚设;round >= 2 走终止路径(强制调度)。
+
+    Attributes:
+        question: 向用户提出的澄清问题文本。
+        original_input: 产生该澄清的输入（跨轮合并后的文本，包含已收集的澄清上下文）。
+            ——超轮终止时以它为最佳猜测调度，比裸原输入更准。
+        round: 已询问的澄清轮数，链式累计。
+            - 重建时从旧值 +1，绝不重置为 0，否则轮数上限形同虚设。
+            - round >= 2 走终止路径（强制调度），由上层逻辑控制。
     """
     question: str
     original_input: str
@@ -25,7 +33,17 @@ class PendingClarification:
 
 @dataclass
 class ConversationState:
-    """跨轮会话状态。prev_* 由 run() 结束后更新;pending_intent 由 CLI 维护。"""
+    """跨轮会话状态。
+
+    存储上一轮意图和用户输入，供追问检测使用；以及跨轮澄清挂起状态（由 CLI 维护）。
+    prev_* 由 agent.py run() 结束后更新;pending_intent 由 CLI 维护。
+
+    Attributes:
+        prev_intent: 上一轮识别出的意图类型，用于追问检测（首轮为 None）。
+        prev_user_input: 上一轮用户原始输入，用于追问分支重跑实体提取（因不缓存实体，需重提）。
+        pending_intent: 跨轮澄清挂起状态，若不为 None 表示当前有未完成的澄清流程。
+            - 由 CLI 层维护，最多允许 2 轮澄清。
+    """
     prev_intent: IntentType | None = None                    # 上一轮意图（追问检测消费）
     prev_user_input: str = ""                                # 上一轮输入（追问分支重跑实体提取用）
     pending_intent: PendingClarification | None = None       # 跨轮澄清挂起（CLI 维护，最多 2 轮）

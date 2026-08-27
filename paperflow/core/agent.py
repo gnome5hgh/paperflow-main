@@ -348,6 +348,7 @@ class Agent:
         接受单条 Message 或 Message 列表(run() 各分支混用两种风格,测试多用列表),
         统一归一为列表后追加。
         """
+        # 判断 added_messages 这个变量是否是 Message 类（或其子类）的实例。
         if isinstance(added_messages, Message):
             added_messages = [added_messages]
         self._messages.extend(added_messages)
@@ -376,45 +377,96 @@ class Agent:
         """
         if self.memory is None:
             return None
+
+        # BlockManager，负责读写 SQLite 数据库里 blocks 表的管理器。list_blocks() 就是去查库，把当前所有块读出来，返回 list[Block]（每个 Block 是 pydantic 模型，含 label/value/版本号等）
+        # 每轮都从 BlockManager 重新读 blocks 重建 memory 对象——这就是「记忆会话内即时生效」的机制
+        # 注意：这里构建的是记忆块（blocks 表）——不是历史会话。历史会话在 messages 表，由 MessageManager 管
         if self.block_manager is not None:
             from paperflow.core.memory.schemas.memory import Memory
+            # 把「缓存的记忆对象」扔掉，从数据库重新读出所有块，拼一个新的 Memory 实例
             self.memory = Memory(blocks=self.block_manager.list_blocks())
+
+        # compile() 只渲染 persona/human 两块 + 文件树索引（渐进暴露，其余块按需读）。compiled 的实际内容长这样：
+        #   <memory_blocks>
+        #   <block name="persona">…助手身份设定…</block>     ← 只有 persona/human 两块的内容
+        #   <block name="human">…用户画像…</block>
+        #   </memory_blocks>
+        #   <memory_filesystem>
+        #   …memory_filesystem.md 的内容…                    ← 文件树索引（文件名/结构，不是正文）
+        #   </memory_filesystem>
         compiled = self.memory.compile(index_text=self._index_text())
         if not compiled:
             return None
         return Message(role="system", content=compiled)
 
     async def _build_head(self, task: str, force_dispatch: bool = False) -> list[Message]:
-        """构建头部 system 消息：① SKILL ② Memory.compile()（system/ 块 + 索引）
-        ③ INTENT 块；末尾追加 user task。
+        """构建本轮 ReAct 循环的头部消息列表（system 层 + 用户任务）。
 
-        澄清早退时返回单元素 [user] 列表——run() 据此直接返回澄清文本，不落盘、
-        不进入 ReAct（澄清是"非任务轮"，只走 CLI 层）。
+        此方法在每个 ReAct 轮次开始时被调用，用于组装 LLM 输入的前置部分（system 消息）。
+        它按顺序拼接四块内容：
+            1. system: SKILL 系统提示（来自 agent 配置，定义角色与行为规范）
+            2. system: 记忆块（Memory.compile() 输出的 persona/human + 文件树索引，若有）
+            3. system: 意图识别块（若启用意图管线且管线成功，格式化为 system 消息的 INTENT 块）
+            4. 末尾追加 user task。
+
+        特殊路径：若意图管线返回了 clarification（澄清问题）且 force_dispatch=False，
+        则直接返回 [user: clarification]（单元素列表），以此通知 run() 跳过 ReAct 循环，
+        将澄清问题直接返回给调用方（CLI 层），实现跨轮澄清。
+
+        Args:
+            task: 本轮用户输入文本（原始任务）。
+            force_dispatch: 强制调度标志。若为 True，即使意图管线要求澄清，也跳过早退，
+                继续执行 ReAct（用于跨轮澄清超过 2 轮后的强制终止路径）。
+
+        Returns:
+            list[Message]: 头部消息列表。正常返回 [system_prompt, memory(可选), intent(可选), user_task]；
+                澄清早退时返回 [user(clarification)]，长度仅为 1 且 role 为 user。
         """
+        # ====== 第1层：SKILL 系统提示 ======
         head: list[Message] = [Message(role="system", content=self.system_prompt)]
+
+        # ====== 第2层：记忆块（核心记忆 + 文件系统索引） ======
         if self.memory is not None:
             m = self._memory_message()
             if m is not None:
                 head.append(m)
+
+        # ====== 第3层：意图识别块 ======
+        # 若管线返回 clarification，则表明当前输入意图不明确，需要向用户追问。
         if self.intent_enabled and self.intent_pipeline is not None and self.conversation is not None:
             try:
+                # 调用意图管线，传入上一轮意图和输入（用于追问检测）
                 intent = await self.intent_pipeline.run(
                     task, prev_intent=self.conversation.prev_intent,
                     prev_user_input=self.conversation.prev_user_input)
             except Exception:
-                # 管线失败降级:意图管线是 LLM 兜底,网络异常/解析失败传播到这里——
-                # 不阻断本轮:记日志 + 跳过 INTENT 块 + 普通 ReAct 继续。last_intent
-                # 显式置 None:CLI 澄清检查跳过、conversation 的上一轮意图不更新。
+                # 管线失败（如 LLM 调用超时）：降级处理，不阻断主流程，
+                # 不阻断本轮:记日志 + 跳过 INTENT 块 + 普通 ReAct 继续。
+                # last_intent 显式置 None:CLI 澄清检查跳过、conversation 的上一轮意图不更新。
                 logger.warning("intent pipeline failed, degraded to plain ReAct", exc_info=True)
                 self.last_intent = None
                 intent = None
+
             if intent is not None:
+                # ---------- 跨轮澄清早退路径 ----------
+                # 如果意图管线返回了 clarification 字段（即需要向用户提问）
+                # 且 force_dispatch 未置 True，则不走 ReAct，而是直接返回澄清问题
+                # 作为用户消息。run() 检测到 head 长度为 1 且 role 为 user 时，
+                # 会直接返回该文本，不落盘、不进入工具循环。
+                # 这样，本轮对话实际上是一个“非任务轮”，CLI 层将问题展示给用户，
+                # 等待用户回答后重新调用 run()，实现跨轮澄清（最多 2 轮）。
                 self.last_intent = intent
                 if intent.clarification and not force_dispatch:
                     # 跨轮澄清:早退在落盘前 → 不持久化(非任务轮)。澄清只走 CLI 层;
                     # INTENT 块不含澄清问题(避免与 ask_user_question 工具双重发问)。
                     return [Message(role="user", content=intent.clarification)]
+
+                # 正常路径：将意图结果序列化为 INTENT 块，注入 system 消息，
+                # 让 LLM 在执行任务时获得路由先验。
                 head.append(Message(role="system", content=_intent_block(intent)))
+
+        # ====== 第4层：用户任务 ======
+        # 最后将当前用户输入作为 user 消息追加。
         head.append(Message(role="user", content=task))
         return head
 
@@ -447,6 +499,12 @@ class Agent:
         """
         if self.message_manager is None:
             return
+
+        # 从 MessageManager 加载当前会话的 in-context 消息（跨轮回放）。
+        # 内部逻辑：先读 AgentState.message_ids 确定窗口范围，
+        #   - 有 message_ids → 按 id 精确查询，返回压缩后的窗口（摘要+保留尾部）
+        #   - 无 message_ids → 降级全量查询该 agent 所有消息（首轮/未压缩兼容）
+        # 返回 schemas.Message 列表，后续经 _schema_to_wire 转为 wire 格式追加进 self._messages。
         loaded = self.message_manager.get_in_context_messages(self.session_id)
         for m in loaded:
             self._messages.append(_schema_to_wire(m))
@@ -479,13 +537,23 @@ class Agent:
         """
         if self.agent_manager is None:
             return
+
+        # 将当前 in‑context 窗口中的每条 Message 对象（内存地址）关联到它在 SQL 数据库中的持久化 ID。old_id_by_msg 的 key 为 id(m)（内存地址），值为 message_id
+        # 因为压缩后的新窗口 new_window 包含：1、旧的“保留尾部”消息（这些对象本身可能来自原 _messages）2、新生成的摘要消息（Message 对象，尚未落盘）
+        # 为了更新 self._message_ids（即持久化的窗口 ID 列表），需要知道哪些消息已经落盘到 AgentState 的 message_ids，哪些是新生成的摘要（需要调用 add_message 插入）。
         old_id_by_msg = {id(m): mid for m, mid in zip(self._messages, self._message_ids)}
+
         new_ids: list[str] = []
         for m in new_window:
+            # 尝试从旧映射中查找此消息是否已落盘
             mid = old_id_by_msg.get(id(m))
+
+            # 若是新生成的摘要消息，则需插入 SQL 并获得新 ID
             if mid is None:
                 mid = self.message_manager.add_message(self.session_id, m).id
             new_ids.append(mid)
+
+        # 更新内存中的窗口的 _message_ids 列表，并持久化到 AgentState 中
         self._message_ids = new_ids
         self.agent_manager.update_agent(self.session_id, message_ids=new_ids)
 
@@ -545,8 +613,7 @@ class Agent:
         if len(head) == 1 and head[0].role == "user":
             return head[0].content
 
-        #: in-context 窗口每轮重建:跨轮回放统一经 MessageManager(SQL) 加载,避免
-        #: self._messages 跨 run 残留导致下一轮重复加载(每步都从权威源重新 load)。
+        #: in-context 窗口每轮重建:跨轮回放统一经 MessageManager(SQL) 加载,避免: self._messages 跨 run 残留导致下一轮重复加载(每步都从权威源重新 load)。
         self._messages = []
         self._load_in_context()
         #: 当前 user task 落盘(Recall),下轮经 _load_in_context 回放
@@ -562,16 +629,15 @@ class Agent:
             # 记忆块会话内即时生效:memory 工具编辑后,下一轮 LLM 调用即见新块
             # (head 是本地列表,_refresh_head_memory 就地替换记忆消息)。
             self._refresh_head_memory(head)
+
             #: LLM 输入 = head 前段(system/memory/INTENT) + in-context 回放历史 +
             #: 末尾当前 user task(恒末位——否则 LLM 会把回放历史里的旧任务误当当前任务)。
             messages = list(head[:-1]) + self._messages + [head[-1]]
-            # 压缩检查:只改 in-context 窗口(驱逐旧对话 + 插摘要),SQL 原始消息由
-            # MessageManager 保留(Recall 可追溯)。structured 未注入(摘要生成器缺失)
-            # 时压缩不触发——避免 None.extract 崩溃,CLI 接线后恢复。
+
+            # 压缩检查:只改 in-context 窗口(驱逐旧对话 + 插摘要),SQL 原始消息由 MessageManager 保留(Recall 可追溯)。
+            # structured 未注入(摘要生成器缺失) 时压缩不触发——避免 None.extract 崩溃,CLI 接线后恢复。
             if self._needs_compaction(messages) and self.structured is not None:
-                # 截断续写与压缩重建互斥:压缩可能驱逐"半截+续写提示"(in-context
-                # 重建),先弃掉累积器里的半截——续写无参照即完整重答,避免
-                # 「半截 + 完整重答」重复交付。
+                # 截断续写与压缩重建互斥:压缩可能驱逐"半截+续写提示"(in-context 重建),先弃掉累积器里的半截——续写无参照即完整重答,避免「半截 + 完整重答」重复交付。
                 accumulated.clear()
                 from paperflow.core.memory.compaction import run_compaction
                 new_window = await run_compaction(
@@ -580,7 +646,13 @@ class Agent:
                 # 持久,下轮 _load_in_context 按 message_ids 回放摘要、不回放被驱逐
                 # 旧消息(SQL 原始消息仍全量保留,Recall 完整)。
                 self._persist_compacted_window(new_window)
+
+                # 更新内存中的窗口的 _messages 列表
                 self._messages = new_window
+
+                # head[:-1]：System Prompt（SKILL 系统提示词）+ Memory Blocks（核心记忆块，如 persona/human）+ INTENT Block（意图识别结果，若启用）
+                # self._messages：从 MessageManager（SQL 持久化层）加载的该会话历史消息，加上本轮已产生的 assistant/tool 交互消息
+                # head[-1]：当前的 user task 消息
                 messages = list(head[:-1]) + self._messages + [head[-1]]
 
             # 流式门控：挂了 stream_callback 才走 chat_stream（否则保持 chat()）。
@@ -599,12 +671,16 @@ class Agent:
                     messages, tools=tools,
                     telemetry_callback=self._make_llm_telemetry(turn))
 
-            # LLM 判定任务完成：返回无 tool_calls 的纯文本消息
+            # LLM 没有请求调用任何工具（判定任务完成）：返回无 tool_calls 的纯文本消息
             if not response.tool_calls:
                 if response.truncated:
-                    # 内容被截断 → 不当作最终回答返回(否则静默交付残缺内容)。暂存半截、
-                    # 把已生成部分+续写提示放进 in-context,继续循环;max_turns 天然封顶
-                    # 续写次数,不会死循环。
+                    # 截断场景：不能把残缺内容作为最终回答返回，否则会静默交付不完整信息。
+                    # 采用“续写策略”：
+                    # 1. 将已生成的半截内容暂存到 accumulated 列表；
+                    # 2. 将 LLM 的响应（含已生成内容）追加到 in-context 缓冲区；
+                    # 3. 追加一条用户角色消息，明确指示 LLM 从断点继续，避免重复输出；
+                    # 4. 持久化这些消息（落盘），然后 continue 进入下一轮循环，让 LLM 续写。
+                    # max_turns 安全阀确保续写次数有限，不会形成死循环。
                     accumulated.append(response.content or "")
                     self._append_to_messages(response)
                     self._append_to_messages(Message(
@@ -612,14 +688,17 @@ class Agent:
                         content="上一条回答因输出长度上限被截断，请直接从断点继续输出，不要重复已输出的内容。"))
                     self._persist_conversation([response])
                     continue
+
+                # 正常完成（未被截断）
                 content = "".join(accumulated) + (response.content or "")
                 accumulated.clear()
-                # on_finish 钩子：顺序执行，可逐级改写最终回答
-                # （如追加来源引用、注入安全声明等）
+
+                # 执行安全中间件（SecurityScanMiddleware）的 on_finish 钩子（按顺序），
+                # 每个中间件可以改写最终回答（如追加来源引用、注入安全声明等）
                 for mw in self.security_middleware:
                     content = await mw.on_finish(self, content)
-                # 意图会话更新:本轮消费了 intent → 更新上一轮意图/输入供下轮追问使用
-                # (澄清早退或管线降级时 last_intent 为 None → 不更新)
+
+                # 如果启用了意图识别功能，并且本轮产生了意图（last_intent 非空） → 更新会话状态：记录本轮意图类型和用户输入，供下一轮追问或上下文理解使用。
                 if self.intent_enabled and self.last_intent is not None:
                     self.conversation.prev_intent = self.last_intent.intent_type
                     self.conversation.prev_user_input = task
@@ -630,27 +709,55 @@ class Agent:
                 self._persist_conversation([final])
                 return content
 
-            # LLM 请求调用工具：将 assistant 消息（含 tool_calls）加入 in-context + 落盘
+            # LLM 请求调用工具：将 assistant 消息（含 tool_calls）加入 in-context
+            # 并持久化到数据库，以便后续轮次（或跨 run）能回放该条消息。
             self._append_to_messages(response)
             self._persist_conversation([response])
 
-            # 并发执行 LLM 请求的工具调用:同一 message 的多个工具调用用 gather 并行
-            # (工具已在线程池执行,真实并发不阻塞事件循环)。gather 按输入顺序返回 →
-            # 结果顺序与工具调用 ID 映射不变,LLM 关联结果到对应调用的顺序语义不因并发
-            # 而改变。并发上限 4(信号量)防一次性打爆网络源;确认用锁串行(CLI 标准输入
-            # 并发读会竞态)。
+            # 并发执行 LLM 请求的所有工具调用:同一 message 的多个工具调用用 gather 并行
+            # 1. 使用 asyncio.gather 并行执行同一 message 中的多个工具调用，提升效率。
+            # 2. 每个工具调用通过 _exec_tool 处理，内部包含中间件管道、参数解析、执行等。
+            # 3. 并行上限使用信号量限制，防止一次性打爆外部 API 或数据库连接池。
+            # 4. 确认回调（如高风险操作需用户确认）通过一个共享锁串行化，避免多个工具同时抢占 CLI 标准输入导致竞态。
             sem = asyncio.Semaphore(4)
             confirm_lock = asyncio.Lock()
 
+            # 内部协程：每个工具调用受信号量限制，并传入确认锁和当前轮次。
             async def _run_one(tc: dict) -> ToolResult:
                 async with sem:
                     return await self._exec_tool(
                         tc, _confirm_lock=confirm_lock, turn=turn)
 
+            # ============================================================
+            # 并发执行所有工具调用，使用 asyncio.gather 实现。
+            #
+            # 1. 语法拆解：
+            #    - response.tool_calls: LLM 返回的工具调用列表（每个元素是 dict），包含 id、function.name、function.arguments。例如 [{"id": "call_1", ...}, {"id": "call_2", ...}]
+            #    - (_run_one(tc) for tc in response.tool_calls): 生成器表达式，为每个工具调用创建一个协程对象（_run_one 是 async 函数）
+            #    - * 星号解包：将生成器产生的多个协程对象解包为位置参数，相当于 asyncio.gather(_run_one(tc1), _run_one(tc2), ...)。若不加 *，则传入的是一个生成器对象，类型不匹配。
+            #    - asyncio.gather(...): 接收一组可等待对象（协程/Task/Future），并发调度它们执行，并等待全部完成后返回一个结果列表，顺序与输入顺序严格一致
+            #    - await: 挂起当前协程（Agent 的 run 方法），直到 gather 管理的所有子协程执行完毕，将控制权交还给事件循环。
+            #
+            # 2. 并发模型：单线程异步并发，事件循环交错执行，适合 I/O 密集型。
+            #    工具执行内部使用 asyncio.to_thread 真正实现线程池并行。
+            #
+            # 3. 并发控制：每个 _run_one 内部会先获取信号量 (Semaphore(4))，
+            #    限制同时活跃的工具调用数，防止打爆外部资源。
+            #
+            # 4. 确认锁串行化：_run_one 将 confirm_lock 传递给 _exec_tool，
+            #    确保用户确认操作串行执行，避免 CLI 输入竞态。
+            #
+            # 5. 异常处理：_exec_tool 捕获所有异常并转为 ToolResult，
+            #    因此 gather 永远不会收到未捕获的异常，保证所有工具结果都能返回。
+            #
+            # 6. 顺序保证：gather 返回的 results 顺序与传入协程顺序完全一致，
+            #    后续通过 zip(response.tool_calls, results) 可安全地将结果
+            #    与 tool_call_id 对应，确保 LLM 下一轮推理上下文正确。
+            # ============================================================
             results = await asyncio.gather(*(_run_one(tc) for tc in response.tool_calls))
 
-            # 将工具执行结果以 tool 角色消息加入 in-context + 落盘
-            # tool_call_id 将这条结果关联到 LLM 请求的对应 tool_call
+            # 将工具执行结果以 tool 角色消息加入 in-context，并持久化
+            # tool_call_id 字段将结果与对应的 tool_call 请求关联，LLM 在下一轮推理时能看到每个调用的返回值。
             for tc, result in zip(response.tool_calls, results):
                 tool_msg = Message(
                     role="tool",
@@ -659,6 +766,8 @@ class Agent:
                 )
                 self._append_to_messages(tool_msg)
                 self._persist_conversation([tool_msg])
+
+            # 本轮工具调用处理完毕，循环继续（回到开头，将新的上下文送交 LLM 进行下一轮推理）。
 
         # 安全阀触发：LLM 陷入了无法在限定轮数内退出的循环。
         # 失败残渣随消息逐条落盘（Recall 保留原始记录含失败轮）；MaxTurnsExceeded
@@ -732,20 +841,20 @@ class Agent:
         """
         name = tool_call["function"]["name"]
 
-        # 工具事件放解析前：即使后续 JSON 解析失败 / 未知工具 / 被中间件拦截，
-        # root 的中间内容缓冲也要被清掉（terminal.render.StreamRenderer 依赖），否则 should_print
-        # 会把中间思考文本误当最终答案。
-        # 门控：stream_callback 为 None（非 CLI 调用方）时连 _format_tool_call 的
-        # json.loads 也不做——保持“无回调零开销空操作”不变式。
+        # 0. 发送工具调用事件（流式渲染）
+        # 目的：在参数解析前就发出流式事件，这样即使后续出现 JSON 解析失败或未知工具，终端渲染器也能及时清空中间内容缓冲区，避免将思考文本误判为最终答案。
+        # 门控：仅当 stream_callback 存在时才执行（即 CLI 交互模式），否则零开销。
         if self.stream_callback is not None:
             self._emit(StreamEvent("tool", _format_tool_call(
                 name, tool_call["function"]["arguments"]), self.agent_type))
 
-        # 1. 按工具名查找 Tool 实例（可能 None = 未知工具，LLM 幻觉/注入）
+        # 1. 按工具名查找 Tool 实例
+        # 若 self.tools 中无此名称，说明 LLM 幻觉或受提示注入攻击生成了非法工具名。此时 tool = None，后续会处理并返回错误 ToolResult。
         tool = self.tools.get(name)
 
-        # 2. 构建工具调用的上下文对象，供中间件读写
-        #    （提前构造：JSON 解析失败 / 未知工具也要走 after 链审计）
+        # 2. 构建 ToolContext（工具调用上下文对象）
+        # 提前构造 ctx 是设计关键：即使参数解析失败或工具不存在，也要能够执行 after 钩子（审计、日志等），保证所有执行路径都有审计记录。
+        # ctx 会贯穿整个管道，中间件可在 before/after 中读写其属性（如添加额外元数据、修改结果等）。
         ctx = ToolContext(
             trace_id=self._trace_id,
             session_id=self.session_id,
@@ -757,7 +866,9 @@ class Agent:
             turn=turn,
         )
 
-        # 3. 解析 LLM 生成的 JSON 参数字符串
+        # 3. 解析 JSON 参数
+        # LLM 生成的 arguments 是 JSON 字符串，必须解析为 dict。
+        # 若解析失败（非法 JSON），记录错误到 ctx，执行 after 钩子，然后返回带有解析错误的 ToolResult，让 LLM 自己决定是否重试。
         try:
             raw_args = json.loads(tool_call["function"]["arguments"])
         except json.JSONDecodeError as e:
@@ -766,10 +877,14 @@ class Agent:
             await self._run_after_hooks(ctx)
             return ToolResult(text=f"Tool argument parse error: {e}")
 
-        # 4. 非 dict 参数（数组/字符串等）归一化为 {}，防止 ** 展开崩溃
+        # 4. 参数归一化
+        # 如果 raw_args 不是 dict（例如 LLM 生成了数组或字符串），为了安全将其归一化为空字典 {}，防止后续 tool.execute(**ctx.args) 时展开崩溃。
+        # 这种异常情况也会被记录在 ctx.args 中供审计。
         ctx.args = raw_args if isinstance(raw_args, dict) else {}
 
-        # 5. 未知工具（LLM 幻觉或 prompt injection）→ 走 after 链审计后反馈可用工具列表
+        # 5. 处理未知工具（LLM 幻觉或 prompt injection）
+        # 若工具不存在（tool is None），记录错误，执行 after 钩子，并返回可用工具列表，帮助 LLM 纠正。
+        # 注意：此时不会执行 before 钩子（因为无工具可执行），但 after 钩子仍会运行，确保审计覆盖。
         if tool is None:
             ctx.error = ValueError(f"Unknown tool: {name}")
             await self._run_after_hooks(ctx)
@@ -777,64 +892,20 @@ class Agent:
                 text=f"Unknown tool: {name}. Available: {list(self.tools.keys())}"
             )
 
-        # 6. before 阶段：中间件按顺序放行 / 拦截
-        for mw in self.security_middleware:
-            try:
-                await mw.before(ctx)
-            except ConfirmRequired as cr:
-                # 高风险操作:交由确认回调决策。并发时多个工具调用的确认回调都跑在事件
-                # 循环线程上(to_thread 只包工具执行,中间件/回调不离开事件循环),但并行
-                # gather 让它们在 await 点交错——CLI 标准输入并发读会竞态(两个回调同时
-                # 抢 input())。确认锁把确认决策串行化:一个确认未决时其余等待;非并发路径
-                # (锁为 None,单工具调用)行为与现状完全一致。
-                # 审批请求事件:发起确认前先落盘(请求≠决策,两条独立事件供合规回溯)。
-                for mw in self.security_middleware:
-                    await mw.on_approval(ctx, "requested")
-                async def _decide() -> bool:
-                    return await self.confirm_callback(cr)
-                if _confirm_lock is not None:
-                    async with _confirm_lock:
-                        confirmed = await _decide()
-                else:
-                    confirmed = await _decide()
-                # 决策语义:确认通过 → user_confirmed;被拒时按是否有真实人工回调区分
-                # user_denied / auto_denied(fail-safe 默认拒绝,无人值守)。
-                outcome = (
-                    "user_confirmed" if confirmed else (
-                        "user_denied" if self._has_human_confirm else "auto_denied"))
-                ctx.approval_outcome = outcome
-                for mw in self.security_middleware:
-                    await mw.on_approval(ctx, "decided", approval_outcome=outcome)
-                if not confirmed:
-                    # 拒绝 → 记录错误并走 after 钩子，反馈给 LLM
-                    # summary.decision 用已计算的 outcome（user_denied/auto_denied），
-                    # 与 ctx.approval_outcome 保持一致——拒绝路径带决策依据回放给 LLM
-                    ctx.error = cr
-                    await self._run_after_hooks(ctx)
-                    return ToolResult(
-                        text=f"User denied: {cr.tool_name}",
-                        summary={"decision": outcome, "tool": cr.tool_name},
-                    )
-                cr.confirm()
-                ctx.user_confirmed = True
-            except SecurityError as se:
-                # 策略拦截（policy_denied / security_blocked）→ 带决策摘要返回
-                ctx.error = se
-                await self._run_after_hooks(ctx)
-                return ToolResult(
-                    text=f"{se.decision}: {se.reason}",
-                    summary={"decision": se.decision, "violations": getattr(se, "violations", [])},
-                )
+        # 6. before 阶段：顺序执行所有安全中间件的 before 钩子。
+        result = await self._run_before_hooks(ctx, _confirm_lock)
+        if result is not None:
+            # 若 before 阶段返回了 ToolResult（拒绝/拦截），直接返回给 LLM
+            return result
 
         # 7. 执行工具逻辑（结果统一规范化为 ToolResult）
+        # 经过 before 阶段后，确认工具可以执行。
+        # 使用 asyncio.to_thread 将工具放到线程池执行，避免阻塞事件循环。
+        # 对于 CPU/网络密集型操作，这能保证并发调度不被单个长耗时任务阻塞。
+        #
+        # 特殊处理：若工具声明了 wants_run_state=True（搜索类工具），则注入一个按 trace_id 键控的去重池（_run_state），用于跨调用共享已访问的 URL 或文件，避免重复抓取。
+        # 该注入通过额外参数 _run_state 传递，不写入 ctx.args，因为 ctx.args 会被序列化用于审计，而去重池不可序列化。
         try:
-            # CPU/网络密集型工具在线程池执行,避免阻塞事件循环——否则并行派发与后台
-            # 归档任务会被单个工具调用卡死。
-            # opt-in 注入每轮搜索状态:声明 wants_run_state 的搜索类工具拿到按追踪 ID
-            # 键控的同一个去重池,跨多次工具调用共享自动去重;未声明的工具零开销。
-            # 注入方式:作为 to_thread 的独立参数直接传 execute,**不写进 ctx.args**——
-            # ctx.args 会被 after 钩子/审计读取并序列化,而去重池不可序列化,写进去
-            # 会让该调用的审计行整体丢失。
             if getattr(tool, "wants_run_state", False):
                 from paperflow.tools.search._common import get_run_state
                 raw = await asyncio.to_thread(
@@ -854,6 +925,81 @@ class Agent:
         if ctx.result.completion and self.stream_callback is not None:
             self._emit(StreamEvent("tool", ctx.result.completion, self.agent_type))
         return ctx.result
+
+    async def _run_before_hooks(self, ctx: ToolContext, confirm_lock: asyncio.Lock | None = None) -> ToolResult | None:
+        """
+        顺序执行所有安全中间件的 before 钩子。
+        每个中间件可以：
+          - 正常返回：放行，继续下一个中间件
+          - 抛出 ConfirmRequired：需要用户确认（高风险操作）
+          - 抛出 SecurityError（或其子类）：策略拦截（如拒绝访问敏感文件）
+
+        若所有钩子通过，返回 None，表示可以继续执行工具。
+        若中途拦截（用户拒绝、策略阻止），则返回一个 ToolResult，调用方应直接返回该结果，不再执行工具。
+
+        内部处理：
+            - 捕获 ConfirmRequired → 调用确认回调（串行化），记录审批事件
+            - 捕获 SecurityError → 直接返回策略拒绝的 ToolResult
+        """
+        for mw in self.security_middleware:
+            try:
+                await mw.before(ctx)
+            except ConfirmRequired as cr:
+                # ----- 需要用户确认 -----
+                # 先通知中间件“请求已发出”
+                for mw in self.security_middleware:
+                    await mw.on_approval(ctx, "requested")
+
+                # 定义异步决策函数，调用外部确认回调
+                async def _decide() -> bool:
+                    return await self.confirm_callback(cr)
+
+                # 串行化确认（若提供了锁）
+                if confirm_lock is not None:
+                    async with confirm_lock:
+                        confirmed = await _decide()
+                else:
+                    confirmed = await _decide()
+
+                # 根据确认结果和是否有人工回调，标记决策类型
+                # 决策语义:确认通过 → user_confirmed;被拒时按是否有真实人工回调区分
+                # user_denied / auto_denied(fail-safe 默认拒绝,无人值守)。
+                outcome = (
+                    "user_confirmed" if confirmed else (
+                        "user_denied" if self._has_human_confirm else "auto_denied"))
+                ctx.approval_outcome = outcome
+
+                # 通知中间件决策已做出
+                for mw in self.security_middleware:
+                    await mw.on_approval(ctx, "decided", approval_outcome=outcome)
+
+                if not confirmed:
+                    # 拒绝 → 记录错误并走 after 钩子，反馈给 LLM
+                    # 注意：此时工具尚未执行，但 after 钩子仍会运行以记录审计。
+                    # summary.decision 用已计算的 outcome（user_denied/auto_denied），
+                    # 与 ctx.approval_outcome 保持一致——拒绝路径带决策依据回放给 LLM
+                    ctx.error = cr
+                    await self._run_after_hooks(ctx)
+                    return ToolResult(
+                        text=f"User denied: {cr.tool_name}",
+                        summary={"decision": outcome, "tool": cr.tool_name},
+                    )
+
+                # 确认通过：标记 ctx，继续执行（不返回，后续会执行工具）
+                cr.confirm()
+                ctx.user_confirmed = True
+            except SecurityError as se:
+                # PolicyEngineMiddleware 抛出的 policy_denied /
+                # SecurityScanMiddleware/WorkspacePolicyMiddleware 抛出的 security_blocked
+                # → 带决策摘要返回
+                ctx.error = se
+                await self._run_after_hooks(ctx)
+                return ToolResult(
+                    text=f"{se.decision}: {se.reason}",
+                    summary={"decision": se.decision, "violations": getattr(se, "violations", [])},
+                )
+        # 全部通过
+        return None
 
     async def _run_after_hooks(self, ctx: ToolContext) -> None:
         """

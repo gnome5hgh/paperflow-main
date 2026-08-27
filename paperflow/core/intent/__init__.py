@@ -9,7 +9,6 @@
 """
 from paperflow.core.intent.schemas.intent import IntentType, IntentStep, IntentOutput, IntentionResult
 from paperflow.core.intent.schemas.route import Route, RouteChoice
-from paperflow.core.intent.encoders.dense import DenseEncoder, FixedDenseEncoder
 from paperflow.core.intent.encoders.bm25 import JiebaTokenizer, BM25Encoder
 from paperflow.core.intent.encoders.index import HybridLocalIndex
 from paperflow.core.intent.routing.router import HybridRouter
@@ -20,7 +19,6 @@ from paperflow.core.intent.conversation_state import ConversationState, PendingC
 __all__ = [
     "IntentType", "IntentStep", "IntentOutput", "IntentionResult",
     "Route", "RouteChoice",
-    "DenseEncoder", "FixedDenseEncoder",
     "JiebaTokenizer", "BM25Encoder",
     "HybridLocalIndex", "HybridRouter",
     "IntentPipeline", "load_routes",

@@ -22,6 +22,13 @@ class IntentPipeline:
 
     def __init__(self, router, structured,
                  llm_fallback_schema: type[BaseModel] = IntentionResult):
+        """初始化意图处理管线。
+
+        Args:
+            router: HybridRouter 实例（routing/router.py），用于混合路由判定。
+            structured: 结构化输出模块（如 LLM 调用封装），提供 extract 异步方法。
+            llm_fallback_schema: LLM 兜底时使用的 Pydantic 模型，默认 IntentionResult（schemas/intent.py）。
+        """
         self.router = router
         self.structured = structured
         self.llm_fallback_schema = llm_fallback_schema
@@ -30,39 +37,59 @@ class IntentPipeline:
                   prev_user_input: str = "") -> IntentOutput:
         """对一次用户输入做完整意图识别，返回结构化意图结果。
 
-        :param query: 用户原始输入
-        :param prev_intent: 上一轮意图（追问检测使用；首轮为 None）
-        :param prev_user_input: 上轮原始输入（追问分支重跑实体提取用；首轮为空串）。
-            上轮实体不存会话，用确定性正则重提取即可，零状态。
-            调用方按三个参数调用，缺参会 TypeError。
+        四级级联判定流程：
+            1. 实体提取（正则）——从当前 query 提取所有实体。
+            2. 追问检测（词表规则）——若为追问，继承上一轮意图，实体合并（本轮覆盖上轮）。
+            3. 混合路由（BM25+稠密）——若命中非 general，直接产出。
+            4. LLM 兜底（结构化输出）——注入近失候选，让 LLM 确认或改判。
+
+        Args:
+            query: 用户当前输入的原始文本。
+            prev_intent: 上一轮识别出的意图类型（用于追问检测），首轮为 None。
+            prev_user_input: 上一轮用户的原始输入（用于追问分支重跑上轮实体提取）。
+                上轮实体不存储在会话中，而是用确定性正则重提取，保持零状态。
+                调用方必须按三个参数调用，否则会触发 TypeError。
+
+        Returns:
+            IntentOutput 对象，包含最终意图类型、置信度、实体、来源步骤、重写查询等。
         """
 
-        # 实体提取（确定性正则，只提取不判定意图）
+        # ====== 第1级：实体提取（确定性正则） ======
+        # 从当前输入中提取所有可能实体，不依赖任何模型
         entities = self._extract_entities(query)
 
-        # 追问检测（词表启发式，依赖会话中的上一轮意图）
+        # ====== 第2级：追问检测（词表启发式） ======
+        # 若判定为追问，则继承上一轮意图，同时合并实体：上轮实体 + 本轮实体（同键覆盖）
         if self._detect_followup(query, prev_intent):
-            # 继承上轮意图；实体 = 上轮实体（从 prev_user_input 重跑实体提取）+ 本轮覆盖。
-            # 合并顺序关键：上轮实体在前，本轮实体在后——同键（如 Figure）本轮赢
+            # 若存在上轮输入，则重跑实体提取（获取上轮实体）
             prev_entities = extract_entities(prev_user_input) if prev_user_input else {}
+            # 实体合并顺序：上轮在前，本轮在后，确保本轮同键实体覆盖上轮
+            # 设计意图：追问场景下，用户可能仍依赖上轮的实体（如 PDF 路径），
+            # 但也会补充或修正新的实体（如“Figure 3”）。合并后本轮新实体优先，
+            # 避免丢失上轮有效信息，同时体现当前输入的最新指向。
             return IntentOutput(
-                intent_type=prev_intent, confidence=1.0,
-                entities={**prev_entities, **entities},
+                intent_type=prev_intent, confidence=1.0, # 追问直接继承，置信度置为 1
+                entities={**prev_entities, **entities}, # Python 字典解包合并，后者（entities）的键值会覆盖前者（prev_entities）中同名的键。
                 source=IntentStep.FOLLOWUP, prev_intent=prev_intent,
-                rewritten_query=query)
+                rewritten_query=query # 追问不改写原文
+            )
 
-        # 混合路由：命中非 general 直接产出
+        # ====== 第3级：混合路由 ======
+        # 调用混合路由器进行判定，若命中且结果不是 "general"，则直接产出
         choice = self.router(query)
         if choice is not None and choice.name != "general":
+            # 将融合分数截断到 [0,1] 区间（余弦相似度可为负，稀疏点积可 >1，需归一化）
             return IntentOutput(
                 intent_type=IntentType(choice.name),
-                # 融合分数 clip 到 [0,1]（cosine 可为负、稀疏点积可 >1，非概率）
-                confidence=float(max(0.0, min(1.0, choice.similarity_score or 0.0))),
+                confidence=float(max(0.0, min(1.0, choice.similarity_score or 0.0))), # 融合分数 clip 到 [0,1]（cosine 可为负、稀疏点积可 >1，非概率）
                 entities=entities, source=IntentStep.ROUTER, prev_intent=prev_intent,
                 rewritten_query=query)
 
-        # LLM 兜底：注入路由近失候选供参考
+        # ====== 第4级：LLM 兜底 ======
+        # 获取路由层近失候选（top-k 融合分数），供 LLM 参考，避免盲猜
         near_miss = self.router.scores(query, k=3)
+
+        # 构建注入路由先验的提示词，调用结构化输出模块
         result = await self.structured.extract(
             prompt=self._build_llm_prompt(query, near_miss),
             schema=self.llm_fallback_schema,
@@ -70,11 +97,12 @@ class IntentPipeline:
                                              confidence=0.0),
         )
         # steps/clarification 透传：复合意图拆分或澄清问题，由上层据此处理
+        # 组装最终输出：透传 LLM 返回的 steps/clarification 供上层处理
         return IntentOutput(
             intent_type=result.intent_type,
             confidence=result.confidence,
             entities=entities, source=IntentStep.LLM, prev_intent=prev_intent,
-            rewritten_query=result.query_rewrite or query,
+            rewritten_query=result.query_rewrite or query, # 若 LLM 提供了改写则用，否则保留原文
             steps=result.steps or [],
             clarification=result.clarification,
         )
@@ -88,9 +116,20 @@ class IntentPipeline:
         return detect_followup(query, prev_intent)
 
     def _build_llm_prompt(self, query: str, near_miss: list[tuple[str, float]]) -> str:
-        """注入意图契约说明（IntentType 枚举）+ 路由近失候选（top 分数）
-        + 原始 query。近失示例："路由层倾向 search_paper（0.31，差阈值一点），
-        请确认或改判"。"""
+        """构建 LLM 兜底提示词。
+
+        注入三部分信息：
+            1. 意图枚举列表（IntentType 所有取值）。
+            2. 路由层的近失候选（路由名 + 分数），供 LLM 参考确认或改判。
+            3. 原始用户输入 query。
+
+        Args:
+            query: 用户原始输入文本。
+            near_miss: 路由层返回的 top-k 候选列表，每项为 (路由名, 分数)。
+
+        Returns:
+            组合后的提示词字符串。
+        """
         parts = [
             "你是意图分类器。从以下意图中选择一个：",
             ", ".join(t.value for t in IntentType),

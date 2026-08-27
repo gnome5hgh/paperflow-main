@@ -24,13 +24,23 @@ class HybridRouter:
                  routes: list[Route] | None = None,
                  index: HybridLocalIndex | None = None,
                  top_k: int = 5, alpha: float = 0.3):
+        """初始化混合路由器。
+
+        Args:
+            encoder: 稠密编码器（实现 __call__ 返回向量列表）。
+            sparse_encoder: 稀疏 BM25 编码器，若未提供则新建默认实例。
+            routes: 初始路由列表，可选。
+            index: 双路索引实例，若未提供则新建。
+            top_k: 检索召回时取 top_k 条候选语料（用于路由聚合）。
+            alpha: 稠密分支的权重，稀疏分支权重为 (1 - alpha)。
+        """
         self.encoder = encoder
         self.sparse_encoder = sparse_encoder or BM25Encoder()
         self.index = index or HybridLocalIndex()
         self.routes: list[Route] = []
         self.top_k = top_k
         self.alpha = alpha
-        self.score_threshold: float | None = None
+        self.score_threshold: float | None = None # 全局路由通过阈值（可被路由自身覆盖）
         if routes:
             self.add(routes)
 
@@ -40,13 +50,19 @@ class HybridRouter:
         ① fit 用全部累积路由（self.routes）——语料统计要覆盖历史所有样本；
         ② 编码入索引只用本次新增路由——维度匹配：新增 utterances 数 == 新增
         route 名数。若入索引用全部累积而 route 名只给新增，第二次 add 时
-        np.concatenate 长度不匹配崩溃。"""
+        np.concatenate 长度不匹配崩溃。
+
+        Args:
+            routes: 单个 Route 对象或 Route 列表。
+        """
         if isinstance(routes, Route):
             routes = [routes]
         self.routes.extend(routes)
+
         # ① fit：用全部累积路由，语料统计覆盖历史所有样本
         all_utterances = [u for r in self.routes for u in r.utterances]
         self.sparse_encoder.fit(all_utterances)
+
         # ② 编码入索引：只用本次新增，与新增 route 名一一对应（维度匹配）
         new_utterances = [u for r in routes for u in r.utterances]
         dense_emb = np.array(self.encoder(new_utterances))
@@ -72,19 +88,36 @@ class HybridRouter:
                  simulate_static: bool = False) -> RouteChoice | None:
         """一次查询的路由判定：编码 → 融合查询 → 按路由聚合打分 → 阈值裁决。
 
-        :param simulate_static: 预留参数，静态路由下无分支。"""
+        Args:
+            text: 查询文本，若提供则使用编码器生成向量；否则必须提供 vector。
+            vector: 预编码的稠密向量（已缩放），直接用于查询。
+            sparse_vector: 预编码的稀疏向量（已缩放），直接用于查询。
+            simulate_static: 预留参数，静态路由下无分支。
+
+        Returns:
+            若命中路由则返回 RouteChoice 对象（含路由名和融合分数），否则返回 None。
+
+        Raises:
+            ValueError: 当 text 和 vector 均为 None 时。
+        """
         if vector is None:
             if text is None:
                 raise ValueError("Either text or vector must be provided")
+
+            # 在线编码并缩放
             dense_s, sparse_s = self._convex_scaling(
                 np.array(self.encoder([text])),
                 self.sparse_encoder([text]),
             )
             vector = dense_s[0]
             sparse_vector = sparse_s[0] if sparse_s else None
+
+        # 从索引中检索 top_k 条候选语料，返回融合分数和对应的路由名
         scores, route_names = self.index.query(vector=vector,
                                                top_k=self.top_k,
                                                sparse_vector=sparse_vector)
+
+        # 构造查询结果列表
         query_results = [{"route": d, "score": s}
                          for d, s in zip(route_names, scores)]
         scored_routes = self._score_routes(query_results)
@@ -94,7 +127,15 @@ class HybridRouter:
         """返回 top_k 覆盖到的路由的融合分数（含未通过阈值的），降序——供 LLM 兜底参考。
 
         ⚠️ 注意：受 index.query(top_k=self.top_k) 限制，只覆盖 top_k 条 utterances
-        命中的路由——不是全部路由的全局视图（与 __call__ 同一数据源）。"""
+        命中的路由——不是全部路由的全局视图（与 __call__ 同一数据源）。
+
+        Args:
+            query: 查询文本。
+            k: 返回的路由数量（最多）。
+
+        Returns:
+            列表，每个元素为 (路由名, 融合分数)，按分数降序排列。
+        """
         dense_s, sparse_s = self._convex_scaling(
             np.array(self.encoder([query])),
             self.sparse_encoder([query]),
@@ -108,7 +149,14 @@ class HybridRouter:
         return [(name, float(score)) for name, score, _ in scored[:k]]
 
     def _score_routes(self, query_results: list[dict]) -> list[tuple[str, float, list[float]]]:
-        """按 route 分组聚合：取 mean 作为该路由的融合分数，按分数降序排列。"""
+        """按 route 分组聚合：取 mean 作为该路由的融合分数，按分数降序排列。
+
+        Args:
+            query_results: 列表，每个元素含 "route" 和 "score"。
+
+        Returns:
+            列表，每个元素为 (路由名, 平均分, 原始分数列表)，按平均分降序。
+        """
         scores_by_class: dict[str, list[float]] = {}
         for r in query_results:
             scores_by_class.setdefault(r["route"], []).append(r["score"])
@@ -122,7 +170,15 @@ class HybridRouter:
 
         route 自身阈值优先，否则用全局 score_threshold；全部未过阈值返回 None
         （未命中，交由管线走 LLM 兜底）。simulate_static 是预留参数，静态路由
-        下无分支。"""
+        下无分支。
+
+        Args:
+            scored_routes: _score_routes 的输出。
+            simulate_static: 预留，无实际作用。
+
+        Returns:
+            RouteChoice 或 None。
+        """
         for route_name, total_score, _scores in scored_routes:
             route = self.get(route_name)
             if route is None:
@@ -156,7 +212,14 @@ class HybridRouter:
 
         每轮对每个路由的当前阈值在 ±0.8 范围内 100 等分随机采样一个新阈值，
         用样本评估准确率，最终写回准确率最高的一组阈值（阈值是每路由独立的，
-        见 load_eval 对硬负样本占比的要求）。"""
+        见 load_eval 对硬负样本占比的要求）。
+
+        Args:
+            X: 查询文本列表。
+            y: 对应的真值路由名列表。
+            batch_size: 批量编码大小，避免内存过载。
+            max_iter: 随机搜索迭代次数。
+        """
         Xq_d = np.concatenate([self.encoder(X[i:i + batch_size])
                                for i in range(0, len(X), batch_size)]) if X else np.array([])
         Xq_s = [s for b in [self.sparse_encoder(X[i:i + batch_size])
@@ -173,7 +236,14 @@ class HybridRouter:
         self._update_thresholds(best_thresholds)
 
     def _threshold_random_search(self, search_range: float) -> dict[str, float]:
-        """对每个路由在当前阈值附近 ±search_range 范围内 100 等分随机采样一个新阈值。"""
+        """对每个路由在当前阈值附近 ±search_range 范围内 100 等分随机采样一个新阈值。
+
+        Args:
+            search_range: 采样半径（绝对值），阈值截断至 [0.0, 1.0]。
+
+        Returns:
+            {路由名: 新阈值} 字典。
+        """
         result = {}
         for route, threshold in self.get_thresholds().items():
             values = np.linspace(max(threshold - search_range, 0.0),
@@ -182,7 +252,16 @@ class HybridRouter:
         return result
 
     def evaluate(self, X: list[str], y: list[str], batch_size: int = 500) -> float:
-        """在给定样本上评估路由准确率（判定结果与真值标签一致的比例）。"""
+        """在给定样本上评估路由准确率（判定结果与真值标签一致的比例）。
+
+        Args:
+            X: 查询文本列表。
+            y: 对应的真值路由名列表。
+            batch_size: 批量编码大小。
+
+        Returns:
+            准确率（0~1）。
+        """
         Xq_d = np.concatenate([self.encoder(X[i:i + batch_size])
                                for i in range(0, len(X), batch_size)]) if X else np.array([])
         Xq_s = [s for b in [self.sparse_encoder(X[i:i + batch_size])
@@ -190,7 +269,16 @@ class HybridRouter:
         return self._vec_evaluate(Xq_d, Xq_s, y)
 
     def _vec_evaluate(self, Xq_d, Xq_s, y: list[str]) -> float:
-        """批量评估路由准确率：逐样本用 simulate_static 路由判定，与真值标签比对，返回一致比例。"""
+        """批量评估路由准确率：逐样本用 simulate_static 路由判定，与真值标签比对，返回一致比例。
+
+        Args:
+            Xq_d: 稠密向量数组。
+            Xq_s: 稀疏向量列表，与 Xq_d 一一对应。
+            y: 真值路由名列表。
+
+        Returns:
+            准确率。
+        """
         correct = 0
         for xq_d, xq_s, target in zip(Xq_d, Xq_s, y):
             choice = self(vector=xq_d, sparse_vector=xq_s, simulate_static=True)

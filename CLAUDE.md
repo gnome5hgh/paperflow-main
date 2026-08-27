@@ -21,7 +21,7 @@ conda activate paperflow && python -m paperflow
 # 或 /opt/miniconda3/envs/paperflow/bin/python -m paperflow
 ```
 
-Always use `conda run -n paperflow` for 非交互命令（测试/脚本/安装）——never bare `python` or `pip`。**例外：交互式 REPL（`python -m paperflow`）不能经 `conda run`**——它不转发 stdin，REPL 一启动就 EOF 退出；需 `conda activate paperflow` 后直接 `python -m paperflow`。
+Always use `conda run -n paperflow` for 非交互命令（测试/脚本/安装）——never bare `python` or `pip`. **例外：交互式 REPL（`python -m paperflow`）不能经 `conda run`**——它不转发 stdin，REPL 一启动就 EOF 退出；需 `conda activate paperflow` 后直接 `python -m paperflow`。
 
 **API key 配置**：key 从 `.env`（gitignored，复制 `.env.example` 填 `PAPERFLOW_API_KEY`）或环境变量 `PAPERFLOW_API_KEY` 读取，**不硬编码在代码里**。未配置时启动即报「LLM API key 未配置」。
 
@@ -52,40 +52,218 @@ Good comments explain the reason, not the mechanics:
 
 ## Architecture
 
-paperFlow is an LLM-driven academic research workflow assistant. Architecture reference: ADR 0003.
+paperFlow 是 LLM 驱动的学术研究流程助手（ADR 0003）。单根 agent（supervisor）接收每一轮用户输入 → 意图识别（INTENT 块注入）→ ReAct 循环 → 拆解子任务 spawn 子 agent（searcher/writer/reviewer/qa-agent）→ 聚合各子 agent 的结构化摘要（digest）→ 汇总回答。
+
+代码分层（自底向上）:
+
+```
+paperflow/
+  core/          核心运行层:agent(ReAct 循环) + agent_registry + llm + tool(抽象)
+                 + security(安全中间件) + memory(记忆系统) + intent(意图识别)
+                 + structured(结构化输出)
+  rag/           RAG 检索栈(解析/分块/向量/混合检索),懒加载单例
+  tools/         原子工具:file/ search/ review/ rank/ orchestration/ common
+  terminal/      终端交互:InputIO(输入) + StreamRenderer(渲染) + diff
+agents/<name>/   Agent 插件:SKILL.md(frontmatter+system_prompt) + tools.py(TOOLS 列表)
+```
+
+设计文档索引：ADR 0003(ReAct 架构)、0004(记忆系统)、0007(意图识别)、0008(reviewer/search 流程)。
 
 ### Agent plugin system
 
 Every agent lives in `agents/<name>/` with two files:
-- `SKILL.md` — YAML frontmatter (`name`, `description`, `skills`, `allowed_agents`, `allowed_spawns`) + Markdown body (used as `system_prompt`)
+- `SKILL.md` — YAML frontmatter (`name`, `description`, `allowed_agents`, `allowed_spawns`) + Markdown body (used as `system_prompt`)
 - `tools.py` — module-level `TOOLS: list[Tool]` list. Each Tool is a subclass of `Tool` ABC with `name`, `description`, `parameters` (JSON Schema for OpenAI function calling), and `execute(**kwargs) -> ToolResult`
 
 `AgentRegistry(agents_dir)` scans this directory at init time, parses frontmatter, dynamically imports `TOOLS` from each `tools.py`, and exposes `get_config(agent_type) -> AgentConfig` plus `list_agents()`. It is the single entry point for agent discovery — no separate tool/skill registries.
 
+现有 5 个 agent（`agents/` 下）:
+
+| agent | 职责 | allowed_spawns | 工具要点 |
+|---|---|---|---|
+| `supervisor` | 调度主管:拆解任务、spawn、汇总 | 硬编码放行所有（绕过白名单） | 仅 2 个调度工具 + 13 个记忆工具（`get_memory_tools()`） |
+| `searcher` | 多源搜索 → reviewer 门禁 → 可选下载 | `[reviewer]` | web_search + fetch_pdf + ask_user + spawn |
+| `writer` | 生成笔记 / 研究大纲,内部 reviewer 审稿 ≤3 轮 | `[reviewer]` | 原子文件工具 + rag_retrieve + ask_user + spawn |
+| `reviewer` | 叶子审稿:笔记/大纲/下载三种模式 | `[]` | 只读 + submit_review / submit_download_review |
+| `qa-agent` | 回答论文/笔记/阅读记忆问题 | `[]` | rag_retrieve + 只读文件工具 + ask_user |
+
+`allowed_agents` / `allowed_spawns` 已由 spawn 工具在运行时强制（见 Orchestration）。**只有 supervisor 装配记忆工具**（`get_memory_tools()`）——记忆是 supervisor 的专属工具面，子 agent 不越权。
+
 ### Agent and ReAct loop
 
-`Agent(llm, agent_registry, agent_type)` uses pull mode — it calls `agent_registry.get_config(agent_type)` internally to load tools and system prompt.
+`Agent(llm, agent_registry, agent_type)` uses pull mode — it calls `agent_registry.get_config(agent_type)` internally to load tools and system prompt. Agent 的完整可注入依赖（`__init__` 参数）:
 
-`Agent.run(task) -> str` is an async ReAct loop:
-1. Send `[system_prompt, task]` to LLM with tool schemas
-2. If response has no `tool_calls` → return `content` (done)
-3. If response has `tool_calls` → execute each tool via `_exec_tool()`, append tool results as `role="tool"` messages, loop
-4. If loop exceeds `max_turns` (default 20) → raise `MaxTurnsExceeded`
+- `security_middleware` — 安全中间件列表（before/after/on_finish 洋葱模型，见 Security）
+- `confirm_callback` — 确认回调；默认 fail-safe 拒绝（`_default_confirm` → `False`）
+- `intent_enabled` / `intent_pipeline` / `conversation` — 意图识别（仅 CLI 构造的 supervisor 置 True；spawn 的子 agent 不传 → 门控关闭）
+- `ask_user_callback` — ask_user_question 工具的消费回调（None 时该工具返回 fail-safe 提示）
+- `session_id` — 跨多轮 run 的会话标识；与 CLI 的 AgentManager.create_agent id 必须一致（记忆/Sleeptime 按它键控）
+- 记忆服务句柄：`memory` / `agent_manager` / `block_manager` / `message_manager` / `passage_manager` / `compaction` / `structured`（None 时相关路径零开销跳过）
+- `stream_callback` — 流式事件回调（CLI 渲染器消费）；None = 非流式路径（`run()` 保持调 `chat()`）
 
-`_exec_tool` handles three error paths gracefully (returns error `ToolResult` instead of raising): JSON parse errors on arguments, unknown tool names, and tool execution exceptions.
+`Agent.run(task) -> str` 是 async ReAct 循环:
+
+1. 构造 head：① SKILL(system_prompt) ② `Memory.compile()`（仅渲染 `system/` 块 persona/human + 文件树索引，渐进暴露）③ INTENT 块（intent_enabled 且管线成功时）；末尾 user task。**澄清早退**：管线产出 clarification 且非 force_dispatch → 直接返回澄清文本（不落盘、不进 ReAct，澄清只在 CLI 层跨轮处理）
+2. 从 MessageManager 加载该会话 in-context 消息（跨轮回放，Letta 语义）；当前 user task 落盘
+3. 调 LLM 前检查压缩（`should_compress` → `run_compaction`，只改 in-context 窗口不删 SQL）；随后 `chat()` 或 `chat_stream()`（挂 stream_callback 才走流式）
+4. 无 tool_calls → 顺序执行各中间件 `on_finish` 钩子（可改写最终回答）→ 落盘 → 返回。**截断续写**：`finish_reason=="length"` 时暂存半截、把「半截 + 续写提示」放回 in-context 继续循环，绝不把残缺内容当最终回答交付
+5. 有 tool_calls → 并发执行（`asyncio.gather` + 信号量上限 4 + 确认锁串行，结果按调用顺序返回），tool 结果以 `role="tool"` 消息落盘 + 附加 in-context
+6. 超过 `max_turns`（默认 20）→ 抛 `MaxTurnsExceeded`（唯一向上抛的错误——LLM 陷入无法自主退出的循环，调用方须介入）
+
+`_exec_tool` 的中间件管道：构造 ToolContext → 解析 JSON 参数（失败走 after 链）→ 未知工具检查 → before 钩子（可抛 `ConfirmRequired`/`SecurityError`，被捕获转为带 `summary.decision` 的 ToolResult：`policy_denied`/`user_denied`/`auto_denied`/`security_blocked`）→ 执行工具（`asyncio.to_thread`，异常转错误 ToolResult）→ 逆序 after 钩子。所有错误都「降级为文本」反馈给 LLM，由 LLM 决定重试/调整/放弃。
+
+记忆会话内即时生效：`_refresh_head_memory` 每轮开头重建记忆块并替换 head——同轮里 `memory_replace` 改的块，下一轮 LLM 调用即见。
 
 ### LLM client
 
-`LLMClient` wraps the `openai` SDK as an async client via `asyncio.to_thread`. `Message` is a simple dataclass (`role`, `content`, `tool_calls`, `tool_call_id`) that serializes to OpenAI wire format. `tool_to_openai_schema(t: Tool) -> dict` converts a Tool to the OpenAI function-calling JSON Schema format.
+`LLMClient(config: LLMConfig)` wraps the `openai` SDK as an async client via `asyncio.to_thread`. Two modes:
+- `chat(messages, tools=..., ...)` — 非流式，ReAct 主路径；StructuredOutput 等 JSON 抽取也用
+- `chat_stream(messages, tools=..., on_delta=...)` — 流式，仅 CLI 实时渲染用；`on_delta` 跑在线程池线程内，只能追加/打印，别碰事件循环
+
+`Message` is a dataclass (`role`, `content`, `tool_calls`, `tool_call_id`, `truncated`) that serializes to OpenAI wire format (`_message_to_openai`，出站时清洗未配对 surrogate)。`tool_to_openai_schema(t) -> dict` converts a Tool to the OpenAI function-calling JSON Schema.
+
+关键行为：
+- **参数降级重试**：端点不支持 `response_format` / `extra_body` / `stream_options` 时（不同兼容端点措辞各异），去掉该参数重试一次（`_looks_like_unsupported_param`）
+- **telemetry_callback**：LLM 调用元数据回调（model/tokens/duration_ms/finish_reason，**不含消息正文**），供审计 replay；None 时零开销跳过
+- api_key 留空时 fail-fast 抛「LLM API key 未配置」，给出可行动配置指引
+
+### Security middleware
+
+安全模型在 `paperflow/core/security/`（`base.py` 定义协议，`middleware/` 放具体中间件，顶层 `__init__.py` 集中导出；`security.py` 文件已不存在——包与同名模块共存时包优先导入，避免死代码）。
+
+协议层：`ToolContext`（trace_id/session_id/agent_type/tool/args/…，审计与决策的载体）+ `SecurityMiddleware` ABC（`before`/`after`/`on_finish`/`on_approval`/`record_llm_call`）。异常体系：`PolicyDenied` / `SecurityBlocked` / `ConfirmRequired`，都继承 `SecurityError`。
+
+CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
+
+1. **AuditMiddleware** — 每次工具调用 + LLM 调用落 SQLite 审计（含 approval requested/decided 两条独立事件、`record_llm_call` 元数据）。after 钩子失败不中断结果返回
+2. **WorkspacePolicyMiddleware** — 路径边界：校验 `format="path"` 参数为绝对路径、落在工具 `allowed_paths` 白名单内（相对路径直接拒绝；`Path.relative_to` 天然阻断目录穿越）；敏感路径黑名单（workspace/audit、workspace/chroma、`.git`、`.claude`、`config.yaml`/`.env`）硬拦截
+3. **SecurityScanMiddleware** — 工具输出扫描（`output_scan="mark"` 的工具标注关键内容）
+4. **PolicyEngineMiddleware** — 三级检查：`blocked_by_default` 直接拒；`risk_level` 超过会话阈值 `max_risk`（默认 "medium"）拒；`requires_confirm` 抛 `ConfirmRequired` → 用户确认后同一（工具名, 目标路径）不再重复询问
+
+`Tool` 安全元数据（`paperflow/core/tool.py`）：`risk_level`（low/medium/high/critical）、`side_effects`、`blocked_by_default`、`requires_confirm`、`output_scan`（"mark"/None）、`allowed_roots`（语义根名 → `make_tools` 解析为绝对路径注入 `allowed_paths`）。注册表加载时校验这些字段的合法值。
+
+### Memory system
+
+`paperflow/core/memory/` 是 **Letta 记忆栈的忠实移植**（取代旧的文件式 MemoryStore/GitStore/Dream）。分层：
+
+- `schemas/` — pydantic 数据模型（`Block`/`Memory`/`Message`/`Passage`/`AgentState`）
+- `orm/` — SQLite 持久化：`MemoryDB`（stdlib sqlite3 单例，`threading.Lock` 包裹写事务，`check_same_thread=False`）；表：blocks/block_history/messages/archival_passages/agent_state/archives
+- `services/` — 业务层管理器
+- `tools/` — 13 个 LLM 面记忆工具（一工具一文件，4 组）
+- 顶层 — `compaction.py`（上下文压缩）、`sleeptime.py`（后台记忆整合）、`runtime_context.py`（运行时上下文）
+
+**核心服务**（装配顺序即依赖方向，见 `cli.py`）：
+
+| 服务 | 角色 |
+|---|---|
+| `BlockManager` / `GitEnabledBlockManager` | 核心记忆块 CRUD。乐观锁（`version` 递增）+ 写前 `block_history` 快照（undo/redo）；`read_only` 块拒绝读写、块长上限 2000；`ensure_default_blocks()` 播种 persona/human（幂等，不覆盖用户已编辑块）。Git 变体每次变更同步 MemFS markdown 投影并 git commit |
+| `MessageManager` | 对话全量落盘（Recall）。`get_in_context_messages()` 按 `AgentState.message_ids` 回放窗口；`make_ask_recorder()` 把子 agent 的 ask 问答也落盘 |
+| `PassageManager` | 长期记忆（archival）：段落插入（可选 bge embedding）+ 语义检索，`delete_passage` 为软删除 |
+| `AgentManager` | Agent 生命周期：`AgentState` JSON 行（keyed by agent_id；message_ids = in-context 窗口） |
+| `ArchiveManager` | 可复用 Archive 段落集合（Letta 接口兼容，按需使用） |
+| `MemFS` | Git 托管的 markdown 投影层：`system/persona.md` + `system/human.md` + 其他块；自动生成 `memory_filesystem.md` 索引；`detect_file_changes()` 检测手工编辑回写块（双向同步） |
+| `TitleExtractor` | 论文标题权威提取：5 级回退链（搜索元数据 > GROBID > LLM > pdftitle > PyMuPDF 启发式），**绝不回退到 PDF 文件名** |
+
+**关键不变式**：
+- **SQL 块是真相源，markdown 是投影**——与旧 GitStore 的语义正好相反
+- 记忆工具经 **`get_memory_tools()`**（`tools/__init__.py`）惰性构建 13 个工具（模块级单例，双重检查加锁，每次返回新列表副本）；执行时经 **`set_memory_context(MemoryToolsContext(...))`** 绑定一次（cli.py）+ `get_memory_context()` 取运行时上下文；未装配时工具降级为错误文本而非崩溃
+- 13 个记忆工具分 4 组：**blocks**（`memory`/`memory_replace`/`memory_insert`/`memory_rethink`/`memory_apply_patch`/`memory_finish_edits`）、**archival**（`archival_memory_insert`/`archival_memory_search`）、**recall**（`conversation_search`，默认过滤 tool 消息防递归噪音）、**paper_lists**（`unread_list_add`/`unread_list_remove`/`history_append`/`extract_title`——列表块工具，`unread_list_add` 要求真实标题绝不用文件名）
+- **Compaction**（`compaction.py`）：只压缩 in-context 窗口（驱逐旧对话 + 插 SummarySchema 摘要 + 保留尾部），**永不删 SQL 行**；`should_compress`（tiktoken 估算，超 `trigger_ratio × context_size` 触发）+ `run_compaction`（滑动窗口，保留 tool 消息与其结果的配对，尾部孤儿清理）
+- **Sleeptime**（`sleeptime.py`）：后台记忆整合，REPL 每轮循环顶部 `run_once_if_due()`（读 stdin 前）；LLM 产出 `MemoryEditBatch` 经 BlockManager 应用 + git commit；两阶段校验（白名单文件、禁止删 `system/` 块），连续 3 次失败强制推进游标防死循环
+- 装配不变式：CLI `session_id` == `AgentManager.create_agent` id == `Agent.session_id`，三者错位会各自读到空数据
+
+### Intent recognition
+
+`paperflow/core/intent/` — 意图识别框架，**仅 CLI 构造的 supervisor 装配**（子 agent 门控关闭，省 LLM 调用）。`IntentPipeline` 4 级级联，前一级未裁决才进下一级：
+
+1. **实体抽取**（`routing/entities.py`）— 确定性正则，抽 pdf_path/arxiv_id/doi/note_path/figure（只抽实体不判意图）
+2. **追问判别**（`routing/followup.py`）— 词表启发式（那/这/呢/然后 + 无动词无数量词）；命中则继承上一轮意图并合并实体
+3. **混合路由**（`HybridRouter`）— 稠密（bge 嵌入）+ 稀疏（jieba BM25）融合（`dense × alpha + sparse × (1-alpha)`，生产 `alpha=0.6`）；`load_routes()` 读 `data/intents/routes.yaml`（唯一知识库源，含各意图示例句 + 标定阈值）；命中阈值则产出
+4. **LLM 兜底** — 无路由命中时注入 top-3 近邻候选，经 `StructuredOutput` 分类，最终兜底 `IntentionResult(GENERAL, 0.0)`
+
+产出 `IntentOutput`（intent_type/confidence/entities/rewritten_query/source/steps/clarification）注入 ReAct head 的 `INTENT:` 块。`INTENT_META` 是意图元数据的**单一真相源**：14 个 `IntentType` 值分 3 类（business 业务派发 / dialogue 会话状态 / system 直接回答），`dispatch_allowed` 决定 spawn 门禁（chitchat/out_of_scope 等永远不能 spawn）。
+
+跨轮澄清：`IntentPipeline` 产出 `clarification` → Agent 早退返回问题（不落盘）→ CLI `ConversationState.pending_intent` 挂起、下一轮合并重跑；`round >= 2` 超轮终止（force_dispatch 强制调度，绝不重跑后再次挂起）。`prev_intent`/`prev_user_input` 供追问判别。
+
+### RAG
+
+`paperflow/rag/` — 检索增强栈，`RAGService` 是唯一门面（indexer 与 retriever 是同一实例的两个视图，共享一把锁，增量写入对查询立即可见）。**懒加载单例**：`get_rag_service(config=None)`（双重检查加锁），所有重量组件（embedder/reranker/grobid/vector_store/bm25）首次访问才构造——`rag/__init__.py` 因此在包导入期不拉重型依赖。
+
+端到端链路：**解析**（`GrobidClient` HTTP 解析 TEI XML → `ParsedDoc`；GROBID 不可达时回退 `PyMuPDFParser` 字体启发式分节；按 (path, mtime, size) 缓存）→ **分块**（`AcademicChunker` 两段式：按节 → 长节按 token 512/overlap 64 重切，跳过参考文献；Chunk id = sha1(path:index) 幂等）→ **索引**（`RagIndexer` 增量扫描，state 文件 `index_state.json`；文档级「删旧建新」，Chroma upsert + BM25 同步；含一致性恢复）→ **检索**（`Retriever` 混合：BM25 top-30 + 向量 top-30 → RRF 融合 → `BgeReranker` 重排 → 有序 Chunks）。
+
+存储与模型：
+- `VectorStore` — ChromaDB `PersistentClient`（`config.chroma_dir` = `workspace/chromadb/`），单 collection "paperflow"
+- `Bm25Index` — rank_bm25 + jieba；是向量库文本的**投影**，启动时从 `store.all_documents()` 重建
+- `BgeEmbedder` — `BAAI/bge-small-zh-v1.5`（CPU，L2 归一化，维度从模型读取）；`BgeReranker` — `BAAI/bge-reranker-v2-m3` CrossEncoder
+- 加载路径 `resolve_model_dir(workspace, model_name)`：本地优先（`<workspace>/models/<name>/` 存在用本地），否则回退 HF 名自动下载
+
+消费方：`RagRetrieveTool`（`rag_retrieve`）装配进 writer 与 qa-agent；`ReadPdfTool` 用 `parse_pdf_cached`；`write_file`/`edit_file`/`fetch_pdf` 写盘后自动触发 `index_document`。embedder 单例与意图管线/记忆语义检索共享（`cli.py` `_rag_embedder`）。
+
+### Tools
+
+`paperflow/tools/` — 原子工具，一工具一文件，按域分包；`paperflow/tools/__init__.py` 再导出全部 13 个工具供消费方统一导入（导出符号名稳定，内部路径随便拆）：
+
+- `file/` — 读/写/编辑/glob/grep/read_pdf/format_check（+ `atomic.py` 原子写盘）
+- `search/` — `web_search`（按 source 搜：arxiv/openalex，`_SOURCE_REGISTRY` 注册；单源一次调用，多源由 searcher 并行多次调、结果自动去重入池）、`fetch_pdf`（下载）；`clients/` 是纯 API 客户端（共享 `_HttpClientMixin` SSRF 校验 + 逐跳重定向校验）；`_common.py` 有 `SearchRunState` 跨调用去重池（`wants_run_state` opt-in）、查询 LRU 缓存、源级熔断器
+- `review/` — `submit_review` / `submit_download_review`（reviewer 的裁决工具）
+- `rank/` — `lookup_venue_rank`（期刊/会议等级查询）
+- `orchestration/` — `spawn_sub_agent` / `ask_user_question` / `SubAgentMode`（见下）
+- `common/` — `make_tools(config, tool_items)` 装配工厂：解析 `allowed_roots` 语义根名 → 绝对路径注入 `allowed_paths`（新列表，不污染类属性）、注入 `_config`、给 `description` 追加 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）；`_http.py` 共享 HTTP 基础设施
+
+根映射（`_root_map`）：note→`vault_note_dir`、pdf→`vault_pdf_dir`、outline→`vault_outline_dir` 或 `workspace/outline`、memory→`workspace/memory`、templates→`workspace/templates`、scratch→`workspace/tmp`。
+
+### Orchestration
+
+`paperflow/tools/orchestration/spawn.py` — **SpawnSubAgentTool**（`spawn_sub_agent`，`needs_parent=True`）。`execute(agent_type, task, mode=None)`：
+
+1. **模式校验**：未知 `mode` → denied
+2. **意图派发门禁**：父 agent 的意图 `dispatch_allowed=False`（chitchat/out_of_scope/help/switch_topic 等）→ 永不 spawn
+3. **spawn 权限**：`_check_spawn_allowed` — supervisor 硬编码放行；其余 agent 查自己的 `AgentConfig.allowed_spawns` 白名单
+4. **去重注册表**（`_SPAWN_REGISTRY`，按 session_id + 任务指纹）：**无路径任务** 运行中去重 + 完成结果 300s 内可复用；**含路径任务** 只做运行中去重（文件可能中途变化，完成不缓存）
+5. **子 agent 构造**：继承父的 security_middleware / session_id / confirm_callback / ask_user_callback（子 agent 能中途问用户）；**不传**意图管线/会话（子任务是结构化任务非用户意图）；`mode` 经「当前模式：{mode}」注入 system prompt
+6. **预算执行**：超时 = 基座超时（`config.agent_timeouts`，writer 600s/searcher 300s/reviewer 180s）+ 累计用户确认等待（`_UserWaitClock` 排除人工等待）；`asyncio.TimeoutError`→timeout、`PermissionError`→denied、其他异常→failed
+7. **摘要提取**：末尾 2000 字符经 `StructuredOutput` 抽结构化 `digest`（按 agent_type 选 `SearcherDigest`/`ReviewerDigest`/`WriterDigest`/`GenericDigest`），失败回退全文摘要
+
+返回 `ToolResult(text=SubAgentResult.model_dump_json(), summary=model_dump())`。`SubAgentResult.status` ∈ {success, failed, timeout, denied}，`needs_attention=True` 表示「被拒且需用户介入」。只有 supervisor（和需要 reviewer 的 searcher/writer）装配此工具——权限最小化：叶子 agent 不递归。
+
+**AskUserQuestionTool**（`ask_user_question`，`needs_parent=True`）：读 `parent.ask_user_callback`（CLI 注入，worker 线程读 stdin）；回调为 None 时 fail-safe 返回「无法交互，请基于已有信息决定」，绝不挂起。装配权限在装配层（supervisor/searcher/writer/qa-agent 有，reviewer 无）。
+
+### Terminal
+
+`paperflow/terminal/` — 终端交互隔离层，测试可注入。
+
+- `io.py`：`InputIO` 契约（`read`/`confirm`/`ask`）。`PromptToolkitIO`（TTY，multiline + 历史；confirm 仅 y/n 键入，Enter 默认 No）vs `FallbackIO`（非 TTY，内置 `input()`）。`make_input_io(config)` 按 `stdin.isatty()` 二选一。`_confirm_lock` 串行化并行子 agent 的并发 confirm/ask（prompt_toolkit 会话非线程安全）
+- `render.py`：`StreamRenderer`（线程安全）经 `on_event` 消费 `StreamEvent`（content/tool）。TTY = `RichBlock`（rich Live + spinner，0.08s 节流重绘）；非 TTY = `PlainBlock`（增量追加）。工具行 `[{agent_type}] Calling ...`，写/编辑工具完成后发 File written/edited 完成行；`should_print` 去重已流式展示的 root 内容；`suspend()` 在确认框/输入框前停 live（rich Live 与 prompt_toolkit 并发互相干扰——实测坑）
+- `diff.py`：`compute_diff`（unified diff ±3）+ `truncate_diff`（≤200 行）——写/编辑确认前渲染 diff 预览
+- 启动横幅：Codex 风格方框（`>_ paperFlow Academic Assistant` + model/workspace + Tip），无 emoji/版本/标语
 
 ### Config
 
-`PaperFlowConfig.from_env()` loads in priority order: environment variables (`PAPERFLOW_API_KEY`, `PAPERFLOW_BASE_URL`, `PAPERFLOW_MODEL`, `PAPERFLOW_WORKSPACE`, `PAPERFLOW_AGENTS_DIR`) > `config.yaml` > dataclass defaults (DeepSeek endpoint, `deepseek-chat` model).
+`PaperFlowConfig.from_env()` loads in priority order: environment variables (`PAPERFLOW_*`) > `config.yaml` > dataclass defaults (DeepSeek endpoint, `deepseek-v4-flash` model). Key fields:
 
-### Key design decisions (Layer 0)
+| 字段 | 说明 |
+|---|---|
+| `llm` (`LLMConfig`) | base_url / api_key / model / max_tokens(393216，给足防长草稿截断) / temperature(0.0) / context_window(1M) |
+| `workspace` | 运行时数据根（`data/`）：memory/chromadb/intents/models/audit/templates 等 |
+| `agents_dir` | 插件扫描目录，默认 `agents` |
+| `max_risk` | 策略引擎风险阈值，默认 "medium" |
+| `compaction` | `CompactionSettings`（惰性工厂避免 config→compaction→llm→config 循环导入） |
+| `sleeptime_enable` / `sleeptime_agent_frequency` | 后台整合开关 / 每 N 条新消息检查一次（默认 50） |
+| `vault_note_dir` / `vault_pdf_dir` / `vault_outline_dir` | Obsidian vault 数据源根（个人绝对路径，**无默认值**，须经 .env/config.yaml） |
+| `grobid_endpoint` | GROBID 服务地址，默认 `http://localhost:8070` |
+| `chroma_path` / `embed_model` / `rerank_model` | ChromaDB 路径 / bge 嵌入 / 重排模型 |
+| `agent_timeouts` | 子 agent 超时覆盖表（writer 600 / searcher 300 / reviewer 180） |
 
-- **No deterministic pipeline.** Everything — routing, tool selection, task decomposition — is driven by the LLM's ReAct loop. Tools are just JSON Schema definitions fed to the model.
-- **`ToolResult.summary: dict`** exists from day one (default empty) as a forward hook for the memory system (Layer 1+).
-- **`risk_level`** on Tool ABC is declared but not enforced yet — Policy Engine arrives in Layer 1.
-- **`allowed_agents` and `allowed_spawns`** on AgentConfig are parsed but not enforced yet — spawn permissions arrive with the Supervisor in later layers.
-- **`Agent.run()` returns plain `str`** in Layer 0. Structured `SubAgentResult` comes with Supervisor spawn logic (Layer 4).
+环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_VAULT_NOTE_DIR` / `PAPERFLOW_VAULT_PDF_DIR` / `PAPERFLOW_VAULT_OUTLINE_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_CHROMA_PATH` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY`。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
+
+### Key design decisions
+
+- **No deterministic pipeline.** Everything — routing, tool selection, task decomposition — is driven by the LLM's ReAct loop. Tools are just JSON Schema definitions fed to the model
+- **`ToolResult.summary: dict`** (default empty) — 结构化摘要通道：决策结果（policy_denied/user_denied）、spawn digest、记忆工具结构化数据都经它承载
+- **`risk_level` 已强制**：PolicyEngineMiddleware 按 `max_risk` 阈值拦截 + `requires_confirm` 确认（键 = (工具名, 目标路径)）；Tool 安全元数据由注册表加载时校验
+- **`allowed_agents` / `allowed_spawns` 已强制**：spawn 工具运行时校验白名单 + 意图派发门禁（supervisor 硬编码放行）
+- **安全是中间件洋葱**：before（可拒绝/要求确认）→ 执行 → 逆序 after；每轮 run 结束 on_finish 可改写最终回答。所有拦截降级为 ToolResult 文本，只有 `MaxTurnsExceeded` 向上抛
+- **SQL 是记忆真相源，markdown 是投影**；压缩/窗口驱逐永不删 SQL 行（Recall 完整）；记忆工具只在 supervisor 装配（权限最小化）
+- **`Agent.run()` 返回 str**；子 agent 结果经 `SubAgentResult`（status/summary/digest/needs_attention）结构化回传 supervisor
+- **流式零开销**：`stream_callback`/`telemetry_callback` 为 None 时全链路保持原非流式行为（mock/无 UI 调用方不受影响）
+- **意图只进根 agent**：spawn 的子 agent 门控关闭；澄清只在 CLI 层跨轮处理，不暴露给 supervisor（避免 ask_user 双问）

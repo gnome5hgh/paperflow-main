@@ -82,12 +82,16 @@ class AgentRegistry:
 
     def __init__(self, agents_dir: str = "agents"):
         """
+        构造即触发全量扫描（_discover 遍历目录 + 动态导入 tools.py）。
+
         :param agents_dir: Agent 插件根目录路径，默认为项目根下的 agents/
 
-        构造即触发全量扫描（_discover 遍历目录 + 动态导入 tools.py）——属于有
-        副作用的构造，进程内只应构造一次（由装配层持有并传给所有 Agent）。
+        :副作用: 扫描过程中会动态导入多个 tools.py 模块，并校验每个 Tool 的安全元数据。
+                 若任一 Tool 的 risk_level / side_effects / output_scan 非法，
+                 会抛出 ValueError 并终止构造，防止不安全配置进入系统。
+        :注意: 本构造为有副作用的操作，进程内应只构造一次（由装配层持有并传给所有 Agent）。
         """
-        #: agent_type → AgentConfig 的映射字典
+        #: agent_type → AgentConfig 的映射字典（key 为 agent 类型，值为对应的AgentConfig）
         self._agents: dict[str, AgentConfig] = {}
         self._discover(Path(agents_dir))
 
@@ -95,19 +99,23 @@ class AgentRegistry:
         """
         遍历 agents_dir 下所有子目录，发现并加载 Agent。
 
-        每个子目录需包含 SKILL.md（配置+prompt），
+        每个子目录需包含 SKILL.md（配置 + prompt），
         可选包含 tools.py（Tool 实例）。
         目录按名称排序以确保加载顺序可预测。
+
+        :param agents_dir: 要扫描的根目录路径（Path 对象）
+        :注意: 若目录不存在或非目录，则直接返回（不做任何加载）。
         """
         if not agents_dir.is_dir():
             return
 
+        # 按目录名排序遍历，保证不同运行环境加载顺序一致（便于调试和缓存）
         for agent_path in sorted(agents_dir.iterdir()):
             # 跳过非目录文件（如 .DS_Store）
             if not agent_path.is_dir():
                 continue
 
-            # SKILL.md 是 Agent 的必需文件
+            # SKILL.md 是 Agent 的必需文件，缺少则跳过该目录
             skill_md = agent_path / "SKILL.md"
             if not skill_md.exists():
                 continue
@@ -121,6 +129,7 @@ class AgentRegistry:
             # importlib 动态加载 tools.py → 读取 TOOLS 列表
             tools = self._import_tools(agent_path / "tools.py")
 
+            # 组装配置并存入映射字典
             self._agents[name] = AgentConfig(
                 name=name,
                 description=meta.get("description", ""),
@@ -150,6 +159,7 @@ class AgentRegistry:
 
         :param path: SKILL.md 文件路径
         :returns: (frontmatter 字典, body 文本)
+        :注意: 若文件开头没有 `---` 标记，则 frontmatter 为空字典，整个文件作为 body。
         """
         text = path.read_text(encoding="utf-8")
 
@@ -178,6 +188,8 @@ class AgentRegistry:
 
         :param tools_path: tools.py 文件路径
         :returns: Tool 实例列表
+        :raises ValueError: 如果某个 Tool 的安全元数据（risk_level / side_effects /
+                            output_scan）非法，会立即抛出，终止该 Agent 的加载。
         """
         if not tools_path.exists():
             return []
@@ -192,6 +204,7 @@ class AgentRegistry:
 
         # 约定：TOOLS 是模块级变量，类型为 list[Tool]
         tools = getattr(module, "TOOLS", [])
+
         # 加载时校验每个 Tool 的安全元数据，非法值立即抛 ValueError
         for tool in tools:
             self._validate_tool(tool)
@@ -208,7 +221,8 @@ class AgentRegistry:
         - ``output_scan`` ∈ (None, "mark")
 
         :param tool: 待校验的 Tool 实例
-        :raises ValueError: 任一字段值非法时抛出，携带工具名和合法值列表
+        :raises ValueError: 任一字段值非法时抛出，携带工具名和合法值列表。
+                            此校验在 AgentRegistry 构造时执行，确保不安全配置不会被载入系统。
         """
         if tool.risk_level not in RISK_LEVELS:
             raise ValueError(
@@ -234,6 +248,8 @@ class AgentRegistry:
         :param agent_type: Agent 类型标识符，如 "supervisor"、"searcher"
         :returns: AgentConfig 实例
         :raises KeyError: 如果 agent_type 未在 agents/ 目录下注册
+        :注意: 若 agent_type 存在但对应的 tools.py 中 Tool 校验失败，构造时即已抛出异常，
+               因此不会出现配置不完整的情况。
         """
         config = self._agents.get(agent_type)
         if config is None:
@@ -245,5 +261,6 @@ class AgentRegistry:
         返回所有已注册 agent_type 的列表。
 
         供 Supervisor 在 spawn 决策时参考可用 SubAgent 清单。
+        :returns: 按加载顺序（即目录名排序）排列的 agent_type 名字列表。
         """
         return list(self._agents.keys())

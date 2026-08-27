@@ -1,8 +1,8 @@
-"""稠密向量编码器：统一接口 + 真实的 bge 模型实现 + 测试用的确定性假实现。
+"""稠密向量编码器：统一的编码契约 + 真实的 bge 模型实现。
 
-真实的 bge 模型同时也被意图识别模块复用为它的向量编码实现。
+真实的 bge 模型同时也被意图识别模块复用为它的向量编码实现；
+测试用的确定性假编码器（FixedDenseEncoder / FakeEmbedder）已迁至 tests/conftest.py。
 """
-import hashlib
 from pathlib import Path
 from typing import Protocol
 
@@ -19,41 +19,19 @@ SentenceTransformer = None  # type: ignore[assignment]
 class Embedder(Protocol):
     """编码器的统一接口：暴露向量维度 dim，并把一批文本编码成向量矩阵。
 
-    dim 用于向量库确定集合的向量维度；__call__ 返回的行数与传入文本数一致。
+    Protocol 是 Python 3.8 在 typing 模块中引入的一种结构化子类型（structural subtyping）机制，本质上是一种行为契约。
+    它和 Java 的接口类似，但更灵活——不要求显式继承。只要一个类实现了 Protocol 中定义的所有方法和属性，类型检查器（如 mypy）就会认为它"符合"这个协议。
+    任何类，只要满足以下两个条件，就自动被视为符合 Embedder 协议：
+    - 有 dim 属性（返回 int）
+    - 可以被调用（__call__），接收 list[str]，返回 np.ndarray
+
+    这是全仓库唯一的稠密编码契约（原意图侧 dense.py 的 DenseEncoder 协议已并入这里）：
+    RAG 向量库消费 `dim` 建集合，意图混合路由器只调用 `__call__` 做余弦相似度。
     """
     @property
     def dim(self) -> int: ...
 
     def __call__(self, texts: list[str]) -> np.ndarray: ...
-
-
-def _deterministic_seed(text: str) -> int:
-    """确定性哈希种子——不能用内置 hash()（PYTHONHASHSEED 随机化跨进程不稳定）。"""
-    return int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
-
-
-class FakeEmbedder:
-    """测试用的假编码器：基于文本的 md5 生成确定性伪向量，维度可任意指定。
-
-    同一文本在任何环境、任何进程下都会得到相同的向量，方便测试断言。
-    ``calls`` 累计已编码的文本条数，供索引测试验证"内容未变的文档不会被
-    重复编码"（统计数量而非调用次数，直接反映实际工作量）。
-    """
-
-    def __init__(self, dim: int = 64):
-        """构造假编码器：指定伪向量维度，并把已编码文本数清零。"""
-        self.dim = dim
-        self.calls = 0
-
-    def __call__(self, texts: list[str]) -> np.ndarray:
-        """把一批文本编码成 L2 归一化的伪向量矩阵（每行一个文本）。"""
-        self.calls += len(texts)
-        vecs = []
-        for t in texts:
-            rng = np.random.RandomState(_deterministic_seed(t))
-            v = rng.rand(self.dim)
-            vecs.append(v / np.linalg.norm(v))   # L2 归一化，保证可用余弦相似度比较
-        return np.array(vecs)
 
 
 def resolve_model_dir(workspace: str, model_name: str) -> str:
@@ -67,6 +45,13 @@ def resolve_model_dir(workspace: str, model_name: str) -> str:
     ① model_name 本身就是一个已存在的本地目录 → 直接使用；
     ② 工作区 models 目录下存在同名子目录 → 使用本地副本；
     ③ 以上都没有 → 返回官方模型名。
+
+    Args:
+        workspace: 工作区根目录路径。
+        model_name: 模型名，如 "BAAI/bge-small-zh-v1.5" 或本地路径。
+
+    Returns:
+        str: 解析后的模型加载路径。
     """
     if Path(model_name).is_dir():
         return model_name
@@ -82,10 +67,15 @@ class BgeEmbedder:
     """
 
     def __init__(self, model_name: str = "BAAI/bge-small-zh-v1.5"):
-        """记下模型名并预留惰性加载槽位（模型首次使用才真正加载）。"""
+        """初始化 BGE 嵌入器，此时不加载模型。
+        记下模型名并预留惰性加载槽位（模型首次使用才真正加载）。
+
+        Args:
+            model_name: 模型名称或路径，支持本地目录或 HuggingFace 模型 ID。
+        """
         self._model_name = model_name
-        self._model = None
-        self._dim: int | None = None
+        self._model = None           # 真实模型实例，首次调用时加载
+        self._dim: int | None = None # 向量维度，加载后填充
 
     def _load(self) -> None:
         """首次使用才加载模型：惰性导入权重、临时关掉加载进度条、读取向量维度。
@@ -93,15 +83,13 @@ class BgeEmbedder:
         向量维度从模型读取而非硬编码（不同 bge 型号维度不同），新老版本
         sentence-transformers 的方法名不同，这里兼容两者。
         """
-        # 惰性导入：sentence-transformers 导入耗时数秒，首次使用才加载。
-        # global + 模块级占位符：把类名解析交给模块属性，测试的 monkeypatch
-        # 替换即生效；真实环境首次走到这里才 import 并回填缓存。
+        # 使用模块级 `SentenceTransformer` 占位符实现真实类的惰性导入，支持测试时用 monkeypatch 替换为假实现。
+        # 真实环境首次走到这里才 import 并回填缓存。
         global SentenceTransformer
         if SentenceTransformer is None:
             from sentence_transformers import SentenceTransformer
-        # 抑制权重加载进度条（tqdm "Loading weights"）——命令行启动不该刷屏。
-        # tqdm 4.70 的 disable 是实例参数而非类属性，故临时改 __init__ 默认值：
-        # 仅在本次加载期间生效，加载完恢复（不污染后续正常进度显示）。
+
+        # ---- 临时禁用 tqdm 进度条 ----
         import tqdm as _tqdm_mod
         _orig_init = _tqdm_mod.tqdm.__init__
 
@@ -113,9 +101,11 @@ class BgeEmbedder:
         try:
             self._model = SentenceTransformer(self._model_name)
         finally:
+            # 确保无论加载是否成功，都恢复 tqdm 原始行为
             _tqdm_mod.tqdm.__init__ = _orig_init
-        # 新版 sentence-transformers 把获取维度的方法改名了（旧名会告警）；
-        # 新名优先，没有时改用旧名，兼容两种版本。
+
+        # ---- 读取向量维度（兼容新旧 API） ----
+        # 新版 sentence-transformers 把获取维度的方法改名了（旧名会告警）；新名优先，没有时改用旧名，兼容两种版本。
         get_dim = getattr(self._model, "get_embedding_dimension", None)
         if get_dim is None:
             get_dim = self._model.get_sentence_embedding_dimension
@@ -123,22 +113,37 @@ class BgeEmbedder:
 
     @property
     def dim(self) -> int:
-        """模型输出的向量维度（首次访问会触发模型加载）。"""
+        """模型输出的向量维度（首次访问会触发模型加载）。
+
+        Returns:
+            int: 向量维度。
+
+        Raises:
+            AssertionError: 如果模型加载后 _dim 仍为 None（防御性检查）。
+        """
         if self._model is None:
             self._load()
         assert self._dim is not None
         return self._dim
 
     def __call__(self, texts: list[str]) -> np.ndarray:
-        """把一批文本编码成向量矩阵（每行一个文本），输出已做 L2 归一化。
+        """把一批文本编码成向量矩阵（每行一个文本），输出已做 L2 归一化。归一化后的向量可直接用余弦相似度比较。
 
-        归一化后的向量可直接用余弦相似度比较。
+        Args:
+            texts: 待编码的文本列表。
+
+        Returns:
+            np.ndarray: 形状为 (len(texts), dim) 的归一化向量矩阵。
         """
+        # 1. 若模型未加载，触发 `_load()`。
         if self._model is None:
             self._load()
-        # 清洗文本中未配对的代理字符（surrogate）。PDF 或外部文本常带这类
-        # 非法字符，不清洗会让 tokenizer 抛 TypeError，导致整个检索流程
-        # 不可用。清洗函数定义在安全模块里，这里只做调用。
+
+        # 2. 清洗输入文本中的非法代理字符（surrogate）。PDF 解析或外部输入
+        #    常包含未配对的代理字符（如 `\ud800`），若不清理，sentence-transformers
+        #    的 tokenizer 会抛出 `TypeError`，导致整个检索流程崩溃。
         from paperflow.core.security.text import sanitize_surrogates
         texts = [sanitize_surrogates(t) for t in texts]
+
+        # 3. 调用模型编码，`normalize_embeddings=True` 执行 L2 归一化，确保输出向量模长为 1，可直接用于余弦相似度计算。
         return self._model.encode(texts, normalize_embeddings=True)

@@ -100,11 +100,19 @@ async def run_compaction(messages: list[WireMessage], settings: CompactionSettin
     摘要文本可由调用方传入（测试/已有 summary），否则用 StructuredOutput 生成。
     压缩只改 in-context 窗口；SQL 原始消息由 MessageManager 保留（Recall 可追溯）。
     """
+    # 生成结构化摘要文本
     if summary_text is None:
         summary_text = await _summarize(messages, structured)
+
+    # 仅保留 messages 前 3 条中的第一条 system 消息作为固定头部（这条 system 消息是 agent.py 中 _build_head/_refresh_head_memory 构造的 system 消息
     head = [m for m in messages[:3] if m.role == "system"][:1]
+
+    # all_messages / self_compact_all 模式下不需要保留尾部对话，整个上下文被压缩为「系统提示 + 单条摘要」，最大限度节省 token。
     if settings.mode in ("all_messages", "self_compact_all"):
         return head + [WireMessage(role="system", content=summary_text)]
+
+    # 根据 settings.keep_recent / context_window 计算需保留的近期消息尾部，
+    # 最终窗口结构: [system_head] + [summary] + [recent_tail]
     tail = _recent_tail(messages, settings, context_window)
     return head + [WireMessage(role="system", content=summary_text)] + tail
 

@@ -65,34 +65,78 @@ class AuditEntry:
     """一条审计事件的可序列化快照：五类事件（tool_started / tool_ended /
     approval_requested / approval_decided / llm_call）共用同一结构，按事件
     类型取用不同字段组。写盘时整体 json.dumps 为一行 JSONL。"""
-
+    #: 事件类型标识。可选值："tool_started"、"tool_ended"、"approval_requested"、
+    #: "approval_decided"、"llm_call"。决定哪些其他字段有效。
     event_type: str
+    #: 当前审计跨度（span）的唯一标识符。格式为 "span_" 加 12 位十六进制字符，
+    #: 用于构建调用树。每个工具调用或审批/LLM 事件都有独立的 span_id。
     span_id: str
+    #: 一次完整 Agent.run() 执行的唯一追踪标识。格式为 "trace_" 加 12 位十六进制字符，
+    #: 用于聚合同一次任务中的所有事件（含嵌套调用）。
     trace_id: str
+    #: 会话标识，跨多次运行保持一致，用于按对话线程分组审计日志。
     session_id: str
+    #: 发起调用的 Agent 类型（如 "supervisor"、"searcher"）。
     agent_type: str
+    #: 被调用的工具名称。对于 llm_call 事件，该字段为空字符串。
     tool_name: str
+    #: 工具的风险等级（来源于 Tool.risk_level），未知工具或 llm_call 时为 "unknown"。
     risk_level: str
+    #: 脱敏后的工具调用参数字典。敏感键值（如 api_key、content）被替换为
+    #: "***" 或 "HIDDEN"，路径类键（如 path）保留原值。
     params: dict
+    #: 父跨度 ID，用于构建调用树。若为 None 则表示当前跨度是根节点（即顶层的工具调用）。
     parent_id: str | None = None
+    #: 跨度树中的嵌套深度，根节点为 0，每嵌套一层递增 1。
     depth: int = 0
+    #: ReAct 循环轮次索引，从 0 开始计数。用于定位该事件发生在第几轮推理中。
     turn: int = 0
+    #: 事件开始时间的 ISO 格式时间戳。
     started_at: str | None = None
+    #: 事件结束时间的 ISO 格式时间戳。
     ended_at: str | None = None
+    #: 策略引擎的最终决策。由 _derive_decision 推导，可能值：
+    #: "auto_allowed"（自动放行）、"user_confirmed"（用户确认放行）、
+    #: "policy_denied"（策略拒绝）、"security_blocked"（安全拦截）、
+    #: "user_denied"（用户拒绝）、"error"（普通异常）。
     policy_decision: str = ""
+    #: 工具执行的结果状态。由 _result_status 推导，可能值：
+    #: "success"（成功）、"policy_blocked"（策略阻断）、"security_blocked"（安全阻断）、
+    #: "user_denied"（用户拒绝）、"error"（执行异常）。
     result_status: str = ""
+    #: 工具执行耗时，单位为毫秒。由 started_at 和 ended_at 计算得出。
     duration_ms: int = 0
+    #: 安全扫描违规明细。仅在 SecurityBlocked 场景下有值，
+    #: 结构为 {"violations": [{"rule_id": ..., "severity": ..., "snippet": ...}, ...]}。
     security_scan: dict | None = None
+    #: 格式化的错误信息（类型名 + 消息，截断至 200 字符）。
+    #: 若无错误则为 None。供运维直接定位问题（如超时、404、IO 错误）。
     error: str | None = None
+    #: 工具结果的摘要。优先取 result.summary 字典（已脱敏），
+    #: 否则取 result.text 字段，去除换行后截断至 200 字符。
     result_summary: dict | str | None = None
+    #: 策略评估的快照。包含 checked（检查项列表）、fired（命中的规则名）、
+    #: reason（拒绝/拦截原因）、policy_context（当时策略配置输入）。
+    #: 用于事后 replay 当时决策依据。
     policy_rules: dict | None = None
+    #: 人工审批结果。仅在 approval_decided 或 tool_ended 场景下有效，
+    #: 可能值："user_confirmed"（用户放行）、"user_denied"（用户拒绝）、
+    #: "auto_denied"（无人值守默认拒绝）。
     approval_outcome: str | None = None
+    #: 用于跨事件回溯的跨度 ID。在 approval_decided 事件中指向对应的
+    #: approval_requested 事件，实现"请求 ≠ 决策"的因果关联。
     causation_id: str | None = None
-    # llm_call 专属
+
+    # ---------- 以下字段仅对 llm_call 事件有效，其他事件类型为空 ----------
+    #: LLM 模型名称（仅 llm_call 事件使用）。
     model: str | None = None
+    #: 提示词消耗的 Token 数量（仅 llm_call 事件使用）。
     prompt_tokens: int | None = None
+    #: 生成回复消耗的 Token 数量（仅 llm_call 事件使用）。
     completion_tokens: int | None = None
+    #: 本次 LLM 调用的总 Token 数量 = prompt_tokens + completion_tokens（仅 llm_call 事件使用）。
     total_tokens: int | None = None
+    #: LLM 的结束原因，如 "stop"（正常结束）、"length"（超过 max_tokens 截断）等（仅 llm_call 事件使用）。
     finish_reason: str | None = None
 
 
@@ -101,13 +145,16 @@ def _sanitize(args: dict) -> dict:
     # 防御：大模型可能返回非 dict 的 JSON（如数组/字符串），脱敏不应崩溃
     if not isinstance(args, dict):
         return {}
+
     sanitized = {}
     for key, value in args.items():
+        # 顺序匹配敏感模式：命中则用对应替换值，break 跳出内层循环
         for pattern, replacement in SENSITIVE_KEY_PATTERNS:
             if re.search(pattern, key, re.IGNORECASE):
                 sanitized[key] = replacement
                 break
         else:
+            # 未命中任何敏感模式：若键属于路径类且值为字符串则原样保留（便于追溯文件操作）
             if key in PATH_KEYS and isinstance(value, str):
                 sanitized[key] = value
             else:
@@ -123,10 +170,16 @@ def _derive_decision(ctx: ToolContext) -> str:
     user_confirmed 并成功执行（无异常）的调用才记为 user_confirmed。
     """
     if ctx.error is None:
+        # 无异常：根据用户确认标志区分自动允许与用户确认
         return "user_confirmed" if ctx.user_confirmed else "auto_allowed"
+
     if isinstance(ctx.error, ConfirmRequired):
+        # 即使 ConfirmRequired 最终被确认，但走到这里时 error 仍存在，
+        # 说明是用户拒绝或超时未确认，一律视为 user_denied
         return "user_denied"
-    # 工具抛出的普通异常（RuntimeError 等）没有 decision 属性
+
+    # 其他异常（PolicyDenied / SecurityBlocked 或普通异常）取异常的 decision 属性，
+    # 若无则兜底为 "error"（工具抛出的普通异常（RuntimeError 等）没有 decision 属性）
     return getattr(ctx.error, "decision", "error")
 
 
@@ -145,6 +198,7 @@ def _result_status(ctx: ToolContext) -> str:
 
 def _extract_violations(ctx: ToolContext) -> dict | None:
     """安全拦截时取出违规明细写入审计；非拦截场景返回 None。"""
+    # 如果 ctx.error 是 SecurityBlocked 类的实例，则执行后续操作
     if isinstance(ctx.error, (SecurityBlocked,)):
         return {"violations": ctx.error.violations}
     return None
@@ -230,14 +284,17 @@ class AuditMiddleware(SecurityMiddleware):
 
         只观察不拦截，是管道里最先执行的一层——后续任何中间件拦截，调用已留痕。
         """
-        # 生成当前 span_id，读栈顶作父链；先写 tool_started 再压 contextvar——
-        # 保证任何子事件（spawn 的子 agent 跑在 execute 内）落盘前，父 span 的
-        # 起始事件已存在，中断也不会把子树写成孤儿。
+        # 1. 获取当前 contextvar 中存储的父 span（若有）
         span = _span_ctx.get()
+
+        # 2. 生成新的 span_id，更新 ctx 中的树字段
         span_id = f"span_{uuid.uuid4().hex[:12]}"
         ctx.span_id = span_id
         ctx.parent_id = span["span_id"] if span else None
         ctx.depth = (span["depth"] + 1) if span else 0
+
+        # 3. 立即落盘 tool_started 事件（在任何子事件发生之前）
+        #    这是保证父链完整的关键：即使后续子工具写盘，父 start 已存在，不会出现孤儿
         self._write_event(AuditEntry(
             event_type="tool_started",
             span_id=span_id,
@@ -252,6 +309,8 @@ class AuditMiddleware(SecurityMiddleware):
             turn=ctx.turn,
             started_at=ctx.timestamp or "",
         ))
+
+        # 4. 将当前 span 压入 contextvar 栈，供嵌套调用继承
         ctx._audit_token = _span_ctx.set({"span_id": span_id, "depth": ctx.depth})
 
     async def after(self, ctx: ToolContext) -> None:
@@ -261,10 +320,9 @@ class AuditMiddleware(SecurityMiddleware):
         只走 after，此处防御性补建 span 并补写 tool_started，保住「每个 span
         必有起始事件」的树不变量。
         """
-        # 防御：early-return 路径（JSON 解析失败/未知工具）只走 after，before 未执行
-        # → ctx.span_id 为 None，则此处补一个 span 并补写 tool_started（树不变量：
-        # 每个 span 必有起始事件）；未压栈则一律不弹栈。
+        # ---- 防御性处理：若 before 未执行（如参数解析失败提前返回），则补建 span ----
         if ctx.span_id is None:
+            # 补生成 span_id，并尝试从当前 contextvar 获取父链
             ctx.span_id = f"span_{uuid.uuid4().hex[:12]}"
             # 防御路径仍要把自己挂到当前调用链下：嵌套工具（子 agent 幻觉未知工具/坏
             # JSON）命中此分支时栈顶是外层 span，不读则父链丢失、被误写成根节点。
@@ -272,6 +330,7 @@ class AuditMiddleware(SecurityMiddleware):
             if span:
                 ctx.parent_id = span["span_id"]
                 ctx.depth = span["depth"] + 1
+            # 补写 tool_started，保证树结构完整
             self._write_event(AuditEntry(
                 event_type="tool_started",
                 span_id=ctx.span_id,
@@ -287,7 +346,10 @@ class AuditMiddleware(SecurityMiddleware):
                 started_at=ctx.timestamp or "",
             ))
         else:
+            # before 已正常执行：从 contextvar 中弹出当前 span
             _span_ctx.reset(getattr(ctx, "_audit_token", None))
+
+        # ---- 计算耗时并落盘 tool_ended ----
         duration = int((time.monotonic() - (ctx.started_at or 0.0)) * 1000)
         self._write_event(AuditEntry(
             event_type="tool_ended",
@@ -325,8 +387,11 @@ class AuditMiddleware(SecurityMiddleware):
         # 守卫：phase 只允许两值，拦截笔误（如 "reuested"）写入日志，避免污染审计。
         if phase not in {"requested", "decided"}:
             raise ValueError(f"invalid approval phase: {phase}")
+
+        # 获取当前 span 上下文，决定本次审批事件的父链
         span = _span_ctx.get()
         now = datetime.now().isoformat()
+
         entry = AuditEntry(
             event_type=f"approval_{phase}",
             span_id=f"span_{uuid.uuid4().hex[:12]}",
@@ -344,13 +409,16 @@ class AuditMiddleware(SecurityMiddleware):
             causation_id=getattr(ctx, "_approval_requested_span_id", None) if phase == "decided" else None,
             approval_outcome=approval_outcome if phase == "decided" else None,
         )
-        # requested 的 span 记到 ctx 上，供 decided 回溯；decided 则把自身 span 与
-        # 最终结果记到 ctx 上，供 after 写 tool_ended 时带上因果链与审批结果。
+
+        # 根据阶段在 ctx 上存储必要的 span ID，供后续事件关联
         if phase == "requested":
+            # 存储请求事件的 span_id，供 decided 事件通过 causation_id 回溯
             ctx._approval_requested_span_id = entry.span_id
         elif phase == "decided":
+            # 存储决策事件的 span_id 和 outcome，供 tool_ended 事件携带
             ctx.approval_decided_span_id = entry.span_id
             ctx.approval_outcome = approval_outcome
+
         self._write_event(entry)
 
     def record_llm_call(self, *, trace_id, session_id, agent_type, turn, model,
@@ -360,9 +428,7 @@ class AuditMiddleware(SecurityMiddleware):
 
         同步方法——LLM 流式回调可能跑在线程池线程，不能 await。
         """
-        # 同步（LLM 流式回调可能跑在线程池线程）：元数据 only，不记 content。
-        # ended_at 由 started_at + duration_ms 推算，与调用方记录的起点一致；
-        # started_at 格式无法解析时兜底为写入时刻。
+        # 计算 ended_at：优先用 started_at + duration_ms 推算，否则兜底为当前时间
         ended_at = datetime.now().isoformat()
         if started_at:
             try:
@@ -370,7 +436,10 @@ class AuditMiddleware(SecurityMiddleware):
                             + timedelta(milliseconds=duration_ms)).isoformat()
             except ValueError:
                 pass
+
+        # 获取当前 span 上下文，将 LLM 调用作为子树挂到当前工具调用之下
         span = _span_ctx.get()
+
         entry = AuditEntry(
             event_type="llm_call",
             span_id=f"span_{uuid.uuid4().hex[:12]}",

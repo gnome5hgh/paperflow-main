@@ -53,18 +53,17 @@ class IntentCategory(str, Enum):
     SYSTEM = "system"            # 系统：直接回复，永不 spawn
 
 
-#: 意图 → (category, dispatch_allowed)——单一真相源。枚举=契约=实现集：
-#: 14 值全覆盖、无悬空；dispatch_allowed=False 的意图由 spawn 门禁代码级拒绝派发
-#: （set_research_topic 是业务但非派发——记录+引导；refine_query 是对话管理但派发——重派入口）。
+# 意图 → (category, dispatch_allowed)——单一真相源。枚举=契约=实现集
+# dispatch_allowed=False 的意图由 spawn 门禁代码级拒绝派发
 INTENT_META: dict[IntentType, tuple[IntentCategory, bool]] = {
-    IntentType.SET_RESEARCH_TOPIC: (IntentCategory.BUSINESS, False),
+    IntentType.SET_RESEARCH_TOPIC: (IntentCategory.BUSINESS, False), # set_research_topic 是业务但非派发——记录+引导
     IntentType.SEARCH_PAPER:       (IntentCategory.BUSINESS, True),
     IntentType.ASK_QUESTION:       (IntentCategory.BUSINESS, True),
     IntentType.GENERATE_NOTE:      (IntentCategory.BUSINESS, True),
     IntentType.WRITE_OUTLINE:      (IntentCategory.BUSINESS, True),
     IntentType.ANALYZE_PAPER:      (IntentCategory.BUSINESS, True),
     IntentType.MANAGE_MEMORY:      (IntentCategory.BUSINESS, True),
-    IntentType.REFINE_QUERY:       (IntentCategory.DIALOGUE, True),
+    IntentType.REFINE_QUERY:       (IntentCategory.DIALOGUE, True), # refine_query 是对话管理但派发——重派入口
     IntentType.SWITCH_TOPIC:       (IntentCategory.DIALOGUE, False),
     IntentType.CHITCHAT:           (IntentCategory.SYSTEM, False),
     IntentType.OUT_OF_SCOPE:       (IntentCategory.SYSTEM, False),
@@ -84,7 +83,7 @@ class IntentStep(str, Enum):
 
 
 class IntentOutput(BaseModel):
-    """管线逐级产出的结构化意图。
+    """pipeline 管线逐级产出的结构化意图。
 
     confidence 语义（两种来源，消费方按 source 区分解释）：
     ROUTER 来源 = 融合分数 clip 到 [0,1]（非概率，可为边缘值）；LLM 来源 = 模型概率。

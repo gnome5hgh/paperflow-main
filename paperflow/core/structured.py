@@ -71,7 +71,9 @@ class StructuredOutput:
             展开成字段级提示喂给 LLM
         :param fallback: 重试耗尽时的兜底构造函数（无参返回 BaseModel 实例）；
             None 表示直接抛 StructuredOutputError
+
         :returns: 校验通过的 schema 实例
+
         :raises StructuredOutputError: 重试耗尽且无 fallback 时抛出
         """
         messages = [

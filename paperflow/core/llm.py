@@ -158,7 +158,8 @@ class LLMClient:
         if extra_body:
             kwargs["extra_body"] = extra_body
 
-        # 将同步阻塞的 SDK 调用包装为 async，释放事件循环给其他协程
+        # 将同步阻塞的 SDK 调用包装为 async，释放事件循环给其他协程，使其可以继续调度其他协程。当线程中的函数执行完毕后，通过 await 获取返回值。
+        # self.client.chat.completions.create(**kwargs) 是一个 同步阻塞函数，整个 asyncio 事件循环会被卡住，所有其他协程（如并发请求、WebSocket、定时任务等）全部暂停，直到该 HTTP 请求返回。
         try:
             response = await asyncio.to_thread(
                 self.client.chat.completions.create, **kwargs
@@ -173,6 +174,21 @@ class LLMClient:
                 )
             else:
                 raise
+
+        # response：上一行调用 openai SDK 的 chat.completions.create(...) 返回的原始响应对象（LLM 给你的完整答复）。它的结构大致是：
+        #   response = {
+        #       "choices": [            # 候选完成列表（通常只有 1 个）
+        #           {
+        #               "message": {     # 助手消息 = 模型实际输出的内容
+        #                   "role": "assistant",
+        #                   "content": "……回答文本……",   # 可能是 None（纯工具调用时）
+        #                   "tool_calls": [ ... ],         # 模型请求调用工具时的列表
+        #               },
+        #               "finish_reason": "stop",           # 结束原因（stop/length/...）
+        #           }
+        #       ],
+        #       "usage": {...},         # token 用量
+        #   }
         choice = response.choices[0].message
 
         # 解析 tool_calls：提取 id / type / function name / arguments

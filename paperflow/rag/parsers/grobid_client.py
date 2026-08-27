@@ -10,13 +10,19 @@ from dataclasses import dataclass
 
 import httpx
 
-#: TEI 命名空间
+#: TEI 命名空间（GROBID 返回的 XML 使用该命名空间）
 _TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
 
 
 @dataclass
 class ParsedDoc:
-    """PDF 解析结果：章节列表、表格文本、图片说明文本。"""
+    """PDF 解析结果：章节列表、表格文本、图片说明文本。
+
+    Attributes:
+        sections: 章节列表，每个元素为 (标题, 正文) 的二元组。
+        tables: 所有表格的纯文本内容列表（提取自 <table> 标签）。
+        figures: 所有图片的说明文本列表（提取自 <figDesc> 标签）。
+    """
 
     sections: list[tuple[str, str]]   # (标题, 正文) 列表
     tables: list[str]
@@ -24,19 +30,28 @@ class ParsedDoc:
 
 
 class GrobidClient:
-    """GROBID 服务的 HTTP 客户端，负责可用性探测与 PDF 全文解析。"""
+    """GROBID 服务的 HTTP 客户端，负责可用性探测与 PDF 全文解析。
+    本客户端封装了与 GROBID REST API 的交互，包括健康检查、标题提取和全文解析。
+    """
 
     def __init__(self, url: str = "http://127.0.0.1:8070", transport=None, timeout: float = 60.0):
         """配置服务地址并创建 HTTP 客户端。
 
-        transport 供测试注入自定义传输层（如 MockTransport）；timeout 是
-        请求超时秒数，健康检查与解析共用。
+        Args:
+            url: GROBID 服务的基础 URL，末尾有无斜杠均可。
+            transport: httpx 传输层对象，用于测试时注入 MockTransport 等。
+            timeout: 所有 HTTP 请求的超时时间（秒），包括健康检查和解析请求。
         """
         self.url = url.rstrip("/")
         self._client = httpx.Client(transport=transport, timeout=timeout)
 
     def available(self) -> bool:
-        """探测服务是否可用：请求健康检查接口，异常或超时都视为不可用。"""
+        """探测服务是否可用：请求健康检查接口，异常或超时都视为不可用。
+
+        Returns:
+            bool: True 表示服务可用，False 表示不可用。
+        """
+        # 通过请求 `/api/isalive` 接口判断服务状态。所有网络异常（如连接拒绝、超时）或非 200 响应均视为不可用。
         try:
             r = self._client.get(f"{self.url}/api/isalive")
             return r.status_code == 200
@@ -46,35 +61,59 @@ class GrobidClient:
     def extract_title(self, path: str) -> str | None:
         """提取 PDF 论文标题：走 GROBID header 接口，返回 TEI 里的 <title>。
 
-        GROBID 0.8 按 Accept 头协商输出格式——必须显式要 XML，否则默认回
-        BibTeX（见 /api/processHeaderDocument 的格式协商行为）。
-        标题链里 GROBID 是可降级层：网络/服务/解析任一步失败都返回 None 而不
-        抛错，让 TitleExtractor 落到 LLM 层兜底（与 parse_pdf 抛错的契约不同
-        ——那是解析链路必经步骤，错误必须上抛给调用方决定）。
+        调用 GROBID 的 `/api/processHeaderDocument` 接口，专门解析文献头部信息。
+        此方法设计为可降级：网络/服务/解析任一步失败都返回 None 而不抛错
+        让上层（如 TitleExtractor）回退到 LLM 层兜底。
+
+        注意：GROBID 0.8 按 Accept 头协商输出格式，必须显式指定 `application/xml`，
+             否则默认返回 BibTeX 格式，导致解析失败（见 /api/processHeaderDocument 的格式协商行为）。
+
+        Args:
+            path: PDF 文件的本地路径。
+
+        Returns:
+            str | None: 提取到的标题文本（已去除首尾空白），失败时返回 None。
         """
+        # 优先查找 `<tei:title type="main">`，这是文献的主标题；若不存在则回退到第一个 `<tei:title>` 标签。
         try:
             with open(path, "rb") as f:
                 r = self._client.post(
                     f"{self.url}/api/processHeaderDocument",
                     files={"input": f},
-                    params={"consolidateHeader": "1"},
-                    headers={"Accept": "application/xml"},
+                    params={"consolidateHeader": "1"},     # 合并作者/机构信息
+                    headers={"Accept": "application/xml"}, # 强制返回 XML
                 )
             r.raise_for_status()
             root = ET.fromstring(r.text)
         except (httpx.HTTPError, OSError, ET.ParseError):
             return None
-        # 优先取 type="main" 的标题：期刊文章的 header 里 analytic/monogr 都带
-        # title，首个 main 才是论文标题本身；找不到再退到第一个 <title>。
+        # 优先查找 `<tei:title type="main">`，这是文献的主标题（期刊文章的 header 里可能包含多个 title）
         title = root.find(".//tei:title[@type='main']", _TEI_NS)
+
         if title is None:
+            # 若不存在则回退到第一个 `<tei:title>` 标签。
             title = root.find(".//tei:title", _TEI_NS)
+
+        # 若找到标签则取其文本，否则返回 None；空字符串或仅空白也视为 None
         return ((title.text if title is not None else None) or "").strip() or None
 
     def parse_pdf(self, path: str) -> ParsedDoc:
         """把本地 PDF 文件提交给 GROBID 做全文解析，返回结构化章节。
 
-        网络或服务出错时会抛出异常（不吞错，由调用方决定下一步怎么处理）。
+        调用 `/api/processFulltextDocument` 接口进行完整文档解析。
+        与 `extract_title` 不同，此方法在失败时会抛出异常（不吞错），
+        因为全文解析是检索链路的关键步骤，上层需要知道失败原因并决定如何处理。
+
+        Args:
+            path: PDF 文件的本地路径。
+
+        Returns:
+            ParsedDoc: 解析后的结构化文档对象，包含章节、表格和图片说明。
+
+        Raises:
+            httpx.HTTPError: 网络请求失败或服务返回非 2xx 状态码。
+            ET.ParseError: GROBID 返回的 XML 格式不符合预期。
+            OSError: 无法打开本地 PDF 文件。
         """
         with open(path, "rb") as f:
             r = self._client.post(
@@ -88,13 +127,26 @@ class GrobidClient:
     def _parse_tei(self, xml: str) -> ParsedDoc:
         """把 GROBID 返回的 TEI XML 解析成 ParsedDoc。
 
-        遍历所有 div 块，提取每块的标题、正文段落，以及块内的表格和图片说明。
+        解析策略：
+        - 遍历所有 `<tei:div>` 块（代表文档中的章节/节）。
+        - 对每个 div，提取 `<tei:head>` 作为标题；若无 head，则用 div 的 `type` 属性
+          （如 "abstract"）作为标题，确保每个章节都有可读的标题。
+        - 提取所有 `<tei:p>` 段落，拼接成正文。
+        - 同时提取 div 内的所有 `<tei:table>` 表格内容和 `<tei:figure>` 的图片说明。
+
+        Args:
+            xml: GROBID 返回的完整 TEI XML 字符串。
+
+        Returns:
+            ParsedDoc: 解析结果。
         """
         root = ET.fromstring(xml)
         sections: list[tuple[str, str]] = []
         tables: list[str] = []
         figures: list[str] = []
+
         for div in root.iter("{http://www.tei-c.org/ns/1.0}div"):
+            # 提取标题：优先用 <head>，否则用 div@type
             head = div.find("tei:head", _TEI_NS)
             if head is not None and head.text:
                 heading = head.text
@@ -102,38 +154,72 @@ class GrobidClient:
                 # GROBID 的 abstract 等 div 常无 <head>，改用 div@type 作标题
                 # （如 type="abstract"），保证首段有可读 heading。
                 heading = div.get("type", "") or ""
+
+            # 提取所有段落的纯文本
             paras = [p.text or "" for p in div.findall("tei:p", _TEI_NS)]
             if paras:
                 sections.append((heading, "\n".join(paras)))
+
+            # 提取表格内容（拼接所有文本节点）
             for t in div.findall("tei:table", _TEI_NS):
                 tables.append("".join(t.itertext()))
+
+            # 提取图片说明（<figDesc> 标签内的文本）
             for f in div.findall("tei:figure", _TEI_NS):
                 cap = f.find(".//tei:figDesc", _TEI_NS)
                 figures.append(cap.text if cap is not None and cap.text else "")
+
         return ParsedDoc(sections=sections, tables=tables, figures=figures)
 
 
 class PyMuPDFParser:
-    """GROBID 不可用时的备用解析器：用 PyMuPDF 抽取全文，按字号粗略切分章节（精度够切块用即可）。"""
+    """GROBID 不可用时的备用解析器
+
+    使用 PyMuPDF (fitz) 从 PDF 中提取文本，并通过字号大小启发式地划分章节。
+    精度虽不如 GROBID，但对于后续的文本分块（chunking）已足够。
+    """
 
     def parse_pdf(self, path: str) -> ParsedDoc:
-        """抽取 PDF 全文并按字号启发式切分章节，返回结构化的章节列表。"""
+        """抽取 PDF 全文并按字号启发式切分章节，返回结构化的章节列表。
+
+        算法思路：
+        - 使用 PyMuPDF 的 `get_text("dict")` 获取页面文本的详细布局信息，包括每个文本块的坐标、字号和内容。
+        - 遍历所有文本块，跳过非文本块（如图片）。
+        - 对于每个文本行，检查其字号：
+          - 如果字号 ≥ 12 且当前已累积正文内容，则认为这是一个新的章节标题，开启一个新章节。
+          - 否则，将当前行追加到当前章节的正文中。
+        - 初始化时默认有一个空标题的章节，用于收集开头的正文。
+
+        边界条件：
+        - 只保留有正文内容的章节（忽略仅有标题而无正文的部分）。
+        - 字号阈值 12 是经验值，适用于多数学术论文的正文/标题区分。
+
+        Args:
+            path: PDF 文件的本地路径。
+
+        Returns:
+            ParsedDoc: 解析结果，其中 tables 和 figures 列表为空（备用解析不支持）。
+        """
         import fitz
         doc = fitz.open(path)
+        # 初始化一个空标题章节，用于容纳开头的正文
         sections: list[tuple[str, str]] = [("", "")]
         for page in doc:
             d = page.get_text("dict")
             for block in d.get("blocks", []):
-                if block.get("type") != 0:   # 跳过图片块
+                if block.get("type") != 0:   # type=0 表示文本块，其他为图片等
                     continue
                 for line in block.get("lines", []):
+                    # 取本行第一个 span 的字号（假设一行内字号一致）
                     size = line["spans"][0]["size"] if line["spans"] else 0
                     text = "".join(s["text"] for s in line["spans"]).strip()
                     if not text:
                         continue
-                    # 字号 ≥ 12 视为标题行（启发式），开启新 section
+                    # # 若字号大（≥12）且当前章节已有正文，则作为新章节标题（启发式），开启新 section
                     if size >= 12 and sections[-1][1]:
                         sections.append((text, ""))
                     else:
+                        # 追加到当前章节正文
                         sections[-1] = (sections[-1][0], sections[-1][1] + text + "\n")
+        # 过滤掉没有正文的章节
         return ParsedDoc(sections=[(h, t) for h, t in sections if t], tables=[], figures=[])

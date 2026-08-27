@@ -36,7 +36,9 @@ class Message(BaseModel):
     id: str = Field(default_factory=lambda: f"message-{uuid.uuid4().hex}")
     role: MessageRole
     content: str | None = None
+    # 内容为：[{"id": "call_00_6u3sYDficDiQyUUyKrdF4993", "type": "function", "function": {"name": "memory_insert", "arguments": "{\"label\": \"human\", \"new_string\": \"- 论文阅读标准（导师要求）：仅接受 JCR Q2 及以上期刊论文；检索/推荐/下载论文时默认以此过滤。\\n\", \"insert_line\": -1}"}}]
     tool_calls: list[dict] = Field(default_factory=list)
+    # 用于 role = "tool"的消息，对应 tool_calls 中的 “id”
     tool_call_id: str | None = None
     step_id: str | None = None
     run_id: str | None = None

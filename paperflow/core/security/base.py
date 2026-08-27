@@ -26,28 +26,35 @@ class ToolContext:
     此时各 before 钩子自行跳过，仍会走 after 钩子审计。
     """
 
-    trace_id: str
-    session_id: str
-    agent_type: str
-    tool: Tool | None = None       # None 表示未知工具（大模型幻觉或注入），此时仍会走 after 钩子审计
-    tool_name: str = ""
-    args: dict = field(default_factory=dict)
-    timestamp: str | None = None
-    started_at: float | None = None
-    result: ToolResult | None = None
-    error: Exception | None = None
-    user_confirmed: bool = False
-    # 审计树与决策字段：turn = ReAct 轮次；span_id/parent_id/depth 由
-    # AuditMiddleware.before 通过 contextvar 填充；policy_context/policy_fired 由
-    # PolicyEngineMiddleware 填充；approval_* 由 Agent 在确认流程里填充。
-    turn: int = 0
-    span_id: str | None = None
-    parent_id: str | None = None
-    depth: int = 0
-    policy_context: dict | None = None
-    policy_fired: str | None = None
-    approval_outcome: str | None = None
-    approval_decided_span_id: str | None = None
+    # --- 调用方与工具本体（由 Agent 构造，贯穿管道） ---
+    trace_id: str                      # 本次 run 的唯一追踪 ID，用于聚合一次完整任务的所有工具调用
+    session_id: str                    # 会话标识，跨多次 run 保持一致，便于审计聚合
+    agent_type: str                    # 当前 Agent 的类型（如 "supervisor"、"searcher"）
+    tool: Tool | None = None           # 当前执行的 Tool 实例；None 表示未知工具（LLM 幻觉或注入）
+    tool_name: str = ""                # 工具名称（用于审计，即使 tool 为 None 也能记录）
+    args: dict = field(default_factory=dict)  # 工具调用的参数字典（已解析 JSON）
+
+    # --- 生命周期时间戳（由 Agent 在调用前后记录） ---
+    timestamp: str | None = None       # ISO 格式的调用发起时间（用于审计的 started_at）
+    started_at: float | None = None    # time.monotonic() 记录的起始时刻，用于计算耗时
+
+    # --- 执行结果与异常（由 Agent 填充） ---
+    result: ToolResult | None = None   # 工具执行成功后的结果对象
+    error: Exception | None = None     # 工具执行或中间件拦截时抛出的异常
+
+    # --- 用户确认状态（由 Agent 在确认流程中设置） ---
+    user_confirmed: bool = False       # 是否已获得用户确认（仅对需要确认的工具有效）
+
+    # --- 审计树与决策信息（由各中间件分别填充） ---
+    turn: int = 0                      # ReAct 循环的轮次（从 0 开始）
+    span_id: str | None = None         # 当前工具调用的审计 span ID（由 AuditMiddleware 生成）
+    parent_id: str | None = None       # 父 span ID（嵌套调用时，由 AuditMiddleware 从栈顶读取）
+    depth: int = 0                     # 调用深度（根为 0，嵌套每层 +1）
+
+    policy_context: dict | None = None # 策略引擎评估时的配置快照（由 PolicyEngineMiddleware 记录）
+    policy_fired: str | None = None    # 被触发的策略规则名（如 "blocked_by_default"）
+    approval_outcome: str | None = None # 审批最终结果（"user_confirmed" / "user_denied" / "auto_denied"）
+    approval_decided_span_id: str | None = None  # 审批决策事件的 span ID（用于审计回溯）
 
 
 class SecurityMiddleware(ABC):
@@ -59,7 +66,17 @@ class SecurityMiddleware(ABC):
     """
 
     async def before(self, ctx: ToolContext) -> None:
-        """工具执行前的钩子：可在此拦截（抛异常）或记录请求。默认空实现。"""
+        """工具执行前的钩子：可在此拦截（抛异常）或记录请求。默认空实现。
+
+        实现者可以：
+            - 检查 ctx.args、ctx.tool 等字段；
+            - 修改 ctx 中的内容（如添加额外元数据）；
+            - 抛出 SecurityError 子类（PolicyDenied / ConfirmRequired / SecurityBlocked）来阻止执行；
+            - 正常返回则继续下一个中间件。
+
+        Args:
+            ctx: 当前工具调用的上下文，各字段在管道中逐步填充。
+        """
         return
 
     async def after(self, ctx: ToolContext) -> None:
@@ -67,11 +84,29 @@ class SecurityMiddleware(ABC):
 
         所有路径都会走到本钩子——含 JSON 解析失败、未知工具、被 before 拦截的
         早退场景，因此审计能覆盖每一次调用。默认空实现。
+
+        实现者可以通过 ctx.error 判断是否发生了异常，并通过 ctx.result 访问执行结果。
+        注意：after 逆序执行（后注册的中间件先执行），形成洋葱模型。
+
+        Args:
+            ctx: 工具调用的完整上下文，包含执行结果或异常信息。
         """
         return
 
     async def on_finish(self, agent, content: str) -> str:
-        """整轮对话收尾时的钩子：可在最终回复落定前改写内容。默认原样返回。"""
+        """整轮对话收尾时的钩子：可在最终回复落定前改写内容。默认原样返回。
+
+        在 ReAct 循环最终产出无 tool_calls 的 assistant 消息后，所有中间件按注册顺序
+        依次执行本钩子，每个中间件都可以对最终内容做改写（如追加来源引用、替换不安全内容）。
+        改写后的内容将作为本轮 run 的返回值交付给调用方，并持久化到对话历史。
+
+        Args:
+            agent: 当前 Agent 实例（可用于访问其属性，如 session_id 等）
+            content: 当前累计的最终回复文本（可能已被前面的中间件改写）
+
+        Returns:
+            str: 改写后的最终回复文本
+        """
         return content
 
     async def on_approval(self, ctx: ToolContext, phase: str, approval_outcome: str | None = None) -> None:
@@ -79,6 +114,16 @@ class SecurityMiddleware(ABC):
 
         其余中间件默认 no-op——这是洋葱模型外的可选横切关注点，只给需要监听
         确认流程的中间件用（当前只有审计要落盘审批双事件）。
+
+        当需要用户确认的工具触发 ConfirmRequired 时，Agent 会在发送确认请求前
+        调用所有中间件的 on_approval(ctx, "requested")，然后在收到用户决策后
+        调用 on_approval(ctx, "decided", approval_outcome)。
+
+        Args:
+            ctx: 工具调用的上下文（此时尚未执行工具）
+            phase: "requested" 或 "decided"
+            approval_outcome: 仅当 phase == "decided" 时有效，值为 "user_confirmed"、
+                "user_denied" 或 "auto_denied"（fail-safe 默认拒绝）。
         """
         return
 
@@ -91,7 +136,7 @@ class SecurityError(Exception):
     （RuntimeError 等）没有该属性，兜底取 "error"。
     """
 
-    decision: str
+    decision: str   # 子类必须覆盖为具体的决策字符串，如 "policy_denied"
 
 
 class PolicyDenied(SecurityError):
@@ -100,7 +145,7 @@ class PolicyDenied(SecurityError):
     decision = "policy_denied"
 
     def __init__(self, reason: str):
-        self.reason = reason
+        self.reason = reason   # 人类可读的拒绝理由，将反馈给 LLM
 
 
 class ConfirmRequired(SecurityError):
@@ -114,14 +159,18 @@ class ConfirmRequired(SecurityError):
     decision = "confirm_required"
 
     def __init__(self, tool_name, params, risk_level, side_effects, on_confirmed=None):
-        self.tool_name = tool_name
-        self.params = params
-        self.risk_level = risk_level
-        self.side_effects = side_effects
-        self._on_confirmed = on_confirmed
+        self.tool_name = tool_name          # 需要用户确认的工具名
+        self.params = params                # 本次调用的参数（用于展示给用户）
+        self.risk_level = risk_level        # 工具的风险等级（如 "high"）
+        self.side_effects = side_effects    # 工具可能产生的副作用说明（如 "写入文件"）
+        self._on_confirmed = on_confirmed   # 确认后触发的回调（由 PolicyEngineMiddleware 传入，用于更新已确认集合）
 
     def confirm(self) -> None:
-        """触发确认回调，放行该工具后续执行；未设置回调时为空操作。"""
+        """触发确认回调，放行该工具后续执行；未设置回调时为空操作。
+
+        用户确认后由 Agent 调用此方法，将本次工具调用标记为“已确认”，
+        避免同一 (工具, 目标路径) 重复询问。
+        """
         if self._on_confirmed:
             self._on_confirmed()
 
@@ -132,5 +181,5 @@ class SecurityBlocked(SecurityError):
     decision = "security_blocked"
 
     def __init__(self, reason: str, violations: list[dict]):
-        self.reason = reason
-        self.violations = violations
+        self.reason = reason                # 拦截原因摘要
+        self.violations = violations        # 违规明细列表，每个元素包含 rule_id、severity、snippet 等
