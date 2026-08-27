@@ -70,7 +70,7 @@ class PaperFlowConfig:
     #: LLM 连接配置
     llm: LLMConfig = field(default_factory=LLMConfig)
 
-    #: 运行时数据根目录，存放 chromadb、memory、audit、templates 等
+    #: 运行时数据根目录，存放 milvus、memory、audit、templates 等
     workspace: str = "data"
 
     #: Agent 插件扫描目录，默认扫描项目根下的 agents/
@@ -105,14 +105,11 @@ class PaperFlowConfig:
     #: （env PAPERFLOW_GROBID_ENDPOINT 覆盖）
     grobid_endpoint: str = "http://localhost:8070"
 
-    #: ChromaDB 持久化路径；空 = 从 workspace 推导 <workspace>/chromadb/
-    chroma_path: str = ""
-
     #: Milvus 连接地址。本地文件路径 → Milvus Lite（内嵌，单测用）；
     #: ``http://host:19530`` → Milvus Standalone（生产默认）。
     milvus_uri: str = "http://localhost:19530"
 
-    #: Milvus 集合名（单一集合，对应原 ChromaDB collection）
+    #: Milvus 集合名（单一集合，对应迁移前的向量库 collection）
     milvus_collection: str = "paperflow"
 
     #: 嵌入模型（真实 bge 落地，维度从模型读取不硬编码）
@@ -128,11 +125,6 @@ class PaperFlowConfig:
     #: (搜索→等级查询→审查裁决→下载)在多候选下也远超——短超时会把整条链路误判为
     #: 超时。YAML 顶层 agent_timeouts 可覆盖;dict 无环境变量形态。
     agent_timeouts: dict[str, int] = field(default_factory=lambda: {"writer": 600, "searcher": 300, "reviewer": 180})
-
-    @property
-    def chroma_dir(self) -> str:
-        """ChromaDB 目录：显式配置优先，否则从 workspace 推导。"""
-        return self.chroma_path or str(Path(self.workspace) / "chromadb")
 
     @classmethod
     def from_env(cls, config_path: str | None = None) -> "PaperFlowConfig":
@@ -177,7 +169,7 @@ class PaperFlowConfig:
         # 顶层配置字段(含 vault / RAG 键,均可通过 config.yaml 顶层覆盖默认值)
         for key in ("workspace", "agents_dir", "max_risk",
                     "vault_note_dir", "vault_pdf_dir", "vault_outline_dir",
-                    "grobid_endpoint", "chroma_path", "milvus_uri", "milvus_collection",
+                    "grobid_endpoint", "milvus_uri", "milvus_collection",
                     "embed_model", "rerank_model",
                     "agent_timeouts", "sleeptime_enable", "sleeptime_agent_frequency"):
             if key in data:
@@ -199,7 +191,6 @@ class PaperFlowConfig:
             PAPERFLOW_VAULT_PDF_DIR  → vault_pdf_dir
             PAPERFLOW_VAULT_OUTLINE_DIR → vault_outline_dir
             PAPERFLOW_GROBID_ENDPOINT → grobid_endpoint
-            PAPERFLOW_CHROMA_PATH    → chroma_path
             PAPERFLOW_EMBED_MODEL    → embed_model
             PAPERFLOW_RERANK_MODEL   → rerank_model
             PAPERFLOW_SLEEPTIME_ENABLE    → sleeptime_enable（"true"/"false"）
@@ -218,7 +209,6 @@ class PaperFlowConfig:
             "PAPERFLOW_VAULT_PDF_DIR": (None, "vault_pdf_dir"),
             "PAPERFLOW_VAULT_OUTLINE_DIR": (None, "vault_outline_dir"),
             "PAPERFLOW_GROBID_ENDPOINT": (None, "grobid_endpoint"),
-            "PAPERFLOW_CHROMA_PATH": (None, "chroma_path"),
             "PAPERFLOW_MILVUS_URI": (None, "milvus_uri"),
             "PAPERFLOW_MILVUS_COLLECTION": (None, "milvus_collection"),
             "PAPERFLOW_EMBED_MODEL": (None, "embed_model"),

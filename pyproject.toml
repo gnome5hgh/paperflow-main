@@ -15,7 +15,6 @@ dependencies = [
     "httpx>=0.27",
     "pymupdf>=1.24",
     "rank_bm25>=0.2.2",
-    "chromadb>=0.5",
     "pymilvus[milvus-lite]>=2.4.2",
     "sentence-transformers>=3.0",
     "rich>=13.0.0",

@@ -31,7 +31,7 @@ def is_denied_path(resolved: Path, workspace: str) -> bool:
     """敏感路径黑名单：白名单之前的硬拦截——命中即拒绝，无视白名单。
 
     分三段：
-    ① 系统运行时数据：workspace/audit（审计日志防篡改）、workspace/chroma
+    ① 系统运行时数据：workspace/audit（审计日志防篡改）、workspace/milvus
        （向量库防绕过/防写坏）——精确绝对路径，工作区里同名文件夹（如笔记
        "audit"）不误伤。约定审计目录 = workspace/audit；若将来改为自定义
        目录，此派生需同步。
@@ -54,11 +54,11 @@ def is_denied_path(resolved: Path, workspace: str) -> bool:
     ws = Path(workspace).resolve()      # 允许访问的工作空间根目录
 
     # ----- 第一段：工作区内的系统运行时数据目录（精确匹配） -----
-    # 使用 is_relative_to 判断 resolved 是否在 ws/audit 或 ws/chroma 之下，
+    # 使用 is_relative_to 判断 resolved 是否在 ws/audit 或 ws/milvus 之下，
     # 注意：这要求 audit 目录直接位于工作区根下，不会误伤工作区内名为 audit 的普通笔记文件夹。
     if resolved.is_relative_to(ws / "audit"):
         return True
-    if resolved.is_relative_to(ws / "chroma"):
+    if resolved.is_relative_to(ws / "milvus"):
         return True
 
     # ----- 第二段：版本控制/配置目录（任何路径位置） -----

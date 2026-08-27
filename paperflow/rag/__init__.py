@@ -1,7 +1,7 @@
 """paperflow RAG 检索子系统：文档解析、向量/稀疏索引与混合检索。
 
 对外统一导出解析器、服务门面与检索工具；编码器与向量存储等底层组件经由
-各自子包访问。重依赖（chromadb、sentence-transformers）由 RAGService 内部
+各自子包访问。重依赖（pymilvus、sentence-transformers）由 RAGService 内部
 惰性加载，包导入本身不拉取，避免拖慢应用与测试启动。
 """
 from paperflow.rag.parsers.chunker import AcademicChunker, Chunk

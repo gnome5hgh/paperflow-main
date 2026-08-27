@@ -94,7 +94,7 @@ class RAGService:
 
         维度从 embedder 读取（建集合时定死）；uri 来自配置（本地文件→Lite、
         http→Standalone）。连接失败抛带可行动指引的错——Milvus 是服务而非
-        本地文件，可能未启动，不能像 Chroma 时代假设永不宕机。
+        本地文件，可能未启动，不能假设向量库永不宕机。
 
         Returns:
             VectorStore: 向量库实例。
