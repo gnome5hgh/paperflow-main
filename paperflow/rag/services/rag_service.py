@@ -41,6 +41,7 @@ class RAGService:
         self._pymupdf_parser = None    # PyMuPDF 备用解析器
         self._grobid_available = None  # 缓存 GROBID 可用性探测结果 (bool | None)
         self._vector_store = None      # 向量库 (VectorStore)
+        self._milvus_available = None    # Milvus 可连性探测缓存 (bool | None)
         self._bm25 = None              # BM25 索引 (Bm25Index)
         self._indexer = None           # 索引器视图 (RagIndexer)
         self._retriever = None         # 检索器视图 (Retriever)
@@ -91,15 +92,49 @@ class RAGService:
     def _ensure_vector_store(self):
         """惰性获取向量库：首次访问时打开（必要时创建）。
 
+        维度从 embedder 读取（建集合时定死）；uri 来自配置（本地文件→Lite、
+        http→Standalone）。连接失败抛带可行动指引的错——Milvus 是服务而非
+        本地文件，可能未启动，不能像 Chroma 时代假设永不宕机。
+
         Returns:
-            VectorStore: 向量库实例。其持久化目录由 config.chroma_dir 指定。
+            VectorStore: 向量库实例。
+
+        Raises:
+            RuntimeError: Milvus 未连接（附 `docker compose up -d` 指引）。
         """
         if self._vector_store is None:
             with self.lock:
                 if self._vector_store is None:
                     from paperflow.rag.storage.vector_store import VectorStore
-                    self._vector_store = VectorStore(self.config.chroma_dir)
+                    dim = self._ensure_embedder().dim
+                    try:
+                        self._vector_store = VectorStore(
+                            self.config.milvus_uri, dim,
+                            collection_name=self.config.milvus_collection,
+                        )
+                    except Exception as e:
+                        raise RuntimeError(
+                            f"Milvus 未连接（{self.config.milvus_uri}）：{e}。"
+                            "请运行 `docker compose up -d` 启动服务后重试。"
+                        ) from e
         return self._vector_store
+
+    def milvus_available(self) -> bool:
+        """探测 Milvus 是否可连接（会话内缓存，不中途变卦）。
+
+        Lite（本地文件 uri）恒可连；Standalone 未启动则 False。失败缓存为
+        False，避免每次索引/检索都重复尝试连接。
+
+        Returns:
+            bool: True 表示可连接。
+        """
+        if self._milvus_available is None:
+            try:
+                self._ensure_vector_store()
+                self._milvus_available = True
+            except RuntimeError:
+                self._milvus_available = False
+        return self._milvus_available
 
     def _ensure_bm25(self):
         """惰性获取 BM25 索引：首次访问时创建。
