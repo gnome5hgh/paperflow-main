@@ -101,6 +101,9 @@ class PaperFlowConfig:
     #: (PAPERFLOW_VAULT_OUTLINE_DIR)或 config.yaml 提供;空则由 factory 回退 workspace/outline。
     vault_outline_dir: str = ""
 
+    #: references.bib 路径（引用库真相源）。空则回退 workspace/citations/references.bib
+    citations_bib_path: str = ""
+
     #: GROBID 服务地址——RAG PDF 解析与 TitleExtractor 标题提取共用同一端点
     #: （env PAPERFLOW_GROBID_ENDPOINT 覆盖）
     grobid_endpoint: str = "http://localhost:8070"
@@ -169,6 +172,7 @@ class PaperFlowConfig:
         # 顶层配置字段(含 vault / RAG 键,均可通过 config.yaml 顶层覆盖默认值)
         for key in ("workspace", "agents_dir", "max_risk",
                     "vault_note_dir", "vault_pdf_dir", "vault_outline_dir",
+                    "citations_bib_path",
                     "grobid_endpoint", "milvus_uri", "milvus_collection",
                     "embed_model", "rerank_model",
                     "agent_timeouts", "sleeptime_enable", "sleeptime_agent_frequency"):
@@ -190,6 +194,7 @@ class PaperFlowConfig:
             PAPERFLOW_VAULT_NOTE_DIR → vault_note_dir
             PAPERFLOW_VAULT_PDF_DIR  → vault_pdf_dir
             PAPERFLOW_VAULT_OUTLINE_DIR → vault_outline_dir
+            PAPERFLOW_CITATIONS_BIB_PATH → citations_bib_path
             PAPERFLOW_GROBID_ENDPOINT → grobid_endpoint
             PAPERFLOW_EMBED_MODEL    → embed_model
             PAPERFLOW_RERANK_MODEL   → rerank_model
@@ -208,6 +213,7 @@ class PaperFlowConfig:
             "PAPERFLOW_VAULT_NOTE_DIR": (None, "vault_note_dir"),
             "PAPERFLOW_VAULT_PDF_DIR": (None, "vault_pdf_dir"),
             "PAPERFLOW_VAULT_OUTLINE_DIR": (None, "vault_outline_dir"),
+            "PAPERFLOW_CITATIONS_BIB_PATH": (None, "citations_bib_path"),
             "PAPERFLOW_GROBID_ENDPOINT": (None, "grobid_endpoint"),
             "PAPERFLOW_MILVUS_URI": (None, "milvus_uri"),
             "PAPERFLOW_MILVUS_COLLECTION": (None, "milvus_collection"),
