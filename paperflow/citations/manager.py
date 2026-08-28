@@ -108,6 +108,18 @@ class CitationManager:
                                     pdf_path=rec.get("pdf_path"))
 
     # —— 入库 ——
+    def _unique_key(self, key: str) -> str:
+        """key 冲突加后缀守卫：同名 key（不同论文）→ 追加数字直至唯一。
+
+        按标题去重已提前早退，走到这里说明是不同论文撞了同一 key；
+        gen_key 保持确定性不变，只在落地前保证 key 在库内唯一。
+        """
+        candidate, n = key, 1
+        while self.get(candidate) is not None:
+            n += 1
+            candidate = f"{key}{n}"
+        return candidate
+
     def add_from_pdf(self, pdf_path: str) -> dict:
         """语料库内 PDF → bib 条目（append-only；已存在则去重返回已有 key）。"""
         with self._lock:
@@ -117,7 +129,8 @@ class CitationManager:
             existing = bibmod.find_by_title(self.bib_path, title)
             if existing is not None:
                 return {"key": existing.key, "created": False, "note": "已在库"}
-            key = gen_key(title, biblio.get("authors", ""), biblio.get("year", ""))
+            key = self._unique_key(gen_key(title, biblio.get("authors", ""),
+                                           biblio.get("year", "")))
             bibmod.append_entry(self.bib_path, entry_text(key, title, biblio))
             return {"key": key, "created": True, "note": "已追加到 references.bib"}
 
@@ -130,7 +143,7 @@ class CitationManager:
             existing = bibmod.find_by_title(self.bib_path, title)
             if existing is not None:
                 return {"key": existing.key, "created": False, "note": "已在库"}
-            key = gen_key(title, authors, year)
+            key = self._unique_key(gen_key(title, authors, year))
             bibmod.append_entry(self.bib_path, entry_text(
                 key, title, {"authors": authors, "year": year, "journal": journal},
                 external=True))
