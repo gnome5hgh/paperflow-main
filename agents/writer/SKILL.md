@@ -81,7 +81,7 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
 
 1. **读模板**:`read_file` 读笔记模板(工具描述 [目录] templates=... 下的 `paper_note.md`);若不存在,按标准结构生成:概述 / 方法 / 实验结果 / 相关工作 / 局限与展望。
 2. **读论文**:`read_pdf` 读主论文全文。
-3. **起草**:按模板结构在上下文中起草笔记(**草稿即 v1**)。
+3. **起草**:按模板结构在上下文中起草笔记(**草稿即 v1**);起草时每节关键论断标 `[来源:§论文章节]`(`read_pdf` 返回的 sections 章节标题即位置)。
 4. **落盘**:`write_file` 写入笔记绝对路径(工具描述 [目录] note=... 下的 `<论文slug>.md`)——草稿 v1。
 5. **审稿循环(最多 3 轮 = 3 次 spawn_sub_agent 提交)**:
    - 提交:`spawn_sub_agent(agent_type=reviewer, mode="note_review", task="审阅草稿文件 <draft_path>,对照原文 <pdf_path>。"[用户要求:<requirements>])` 交 reviewer 审稿。requirements 取任务文本中用户对笔记的约束(篇幅/语言/侧重/深度等);没有就不拼(跳过要求维度)。
@@ -96,7 +96,7 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
      - 第 3 次提交仍 fail → 停止循环,返回笔记路径并**明示「仍有 blocking 意见未解决」**——不伪装达标。
    - 定位文件用 `glob`(如 `**/*.pdf`、`**/*标题*.pdf`)。
 6. **定稿**:确认笔记绝对路径存在,返回路径。
-7. **记录**(谁干活谁记录):笔记落盘后 → `history_append(写笔记, 论文标题)` 记入浏览历史;若该论文在未读清单,`ask_user_question("《{title}》笔记已生成，还要保留在未读清单吗?")`,用户确认移除 → `unread_list_remove(title)`。
+7. **记录**(谁干活谁记录):笔记落盘后 → `lookup_citation(标题)` 确认笔记所属论文 key(缺失则 `add_citation(pdf_path=论文路径)`),写入头部 `**论文引用**: [key]`(已落盘用 `edit_file` 补写);`history_append(写笔记, 论文标题)` 记入浏览历史;若该论文在未读清单,`ask_user_question("《{title}》笔记已生成，还要保留在未读清单吗?")`,用户确认移除 → `unread_list_remove(title)`。
 
 ## ⚠️ 铁律(IRON RULES)
 
