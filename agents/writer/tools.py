@@ -7,6 +7,9 @@ paperflow/tools/ 的集中式安全边界与风险语义)、glob/grep 定位工�
 的审稿循环用它派发 reviewer 子 agent 审阅草稿,拿回裁决后经 edit_file 修订。
 spawn 工具需要构造参数(agent_timeouts),故 make_tools 传已实例化的工具实例而非类。
 """
+from paperflow.citations import CitationManager
+from paperflow.citations.tools import (LookupCitationTool, AddCitationTool,
+                                       FormatCitationsTool, ListCitationsTool)
 from paperflow.config import PaperFlowConfig
 from paperflow.core.memory.tools import HistoryAppendTool, UnreadListRemoveTool
 from paperflow.rag.services.retriever import RagRetrieveTool
@@ -18,9 +21,14 @@ from paperflow.tools.common.factory import make_tools
 from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
 
 
-# 完整装配 11 工具:4 原子工具 + ask_user_question + rag_retrieve + 共享 spawn_sub_agent
+# 引用管理工具共享同一个 CitationManager 实例（引用库路径来自 config，模块级构造一次）
+_cm = CitationManager(PaperFlowConfig.from_env())
+
+
+# 完整装配 15 工具:4 原子工具 + ask_user_question + rag_retrieve + 共享 spawn_sub_agent
 # + glob/grep + history_append/unread_list_remove(写笔记后记历史、确认后移出未读,
-# 谁干活谁记录)。审稿循环由 SKILL 驱动:spawn_sub_agent(agent_type=reviewer, task="审阅草稿文件
+# 谁干活谁记录) + 4 个引用工具(lookup/add/format/list,溯源引用与引用管理)。
+# 审稿循环由 SKILL 驱动:spawn_sub_agent(agent_type=reviewer, task="审阅草稿文件
 # <draft>,对照原文 <pdf>") 提交草稿,修订经 edit_file 覆盖写回同一最终路径,同时
 # 兼顾"修改既有笔记"类任务。rag_retrieve 服务大纲模式的笔记发现:query 检索本地知识库
 # 返回 [source:path] 段落,SKILL 据此回溯相关笔记与论文。agent_timeouts 经 config 注入
@@ -30,4 +38,6 @@ TOOLS = make_tools(PaperFlowConfig.from_env(), [
     SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agent_timeouts),
     RagRetrieveTool, GlobTool, GrepTool, AskUserQuestionTool,
     HistoryAppendTool, UnreadListRemoveTool,
+    LookupCitationTool(_cm), AddCitationTool(_cm),
+    FormatCitationsTool(_cm), ListCitationsTool(_cm),
 ])
