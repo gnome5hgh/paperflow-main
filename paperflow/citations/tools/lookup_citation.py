@@ -16,6 +16,7 @@ class LookupCitationTool(Tool):
         "required": [],
     }
     risk_level = "low"
+    allowed_roots = ["note", "pdf"]   # path 可能是笔记或 PDF 源路径
 
     def __init__(self, manager):
         """注入 CitationManager（引用库路径来自 config，非 LLM 可控）。"""
