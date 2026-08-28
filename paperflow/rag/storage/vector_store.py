@@ -29,31 +29,52 @@ class VectorStore:
         self._client = MilvusClient(uri=uri)
         self._collection = collection_name
         self._batch_size = batch_size
+
         if not self._client.has_collection(collection_name):
             self._create_collection(dim)
+
         # 确保集合已加载进内存供检索（Standalone 必需，Lite 幂等无害）
         self._client.load_collection(collection_name)
 
     def _create_collection(self, dim: int) -> None:
-        """按固定 schema 建集合：id 主键 + 向量 + 原文/来源/路径/修改时间。"""
+        """按固定 schema 创建集合，同时建立向量索引和标量索引。
+
+        Schema 字段说明：
+        - id (VARCHAR, 主键): 块 ID，16 位 sha1 哈希值，长度 128 足够。
+        - vector (FLOAT_VECTOR): 稠密向量，维度由参数 dim 指定。
+        - text (VARCHAR): 块原文，最大 65535 字符，供 BM25 重建和结果展示。
+        - source (VARCHAR): 来源类型，'note' 或 'pdf'，最大 16 字符。
+        - path (VARCHAR): 相对路径，最大 1024 字符，用于按文档删除和元数据展示。
+        - mtime (DOUBLE): 修改时间戳。**必须用 DOUBLE**：float32 在 1.7e9（2023年时间戳）
+                           量级精度不足（只能精确到秒级整数），增量比对会失真。
+
+        Args:
+            dim: 向量维度。
+        """
         schema = self._client.create_schema(auto_id=False)
-        # id 是 16 位 sha1，128 足够；text 存块原文供 BM25 重建与结果展示
+
+        # ---- 字段定义 ----
         schema.add_field("id", DataType.VARCHAR, is_primary=True, max_length=128)
         schema.add_field("vector", DataType.FLOAT_VECTOR, dim=dim)
         schema.add_field("text", DataType.VARCHAR, max_length=65535)
         schema.add_field("source", DataType.VARCHAR, max_length=16)
         schema.add_field("path", DataType.VARCHAR, max_length=1024)
-        # mtime 必须 DOUBLE：float32 在 1.7e9 量级精度不足，增量比对会失真
         schema.add_field("mtime", DataType.DOUBLE)
 
+        # ---- 索引配置 ----
         index_params = self._client.prepare_index_params()
-        # 向量索引：HNSW + COSINE（bge 向量已 L2 归一化）
+
+        # 向量索引：HNSW + COSINE 距离。BGE 向量已 L2 归一化，COSINE 等价于内积。
         index_params.add_index(
-            field_name="vector", index_type="HNSW", metric_type="COSINE",
-            params={"M": 16, "efConstruction": 200},
+            field_name="vector",
+            index_type="HNSW",
+            metric_type="COSINE", # 余弦相似度，与 L2 归一化向量配合
+            params={"M": 16, "efConstruction": 200}, # M=16（每层连接数），efConstruction=200（构建时搜索宽度）是平衡性能的常用配置。
         )
+
         # path 标量索引：供 delete_doc / all_documents 按路径过滤
         index_params.add_index(field_name="path", index_type="INVERTED")
+
         self._client.create_collection(
             collection_name=self._collection, schema=schema, index_params=index_params,
         )
@@ -61,17 +82,26 @@ class VectorStore:
     def upsert(self, chunks: list[Chunk], embeddings, mtime: float = 0.0) -> None:
         """写入或覆盖一批块：同 id 的块覆盖旧数据（主键幂等）。
 
-        ``text`` 存原文（查询默认返回文档、BM25 靠它重建）。写后 ``flush``
-        让 ``count()``/统计立刻反映新数据，否则只计已落盘段、一致性修复读到过期计数。
+        关键设计：
+        - ``text`` 字段存原文，因为查询默认返回文档、BM25 重建也依赖它。
+        - 使用 ``upsert`` 而非 ``insert``，实现按主键的幂等覆盖。
+        - 写入后调用 ``flush()`` 强制落盘，使 ``count()`` 和 ``get_collection_stats``
+          立刻反映新数据。若不 flush，统计数据可能滞后（只计已落盘段），
+          导致索引一致性修复逻辑读到过期的 row_count。
+
+        Args:
+            chunks: Chunk 对象列表。
+            embeddings: 对应的向量矩阵（numpy.ndarray 或 list），形状为 (len(chunks), dim)。
+            mtime: 文档修改时间戳（浮点数），同一文档的所有块共享此值。
         """
         data = [
             {
                 "id": c.id,
-                "vector": embeddings[i].tolist(),
+                "vector": embeddings[i].tolist(), # 转换为 Python list
                 "text": c.text,
                 "source": c.source,
                 "path": c.path,
-                "mtime": float(mtime),
+                "mtime": float(mtime), # 确保为 float 类型
             }
             for i, c in enumerate(chunks)
         ]
@@ -79,41 +109,69 @@ class VectorStore:
         self._client.flush(self._collection)
 
     def query(self, embedding, top_k: int) -> list[tuple[str, str, float]]:
-        """按向量做相似度检索，返回前 top_k 条，每条为 (块 id, 原文, 距离)。"""
+        """按向量做相似度检索，返回前 top_k 条，每条为 (块 id, 原文, 距离)。
+
+
+        返回的 distance 在 COSINE 度量下，值越接近 1 表示越相似。
+
+        Args:
+            embedding: 查询向量，一维数组（numpy.ndarray 或 list）。
+            top_k: 返回结果数量上限。
+
+        Returns:
+            list[tuple[str, str, float]]: 每条为 (块 id, 原文, 距离分数)。
+        """
         res = self._client.search(
             collection_name=self._collection,
-            data=[embedding.tolist()],
+            data=[embedding.tolist()], # 二维：[[v1, v2, ...]]
             limit=top_k,
-            output_fields=["text"],
+            output_fields=["text"], # 只返回 text，其他元数据不需要
         )
-        # res[0] 是第一条 query 的命中列表；每项含 id / distance / entity
+
+        # Milvus 的 ``search`` 返回格式是嵌套结构：
+        # - 外层列表：每个 query 向量对应一个元素（这里只有 1 个）。
+        # - 内层列表：命中结果列表，每项包含 id、distance、entity 等字段。
+        # res[0] 是第一个（也是唯一一个）query 的命中列表；每项含 id / distance / entity
         return [(h["id"], h["entity"]["text"], h["distance"]) for h in res[0]]
 
     def delete_doc(self, path: str) -> None:
         """删除指定路径文档的全部块（按 path 字段过滤）。
 
-        路径里的反斜杠与双引号先转义，避免破坏过滤表达式。写后 ``flush``
-        让 ``count()`` 立刻反映删除。
+        Args:
+            path: 文档的相对路径（存储时使用的路径值）。
         """
+        # 过滤表达式是字符串拼接形式，path 值中的反斜杠（Windows 路径）和双引号必须转义，否则会破坏 filter 语法。
+        # 例如 "C:\Users\note.md" → "C:\\\\Users\\note.md"。
         escaped = path.replace("\\", "\\\\").replace('"', '\\"')
         self._client.delete(
             collection_name=self._collection, filter=f'path == "{escaped}"',
         )
+        # 写入后调用 flush，使 count() 立即反映删除结果。
         self._client.flush(self._collection)
 
     def all_documents(self) -> list[tuple[str, str, str, float]]:
         """返回全部块，每块为 (块 id, 原文, 路径, 修改时间)。
 
-        用 ``query_iterator`` 分页遍历——Milvus 单次 query 有 16384 行上限，
-        超过会被截断；迭代器无此限制。BM25 重建与索引状态比对都依赖本方法。
+        为什么用 query_iterator 分页：
+        - Milvus 单次 ``query`` 操作有 16384 行的返回上限（默认配置），
+          超过限制会被静默截断，导致全量读取不完整。
+        - ``query_iterator`` 自动分页，无此限制，可以遍历全部数据。
+
+        使用场景：
+        - BM25 索引重建：从向量库读取全部块的文本。
+        - 索引状态重建：从元数据恢复 state 文件。
+
+        Returns:
+            list[tuple[str, str, str, float]]: 列表，每项为 (id, text, path, mtime)。
         """
         out: list[tuple[str, str, str, float]] = []
         it = self._client.query_iterator(
             collection_name=self._collection,
-            filter="",
+            filter="", # 空过滤 = 全量
             output_fields=["text", "path", "mtime"],
             batch_size=self._batch_size,
         )
+
         try:
             while True:
                 try:
@@ -130,6 +188,12 @@ class VectorStore:
         return out
 
     def count(self) -> int:
-        """集合中的块总数。"""
+        """集合中的块总数。
+
+        注意：该值依赖最后一次 flush 后的统计信息。写入/删除后调用 flush，可保证 count 立即反映最新状态。
+
+        Returns:
+            int: 集合中的记录条数。
+        """
         stats = self._client.get_collection_stats(self._collection)
         return int(stats.get("row_count", 0))
