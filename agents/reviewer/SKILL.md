@@ -35,7 +35,7 @@ allowed_spawns: []
 ## A. 笔记审查模式
 
 1. `read_file` 读草稿;2. `read_pdf` 读原文;3. `format_check` 查结构;
-4. **核验溯源标注**:`[来源:key§节]` → `lookup_citation` 确认 key 真实存在于 references.bib 且内容匹配;
+4. **核验溯源标注**:笔记头部 `**论文引用**: [key]` 与 `[来源:key§节]` → `list_citations(search=<key>)` 确认 key 真实存在于 references.bib;
    `[来源:笔记「X」§Y]` → `read_file` 读该笔记 §Y,确认内容支撑论断;
    `[⚠无支撑]`/`[待确认]` 未消除 → 如实列 blocking,不默认放行。
 5. **沿链回溯**:论断 ↔ 出处存疑时,笔记溯源标 `[来源:§X]` 的,回溯 `read_pdf` 该论文对应章节核对原文。
@@ -70,7 +70,7 @@ allowed_spawns: []
 2. 按任务文本里的**相关笔记路径清单**核验映射（不 glob 全库找）。
 3. 对每条「论点 ← 笔记」：核验**证据摘录 ↔ 论点**的支撑关系（对摘录本身核验）；
    仅当证据存疑时才 `read_file` 读对应笔记全文。
-4. **核验溯源标注**：`[来源:key§节]` → `lookup_citation` 确认 key 真实存在于 references.bib 且内容匹配；
+4. **核验溯源标注**：`[来源:key§节]` → `list_citations(search=<key>)` 确认 key 真实存在于 references.bib 且内容匹配；
    `[来源:笔记「X」§Y]` → `read_file` 读该笔记 §Y，确认其内容支撑「论点 ← 笔记」映射；
    `[⚠无支撑]`/`[待确认]` 未消除 → 如实列 blocking，不默认放行。
 5. **沿链回溯**：论断 ↔ 出处存疑时，沿笔记溯源 `[来源:§X]` 回溯 `read_pdf` 该论文对应章节核对原文。
@@ -87,7 +87,7 @@ allowed_spawns: []
 - 定位:`glob`(如 `**/*标题*.pdf`)
 - 核对:`grep`(搜关键数字/术语,确认与原文一致)
 - 等级复核:`lookup_venue_rank`(下载模式有等级要求时必查,不信任上游字段)
-- 溯源核验:`lookup_citation` / `list_citations`(核验 `[来源:key§节]` 的 key 真实存在于 references.bib,不信任标注本身)
+- 溯源核验:`list_citations(search=<key>)`(核验 `[来源:key§节]` / `**论文引用**` 的 key 真实存在于 references.bib,不信任标注本身)
 
 ## ⚠️ 铁律(IRON RULES)
 
