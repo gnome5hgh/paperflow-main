@@ -48,6 +48,8 @@ class ReadPdfTool(Tool):
                 # 错误文本(经执行器的 "Tool error:" 包装)。
                 raise e
         text = "\n\n".join(f"## {h}\n{t}" for h, t in doc.sections)
+        if doc.title:
+            text = f"# {doc.title}\n\n" + text   # 标题在顶部，writer 据此拿干净全标题
         return ToolResult(text=text or "（PDF 未能解析出文本）")
 
     def _resolve_fuzzy(self, path: str):

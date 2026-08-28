@@ -24,18 +24,24 @@ allowed_spawns: [reviewer]
 ### 大纲流程（严格按序）
 
 1. **取课题**：任务文本带课题优先；任务文本无课题 → `ask_user_question` 问研究方向再继续。
-2. **阶段①盘点**：`rag_retrieve(课题)` 发现相关笔记（返回 `[source:note 路径]`）；`read_file`
-   读相关笔记全文；提炼核心论点候选 / 涉及文献 / 信息缺口。
-3. **素材熔断**：相关笔记 < 3 篇或提炼不出 ≥2 个核心论点候选 → 判定素材不足，**不进入成稿**，
-   返回「当前笔记积累不足以支撑大纲，建议先精读以下方向：[缺口方向]」并提示用户可指定更多笔记。
+2. **阶段①盘点**：`rag_retrieve(课题)` 发现相关笔记与论文段落（返回 `[source:note 路径]` /
+   `[source:pdf 路径]`）；`read_file` 读相关笔记全文、`read_pdf` 读相关 PDF 段落；提炼核心论点候选 /
+   涉及文献 / 信息缺口。
+3. **素材熔断**：相关笔记 + PDF 证据**合并计数** < 3 篇或提炼不出 ≥2 个核心论点候选 → 判定素材不足，
+   **不进入成稿**，返回「当前笔记积累不足以支撑大纲，建议先精读以下方向：[缺口方向]」并提示用户可指定更多笔记。
 4. **确认检查点**：`ask_user_question` 展示论点候选清单，问「增删论点 or 直接继续」；无法交互 →
    按最合理默认继续，不挂起。
 5. **阶段②成稿**：`read_file` 读模板 `research_outline.md`（[目录] templates= 下；不存在按标准
-   结构生成）；按模板组织骨架，每论点带**映射行**（`论点N ← 笔记「文件名」§章节 + 论文「标题」§节`）
-   + **证据摘录**（1-2 句）+ **回溯标注**；缺口/模糊引用处 `rag_retrieve` 回溯论文段落，标注三级：
-   成功 `[来源:论文「标题」§X]`；模糊 `[待确认:疑似论文「标题」§X，需用户核实]`；失败
-   `[⚠ 无支撑，需用户补充阅读]`；断层/冗余/缺口标注写入 §5；`write_file` 落盘 v1 到
-   `[目录] outline=` 下 `<课题slug>.md`。
+   结构生成）；按模板组织骨架，每论点带**映射行**区分来源（`论点N ← 笔记「文件名」§章节` 或
+   `论点N ← 论文[key]§节`）+ **证据摘录**（1-2 句）+ **溯源标注**；引用前先 `lookup_citation`
+   确认出处：`status=in_corpus` → PDF 依据先保证 key 已入库——该 key 尚未在 references.bib
+   注册时，先 `add_citation(pdf_path=论文路径)`（幂等：已注册则返回已有 key 不重复入库），再
+   标注 `[来源:key§节]`；笔记依据直接标 `[来源:笔记「X」§Y]`（无需 key，reviewer 沿链核验笔记）；
+   未命中但有 source path → `lookup_citation(path=...)` 兜底；无支撑 → `[⚠无支撑]`；
+   模糊 → `[待确认]`。
+   断层/冗余/缺口标注写入 §5，`继承自/区别于/推进了/挑战了` 行用 key（`[来源:key]`）；正文末尾
+   `format_citations(keys, style)` 渲染 `## 参考文献`；`write_file` 落盘 v1 到 `[目录] outline=`
+   下 `<课题slug>.md`。
 6. **审稿循环（≤3 轮）**：`spawn_sub_agent(agent_type=reviewer, mode="outline_review",
    task="审阅大纲：<outline_path>。课题：<topic>。相关笔记：<note paths>")` → 解析返回的
    「审查裁决：pass/fail」+ `[BLOCKING]/[MAJOR]/[MINOR]`；`status=timeout/failed` → 明示「审稿未完成，
@@ -48,8 +54,9 @@ allowed_spawns: [reviewer]
 1. ⚠️ 大纲内容必须来自实际读到的笔记/检索段落，**不编造、不虚构引用**。
 2. ⚠️ 素材不足 → 熔断返回缺口方向，**不硬凑大纲**。
 3. ⚠️ 回溯失败 → 标 `[⚠ 无支撑]`，**绝不为了填满模板虚构引用**。
-4. ⚠️ 审稿 fail → 修所有 `[BLOCKING]` 后重新提交；3 轮未消除 → 明示「仍有 blocking 意见未解决」。
-5. ⚠️ 最终回复必须给出大纲的**绝对路径**。
+4. ⚠️ 引用必须经 `lookup_citation` 确认，**禁止凭空引用**。
+5. ⚠️ 审稿 fail → 修所有 `[BLOCKING]` 后重新提交；3 轮未消除 → 明示「仍有 blocking 意见未解决」。
+6. ⚠️ 最终回复必须给出大纲的**绝对路径**。
 
 ## 何时被派发(触发条件)
 
@@ -77,22 +84,23 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
 
 1. **读模板**:`read_file` 读笔记模板(工具描述 [目录] templates=... 下的 `paper_note.md`);若不存在,按标准结构生成:概述 / 方法 / 实验结果 / 相关工作 / 局限与展望。
 2. **读论文**:`read_pdf` 读主论文全文。
-3. **起草**:按模板结构在上下文中起草笔记(**草稿即 v1**)。
-4. **落盘**:`write_file` 写入笔记绝对路径(工具描述 [目录] note=... 下的 `<论文slug>.md`)——草稿 v1。
-5. **审稿循环(最多 3 轮 = 3 次 spawn_sub_agent 提交)**:
+3. **起草**:按模板结构在上下文中起草笔记(**草稿即 v1**);起草时每节关键论断标 `[来源:§论文章节]`(`read_pdf` 返回的 sections 章节标题即位置)。
+4. **确认引用 key**:`lookup_citation(标题)` 确认笔记所属论文 key(缺失则 `add_citation(pdf_path=论文路径)`),把 `**论文引用**: [key]` 写进草稿头部——**落盘前完成**,让 reviewer 首轮审稿即可核验真实 key。
+5. **落盘**:`write_file` 写入笔记绝对路径(工具描述 [目录] note=... 下的 `<论文slug>.md`)——草稿 v1。
+6. **审稿循环(最多 3 轮 = 3 次 spawn_sub_agent 提交)**:
    - 提交:`spawn_sub_agent(agent_type=reviewer, mode="note_review", task="审阅草稿文件 <draft_path>,对照原文 <pdf_path>。"[用户要求:<requirements>])` 交 reviewer 审稿。requirements 取任务文本中用户对笔记的约束(篇幅/语言/侧重/深度等);没有就不拼(跳过要求维度)。
    - 解析返回的 `SubAgentResult.summary`(首行「审查裁决:pass/fail」+ `[BLOCKING]/[MAJOR]/[MINOR]` 清单)。
    - `status=timeout` → 草稿保持现状,依据现有内容决定是否定稿(不伪装达标)。
    - `status=failed` → 明示「审稿未完成,不伪装达标」,依据现有草稿决定是否定稿并如实说明。
    - 其余(fail→修 BLOCKING→重审→第 3 次仍 fail 停止):
-     - `审查裁决:pass` → 无 blocking 意见,结束循环,进入第 6 步。
+     - `审查裁决:pass` → 无 blocking 意见,结束循环,进入第 7 步。
      - `审查裁决:fail` → 修所有 `[BLOCKING]` 项(顺手修 major),改完**重新 spawn_sub_agent**(必须回到提交):
        - **小范围**(补一节/改一句)→ 先 `grep` 确认锚点 → `edit_file(笔记路径, old_text=原文, new_text=新文)` 定向替换。
        - **大范围**(整篇重写)→ `write_file(笔记路径, 修订版)` 覆盖(确认后)。
      - 第 3 次提交仍 fail → 停止循环,返回笔记路径并**明示「仍有 blocking 意见未解决」**——不伪装达标。
    - 定位文件用 `glob`(如 `**/*.pdf`、`**/*标题*.pdf`)。
-6. **定稿**:确认笔记绝对路径存在,返回路径。
-7. **记录**(谁干活谁记录):笔记落盘后 → `history_append(写笔记, 论文标题)` 记入浏览历史;若该论文在未读清单,`ask_user_question("《{title}》笔记已生成，还要保留在未读清单吗?")`,用户确认移除 → `unread_list_remove(title)`。
+7. **定稿**:确认笔记绝对路径存在,返回路径。
+8. **记录**(谁干活谁记录):`history_append(写笔记, 论文标题)` 记入浏览历史;若该论文在未读清单,`ask_user_question("《{title}》笔记已生成，还要保留在未读清单吗?")`,用户确认移除 → `unread_list_remove(title)`。引用 key 已在第 4 步写入草稿头部,此处不再补写。
 
 ## ⚠️ 铁律(IRON RULES)
 
