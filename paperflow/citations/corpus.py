@@ -94,15 +94,18 @@ class CorpusIndex:
         if not title:
             return  # 提不出标题的不索引（如损坏 PDF）
         norm = self.normalize(title)
+        field = "pdf_path" if kind == "pdf" else "note_path"
+        # 文件标题变更时（同路径 mtime 变化），先把本路径从其他记录的引用里
+        # 解绑，避免新旧两个标题同时指向同一文件（ghost record）
+        for other in self._records.values():
+            if other.get(field) == path:
+                other[field] = None
         rec = self._records.setdefault(norm, {"title": title, "note_path": None,
                                               "pdf_path": None, "biblio": {}})
         rec["title"] = title
-        if kind == "pdf":
-            rec["pdf_path"] = path
-            if biblio:
-                rec["biblio"] = biblio
-        else:
-            rec["note_path"] = path
+        rec[field] = path
+        if kind == "pdf" and biblio:
+            rec["biblio"] = biblio
 
     def _remove(self, path: str) -> None:
         """从所有包含该路径的记录里摘除引用；记录空壳则删除。"""
