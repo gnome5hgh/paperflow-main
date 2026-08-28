@@ -34,8 +34,11 @@ allowed_spawns: [reviewer]
 5. **阶段②成稿**：`read_file` 读模板 `research_outline.md`（[目录] templates= 下；不存在按标准
    结构生成）；按模板组织骨架，每论点带**映射行**区分来源（`论点N ← 笔记「文件名」§章节` 或
    `论点N ← 论文[key]§节`）+ **证据摘录**（1-2 句）+ **溯源标注**；引用前先 `lookup_citation`
-   确认出处：`status=in_corpus` → `[来源:key§节]`（PDF）或 `[来源:笔记「X」§Y]`（笔记）；未命中但
-   有 source path → `lookup_citation(path=...)` 兜底；无支撑 → `[⚠无支撑]`；模糊 → `[待确认]`。
+   确认出处：`status=in_corpus` → PDF 依据先保证 key 已入库——该 key 尚未在 references.bib
+   注册时，先 `add_citation(pdf_path=论文路径)`（幂等：已注册则返回已有 key 不重复入库），再
+   标注 `[来源:key§节]`；笔记依据直接标 `[来源:笔记「X」§Y]`（无需 key，reviewer 沿链核验笔记）；
+   未命中但有 source path → `lookup_citation(path=...)` 兜底；无支撑 → `[⚠无支撑]`；
+   模糊 → `[待确认]`。
    断层/冗余/缺口标注写入 §5，`继承自/区别于/推进了/挑战了` 行用 key（`[来源:key]`）；正文末尾
    `format_citations(keys, style)` 渲染 `## 参考文献`；`write_file` 落盘 v1 到 `[目录] outline=`
    下 `<课题slug>.md`。

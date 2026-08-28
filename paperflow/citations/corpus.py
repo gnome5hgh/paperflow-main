@@ -139,12 +139,28 @@ class CorpusIndex:
 
     @staticmethod
     def _note_title(path: str) -> str:
-        """笔记标题：首行 `# ...`（笔记 H1 是权威标题）。"""
+        """笔记标题：跳过 frontmatter（`---…---`，Obsidian 常见开头）后取首个 `# ` H1。
+
+        旧实现只读首行——frontmatter 笔记首行是 `---`，归一化后成空串，导致所有
+        frontmatter 笔记塌缩到同一空 key 记录。先跳过 frontmatter 块，再取第一个
+        非空 `# ` 标题行；无 frontmatter 的笔记（paperFlow 生成的，首行即 `# `）
+        行为不变。
+        """
         try:
-            first = Path(path).read_text(encoding="utf-8").splitlines()[0].strip()
-            return first.lstrip("#").strip()
+            lines = Path(path).read_text(encoding="utf-8").splitlines()
         except Exception:
             return ""
+        if lines and lines[0].strip() == "---":
+            # 首行是 frontmatter 起始：找到闭合 `---`，其后才是正文
+            for i in range(1, len(lines)):
+                if lines[i].strip() == "---":
+                    lines = lines[i + 1:]
+                    break
+        for line in lines:
+            line = line.strip()
+            if line.startswith("#"):
+                return line.lstrip("#").strip()
+        return ""
 
     # —— 查询 ——
     def match(self, title: str) -> dict | None:
