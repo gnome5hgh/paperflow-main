@@ -66,6 +66,8 @@ paperflow/
                  + security(安全中间件) + memory(记忆系统) + intent(意图识别)
                  + structured(结构化输出)
   rag/           RAG 检索栈(解析/分块/向量/混合检索),懒加载单例
+  citations/     引用管理(溯源落地):bib.py 读写 + corpus.py 语料标题索引
+                 + manager.py 编排 + tools/ LLM 工具面
   tools/         原子工具:file/ search/ review/ rank/ orchestration/ common
   terminal/      终端交互:InputIO(输入) + StreamRenderer(渲染) + diff
 agents/<name>/   Agent 插件:SKILL.md(frontmatter+system_prompt) + tools.py(TOOLS 列表)
@@ -87,8 +89,8 @@ Every agent lives in `agents/<name>/` with two files:
 |---|---|---|---|
 | `supervisor` | 调度主管:拆解任务、spawn、汇总 | 硬编码放行所有（绕过白名单） | 仅 2 个调度工具 + 13 个记忆工具（`get_memory_tools()`） |
 | `searcher` | 多源搜索 → reviewer 门禁 → 可选下载 | `[reviewer]` | web_search + fetch_pdf + ask_user + spawn |
-| `writer` | 生成笔记 / 研究大纲,内部 reviewer 审稿 ≤3 轮 | `[reviewer]` | 原子文件工具 + rag_retrieve + ask_user + spawn |
-| `reviewer` | 叶子审稿:笔记/大纲/下载三种模式 | `[]` | 只读 + submit_review / submit_download_review |
+| `writer` | 生成笔记 / 研究大纲,内部 reviewer 审稿 ≤3 轮 | `[reviewer]` | 原子文件工具 + rag_retrieve + ask_user + spawn + 4 引用工具(lookup/add/format/list) |
+| `reviewer` | 叶子审稿:笔记/大纲/下载三种模式 | `[]` | 只读 + submit_review / submit_download_review + 溯源核验(list_citations/lookup_citation) |
 | `qa-agent` | 回答论文/笔记/阅读记忆问题 | `[]` | rag_retrieve + 只读文件工具 + ask_user |
 
 `allowed_agents` / `allowed_spawns` 已由 spawn 工具在运行时强制（见 Orchestration）。**只有 supervisor 装配记忆工具**（`get_memory_tools()`）——记忆是 supervisor 的专属工具面，子 agent 不越权。
@@ -203,6 +205,16 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 消费方：`RagRetrieveTool`（`rag_retrieve`）装配进 writer 与 qa-agent；`ReadPdfTool` 用 `parse_pdf_cached`；`write_file`/`edit_file`/`fetch_pdf` 写盘后自动触发 `index_document`。embedder 单例与意图管线/记忆语义检索共享（`cli.py` `_rag_embedder`）。
 
+### Citations
+
+`paperflow/citations/` — 引用管理（溯源落地）。`references.bib` 是引用库**真相源**：append-only 追加、绝不重写（用户手工维护的分节注释原样保留）。`bib.py` 轻量扫描条目（查找/去重）；`corpus.py` 是「语料里有哪些论文」的易变投影（note H1 + PDF 解析标题 → 全标题精确匹配，按 (path, mtime_ns) 增量重建）；`manager.py` 编排：引用解析（干净全标题/路径 → key+status）、入库（语料内 PDF / 库外 EXTERNAL）、去重、渲染（author-year/numbered/bibtex/gbt7714）、调和（渲染视图回填空字段，bib 文件不动）。懒加载单例 `get_citation_manager()`，重组件（corpus 索引、TitleExtractor）首次使用才构造。
+
+4 个引用工具（`citations/tools/`）装配给 **writer**（`lookup_citation`/`add_citation`/`format_citations`/`list_citations`）；**reviewer** 装配 `list_citations`+`lookup_citation` 做溯源核验（核验 `[来源:key§节]` 的 key 真实存在于 references.bib，不信任标注本身）。
+
+产物溯源标注：
+- **大纲模式依据双源**（笔记为主索引，缺口/模糊处按需 `rag_retrieve` 回溯 PDF 段落）；论点带三级溯源标注：`[来源:key§节]`（PDF 支撑）/ `[来源:笔记「X」§Y]`（笔记支撑）/ 无支撑 → `[⚠无支撑]`、模糊 → `[待确认]`；正文末尾 `format_citations(keys, style)` 渲染 `## 参考文献` 节
+- **笔记**头部写 `**论文引用**: [key]`（落盘前经 `lookup_citation` 确认 key 真实性），各节关键论断标节级 `[来源:§X]`，供 reviewer 沿链回溯核对原文
+
 ### Tools
 
 `paperflow/tools/` — 原子工具，一工具一文件，按域分包；`paperflow/tools/__init__.py` 再导出全部 13 个工具供消费方统一导入（导出符号名稳定，内部路径随便拆）：
@@ -256,9 +268,10 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | `vault_note_dir` / `vault_pdf_dir` / `vault_outline_dir` | Obsidian vault 数据源根（个人绝对路径，**无默认值**，须经 .env/config.yaml） |
 | `grobid_endpoint` | GROBID 服务地址，默认 `http://localhost:8070` |
 | `milvus_uri` / `milvus_collection` / `embed_model` / `rerank_model` | Milvus 地址（默认 `http://localhost:19530`）/ 集合名（默认 `paperflow`）/ bge 嵌入 / 重排模型 |
+| `citations_bib_path` | references.bib 路径（引用库真相源）。默认 `workspace/citations/references.bib`，可指向任意论文项目目录；空则回退默认 |
 | `agent_timeouts` | 子 agent 超时覆盖表（writer 600 / searcher 300 / reviewer 180） |
 
-环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_VAULT_NOTE_DIR` / `PAPERFLOW_VAULT_PDF_DIR` / `PAPERFLOW_VAULT_OUTLINE_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY`。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
+环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_VAULT_NOTE_DIR` / `PAPERFLOW_VAULT_PDF_DIR` / `PAPERFLOW_VAULT_OUTLINE_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY` / `PAPERFLOW_CITATIONS_BIB_PATH`。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
 
 ### Key design decisions
 
