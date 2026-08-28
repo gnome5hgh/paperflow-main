@@ -14,7 +14,8 @@ conda run -n paperflow python -m pytest tests/ -v
 # Run a single test
 conda run -n paperflow python -m pytest tests/agent/test_agent.py::TestExecTool -v
 
-# Start Milvus Standalone（RAG 向量库，etcd+minio+milvus）；单测用 Milvus Lite 内嵌，无需此服务
+# Start 依赖服务栈（Milvus Standalone RAG 向量库 + GROBID PDF 解析）；单测用 Milvus Lite 内嵌，无需此服务
+# GROBID 首次需先一次性初始化（复制 grobid-home 到 data/grobid/），见 docs/测试指南/ §2.3
 docker compose up -d
 
 # Run the app — 交互式 REPL（⚠️ 不能经 conda run）

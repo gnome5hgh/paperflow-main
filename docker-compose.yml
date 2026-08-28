@@ -1,6 +1,9 @@
-# Milvus Standalone（etcd 元数据 + minio 对象存储 + milvus 计算），供 paperFlow RAG 向量库使用。
-# 启动: docker compose up -d   验证: curl http://localhost:9091/healthz → OK
-# 数据卷统一收进 ./data/milvus/（workspace，gitignore 已盖）。
+# paperFlow 依赖服务栈：Milvus Standalone（etcd 元数据 + minio 对象存储 + milvus 计算）+ GROBID（PDF 解析）。
+# 启动: docker compose up -d   验证: curl http://localhost:9091/healthz → OK（Milvus）、curl http://localhost:8070/api/isalive → true（GROBID）
+# 数据卷统一收进 ./data/（workspace，gitignore 已盖）：Milvus 走 ./data/milvus/，GROBID 走 ./data/grobid/。
+# ⚠️ GROBID 的 grobid-home 是 bind mount：首次需一次性把镜像内置的 grobid-home 复制到 ./data/grobid/
+#    （否则空目录会遮蔽模型导致 GROBID 起不来），命令见 docs/测试指南/ 迁移 runbook。
+# 注：GROBID 镜像是 linux/amd64，在 Apple Silicon 上经 OrbStack 仿真运行（与 docker run 一致）。
 services:
   etcd:
     container_name: milvus-etcd
@@ -26,8 +29,10 @@ services:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
     volumes:
-      - ./data/milvus/minio:/minio_data
-    command: minio server /minio_data --console-address ":9001"
+      # 必须挂 /data（minio 镜像声明的 VOLUME 路径）而非其他路径：挂别的路径会触发
+      # Docker 为未覆盖的 /data 自动创建匿名卷（落在 OrbStack volumes 目录的 hash 目录）。
+      - ./data/milvus/minio:/data
+    command: minio server /data --console-address ":9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
@@ -55,6 +60,15 @@ services:
     depends_on:
       - etcd
       - minio
+
+  grobid:
+    container_name: grobid
+    image: lfoppiano/grobid:0.8.0
+    ports:
+      - "8070:8070"
+    volumes:
+      # 持久化 grobid-home（模型+配置），须先一次性从镜像复制内容到 ./data/grobid/grobid-home
+      - ./data/grobid/grobid-home:/opt/grobid/grobid-home
 
 networks:
   default:
