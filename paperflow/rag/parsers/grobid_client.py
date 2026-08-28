@@ -6,7 +6,7 @@ GrobidClient 刻意不做 SSRF 防护校验：它的地址是固定的本地可�
 allowlist={"127.0.0.1:8070"} 做精确匹配。
 """
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -22,11 +22,17 @@ class ParsedDoc:
         sections: 章节列表，每个元素为 (标题, 正文) 的二元组。
         tables: 所有表格的纯文本内容列表（提取自 <table> 标签）。
         figures: 所有图片的说明文本列表（提取自 <figDesc> 标签）。
+        title: TEI header 提取的主标题（corpus 索引用），无 header 时为空串。
+        biblio: 文献书目元数据（建 bib 条目用），键为
+            authors/year/journal/volume/number/pages，缺失的键不出现。
     """
 
     sections: list[tuple[str, str]]   # (标题, 正文) 列表
     tables: list[str]
     figures: list[str]
+    title: str = ""                   # TEI header 主标题（corpus 索引用）
+    # biblio 是可变默认值，dataclass 不允许直接写 {}，须用 default_factory
+    biblio: dict = field(default_factory=dict)   # 文献书目元数据（建 bib 条目用）
 
 
 class GrobidClient:
@@ -141,6 +147,8 @@ class GrobidClient:
             ParsedDoc: 解析结果。
         """
         root = ET.fromstring(xml)
+        # 从 TEI header 提取主标题与书目元数据（无 header 时为空值，不抛错）
+        title, biblio = self._extract_header(root)
         sections: list[tuple[str, str]] = []
         tables: list[str] = []
         figures: list[str] = []
@@ -169,7 +177,38 @@ class GrobidClient:
                 cap = f.find(".//tei:figDesc", _TEI_NS)
                 figures.append(cap.text if cap is not None and cap.text else "")
 
-        return ParsedDoc(sections=sections, tables=tables, figures=figures)
+        return ParsedDoc(sections=sections, tables=tables, figures=figures,
+                         title=title, biblio=biblio)
+
+    def _extract_header(self, root):
+        """从 TEI header 提取主标题与书目元数据，任一层缺失返回空值不抛错。"""
+        header = root.find("tei:teiHeader", _TEI_NS)
+        if header is None:
+            return "", {}
+        title = ""
+        t = header.find("tei:fileDesc/tei:titleStmt/tei:title", _TEI_NS)
+        if t is not None and t.text:
+            title = t.text.strip()
+        biblio = {}
+        bs = header.find("tei:fileDesc/tei:sourceDesc//tei:biblStruct", _TEI_NS)
+        if bs is not None:
+            authors = []
+            for a in bs.iter(f"{{{_TEI_NS['tei']}}}author"):
+                s = a.find(".//tei:surname", _TEI_NS)
+                if s is not None and s.text:
+                    authors.append(s.text.strip())
+            if authors:
+                biblio["authors"] = ", ".join(authors)
+            for tag, key in (("tei:title[@level='j']", "journal"),
+                             ("tei:date", "year")):
+                el = bs.find(f".//{tag}", _TEI_NS)
+                if el is not None and (el.text or el.get("when")):
+                    biblio[key] = (el.text or el.get("when")).strip()
+            for unit, key in (("volume", "volume"), ("issue", "number"), ("page", "pages")):
+                scope = bs.find(f".//tei:biblScope[@unit='{unit}']", _TEI_NS)
+                if scope is not None and scope.text:
+                    biblio[key] = scope.text.strip()
+        return title, biblio
 
 
 class PyMuPDFParser:
