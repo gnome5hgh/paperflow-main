@@ -38,6 +38,8 @@ class AnalyzeFiguresTool(Tool):
     allowed_roots = ["note", "pdf"]              # 读 PDF + 写 note 目录
     output_scan = "mark"
     side_effects = ["read_file", "write_file"]
+    #: 需要父 Agent 引用：视觉调用归属父 agent 的轮次进审计（见 _telemetry）
+    needs_parent = True
 
     def __init__(self, vision_llm=None):
         """视觉模型可注入（测试）；None 时按配置惰性构造。
@@ -59,6 +61,19 @@ class AnalyzeFiguresTool(Tool):
         if not cfg.vision.api_key:
             return None
         return LLMClient(cfg.vision)
+
+    def _telemetry(self):
+        """构造视觉 LLM 调用的元数据回调：归属父 agent 的当前轮次进审计。
+
+        对齐 spawn 的既有接线模式（LLM 调用全审计不变式）：每张图的 GLM-4V 调用
+        产出 record_llm_call 元数据，trace/session/agent_type 由父 agent 补全。
+        直接构造（无 Agent 注入 _parent，如测试）返回 None——零开销不接线。
+        """
+        parent = getattr(self, "_parent", None)
+        if parent is None:
+            return None
+        return lambda data: parent._emit_llm_call(
+            getattr(parent, "_current_turn", 0), data)
 
     def execute(self, path: str, figure: int | None = None,
                 embed_dir: str | None = None) -> ToolResult:
@@ -99,7 +114,7 @@ class AnalyzeFiguresTool(Tool):
             figures = figures[:MAX_FIGURES]
 
         try:  # 兜底：视觉分析/落盘等任何未料异常降级为文本，绝不抛穿
-            analyzer = FigureAnalyzer(llm)
+            analyzer = FigureAnalyzer(llm, telemetry_callback=self._telemetry())
             analyses = asyncio.run(_analyze_all(analyzer, figures))
 
             pdf_stem = Path(path).stem
