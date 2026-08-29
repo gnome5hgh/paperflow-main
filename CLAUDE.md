@@ -68,7 +68,7 @@ paperflow/
   rag/           RAG 检索栈(解析/分块/向量/混合检索),懒加载单例
   citations/     引用管理(溯源落地):bib.py 读写 + corpus.py 语料标题索引
                  + manager.py 编排 + tools/ LLM 工具面
-  vision/        视觉分析(图表提取+看图)
+  vision/        视觉分析(10 模块 pdffigures2 提取管线 + 视觉模型看图)
   tools/         原子工具:file/ search/ review/ rank/ orchestration/ vision/ common
   terminal/      终端交互:InputIO(输入) + StreamRenderer(渲染) + diff
 agents/<name>/   Agent 插件:SKILL.md(frontmatter+system_prompt) + tools.py(TOOLS 列表)
@@ -224,7 +224,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `search/` — `web_search`（按 source 搜：arxiv/openalex，`_SOURCE_REGISTRY` 注册；单源一次调用，多源由 searcher 并行多次调、结果自动去重入池）、`fetch_pdf`（下载）；`clients/` 是纯 API 客户端（共享 `_HttpClientMixin` SSRF 校验 + 逐跳重定向校验）；`_common.py` 有 `SearchRunState` 跨调用去重池（`wants_run_state` opt-in）、查询 LRU 缓存、源级熔断器
 - `review/` — `submit_review` / `submit_download_review`（reviewer 的裁决工具）
 - `rank/` — `lookup_venue_rank`（期刊/会议等级查询）
-- `vision/` — `analyze_figures`（图提取 + 视觉模型结构化看图分析 + 嵌入落盘；key 缺失/无图/失败全降级）
+- `vision/` — `analyze_figures`（`needs_parent=True`：视觉 LLM 调用归属父 agent 轮次进审计）。图提取走 pdffigures2 管线（proposal 候选 + 打分选优 + no-overlap 互斥），随后视觉模型结构化看图分析 + 嵌入落盘；key 缺失/无图/失败全降级
 - `orchestration/` — `spawn_sub_agent` / `ask_user_question` / `SubAgentMode`（见下）
 - `common/` — `make_tools(config, tool_items)` 装配工厂：解析 `allowed_roots` 语义根名 → 绝对路径注入 `allowed_paths`（新列表，不污染类属性）、注入 `_config`、给 `description` 追加 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）；`_http.py` 共享 HTTP 基础设施
 
