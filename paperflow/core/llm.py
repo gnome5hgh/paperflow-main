@@ -43,13 +43,17 @@ class Message:
     - system / user / assistant（无 tool_calls）：只需 role + content
     - assistant（有 tool_calls）：role + tool_calls（content 可为空）
     - tool（工具执行结果）：role + content + tool_call_id
+
+    content 为 str 或 OpenAI content parts 列表——视觉调用用 list 携带图
+    （image_url base64 data URL），ReAct 对话恒为 str。
     """
 
     #: 消息角色："system" | "user" | "assistant" | "tool"
     role: str
 
-    #: 消息正文，tool_calls 消息此项可为空字符串
-    content: str
+    #: 消息正文，tool_calls 消息此项可为空字符串；
+    #: 视觉调用时为 OpenAI content parts 列表（text / image_url）
+    content: str | list[dict]
 
     #: LLM 返回的工具调用列表，仅 assistant 消息有值
     #: 每个元素为: {"id": str, "type": "function", "function": {"name": ..., "arguments": ...}}
@@ -391,7 +395,10 @@ def _message_to_openai(m: Message) -> dict:
     # 整轮 ReAct 崩溃（见 core/security/text.py）。
     from paperflow.core.security.text import sanitize_surrogates
     content = m.content
-    if isinstance(content, str):
+    if isinstance(content, list):
+        # 视觉 content parts：逐 part 清洗 text 的 surrogate，图片 part 原样透传
+        content = [_sanitize_content_part(p) for p in content]
+    else:
         content = sanitize_surrogates(content)
     msg: dict = {"role": m.role, "content": content}
     if m.tool_calls is not None:
@@ -399,6 +406,18 @@ def _message_to_openai(m: Message) -> dict:
     if m.tool_call_id is not None:
         msg["tool_call_id"] = m.tool_call_id
     return msg
+
+
+def _sanitize_content_part(part: dict) -> dict:
+    """清洗单个 content part 里的文本 surrogate；非 text part 原样返回。
+
+    返回新 dict（不动调用方对象），图片 part 无需清洗直接透传。
+    """
+    from paperflow.core.security.text import sanitize_surrogates
+    if part.get("type") == "text" and isinstance(part.get("text"), str):
+        part = dict(part)
+        part["text"] = sanitize_surrogates(part["text"])
+    return part
 
 
 def tool_to_openai_schema(t) -> dict:
