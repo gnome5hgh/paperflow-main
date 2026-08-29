@@ -6,6 +6,7 @@ Obsidian 嵌入标记）；qa-agent 图表问答用它单图分析。视觉 key 
 （Path.write_bytes），不走 write_file——避免触发 RAG 热索引钩子污染向量库。
 """
 import asyncio
+import re
 from pathlib import Path
 
 from paperflow.config import PaperFlowConfig
@@ -82,7 +83,8 @@ class AnalyzeFiguresTool(Tool):
         Args:
             path: PDF 绝对路径。
             figure: 指定图号只分析该图；None 分析全部（上限 MAX_FIGURES）。
-            embed_dir: 非 None 时把每张图存为 <pdf-stem>-fig<N>.<ext> 并返回嵌入标记。
+            embed_dir: 非 None 时把每张图存为 <pdf-stem>-fig<name>.<ext>（name 为图号
+                原始串，非整数图号据此不互覆）并返回嵌入标记。
 
         Returns:
             ToolResult：text 为逐图分析 digest（含嵌入标记），summary 携带
@@ -102,9 +104,13 @@ class AnalyzeFiguresTool(Tool):
             return ToolResult(text="该 PDF 未检测到图表（无图注/无图区）",
                               summary={"figures": []})
         if figure is not None:
-            matched = [f for f in figures if f.number == figure]
+            target = str(figure)
+            # 按 number 解析值匹配为主（number=0 的非整数图号归为一组）；
+            # name 精确匹配为辅——只匹配 name 恰好是整数串的情况，不拆分组
+            matched = [f for f in figures
+                       if str(f.number) == target or f.name == target]
             if not matched:
-                known = "、".join(str(f.number) for f in figures)
+                known = "、".join(f.name or str(f.number) for f in figures)
                 return ToolResult(
                     text=f"PDF 中未找到 Fig.{figure}（已检测到图号：{known}）",
                     summary={"figures": []})
@@ -122,14 +128,14 @@ class AnalyzeFiguresTool(Tool):
             embedded: list[dict] = []
             for fig, analysis in zip(figures, analyses):
                 if isinstance(analysis, Exception):  # 单图视觉调用失败 → 该图标注跳过，不短路整批
-                    lines.append(f"### Fig.{fig.number} {fig.caption}")
+                    lines.append(f"### Fig.{fig.name or fig.number} {fig.caption}")
                     lines.append("- 分析失败：视觉模型调用异常，该图已跳过")
                     lines.append("")
                     continue
                 embed_mark = ""
                 if embed_dir:
                     embed_mark = _save_figure(fig, Path(embed_dir), pdf_stem)
-                lines.append(f"### Fig.{fig.number} {fig.caption}")
+                lines.append(f"### Fig.{fig.name or fig.number} {fig.caption}")
                 lines.append(f"- 核心内容：{analysis.insight}")
                 lines.append(f"- 图表类型：{analysis.chart_type}")
                 lines.append(f"- 新颖之处：{analysis.notable}")
@@ -164,11 +170,15 @@ async def _analyze_all(analyzer: FigureAnalyzer, figures: list) -> list:
 def _save_figure(fig, embed_dir: Path, pdf_stem: str) -> str:
     """把图存到 embed_dir 并返回 Obsidian 嵌入标记。
 
-    扩展名按 mime 取（png→.png / jpeg→.jpg / 其余 .img）；落盘失败不抛——
-    返回嵌入标记即使文件没写上也保持流程不断（调用方据文件存在性判断）。
+    文件名以图号原始串 fig.name 为键（非解析出的 int number）——"3.1"/"III"/"S1"
+    这类非整数图号的 number 都归 0，按 number 命名会静默互覆成同一文件；name 为空
+    时回退 number。文件名做安全化（/、\\、空格等替换为 _）。扩展名按 mime 取
+    （png→.png / jpeg→.jpg / 其余 .img）；落盘失败不抛——返回嵌入标记即使文件
+    没写上也保持流程不断（调用方据文件存在性判断）。
     """
     ext = {"image/png": "png", "image/jpeg": "jpg"}.get(fig.mime, "img")
-    name = f"{pdf_stem}-fig{fig.number}.{ext}"
+    label = re.sub(r"[/\\\s]+", "_", fig.name or str(fig.number))
+    name = f"{pdf_stem}-fig{label}.{ext}"
     try:
         (embed_dir / name).write_bytes(fig.image_bytes)
     except OSError:

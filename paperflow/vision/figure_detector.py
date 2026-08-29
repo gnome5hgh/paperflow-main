@@ -90,9 +90,9 @@ class PageWithFigures:
         page_number: 页码。
         non_figure_text: 非图文本段落（未被图区域吞掉的正文/图内文本 + 失败图注段落）。
         classified_text: 全页文本（透传 PageWithBodyText.classified_text）。
-        figures: 检测出的图。Task 16 先产 dict 占位（键与 Figure.scala 对齐：
-            name/fig_type/page/caption_text/image_text/caption_boundary/region_boundary），
-            Task 17 换 schemas.Figure。
+        figures: 检测出的图（dict，键对齐 Figure.scala：name/fig_type/page/
+            caption_text/image_text/caption_boundary/region_boundary），由 extractor
+            桥接成 schemas.Figure。
         failed_captions: 配不到图的图注（精简版 Caption）。
     """
 
