@@ -68,7 +68,8 @@ paperflow/
   rag/           RAG 检索栈(解析/分块/向量/混合检索),懒加载单例
   citations/     引用管理(溯源落地):bib.py 读写 + corpus.py 语料标题索引
                  + manager.py 编排 + tools/ LLM 工具面
-  tools/         原子工具:file/ search/ review/ rank/ orchestration/ common
+  vision/        视觉分析(图表提取+看图)
+  tools/         原子工具:file/ search/ review/ rank/ orchestration/ vision/ common
   terminal/      终端交互:InputIO(输入) + StreamRenderer(渲染) + diff
 agents/<name>/   Agent 插件:SKILL.md(frontmatter+system_prompt) + tools.py(TOOLS 列表)
 ```
@@ -89,9 +90,9 @@ Every agent lives in `agents/<name>/` with two files:
 |---|---|---|---|
 | `supervisor` | 调度主管:拆解任务、spawn、汇总 | 硬编码放行所有（绕过白名单） | 仅 2 个调度工具 + 13 个记忆工具（`get_memory_tools()`） |
 | `searcher` | 多源搜索 → reviewer 门禁 → 可选下载 | `[reviewer]` | web_search + fetch_pdf + ask_user + spawn |
-| `writer` | 生成笔记 / 研究大纲,内部 reviewer 审稿 ≤3 轮 | `[reviewer]` | 原子文件工具 + rag_retrieve + ask_user + spawn + 4 引用工具(lookup/add/format/list) |
+| `writer` | 生成笔记 / 研究大纲,内部 reviewer 审稿 ≤3 轮 | `[reviewer]` | 原子文件工具 + rag_retrieve + ask_user + spawn + 4 引用工具(lookup/add/format/list) + analyze_figures |
 | `reviewer` | 叶子审稿:笔记/大纲/下载三种模式 | `[]` | 只读 + submit_review / submit_download_review + 溯源核验(list_citations/lookup_citation) |
-| `qa-agent` | 回答论文/笔记/阅读记忆问题 | `[]` | rag_retrieve + 只读文件工具 + ask_user |
+| `qa-agent` | 回答论文/笔记/阅读记忆问题 | `[]` | rag_retrieve + 只读文件工具 + ask_user + analyze_figures |
 
 `allowed_agents` / `allowed_spawns` 已由 spawn 工具在运行时强制（见 Orchestration）。**只有 supervisor 装配记忆工具**（`get_memory_tools()`）——记忆是 supervisor 的专属工具面，子 agent 不越权。
 
@@ -223,6 +224,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `search/` — `web_search`（按 source 搜：arxiv/openalex，`_SOURCE_REGISTRY` 注册；单源一次调用，多源由 searcher 并行多次调、结果自动去重入池）、`fetch_pdf`（下载）；`clients/` 是纯 API 客户端（共享 `_HttpClientMixin` SSRF 校验 + 逐跳重定向校验）；`_common.py` 有 `SearchRunState` 跨调用去重池（`wants_run_state` opt-in）、查询 LRU 缓存、源级熔断器
 - `review/` — `submit_review` / `submit_download_review`（reviewer 的裁决工具）
 - `rank/` — `lookup_venue_rank`（期刊/会议等级查询）
+- `vision/` — `analyze_figures`（图提取 + 视觉模型结构化看图分析 + 嵌入落盘；key 缺失/无图/失败全降级）
 - `orchestration/` — `spawn_sub_agent` / `ask_user_question` / `SubAgentMode`（见下）
 - `common/` — `make_tools(config, tool_items)` 装配工厂：解析 `allowed_roots` 语义根名 → 绝对路径注入 `allowed_paths`（新列表，不污染类属性）、注入 `_config`、给 `description` 追加 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）；`_http.py` 共享 HTTP 基础设施
 
@@ -260,6 +262,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | 字段 | 说明 |
 |---|---|
 | `llm` (`LLMConfig`) | base_url / api_key / model / max_tokens(393216，给足防长草稿截断) / temperature(0.0) / context_window(1M) |
+| `vision` (`VisionLLMConfig`) | 视觉模型（多模态图表分析）：base_url / api_key / model；独立于文本 LLM，api_key 留空不崩启动，图表分析调用时降级不可用 |
 | `workspace` | 运行时数据根（`data/`）：milvus/memory/intents/models/audit/templates 等 |
 | `agents_dir` | 插件扫描目录，默认 `agents` |
 | `max_risk` | 策略引擎风险阈值，默认 "medium" |
@@ -271,7 +274,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | `citations_bib_path` | references.bib 路径（引用库真相源）。默认 `workspace/citations/references.bib`，可指向任意论文项目目录；空则回退默认 |
 | `agent_timeouts` | 子 agent 超时覆盖表（writer 600 / searcher 300 / reviewer 180） |
 
-环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_VAULT_NOTE_DIR` / `PAPERFLOW_VAULT_PDF_DIR` / `PAPERFLOW_VAULT_OUTLINE_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY` / `PAPERFLOW_CITATIONS_BIB_PATH`。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
+环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_VAULT_NOTE_DIR` / `PAPERFLOW_VAULT_PDF_DIR` / `PAPERFLOW_VAULT_OUTLINE_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY` / `PAPERFLOW_CITATIONS_BIB_PATH`。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
 
 ### Key design decisions
 
