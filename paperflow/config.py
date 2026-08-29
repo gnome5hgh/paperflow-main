@@ -60,6 +60,35 @@ class LLMConfig:
 
 
 @dataclass
+class VisionLLMConfig:
+    """视觉模型连接配置（多模态图表分析）。
+
+    字段对齐 LLMConfig（duck-typing：可直接喂 LLMClient），但指向独立的
+    视觉端点——DeepSeek 纯文本，图表看图必须引入可配置的视觉模型。
+    默认智谱 GLM-4V（OpenAI 兼容端点）；api_key 留空不崩启动，
+    由 analyze_figures 工具调用时降级报错。
+    """
+
+    #: 视觉端点基础地址，默认智谱 OpenAI 兼容端点
+    base_url: str = "https://open.bigmodel.cn/api/paas/v4"
+
+    #: 视觉模型 API 密钥——**不硬编码默认值**，经 PAPERFLOW_VISION_API_KEY 提供
+    api_key: str = ""
+
+    #: 视觉模型名称（glm-4v-flash 免费 / glm-4v-plus 更强）
+    model: str = "glm-4v-flash"
+
+    #: 单次视觉输出上限（逐图分析，几行结构化文本，2048 足够）
+    max_tokens: int = 2048
+
+    #: 采样温度，0.0 确定性输出
+    temperature: float = 0.0
+
+    #: 模型上下文窗口（token 数）
+    context_window: int = 32768
+
+
+@dataclass
 class PaperFlowConfig:
     """
     项目全局配置,聚合所有子系统的配置项。
@@ -69,6 +98,9 @@ class PaperFlowConfig:
 
     #: LLM 连接配置
     llm: LLMConfig = field(default_factory=LLMConfig)
+
+    #: 视觉模型连接配置（多模态图表分析，独立于文本 LLM）
+    vision: VisionLLMConfig = field(default_factory=VisionLLMConfig)
 
     #: 运行时数据根目录，存放 milvus、memory、audit、templates 等
     workspace: str = "data"
@@ -163,11 +195,12 @@ class PaperFlowConfig:
         with open(path) as f:
             data = yaml.safe_load(f) or {}
 
-        # 嵌套处理 llm 子配置：逐个字段检查，避免类型不匹配
-        if "llm" in data:
-            for key, val in data["llm"].items():
-                if hasattr(self.llm, key):
-                    setattr(self.llm, key, val)
+        # 嵌套处理 llm/vision 子配置：逐个字段检查，避免类型不匹配
+        for sub in ("llm", "vision"):
+            if sub in data:
+                for key, val in data[sub].items():
+                    if hasattr(getattr(self, sub), key):
+                        setattr(getattr(self, sub), key, val)
 
         # 顶层配置字段(含 vault / RAG 键,均可通过 config.yaml 顶层覆盖默认值)
         for key in ("workspace", "agents_dir", "max_risk",
@@ -198,15 +231,21 @@ class PaperFlowConfig:
             PAPERFLOW_GROBID_ENDPOINT → grobid_endpoint
             PAPERFLOW_EMBED_MODEL    → embed_model
             PAPERFLOW_RERANK_MODEL   → rerank_model
+            PAPERFLOW_VISION_BASE_URL → vision.base_url
+            PAPERFLOW_VISION_API_KEY  → vision.api_key
+            PAPERFLOW_VISION_MODEL    → vision.model
             PAPERFLOW_SLEEPTIME_ENABLE    → sleeptime_enable（"true"/"false"）
             PAPERFLOW_SLEEPTIME_FREQUENCY → sleeptime_agent_frequency
         """
         # 映射表：环境变量名 → (父对象名, 属性名)
-        # parent 为 "llm" 表示写入 self.llm.<attr>，None 表示写入 self.<attr>
+        # parent 为 "llm"/"vision" 表示写入 self.<parent>.<attr>，None 表示写入 self.<attr>
         env_map = {
             "PAPERFLOW_API_KEY": ("llm", "api_key"),
             "PAPERFLOW_BASE_URL": ("llm", "base_url"),
             "PAPERFLOW_MODEL": ("llm", "model"),
+            "PAPERFLOW_VISION_BASE_URL": ("vision", "base_url"),
+            "PAPERFLOW_VISION_API_KEY": ("vision", "api_key"),
+            "PAPERFLOW_VISION_MODEL": ("vision", "model"),
             "PAPERFLOW_WORKSPACE": (None, "workspace"),
             "PAPERFLOW_AGENTS_DIR": (None, "agents_dir"),
             "PAPERFLOW_MAX_RISK": (None, "max_risk"),
@@ -226,7 +265,7 @@ class PaperFlowConfig:
         for env_var, (parent, attr) in env_map.items():
             val = os.getenv(env_var)
             if val:
-                obj = self.llm if parent == "llm" else self
+                obj = getattr(self, parent) if parent in ("llm", "vision") else self
                 # 环境变量恒为字符串：按目标字段当前类型做布尔/整数转换，
                 # 否则 bool 字段收到 "false" 会被当真值、int 字段收到 "10" 仍是字符串
                 current = getattr(obj, attr)
