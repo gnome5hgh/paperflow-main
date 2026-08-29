@@ -98,31 +98,39 @@ class AnalyzeFiguresTool(Tool):
         if truncated:
             figures = figures[:MAX_FIGURES]
 
-        analyzer = FigureAnalyzer(llm)
-        analyses = asyncio.run(_analyze_all(analyzer, figures))
+        try:  # 兜底：视觉分析/落盘等任何未料异常降级为文本，绝不抛穿
+            analyzer = FigureAnalyzer(llm)
+            analyses = asyncio.run(_analyze_all(analyzer, figures))
 
-        pdf_stem = Path(path).stem
-        lines: list[str] = []
-        embedded: list[dict] = []
-        for fig, analysis in zip(figures, analyses):
-            embed_mark = ""
-            if embed_dir:
-                embed_mark = _save_figure(fig, Path(embed_dir), pdf_stem)
-            lines.append(f"### Fig.{fig.number} {fig.caption}")
-            lines.append(f"- 核心内容：{analysis.insight}")
-            lines.append(f"- 图表类型：{analysis.chart_type}；展示目的：{analysis.insight}")
-            lines.append(f"- 新颖之处：{analysis.notable}")
-            lines.append(f"- 适用场景：{analysis.applicable_scenarios}")
-            lines.append(f"- 制作工具推测：{analysis.tool_guess}")
-            lines.append(f"- 配色：{analysis.color_scheme}；布局：{analysis.layout_tips}；"
-                         f"字体标注：{analysis.font_annotation}")
-            if embed_mark:
-                lines.append(f"- 图：{embed_mark}")
-            lines.append("")
-            embedded.append({**analysis.model_dump(), "embed": embed_mark})
-        if truncated:
-            lines.append(f"（仅展示前 {MAX_FIGURES} 张，其余省略）")
-        return ToolResult(text="\n".join(lines), summary={"figures": embedded})
+            pdf_stem = Path(path).stem
+            lines: list[str] = []
+            embedded: list[dict] = []
+            for fig, analysis in zip(figures, analyses):
+                if isinstance(analysis, Exception):  # 单图视觉调用失败 → 该图标注跳过，不短路整批
+                    lines.append(f"### Fig.{fig.number} {fig.caption}")
+                    lines.append("- 分析失败：视觉模型调用异常，该图已跳过")
+                    lines.append("")
+                    continue
+                embed_mark = ""
+                if embed_dir:
+                    embed_mark = _save_figure(fig, Path(embed_dir), pdf_stem)
+                lines.append(f"### Fig.{fig.number} {fig.caption}")
+                lines.append(f"- 核心内容：{analysis.insight}")
+                lines.append(f"- 图表类型：{analysis.chart_type}")
+                lines.append(f"- 新颖之处：{analysis.notable}")
+                lines.append(f"- 适用场景：{analysis.applicable_scenarios}")
+                lines.append(f"- 制作工具推测：{analysis.tool_guess}")
+                lines.append(f"- 配色：{analysis.color_scheme}；布局：{analysis.layout_tips}；"
+                             f"字体标注：{analysis.font_annotation}")
+                if embed_mark:
+                    lines.append(f"- 图：{embed_mark}")
+                lines.append("")
+                embedded.append({**analysis.model_dump(), "embed": embed_mark})
+            if truncated:
+                lines.append(f"（仅展示前 {MAX_FIGURES} 张，其余省略）")
+            return ToolResult(text="\n".join(lines), summary={"figures": embedded})
+        except Exception as e:  # 兜底：任何未料异常降级为文本反馈，不抛穿
+            return ToolResult(text=f"图表分析失败：{e}", summary={"figures": []})
 
 
 async def _analyze_all(analyzer: FigureAnalyzer, figures: list) -> list:
@@ -130,8 +138,12 @@ async def _analyze_all(analyzer: FigureAnalyzer, figures: list) -> list:
 
     asyncio.gather 返回 Future 而非协程，asyncio.run 只接受协程，故经此
     async 包装后再交给 asyncio.run（工具跑在独立线程，新建事件循环安全）。
+    return_exceptions=True：单图视觉调用失败（网络断/5xx/限流/key 无效——
+    StructuredOutput 只兜 JSON 解析与校验错误，LLM 调用异常会穿出）不短路整批，
+    该图异常项随列表返回，由 execute 逐图降级标注。
     """
-    return await asyncio.gather(*[analyzer.analyze(f) for f in figures])
+    return await asyncio.gather(*[analyzer.analyze(f) for f in figures],
+                                return_exceptions=True)
 
 
 def _save_figure(fig, embed_dir: Path, pdf_stem: str) -> str:
