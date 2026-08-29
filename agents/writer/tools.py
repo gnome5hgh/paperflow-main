@@ -19,15 +19,17 @@ from paperflow.tools import (
 )
 from paperflow.tools.common.factory import make_tools
 from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
+from paperflow.tools.vision.analyze_figures import AnalyzeFiguresTool
 
 
 # 引用管理工具共享同一个 CitationManager 实例（引用库路径来自 config，模块级构造一次）
 _cm = CitationManager(PaperFlowConfig.from_env())
 
 
-# 完整装配 15 工具:4 原子工具 + ask_user_question + rag_retrieve + 共享 spawn_sub_agent
+# 完整装配 16 工具:4 原子工具 + ask_user_question + rag_retrieve + 共享 spawn_sub_agent
 # + glob/grep + history_append/unread_list_remove(写笔记后记历史、确认后移出未读,
-# 谁干活谁记录) + 4 个引用工具(lookup/add/format/list,溯源引用与引用管理)。
+# 谁干活谁记录) + 4 个引用工具(lookup/add/format/list,溯源引用与引用管理)
+# + analyze_figures(笔记 §5 图表提取与视觉分析,embed_dir 落到笔记目录)。
 # 审稿循环由 SKILL 驱动:spawn_sub_agent(agent_type=reviewer, task="审阅草稿文件
 # <draft>,对照原文 <pdf>") 提交草稿,修订经 edit_file 覆盖写回同一最终路径,同时
 # 兼顾"修改既有笔记"类任务。rag_retrieve 服务大纲模式的笔记发现:query 检索本地知识库
@@ -40,4 +42,5 @@ TOOLS = make_tools(PaperFlowConfig.from_env(), [
     HistoryAppendTool, UnreadListRemoveTool,
     LookupCitationTool(_cm), AddCitationTool(_cm),
     FormatCitationsTool(_cm), ListCitationsTool(_cm),
+    AnalyzeFiguresTool(),
 ])
