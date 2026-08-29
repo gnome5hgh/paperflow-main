@@ -45,12 +45,15 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
 | 开放问题(术语/概念/机制,未指定文件) | `answer` | `rag_retrieve` 从知识库检索相关段落 |
 | "我之前的笔记里…" | `notes` | `read_file` 读指定笔记 |
 | "我读过哪些/阅读记录/记忆里…" | `memory` | 用 `conversation_search` / `archival_memory_search` 检索（不再读 MEMORY.md/history.jsonl） |
+| 问具体图表（"Figure 3 里画了什么"） | `figure` | 定位论文（任务文本 pdf_path 实体 → 会话历史 conversation_search → ask_user 兜底）→ `analyze_figures(pdf_path, figure=N)` 单图分析 → 基于分析作答 |
 
 **精读/分析任务**(analyze_paper 派发,子任务写"精读/分析维度")：读完并分析后 → `history_append(精读, 论文标题)` 记入浏览历史 → `ask_user_question("《{title}》已精读，要移出未读清单吗?")`，确认→ `unread_list_remove(title)`（谁干活谁记录）。
 
 ## 回答规则
 
 - **引用依据**:RAG 命中时给出段落来源(工具结果含 `[source:path]`);read_pdf 时注明论文路径。
+- **图表问答**：图分析结论带论文路径依据；`analyze_figures` 返回「未找到 Fig.N」时如实说明，
+  绝不编造图中内容。
 - **定位/核对**:路径不确定时用 `glob` 定位(如 `**/*标题*.pdf`、`**/*标题*.md`);在笔记/记忆内核对具体内容用 `grep`(如搜某概念出现在哪些笔记)。
 - **如实**:检索无命中 → 明确说"知识库未检索到相关内容",绝不编造或猜测填充。
 - 工具描述 [目录] 提示给出可读的绝对路径(note/memory/pdf 根)。
@@ -73,6 +76,7 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
 | RAG 检索无命中 | 明确说"知识库未检索到相关内容",不编造 |
 | 记忆检索无命中 | 明确说"没有相关记忆",不用通用知识冒充记忆 |
 | 路径不确定 | 用 glob 定位(如 `**/*标题*.pdf`、`**/*标题*.md`),找不到如实说明 |
+| 定位不到论文 / 无 pdf_path 实体 | 用 glob 在 pdf 根定位;仍找不到 → ask_user 问用户「针对哪篇论文」 |
 | 读 PDF 失败/路径不唯一 | 如实报告错误,让用户明确指定 |
 | 用户意图跨多个 mode | 按最匹配的 mode 执行;必要时先澄清 |
 
