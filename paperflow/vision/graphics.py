@@ -7,9 +7,10 @@ pdffigures2 的 GraphicsExtractor 移植（GraphicBBDetector.scala + GraphicsExt
 
 坐标约定：PyMuPDF 原样（原点左上、y 向下，pt），直接映射 Box(x1,y1,x2,y2)。
 本层接口只接收 page、不含文本/段落——GraphicsExtractor.scala 里依赖段落的
-「页眉线检测」与「混入正文的小图形过滤」无法在此应用，留待布局感知的编排层
-（Task 15 RegionClassifier / Task 17 编排）按需接入。OCRed/整页扫描图需
-FindGraphicsRaster 的全页光栅连通域检测，也不在本层范围。
+「页眉规则线检测（HeaderLineMinWidthPercent）」与「混入正文的小图形过滤
+（MixedInGraphicMaxSize=70）」在此**正式接受未实现**（vs pdffigures2 的已知偏差，
+接受声明见 extract_graphics docstring）。OCRed/整页扫描图需 FindGraphicsRaster 的
+全页光栅连通域检测，也不在本层范围。
 """
 from __future__ import annotations
 
@@ -21,6 +22,12 @@ _GRAPHIC_CLUSTERING_TOLERANCE = 2.0
 
 def extract_graphics(page, ignore_white: bool = True) -> tuple[list[Box], list[Box]]:
     """提取页面上的图形元素包围盒，返回 (graphics, nonFigureGraphics)。
+
+    已知偏差（正式接受）：页眉规则线检测与混入正文的小图形过滤未实现——两者都
+    依赖段落文本/布局（本层只接收 page），且无真实 PDF 可验证移植新启发式的行为。
+    影响：页眉线/正文小图形会留在 graphics，可能给邻近 proposal 误加
+    ContainsGraphicBonus 或触发 _box_cuts_figure 误删；实际影响 modest——页眉线
+    通常远离图区，正文小图形面积小、对图检测打分影响有限。
 
     Args:
         page: PyMuPDF Page 对象。

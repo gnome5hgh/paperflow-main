@@ -3,6 +3,11 @@
 pdffigures2 的 Rasterizer 对应物——FigureDetector 产出的是矢量/文本层几何，
 视觉模型看图需要像素，这里用 PyMuPDF 按图区域裁剪渲染。输入必须是仍然打开的
 fitz 文档里的 Page（渲染由所属文档驱动），区域用我们自己的 Box 几何传入。
+
+已知偏差（正式接受）：pdffigures2 的 FigureRenderer 在渲染前还会 expandFigureBounds
+（MaxExpand=20）把图边界向四周扩张，以免裁掉紧贴图区的文字；本实现按 Task 17 界定
+做 bare clip（直接按检测出的 region 裁剪，不扩张）。已知质量缺口：图边界紧邻图外
+文字时渲染可能裁掉少量文字，见 render_figure docstring。
 """
 from __future__ import annotations
 

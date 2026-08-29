@@ -106,7 +106,9 @@ class AnalyzeFiguresTool(Tool):
         if figure is not None:
             target = str(figure)
             # 按 number 解析值匹配为主（number=0 的非整数图号归为一组）；
-            # name 精确匹配为辅——只匹配 name 恰好是整数串的情况，不拆分组
+            # name 精确匹配为辅——只匹配 name 恰好是整数串的情况，不拆分组。
+            # 终审 ruling 正式接受：figure=0 一次匹配全部非整数名图（"3.1"/"III"/"S1"），
+            # 因为 int 参数表达不了非整数图号，语义已在 description/参数注释文档化。
             matched = [f for f in figures
                        if str(f.number) == target or f.name == target]
             if not matched:

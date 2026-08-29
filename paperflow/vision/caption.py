@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
 
-from paperflow.vision.geometry import Box, Line, Paragraph
+from paperflow.vision.geometry import Box, Box_container, Line, Paragraph
 from paperflow.vision.text_extractor import Page
 
 
@@ -321,11 +321,15 @@ def find_captions(pages: list[Page], layout) -> list[CaptionStart]:
 
     Args:
         pages: 各页文本（text_extractor 产物）。
-        layout: 文档级布局统计（DocumentLayout），字体过滤用其 font_counts。
+        layout: 文档级布局统计（DocumentLayout），字体过滤用其 font_counts；
+            None（布局信息不足）时直接放弃图注识别，返回空列表——字体过滤依赖
+            font_counts，无布局即无从消歧。
 
     Returns:
-        消歧后的图注起始候选列表。
+        消歧后的图注起始候选列表；layout 为 None 时返回空列表。
     """
+    if layout is None:
+        return []  # 布局信息不足（文本几乎抽不出），无字体信息可做消歧 → 放弃
     candidates = find_caption_candidates(pages)
 
     # 常见字体过滤：仅当文档确有占绝对多数的「标准字体」时才启用——
@@ -586,3 +590,40 @@ def build_captions(
         )
         for c in starts
     ]
+
+
+def strip_caption_lines(page: Page, captions: list[CaptionParagraph]) -> None:
+    """把图注行从所在段落移除（原地改 page.paragraphs），照 Paragraph.removeSpans。
+
+    图注行若留在页面段落里，分类阶段会把这些小字行误判成图内文本（other_text，
+    进 possibleFigureContent 喂给 _box_cuts_figure / crosses_center），图注跨图边框时
+    还会抑制边框检测——所以图注一旦扩展成 CaptionParagraph，就从正文段落剥离。
+
+    靠对象身份定位：build_captions 复用 find_captions 传入的同一批 Line 对象，
+    图注段落里的行与 page.paragraphs 里的是同一批实例，用 id 精确匹配。段落里
+    行被删光的整段移除；删掉部分行的按剩余行重算段落边界（不再含图注区域）。
+
+    Args:
+        page: 该页 Page（page.paragraphs 原地修改）。
+        captions: 该页图注段落（行对象来自 page.paragraphs）。
+    """
+    if not captions:
+        return
+    caption_line_ids = {
+        id(line) for c in captions for line in c.paragraph.lines
+    }
+    stripped: list[Paragraph] = []
+    for paragraph in page.paragraphs:
+        remaining = [
+            line for line in paragraph.lines if id(line) not in caption_line_ids
+        ]
+        if not remaining:
+            continue  # 行全被图注吃掉 → 整段移除
+        if len(remaining) == len(paragraph.lines):
+            stripped.append(paragraph)  # 没删到行，原样保留
+        else:
+            # 删掉部分行后按剩余行重算边界，避免段落外接矩形仍盖住图注区域
+            stripped.append(
+                Paragraph(remaining, Box_container([l.boundary for l in remaining]))
+            )
+    page.paragraphs[:] = stripped

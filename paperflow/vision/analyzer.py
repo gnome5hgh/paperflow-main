@@ -36,7 +36,7 @@ class FigureAnalyzer:
             （至少 figure.number 有值，insight 等字段留空）。
         """
         prompt = (
-            f"这是学术论文的图，图号 Fig.{figure.number}。\n"
+            f"这是学术论文的图，图号 Fig.{figure.name or str(figure.number)}。\n"
             f"图注：{figure.caption}\n"
             "请仔细观察图片内容，严格按结构输出分析。"
         )

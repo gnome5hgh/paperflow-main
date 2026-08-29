@@ -18,7 +18,12 @@ from __future__ import annotations
 
 import fitz
 
-from paperflow.vision.caption import FigureType, build_captions, find_captions
+from paperflow.vision.caption import (
+    FigureType,
+    build_captions,
+    find_captions,
+    strip_caption_lines,
+)
 from paperflow.vision.document_layout import build_document_layout
 from paperflow.vision.figure_detector import located_figures
 from paperflow.vision.renderer import render_figure
@@ -82,6 +87,9 @@ class FigureExtractor:
             captions = build_captions(
                 page_starts, graphics, text_page, layout.median_line_spacing
             )
+            # 图注行从正文段落剥离：否则小字图注会被分类误判成图内文本、甚至
+            # 抑制图边框检测（removeSpans 语义，见 caption.strip_caption_lines）
+            strip_caption_lines(text_page, captions)
             classified = classify_regions(
                 text_page, captions, graphics, non_figure_graphics, layout
             )
