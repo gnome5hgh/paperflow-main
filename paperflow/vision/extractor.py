@@ -1,119 +1,105 @@
-"""PDF 图表提取：图注定位 + 栅格图/区域渲染取图。与 GROBID 正交——GROBID 只给
-文本与图注，图片本身恒由本模块负责。"""
-import re
+"""PDF 图表提取管线编排：pdffigures2 8 步（文本 → 布局 → 图注 → 图形 → 分类 → 图检测 → 渲染）。
 
-#: 图注识别：行首出现 Fig./Figure/图 + 数字（如 "Fig. 3:" / "Figure 4 " / "图 2."）
-_CAPTION_RE = re.compile(r"^(?:Fig(?:ure)?\.?\s*|图\s*)(\d+)", re.IGNORECASE)
-#: 图注与上方栅格图的垂直间距超过页面高度 20% 即视为不相关（行内引用间距很小）
-_MAX_GAP_RATIO = 0.2
-#: 区域渲染兜底的最小图区高度（pt），低于此值视为无图（正文行内引用）
-_MIN_RENDER_HEIGHT = 20.0
+替代旧启发式 FigureExtractor。编排顺序与 pdffigures2 的 Main 对齐：
+1. extract_text        rawdict → word/line/paragraph
+2. strip_formatting    去页眉/页脚/页码
+3. build_document_layout   双栏/字号/行宽/中位行距等文档级统计
+4. find_captions       全文档图注起始识别 + filter sieve 消歧
+5. 逐页 extract_graphics   矢量 + 光栅图形区
+6. 逐页 build_captions     图注起始行向后扩展成完整图注段落
+7. 逐页 classify_regions   正文/图内文本分类
+8. 逐页 located_figures    为每图注构建候选区域、打分、取最优配置
+9. 渲染每图区域 → schemas.Figure
+
+消费方（FigureAnalyzer / analyze_figures 工具）只用 number/caption/image_bytes/mime，
+扩展出的 name/fig_type/image_text/boundary 字段向下兼容。
+"""
+from __future__ import annotations
+
+import fitz
+
+from paperflow.vision.caption import FigureType, build_captions, find_captions
+from paperflow.vision.document_layout import build_document_layout
+from paperflow.vision.figure_detector import located_figures
+from paperflow.vision.renderer import render_figure
+from paperflow.vision.schemas import Figure
+from paperflow.vision.text_extractor import Page, extract_text, strip_formatting
+from paperflow.vision.graphics import extract_graphics
+from paperflow.vision.region_classifier import classify_regions
+
+
+def _parse_number(name: str) -> int:
+    """图号从 name 解析出整数；解析失败归 0（两段式图号 "3.1" 等当前不支持）。"""
+    try:
+        return int(name)
+    except (TypeError, ValueError):
+        return 0
 
 
 class FigureExtractor:
-    """用 PyMuPDF 从 PDF 提取图表：识别图注块，为每个图注定位图区并取图。
+    """用 pdffigures2 8 步管线从 PDF 提取图表，产出 schemas.Figure 列表。"""
 
-    图区定位启发式（v1，够用不求全）：
-    1. 栅格优先：图注上方、水平有交叠的图片（get_image_info）取面积最大者，
-       经 extract_image 拿原始字节（保真度最高）。
-    2. 渲染兜底：上方无栅格图（matplotlib 矢量图等）时，把「上一文本块底边 →
-       图注顶边」区域渲染成 PNG；区域过小（<20pt，正文行内引用 "Fig. N shows"）
-       或区域内无矢量绘制 → 跳过，不硬凑。
-    3. 去重：同一栅格 xref / 同一渲染区域只出一个 Figure（子图 a/b 场景留 v2）。
-    """
-
-    def extract(self, path: str) -> list:
+    def extract(self, path: str) -> list[Figure]:
         """提取 PDF 中所有图表对象。
 
         Args:
             path: PDF 文件绝对路径。
 
         Returns:
-            list[Figure]：图表对象列表，无图返回空列表。
+            list[Figure]：图表对象列表；无图或布局信息不足（扫描件/纯图文档）返回空列表。
         """
-        import fitz
+        # 一次打开、两处复用：extract_text 接收 fitz.Document 不接管其生命周期，
+        # 后续逐页取图形区 / 渲染图区域仍靠这份 doc。两套「页」并存——
+        # fitz 页（doc 按索引取）供渲染与光栅图，我们自己的 Page（pages 列表）
+        # 供图注/图形/分类/图检测；两套按页码一一对应。
+        doc = fitz.open(path)
+        try:
+            pages = strip_formatting(extract_text(doc))
+            layout = build_document_layout(pages)
+            if layout is None:
+                # 文本几乎抽不出来，给不出可信布局统计 → 无从检测图
+                return []
+            starts = find_captions(pages, layout)
+            return self._process_pages(doc, pages, starts, layout)
+        finally:
+            doc.close()
 
-        from paperflow.vision.schemas import Figure
+    def _process_pages(
+        self, doc, pages: list[Page], starts, layout
+    ) -> list[Figure]:
+        """逐页执行 图形 → 图注扩展 → 分类 → 图检测 → 渲染，汇总成 Figure 列表。
 
-        figures: list = []
-        seen: set = set()
-        with fitz.open(path) as doc:
-            for pno, page in enumerate(doc, start=1):
-                raster = page.get_image_info(xrefs=True)
-                text_blocks = [b for b in page.get_text("dict").get("blocks", [])
-                               if b.get("type") == 0]
-                text_blocks.sort(key=lambda b: b["bbox"][1])  # 自上而下
-                for i, blk in enumerate(text_blocks):
-                    caption = _block_text(blk)
-                    m = _CAPTION_RE.match(caption)
-                    if not m:
-                        continue
-                    number = int(m.group(1))
-                    bbox = blk["bbox"]
-                    hit = self._raster_above(page, raster, bbox)
-                    if hit is not None:
-                        key = (pno, hit["xref"])
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        data = doc.extract_image(hit["xref"])
-                        figures.append(Figure(
-                            number=number, caption=caption.strip(), page=pno,
-                            image_bytes=data["image"], mime=f"image/{data['ext']}"))
-                        continue
-                    region = self._render_region(page, text_blocks, i, bbox)
-                    if region is None:
-                        continue
-                    key = (pno, round(region.y0), round(region.y1))
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    pix = page.get_pixmap(clip=region)
-                    figures.append(Figure(
-                        number=number, caption=caption.strip(), page=pno,
-                        image_bytes=pix.tobytes("png"), mime="image/png"))
+        图注起始（starts）是全文级别识别的，按页码过滤出本页的再传给 build_captions
+        ——build_captions 靠行对象身份对齐，必须复用 find_captions 传入的同一批 Page。
+        """
+        figures: list[Figure] = []
+        for index, text_page in enumerate(pages):
+            page_starts = [s for s in starts if s.page == text_page.page_number]
+            if not page_starts:
+                continue  # 本页无图注即无图，跳过渲染
+            fitz_page = doc[index]
+            graphics, non_figure_graphics = extract_graphics(fitz_page)
+            captions = build_captions(
+                page_starts, graphics, text_page, layout.median_line_spacing
+            )
+            classified = classify_regions(
+                text_page, captions, graphics, non_figure_graphics, layout
+            )
+            located = located_figures(classified, layout)
+            for f in located.figures:
+                if f["fig_type"] != FigureType.Figure:
+                    continue  # 表格检测保留但不产出（Phase 2 范围只收图）
+                image_bytes, mime = render_figure(fitz_page, f["region_boundary"])
+                figures.append(Figure(
+                    number=_parse_number(f["name"]),
+                    caption=f["caption_text"],
+                    page=f["page"],
+                    image_bytes=image_bytes,
+                    mime=mime,
+                    name=f["name"],
+                    fig_type=f["fig_type"],
+                    image_text=" ".join(f["image_text"]),
+                    caption_boundary=f["caption_boundary"],
+                    region_boundary=f["region_boundary"],
+                ))
         return figures
-
-    def _raster_above(self, page, raster, caption_bbox):
-        """图注上方、水平有交叠、间距在阈值内的最大栅格图；无则 None。
-
-        返回 get_image_info 的元素（含 xref/bbox），供调用方 extract_image。
-        """
-        best = None
-        for item in raster:
-            xref = item.get("xref", 0)
-            if xref <= 0:
-                continue
-            ib = item["bbox"]
-            if ib[3] <= caption_bbox[1] and (caption_bbox[1] - ib[3]) <= page.rect.height * _MAX_GAP_RATIO:
-                if ib[0] < caption_bbox[2] and ib[2] > caption_bbox[0]:  # 水平交叠防跨列误配
-                    area = (ib[2] - ib[0]) * (ib[3] - ib[1])
-                    if best is None or area > best[0]:
-                        best = (area, item)
-        return best[1] if best else None
-
-    def _render_region(self, page, text_blocks, i, caption_bbox):
-        """矢量渲染兜底的图区矩形：上一文本块底边 → 图注顶边。
-
-        区域高度须 ≥ _MIN_RENDER_HEIGHT 且区域内含矢量绘制（get_drawings 命中），
-        否则视为正文行内引用返回 None。返回 fitz.Rect 或 None。
-        """
-        import fitz
-
-        prev_bottom = text_blocks[i - 1]["bbox"][3] if i > 0 else 0.0
-        region = fitz.Rect(caption_bbox[0] - 2, prev_bottom,
-                           caption_bbox[2] + 2, caption_bbox[1])
-        region &= page.rect
-        if region.height < _MIN_RENDER_HEIGHT:
-            return None
-        for d in page.get_drawings():
-            if fitz.Rect(d["rect"]).intersects(region):
-                return region
-        return None
-
-
-def _block_text(block) -> str:
-    """拼接一个文本块的纯文本（多行 span 顺序拼）。"""
-    return "".join(span.get("text", "")
-                   for line in block.get("lines", [])
-                   for span in line.get("spans", []))

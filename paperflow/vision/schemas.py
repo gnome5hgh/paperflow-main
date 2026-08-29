@@ -3,17 +3,24 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
+from paperflow.vision.geometry import Box
+
 
 @dataclass
 class Figure:
-    """从 PDF 提取出的一个图表对象。
+    """从 PDF 提取出的一个图表对象（FigureDetector 占位 dict 的结构化投影）。
 
     Attributes:
-        number: 图号（图注解析出的数字）。
-        caption: 图注文本。
-        page: 所在页码（1 起）。
-        image_bytes: 图片字节（栅格原始格式或渲染 PNG）。
-        mime: 图片 MIME（"image/png"/"image/jpeg"），用于 base64 data URL。
+        number: 图号（从 name 解析出的数字；name 解析失败归 0，如两段式图号 "3.1"）。
+        caption: 图注文本（= caption_text 的别名）。
+        page: 所在页码（0 起，与 text_extractor 的 Page.page_number 一致）。
+        image_bytes: 图片字节（渲染出的 PNG）。
+        mime: 图片 MIME（"image/png"），用于 base64 data URL。
+        name: 图号原始字符串（如 "1" / "3.1"），透传自图注。
+        fig_type: 图注类型（"Figure"/"Table"）；管线只产出 Figure。
+        image_text: 图区域内的图内文本（词以空格拼接）。
+        caption_boundary: 图注段落包围盒。
+        region_boundary: 检测出的图区域包围盒。
     """
 
     number: int
@@ -21,6 +28,11 @@ class Figure:
     page: int
     image_bytes: bytes
     mime: str
+    name: str = ""
+    fig_type: str = "Figure"
+    image_text: str = ""
+    caption_boundary: Box | None = None
+    region_boundary: Box | None = None
 
 
 class FigureAnalysis(BaseModel):
