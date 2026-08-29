@@ -69,8 +69,9 @@ def _vector_graphics(page, ignore_white: bool) -> list[Box]:
         has_stroke = "s" in kind
         if not has_fill and not has_stroke:
             continue  # clip-only 项
-        # 白图过滤：仅当涉及的维度（fill/stroke）都是白/空色才跳过，语义照 addLinePath
-        if ignore_white and _is_white_graphic(has_fill, has_stroke, item.get("fill"), item.get("stroke")):
+        # 白图过滤：仅当涉及的维度（fill/stroke）都是白/空色才跳过，语义照 addLinePath。
+        # 注意 PyMuPDF 的 get_drawings() 里描边色在 key "color"（无 "stroke" key），fill 仍是 "fill"
+        if ignore_white and _is_white_graphic(has_fill, has_stroke, item.get("fill"), item.get("color")):
             continue
         rect = item["rect"]
         b = Box(rect.x0, rect.y0, rect.x1, rect.y1)
