@@ -5,7 +5,8 @@ FigureDetector（Task 16）划定图边界、给 proposal 打分。
 
 核心是两层：
 - splitAroundCaptions：段落外接矩形与图注重叠时按行拆成子段——图注常被 PDFBox
-  与相邻正文合并进同一段，不拆开会污染正文分类。
+  与相邻正文合并进同一段，不拆开会污染正文分类。拆分出的子段与 body_text/
+  other_text 统一按「阅读序」累积（首段在前），有意偏离 Scala 的 :: 前插倒序。
 - classifyRegions：一组启发式「筛子」按固定顺序逐个判定段落，首个命中者定案，
   默认归正文。筛子里的图内文本信号（图形重叠/竖排/宽间距/小字号）排前、正文信号
   （行宽/标题/边距）排后——前者是高置信「这是图内文本」的负信号，先识别出来，
@@ -201,6 +202,9 @@ def _split_around_captions(
     图注常被 PDFBox 与相邻正文合并成同一段，不拆开的话正文段会被图注污染。
     判定：段落外接矩形与图注重叠（负容差要求真叠 2pt）；且至少有一行不叠图注
     才拆——所有行都叠说明这段本身就在图注里，无从分离。
+
+    返回的子段按阅读序排列（首段在前）。有意偏离 Scala 原实现的 `::` 前插
+    倒序，理由见下方累积注释。
     """
     caption_boundaries = [
         c.boundary
@@ -212,21 +216,22 @@ def _split_around_captions(
     if all(_intersects_any(line.boundary, caption_boundaries) for line in paragraph.lines):
         return [paragraph]
     # 逐行累积；一旦累积行的外接矩形碰到图注就切出新段。
-    # 段间顺序用前插累积（对应 Scala 的 ::），故返回的段序为倒序——原实现如此，
-    # 分类逐段独立判定，段序不影响结果。
+    # 段间顺序用正序累积（append），返回的子段为阅读序（首段在前）。有意偏离
+    # Scala 原实现的 :: 前插倒序：下游 Figure.imageText 拼接词文本时与直觉一致，
+    # 分类逐段独立判定，段序本身不影响分类结果。
     split_paragraphs: list[Paragraph] = []
     new_lines = [paragraph.lines[0]]
     new_box = paragraph.lines[0].boundary
     for next_line in paragraph.lines[1:]:
         combined_box = next_line.boundary.container(new_box)
         if _intersects_any(combined_box, caption_boundaries):
-            split_paragraphs.insert(0, Paragraph(list(new_lines), new_box))
+            split_paragraphs.append(Paragraph(list(new_lines), new_box))
             new_lines = [next_line]
             new_box = next_line.boundary
         else:
             new_box = combined_box
             new_lines.append(next_line)
-    split_paragraphs.insert(0, Paragraph(list(new_lines), new_box))
+    split_paragraphs.append(Paragraph(list(new_lines), new_box))
     return split_paragraphs
 
 
