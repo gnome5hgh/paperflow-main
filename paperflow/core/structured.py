@@ -54,7 +54,8 @@ class StructuredOutput:
         self.telemetry_callback = telemetry_callback
 
     async def extract(self, prompt: str, schema: type[BaseModel],
-                      fallback: Callable[[], BaseModel] | None = None) -> BaseModel:
+                      fallback: Callable[[], BaseModel] | None = None,
+                      images: list[str] | None = None) -> BaseModel:
         """让 LLM 按给定 pydantic schema 稳定输出 JSON，并返回校验通过的实例。
 
         三层防御（从源头提正确率，到失败兜底）：
@@ -71,17 +72,25 @@ class StructuredOutput:
             展开成字段级提示喂给 LLM
         :param fallback: 重试耗尽时的兜底构造函数（无参返回 BaseModel 实例）；
             None 表示直接抛 StructuredOutputError
+        :param images: 视觉分析的图片 data URL 列表；非 None 时
+            user 消息改为「文本 + 图」的 content parts，文本仍是 prompt
 
         :returns: 校验通过的 schema 实例
 
         :raises StructuredOutputError: 重试耗尽且无 fallback 时抛出
         """
+        # 传了 images 时 user 消息改为 OpenAI content parts（文本 + 图片），
+        # 让视觉模型能看图；未传则保持纯文本，旧行为不变。
+        user_content = prompt if not images else [
+            {"type": "text", "text": prompt},
+            *({"type": "image_url", "image_url": {"url": url}} for url in images),
+        ]
         messages = [
             Message(role="system", content=(
                 f"严格按以下 JSON 结构输出，不要附加任何文字：\n"
                 f"{_schema_to_prompt(schema, max_depth=self.config.max_schema_depth)}"
             )),
-            Message(role="user", content=prompt),
+            Message(role="user", content=user_content),
         ]
         last_error: Exception | None = None
         resp: Message | None = None
