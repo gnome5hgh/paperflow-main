@@ -68,7 +68,7 @@ paperflow/
   rag/           RAG 检索栈(解析/分块/向量/混合检索),懒加载单例
   citations/     引用管理(溯源落地):bib.py 读写 + corpus.py 语料标题索引
                  + manager.py 编排 + tools/ LLM 工具面
-  vision/        视觉分析(10 模块 pdffigures2 提取管线 + 视觉模型看图)
+  vision/        视觉分析(pdffigures2 提取管线: parsers/ 解析 + detectors/ 图检测 + 编排 + 视觉模型看图)
   tools/         原子工具:file/ search/ review/ rank/ orchestration/ vision/ common
   terminal/      终端交互:InputIO(输入) + StreamRenderer(渲染) + diff
 agents/<name>/   Agent 插件:SKILL.md(frontmatter+system_prompt) + tools.py(TOOLS 列表)
