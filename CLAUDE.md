@@ -74,7 +74,7 @@ paperflow/
 agents/<name>/   Agent 插件:SKILL.md(frontmatter+system_prompt) + tools.py(TOOLS 列表)
 ```
 
-设计文档索引：ADR 0003(ReAct 架构)、0004(记忆系统)、0007(意图识别)、0008(reviewer/search 流程)、0009(引用管理/溯源落地)。
+设计文档索引：ADR 0003(ReAct 架构)、0004(记忆系统)、0007(意图识别)、0008(reviewer/search 流程)、0009(引用管理/溯源落地)、0010(图片提取+多模态)。
 
 ### Agent plugin system
 
