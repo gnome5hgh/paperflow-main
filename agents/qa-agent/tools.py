@@ -16,7 +16,7 @@ from paperflow.tools.common.factory import make_tools
 from paperflow.tools import (
     ReadFileTool, ReadPdfTool, GlobTool, GrepTool, AskUserQuestionTool,
 )
-from paperflow.rag.services.retriever import RagRetrieveTool
+from paperflow.tools.rag import RagRetrieveTool
 from paperflow.tools.vision.analyze_figures import AnalyzeFiguresTool
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [

@@ -16,7 +16,7 @@ from paperflow.tools import (
     LookupVenueRankTool, SubmitDownloadReviewTool, GlobTool, GrepTool,
 )
 from paperflow.citations import CitationManager
-from paperflow.citations.tools import ListCitationsTool, LookupCitationTool
+from paperflow.tools.citations import ListCitationsTool, LookupCitationTool
 
 _cm = CitationManager(PaperFlowConfig.from_env())
 

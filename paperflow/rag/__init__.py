@@ -8,7 +8,7 @@ from paperflow.rag.parsers.chunker import AcademicChunker, Chunk
 from paperflow.rag.parsers.grobid_client import GrobidClient, ParsedDoc, PyMuPDFParser
 from paperflow.rag.services.rag_service import RAGService, get_rag_service
 from paperflow.rag.services.indexer import RagIndexer
-from paperflow.rag.services.retriever import Retriever, RagRetrieveTool
+from paperflow.rag.services.retriever import Retriever
 
 __all__ = ["AcademicChunker", "Chunk", "GrobidClient", "ParsedDoc", "PyMuPDFParser",
-           "RAGService", "get_rag_service", "RagIndexer", "Retriever", "RagRetrieveTool"]
+           "RAGService", "get_rag_service", "RagIndexer", "Retriever"]

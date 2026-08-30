@@ -8,11 +8,11 @@ paperflow/tools/ 的集中式安全边界与风险语义)、glob/grep 定位工�
 spawn 工具需要构造参数(agent_timeouts),故 make_tools 传已实例化的工具实例而非类。
 """
 from paperflow.citations import CitationManager
-from paperflow.citations.tools import (LookupCitationTool, AddCitationTool,
+from paperflow.tools.citations import (LookupCitationTool, AddCitationTool,
                                        FormatCitationsTool, ListCitationsTool)
 from paperflow.config import PaperFlowConfig
 from paperflow.core.memory.tools import HistoryAppendTool, UnreadListRemoveTool
-from paperflow.rag.services.retriever import RagRetrieveTool
+from paperflow.tools.rag import RagRetrieveTool
 from paperflow.tools import (
     ReadFileTool, ReadPdfTool, WriteFileTool, EditFileTool,
     GlobTool, GrepTool, AskUserQuestionTool,

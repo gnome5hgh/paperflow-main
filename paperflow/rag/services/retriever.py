@@ -1,9 +1,7 @@
 """检索器：融合 BM25 关键词与向量检索的候选，用 RRF 算法合并排序，再交给重排模型精排。
 
-索引为空时返回空结果。RagRetrieveTool 是暴露给外部调用方的薄封装工具。
+索引为空时返回空结果。对外检索工具 RagRetrieveTool 在 `paperflow/tools/rag/rag_retrieve.py`。
 """
-from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.services.rag_service import get_rag_service
 
 
 # ---- 混合检索参数配置 ----
@@ -18,8 +16,8 @@ _VECTOR_TOPK = 30
 class Retriever:
     """融合检索引擎：同时跑 BM25 关键词检索与向量检索，RRF 合并，再精排。
 
-    与 RagRetrieveTool 是两类职责：这里实现检索与融合算法；RagRetrieveTool
-    只做对外暴露的薄封装（取单例、持锁、格式化结果）。
+    与检索工具 RagRetrieveTool（tools/rag）是两类职责：这里实现检索与融合算法；
+    RagRetrieveTool 只做对外暴露的薄封装（取单例、持锁、格式化结果）。
     """
 
     def __init__(self, service):
@@ -129,58 +127,3 @@ class Retriever:
         return out
 
 
-class RagRetrieveTool(Tool):
-    """对外暴露的检索工具：本身不实现检索逻辑，只惰性获取全局检索服务单例、持锁调用并格式化结果。
-
-    职责：
-    - 惰性获取全局 RAGService 单例。
-    - 持有锁调用检索器。
-    - 将检索结果格式化为人类可读的文本，供 Agent 或其他调用方使用。
-
-    与 Retriever 的区别：
-    - Retriever 实现核心检索算法。
-    - RagRetrieveTool 是工具层封装，负责单例管理、锁控制和输出格式化。
-    """
-
-    name = "rag_retrieve"
-    description = ("从本地知识库（笔记 + PDF 全文）检索相关段落。"
-                   "参数 query 为检索问题，top_k 为返回块数。")
-    parameters = {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "检索问题"},
-            "top_k": {"type": "integer", "description": "返回块数", "default": 5},
-        },
-        "required": ["query"],
-    }
-    risk_level = "low" # 工具风险等级：只读操作，无风险
-
-    def __init__(self):
-        """创建检索工具；_service 延迟到首次 execute 时取全局单例（也支持测试注入）。"""
-        super().__init__()
-        self._service = None # 可被测试注入，否则在 execute 中取全局单例
-
-    def execute(self, query: str, top_k: int = 5) -> ToolResult:
-        """执行检索并返回格式化结果：每条命中列出来源、路径与文本前 200 字；无命中时给出提示。
-
-        Args:
-            query: 检索查询。
-            top_k: 返回块数。
-
-        Returns:
-            ToolResult: 包含格式化文本的 ToolResult 对象。
-        """
-        # 1. 获取 RAGService 单例（若已注入则使用注入的实例）。
-        svc = self._service or get_rag_service()
-
-        # 2. 持锁调用检索器（保证与索引操作的互斥）。
-        with svc.lock:
-            chunks = svc.get_retriever().retrieve(query, top_k)
-
-        # 3. 若无结果，返回结构化提示信息。
-        if not chunks:
-            return ToolResult(text="检索无命中（索引可能为空，可先写几篇笔记）")
-
-        # 4. 否则，每条命中格式化为 `- [来源:路径] 文本前200字` 的列表。
-        lines = [f"- [{c.source}:{c.path}] {c.text[:200]}" for c in chunks]
-        return ToolResult(text="检索到以下相关段落：\n" + "\n".join(lines))
