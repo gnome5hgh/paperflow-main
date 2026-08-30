@@ -264,7 +264,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | 字段 | 说明 |
 |---|---|
 | `llm` (`LLMConfig`) | base_url / api_key / model / max_tokens(393216，给足防长草稿截断) / temperature(0.0) / context_window(1M) |
-| `vision` (`VisionLLMConfig`) | 视觉模型（多模态图表分析）：base_url / api_key / model；独立于文本 LLM，api_key 留空不崩启动，图表分析调用时降级不可用 |
+| `vision` (`VisionLLMConfig`) | 视觉模型（多模态图表分析）：base_url / api_key / model；默认 DeepSeek 视觉（与文本 LLM 同一端点/key），可经 env 换 OpenAI 兼容端点；api_key 留空不崩启动，图表分析调用时降级不可用 |
 | `workspace` | 运行时数据根（`data/`）：milvus/memory/intents/models/audit/templates 等 |
 | `agents_dir` | 插件扫描目录，默认 `agents` |
 | `max_risk` | 策略引擎风险阈值，默认 "medium" |

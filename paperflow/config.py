@@ -64,21 +64,24 @@ class VisionLLMConfig:
     """视觉模型连接配置（多模态图表分析）。
 
     字段对齐 LLMConfig（duck-typing：可直接喂 LLMClient），但指向独立的
-    视觉端点——DeepSeek 纯文本，图表看图必须引入可配置的视觉模型。
-    默认智谱 GLM-4V（OpenAI 兼容端点）；api_key 留空不崩启动，
-    由 analyze_figures 工具调用时降级报错。
+    视觉端点——图表看图必须引入可配置的视觉模型。
+    默认 DeepSeek 视觉模型（deepseek-v4-flash-vision-exp，与文本 LLM 同一
+    端点/key）；可经 PAPERFLOW_VISION_MODEL/BASE_URL 换其他 OpenAI 兼容
+    端点（如智谱 GLM-4V）。api_key 留空不崩启动，由 analyze_figures 工具
+    调用时降级报错。
     """
 
-    #: 视觉端点基础地址，默认智谱 OpenAI 兼容端点
+    #: 视觉端点基础地址，默认 DeepSeek（与文本 LLM 同一端点/key）
     # base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     base_url: str = "https://api.deepseek.com/v1"
 
     #: 视觉模型 API 密钥——**不硬编码默认值**，经 PAPERFLOW_VISION_API_KEY 提供
     api_key: str = ""
 
-    #: 视觉模型名称（glm-4v-flash 免费 / glm-4v-plus 更强）
+    #: 视觉模型名称（deepseek-v4-flash-vision-exp；可经 env 换回 glm-4v-flash）
     # model: str = "glm-4v-flash"
     model: str = "deepseek-v4-flash-vision-exp"
+
     #: 单次视觉输出上限（逐图分析，几行结构化文本，2048 足够）
     max_tokens: int = 2048
 
