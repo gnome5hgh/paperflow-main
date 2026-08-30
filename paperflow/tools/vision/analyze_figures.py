@@ -182,6 +182,8 @@ def _save_figure(fig, embed_dir: Path, pdf_stem: str) -> str:
     label = re.sub(r"[/\\\s]+", "_", fig.name or str(fig.number))
     name = f"{pdf_stem}-fig{label}.{ext}"
     try:
+        # embed_dir 可能是尚不存在的 figures/ 子目录——按需创建，避免写盘静默失败
+        embed_dir.mkdir(parents=True, exist_ok=True)
         (embed_dir / name).write_bytes(fig.image_bytes)
     except OSError:
         pass
