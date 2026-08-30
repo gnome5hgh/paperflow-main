@@ -19,7 +19,7 @@ from enum import Enum
 from typing import Callable
 
 from paperflow.vision.geometry import Box, Box_container, Line, Paragraph
-from paperflow.vision.text_extractor import Page
+from paperflow.vision.parsers.text_extractor import Page
 
 
 class FigureType(str, Enum):

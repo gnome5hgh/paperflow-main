@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from paperflow.vision.text_extractor import Page
+from paperflow.vision.parsers.text_extractor import Page
 
 # 行宽分桶粒度(pt)：把相近行宽聚到 2pt 桶里，弱化浮动对象/公式造成的宽度噪声
 LINE_WIDTH_BUCKET_SIZE = 2

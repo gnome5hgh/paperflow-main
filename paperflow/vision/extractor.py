@@ -18,19 +18,19 @@ from __future__ import annotations
 
 import fitz
 
-from paperflow.vision.caption import (
+from paperflow.vision.parsers.caption import (
     FigureType,
     build_captions,
     find_captions,
     strip_caption_lines,
 )
-from paperflow.vision.document_layout import build_document_layout
-from paperflow.vision.figure_detector import located_figures
+from paperflow.vision.parsers.document_layout import build_document_layout
+from paperflow.vision.detectors.figure_detector import located_figures
 from paperflow.vision.renderer import render_figure
 from paperflow.vision.schemas import Figure
-from paperflow.vision.text_extractor import Page, extract_text, strip_formatting
-from paperflow.vision.graphics import extract_graphics
-from paperflow.vision.region_classifier import classify_regions
+from paperflow.vision.parsers.text_extractor import Page, extract_text, strip_formatting
+from paperflow.vision.parsers.graphics import extract_graphics
+from paperflow.vision.detectors.region_classifier import classify_regions
 
 
 def _parse_number(name: str) -> int:

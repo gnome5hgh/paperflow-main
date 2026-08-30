@@ -23,8 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from itertools import product
 
-from paperflow.vision.caption import Caption, CaptionParagraph
-from paperflow.vision.document_layout import DocumentLayout
+from paperflow.vision.parsers.caption import Caption, CaptionParagraph
+from paperflow.vision.parsers.document_layout import DocumentLayout
 from paperflow.vision.geometry import (
     Box,
     Box_container,
@@ -32,7 +32,7 @@ from paperflow.vision.geometry import (
     Paragraph,
     find_empty_horizontal_blocks,
 )
-from paperflow.vision.region_classifier import PageWithBodyText
+from paperflow.vision.detectors.region_classifier import PageWithBodyText
 
 # ---- 常量（照 FigureDetector.scala 全量照抄）----
 # 候选图区域的最小尺寸：小于该尺寸的 proposal 视为无意义，直接丢弃
