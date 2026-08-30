@@ -67,9 +67,9 @@ paperflow/
                  + structured(结构化输出)
   rag/           RAG 检索栈(解析/分块/向量/混合检索),懒加载单例
   citations/     引用管理(溯源落地):bib.py 读写 + corpus.py 语料标题索引
-                 + manager.py 编排 + tools/ LLM 工具面
+                 + manager.py 编排
   vision/        视觉分析(pdffigures2 提取管线: parsers/ 解析 + detectors/ 图检测 + 编排 + 视觉模型看图)
-  tools/         原子工具:file/ search/ review/ rank/ orchestration/ vision/ common
+  tools/         原子工具:file/ search/ review/ rank/ orchestration/ citations/ rag/ vision/ common
   terminal/      终端交互:InputIO(输入) + StreamRenderer(渲染) + diff
 agents/<name>/   Agent 插件:SKILL.md(frontmatter+system_prompt) + tools.py(TOOLS 列表)
 ```
@@ -204,13 +204,13 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `BgeEmbedder` — `BAAI/bge-small-zh-v1.5`（CPU，L2 归一化，维度从模型读取）；`BgeReranker` — `BAAI/bge-reranker-v2-m3` CrossEncoder
 - 加载路径 `resolve_model_dir(workspace, model_name)`：本地优先（`<workspace>/models/<name>/` 存在用本地），否则回退 HF 名自动下载
 
-消费方：`RagRetrieveTool`（`rag_retrieve`）装配进 writer 与 qa-agent；`ReadPdfTool` 用 `parse_pdf_cached`；`write_file`/`edit_file`/`fetch_pdf` 写盘后自动触发 `index_document`。embedder 单例与意图管线/记忆语义检索共享（`cli.py` `_rag_embedder`）。
+消费方：`RagRetrieveTool`（`tools/rag/`，`rag_retrieve`）装配进 writer 与 qa-agent；`ReadPdfTool` 用 `parse_pdf_cached`；`write_file`/`edit_file`/`fetch_pdf` 写盘后自动触发 `index_document`。embedder 单例与意图管线/记忆语义检索共享（`cli.py` `_rag_embedder`）。
 
 ### Citations
 
 `paperflow/citations/` — 引用管理（溯源落地）。`references.bib` 是引用库**真相源**：append-only 追加、绝不重写（用户手工维护的分节注释原样保留）。`bib.py` 轻量扫描条目（查找/去重）；`corpus.py` 是「语料里有哪些论文」的易变投影（note H1 + PDF 解析标题 → 全标题精确匹配，按 (path, mtime_ns) 增量重建）；`manager.py` 编排：引用解析（干净全标题/路径 → key+status）、入库（语料内 PDF / 库外 EXTERNAL）、去重、渲染（author-year/numbered/bibtex/gbt7714）、调和（渲染视图回填空字段，bib 文件不动）。懒加载单例 `get_citation_manager()`，重组件（corpus 索引、TitleExtractor）首次使用才构造。
 
-4 个引用工具（`citations/tools/`）装配给 **writer**（`lookup_citation`/`add_citation`/`format_citations`/`list_citations`）；**reviewer** 装配 `list_citations`+`lookup_citation` 做溯源核验（核验 `[来源:key§节]` 的 key 真实存在于 references.bib，不信任标注本身）。
+4 个引用工具（`tools/citations/`）装配给 **writer**（`lookup_citation`/`add_citation`/`format_citations`/`list_citations`）；**reviewer** 装配 `list_citations`+`lookup_citation` 做溯源核验（核验 `[来源:key§节]` 的 key 真实存在于 references.bib，不信任标注本身）。
 
 产物溯源标注：
 - **大纲模式依据双源**（笔记为主索引，缺口/模糊处按需 `rag_retrieve` 回溯 PDF 段落）；论点带三级溯源标注：`[来源:key§节]`（PDF 支撑）/ `[来源:笔记「X」§Y]`（笔记支撑）/ 无支撑 → `[⚠无支撑]`、模糊 → `[待确认]`；正文末尾 `format_citations(keys, style)` 渲染 `## 参考文献` 节
@@ -224,6 +224,8 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `search/` — `web_search`（按 source 搜：arxiv/openalex，`_SOURCE_REGISTRY` 注册；单源一次调用，多源由 searcher 并行多次调、结果自动去重入池）、`fetch_pdf`（下载）；`clients/` 是纯 API 客户端（共享 `_HttpClientMixin` SSRF 校验 + 逐跳重定向校验）；`_common.py` 有 `SearchRunState` 跨调用去重池（`wants_run_state` opt-in）、查询 LRU 缓存、源级熔断器
 - `review/` — `submit_review` / `submit_download_review`（reviewer 的裁决工具）
 - `rank/` — `lookup_venue_rank`（期刊/会议等级查询）
+- `citations/` — 4 引用工具（`lookup_citation`/`add_citation`/`format_citations`/`list_citations`，装配 writer；reviewer 装 list+lookup 溯源核验）
+- `rag/` — `rag_retrieve`（`RagRetrieveTool`：惰性取 RAGService 单例 + 持锁检索 + 格式化结果；装配 writer 与 qa-agent）
 - `vision/` — `analyze_figures`（`needs_parent=True`：视觉 LLM 调用归属父 agent 轮次进审计）。图提取走 pdffigures2 管线（proposal 候选 + 打分选优 + no-overlap 互斥），随后视觉模型结构化看图分析 + 嵌入落盘；key 缺失/无图/失败全降级
 - `orchestration/` — `spawn_sub_agent` / `ask_user_question` / `SubAgentMode`（见下）
 - `common/` — `make_tools(config, tool_items)` 装配工厂：解析 `allowed_roots` 语义根名 → 绝对路径注入 `allowed_paths`（新列表，不污染类属性）、注入 `_config`、给 `description` 追加 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）；`_http.py` 共享 HTTP 基础设施
