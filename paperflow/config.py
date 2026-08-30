@@ -70,14 +70,15 @@ class VisionLLMConfig:
     """
 
     #: 视觉端点基础地址，默认智谱 OpenAI 兼容端点
-    base_url: str = "https://open.bigmodel.cn/api/paas/v4"
+    # base_url: str = "https://open.bigmodel.cn/api/paas/v4"
+    base_url: str = "https://api.deepseek.com/v1"
 
     #: 视觉模型 API 密钥——**不硬编码默认值**，经 PAPERFLOW_VISION_API_KEY 提供
     api_key: str = ""
 
     #: 视觉模型名称（glm-4v-flash 免费 / glm-4v-plus 更强）
-    model: str = "glm-4v-flash"
-
+    # model: str = "glm-4v-flash"
+    model: str = "deepseek-v4-flash-vision-exp"
     #: 单次视觉输出上限（逐图分析，几行结构化文本，2048 足够）
     max_tokens: int = 2048
 
