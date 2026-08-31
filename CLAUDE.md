@@ -69,7 +69,7 @@ paperflow/
   citations/     引用管理(溯源落地):bib.py 读写 + corpus.py 语料标题索引
                  + manager.py 编排
   vision/        视觉分析(pdffigures2 提取管线: parsers/ 解析 + detectors/ 图检测 + 编排 + 视觉模型看图)
-  tools/         原子工具:file/ search/ review/ rank/ orchestration/ citations/ rag/ vision/ common
+  tools/         原子工具:file/ search/ review/ rank/ orchestration/ citations/ rag/ vision/ memory/ common
   terminal/      终端交互:InputIO(输入) + StreamRenderer(渲染) + diff
 agents/<name>/   Agent 插件:SKILL.md(frontmatter+system_prompt) + tools.py(TOOLS 列表)
 ```
@@ -173,7 +173,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 **关键不变式**：
 - **SQL 块是真相源，markdown 是投影**——与旧 GitStore 的语义正好相反
-- 记忆工具经 **`get_memory_tools()`**（`tools/__init__.py`）惰性构建 13 个工具（模块级单例，双重检查加锁，每次返回新列表副本）；执行时经 **`set_memory_context(MemoryToolsContext(...))`** 绑定一次（cli.py）+ `get_memory_context()` 取运行时上下文；未装配时工具降级为错误文本而非崩溃
+- 记忆工具在 **`paperflow/tools/memory/`**，经 **`get_memory_tools()`**（`tools/memory/__init__.py`）惰性构建 13 个工具（模块级单例，双重检查加锁，每次返回新列表副本）；执行时经 **`set_memory_context(MemoryToolsContext(...))`** 绑定一次（cli.py）+ `get_memory_context()` 取运行时上下文；未装配时工具降级为错误文本而非崩溃
 - 13 个记忆工具分 4 组：**blocks**（`memory`/`memory_replace`/`memory_insert`/`memory_rethink`/`memory_apply_patch`/`memory_finish_edits`）、**archival**（`archival_memory_insert`/`archival_memory_search`）、**recall**（`conversation_search`，默认过滤 tool 消息防递归噪音）、**paper_lists**（`unread_list_add`/`unread_list_remove`/`history_append`/`extract_title`——列表块工具，`unread_list_add` 要求真实标题绝不用文件名）
 - **Compaction**（`compaction.py`）：只压缩 in-context 窗口（驱逐旧对话 + 插 SummarySchema 摘要 + 保留尾部），**永不删 SQL 行**；`should_compress`（tiktoken 估算，超 `trigger_ratio × context_size` 触发）+ `run_compaction`（滑动窗口，保留 tool 消息与其结果的配对，尾部孤儿清理）
 - **Sleeptime**（`sleeptime.py`）：后台记忆整合，REPL 每轮循环顶部 `run_once_if_due()`（读 stdin 前）；LLM 产出 `MemoryEditBatch` 经 BlockManager 应用 + git commit；两阶段校验（白名单文件、禁止删 `system/` 块），连续 3 次失败强制推进游标防死循环
@@ -227,6 +227,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `citations/` — 4 引用工具（`lookup_citation`/`add_citation`/`format_citations`/`list_citations`，装配 writer；reviewer 装 list+lookup 溯源核验）
 - `rag/` — `rag_retrieve`（`RagRetrieveTool`：惰性取 RAGService 单例 + 持锁检索 + 格式化结果；装配 writer 与 qa-agent）
 - `vision/` — `analyze_figures`（`needs_parent=True`：视觉 LLM 调用归属父 agent 轮次进审计）。图提取走 pdffigures2 管线（proposal 候选 + 打分选优 + no-overlap 互斥），随后视觉模型结构化看图分析 + 嵌入落盘；key 缺失/无图/失败全降级
+- `memory/` — 13 个记忆工具（`get_memory_tools()` 惰性单例 + `set_memory_context`/`get_memory_context` 运行时上下文；blocks/archival/recall/paper_lists 四组；装配 supervisor，子 agent 各装子集）
 - `orchestration/` — `spawn_sub_agent` / `ask_user_question` / `SubAgentMode`（见下）
 - `common/` — `make_tools(config, tool_items)` 装配工厂：解析 `allowed_roots` 语义根名 → 绝对路径注入 `allowed_paths`（新列表，不污染类属性）、注入 `_config`、给 `description` 追加 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）；`_http.py` 共享 HTTP 基础设施
 
