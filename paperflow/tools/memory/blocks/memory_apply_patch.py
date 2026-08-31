@@ -1,6 +1,6 @@
 """MemoryApplyPatchTool：就地应用简化 unified diff（仅单块模式）。"""
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.core.memory.tools.runtime_context import get_memory_context
+from paperflow.tools.memory.runtime_context import get_memory_context
 
 
 def _apply_diff(value: str, patch: str) -> str:

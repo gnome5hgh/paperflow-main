@@ -34,7 +34,7 @@ from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
 from paperflow.core.memory.services.message_manager import MessageManager
 from paperflow.core.memory.services.passage_manager import PassageManager
 from paperflow.core.memory.services.archive_manager import ArchiveManager
-from paperflow.core.memory.tools import set_memory_context, MemoryToolsContext
+from paperflow.tools.memory import set_memory_context, MemoryToolsContext
 from paperflow.core.memory.services.title_extractor import TitleExtractor
 from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.sleeptime import Sleeptime

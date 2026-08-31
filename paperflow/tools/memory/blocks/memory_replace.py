@@ -1,6 +1,6 @@
 """MemoryReplaceTool：替换记忆块中的精确子串（old_string 必须唯一）。"""
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.core.memory.tools.runtime_context import get_memory_context
+from paperflow.tools.memory.runtime_context import get_memory_context
 
 
 def _memory_replace(ctx, label: str, old_string: str, new_string: str) -> str:

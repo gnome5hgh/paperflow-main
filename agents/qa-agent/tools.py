@@ -8,7 +8,7 @@
 钩子统一兜底。
 """
 from paperflow.config import PaperFlowConfig
-from paperflow.core.memory.tools import (
+from paperflow.tools.memory import (
     ConversationSearchTool, ArchivalMemorySearchTool, ArchivalMemoryInsertTool,
     ExtractTitleTool, UnreadListAddTool, UnreadListRemoveTool, HistoryAppendTool,
 )

@@ -1,7 +1,7 @@
 """MemoryRethinkTool：整块重写记忆（与 memory 的 replace 动作共用 rewrite_block）。"""
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.core.memory.tools.runtime_context import get_memory_context
-from paperflow.core.memory.tools.blocks._common import rewrite_block
+from paperflow.tools.memory.runtime_context import get_memory_context
+from paperflow.tools.memory.blocks._common import rewrite_block
 
 
 class MemoryRethinkTool(Tool):

@@ -1,6 +1,6 @@
 """ConversationSearchTool：检索完整对话历史（Recall，默认过滤 tool 消息防递归）。"""
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.core.memory.tools.runtime_context import get_memory_context
+from paperflow.tools.memory.runtime_context import get_memory_context
 
 
 class ConversationSearchTool(Tool):

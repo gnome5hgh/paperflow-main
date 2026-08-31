@@ -5,8 +5,8 @@
 from datetime import datetime
 
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.core.memory.tools.runtime_context import get_memory_context
-from paperflow.core.memory.tools.paper_lists._common import append_line
+from paperflow.tools.memory.runtime_context import get_memory_context
+from paperflow.tools.memory.paper_lists._common import append_line
 
 
 class HistoryAppendTool(Tool):

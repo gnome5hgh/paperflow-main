@@ -11,7 +11,7 @@ from paperflow.citations import CitationManager
 from paperflow.tools.citations import (LookupCitationTool, AddCitationTool,
                                        FormatCitationsTool, ListCitationsTool)
 from paperflow.config import PaperFlowConfig
-from paperflow.core.memory.tools import HistoryAppendTool, UnreadListRemoveTool
+from paperflow.tools.memory import HistoryAppendTool, UnreadListRemoveTool
 from paperflow.tools.rag import RagRetrieveTool
 from paperflow.tools import (
     ReadFileTool, ReadPdfTool, WriteFileTool, EditFileTool,

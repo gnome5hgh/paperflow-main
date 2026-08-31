@@ -1,7 +1,7 @@
 """MemoryTool：统一记忆块管理（create / replace / delete / rename）。"""
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.core.memory.tools.runtime_context import get_memory_context
-from paperflow.core.memory.tools.blocks._common import rewrite_block
+from paperflow.tools.memory.runtime_context import get_memory_context
+from paperflow.tools.memory.blocks._common import rewrite_block
 
 
 class MemoryTool(Tool):

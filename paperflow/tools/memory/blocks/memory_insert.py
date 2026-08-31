@@ -1,6 +1,6 @@
 """MemoryInsertTool：在记忆块指定行号后插入内容（-1=末尾，0=开头）。"""
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.core.memory.tools.runtime_context import get_memory_context
+from paperflow.tools.memory.runtime_context import get_memory_context
 
 
 def _memory_insert(ctx, label: str, new_string: str, insert_line: int = -1) -> str:

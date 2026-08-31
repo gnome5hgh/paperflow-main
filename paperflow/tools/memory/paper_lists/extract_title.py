@@ -1,6 +1,6 @@
 """ExtractTitleTool：提取论文权威标题（PDF 提取链或用户直接提供，禁文件名）。"""
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.core.memory.tools.runtime_context import get_memory_context
+from paperflow.tools.memory.runtime_context import get_memory_context
 
 
 class ExtractTitleTool(Tool):

@@ -1,6 +1,6 @@
 """ArchivalMemorySearchTool：检索长期记忆（语义 + tags 过滤）。"""
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.core.memory.tools.runtime_context import get_memory_context
+from paperflow.tools.memory.runtime_context import get_memory_context
 
 
 class ArchivalMemorySearchTool(Tool):

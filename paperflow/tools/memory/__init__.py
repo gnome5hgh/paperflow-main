@@ -9,21 +9,21 @@ from __future__ import annotations
 import threading
 
 from paperflow.core.tool import Tool
-from paperflow.core.memory.tools.runtime_context import (
+from paperflow.tools.memory.runtime_context import (
     MemoryToolsContext, set_memory_context, get_memory_context)
-from paperflow.core.memory.tools.blocks.memory_replace import MemoryReplaceTool
-from paperflow.core.memory.tools.blocks.memory_insert import MemoryInsertTool
-from paperflow.core.memory.tools.blocks.memory_rethink import MemoryRethinkTool
-from paperflow.core.memory.tools.blocks.memory_finish_edits import MemoryFinishEditsTool
-from paperflow.core.memory.tools.blocks.memory import MemoryTool
-from paperflow.core.memory.tools.blocks.memory_apply_patch import MemoryApplyPatchTool
-from paperflow.core.memory.tools.archival.archival_memory_insert import ArchivalMemoryInsertTool
-from paperflow.core.memory.tools.archival.archival_memory_search import ArchivalMemorySearchTool
-from paperflow.core.memory.tools.recall.conversation_search import ConversationSearchTool
-from paperflow.core.memory.tools.paper_lists.unread_list_add import UnreadListAddTool
-from paperflow.core.memory.tools.paper_lists.unread_list_remove import UnreadListRemoveTool
-from paperflow.core.memory.tools.paper_lists.history_append import HistoryAppendTool
-from paperflow.core.memory.tools.paper_lists.extract_title import ExtractTitleTool
+from paperflow.tools.memory.blocks.memory_replace import MemoryReplaceTool
+from paperflow.tools.memory.blocks.memory_insert import MemoryInsertTool
+from paperflow.tools.memory.blocks.memory_rethink import MemoryRethinkTool
+from paperflow.tools.memory.blocks.memory_finish_edits import MemoryFinishEditsTool
+from paperflow.tools.memory.blocks.memory import MemoryTool
+from paperflow.tools.memory.blocks.memory_apply_patch import MemoryApplyPatchTool
+from paperflow.tools.memory.archival.archival_memory_insert import ArchivalMemoryInsertTool
+from paperflow.tools.memory.archival.archival_memory_search import ArchivalMemorySearchTool
+from paperflow.tools.memory.recall.conversation_search import ConversationSearchTool
+from paperflow.tools.memory.paper_lists.unread_list_add import UnreadListAddTool
+from paperflow.tools.memory.paper_lists.unread_list_remove import UnreadListRemoveTool
+from paperflow.tools.memory.paper_lists.history_append import HistoryAppendTool
+from paperflow.tools.memory.paper_lists.extract_title import ExtractTitleTool
 
 __all__ = [
     "get_memory_tools", "set_memory_context", "get_memory_context", "MemoryToolsContext",

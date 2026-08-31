@@ -1,7 +1,7 @@
 """UnreadListRemoveTool：把论文移出未读清单（按权威标题精确删行）。"""
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.core.memory.tools.runtime_context import get_memory_context
-from paperflow.core.memory.tools.paper_lists._common import remove_line_by_key
+from paperflow.tools.memory.runtime_context import get_memory_context
+from paperflow.tools.memory.paper_lists._common import remove_line_by_key
 
 
 class UnreadListRemoveTool(Tool):
