@@ -11,6 +11,11 @@ import json
 import threading
 from pathlib import Path
 
+#: TitleExtractor 回退层级中可信任的来源：只有这些层级产出的标题可入索引/建条目。
+#: pymupdf 字体启发式会把期刊名/页眉/arXiv 头当标题（GROBID 挂时实测污染 corpus
+#: 与 bib），宁缺毋滥——提取不可靠就返回空，让调用方不索引/不建条目。
+_TRUSTED_TITLE_SOURCES = frozenset({"grobid", "pdftitle"})
+
 
 class CorpusIndex:
     """论文中心索引：`{norm_title: {title, note_path, pdf_path, biblio}}`。
@@ -120,8 +125,9 @@ class CorpusIndex:
     def _pdf_meta(self, path: str) -> tuple[str, dict]:
         """标题+书目：复用 GROBID 解析（ParsedDoc.title/biblio），空时回退 TitleExtractor。
 
-        解析失败（异常/空标题）走 5 级链兜底；全失败返回空串——调用方决定
-        是否索引（不索引比用文件名凑数好）。
+        TitleExtractor 回退只接受 grobid/pdftitle 层级（见 _TRUSTED_TITLE_SOURCES）
+        ——pymupdf 字体启发式把期刊名/页眉当标题，GROBID 挂时实测污染 corpus 与 bib，
+        宁缺毋滥：提取不可靠就返回空串，由调用方不索引/不建条目，而不是垃圾标题凑数。
         """
         try:
             doc = self._rag().parse_pdf_cached(path)
@@ -131,7 +137,7 @@ class CorpusIndex:
             pass
         try:
             r = self._te().extract(pdf_path=path)
-            if r.title:
+            if r.title and r.source in _TRUSTED_TITLE_SOURCES:
                 return r.title, {}
         except Exception:
             pass

@@ -121,11 +121,19 @@ class CitationManager:
         return candidate
 
     def add_from_pdf(self, pdf_path: str) -> dict:
-        """语料库内 PDF → bib 条目（append-only；已存在则去重返回已有 key）。"""
+        """语料库内 PDF → bib 条目（append-only；已存在则去重返回已有 key）。
+
+        要求 biblio 至少含作者+年份：无作者/年份的空壳条目（GROBID 不可用时标题
+        提取降级的产物）无法支撑真实引用，宁缺毋滥——拒绝入库并交上层提示用户，
+        而不是写出 `@article{key, title={…}}` 这种垃圾条目。
+        """
         with self._lock:
             title, biblio = self._index._pdf_meta(pdf_path)
             if not title:
                 return {"key": None, "created": False, "note": "PDF 标题提取失败，未入库"}
+            if not biblio.get("authors") or not biblio.get("year"):
+                return {"key": None, "created": False,
+                        "note": "PDF 元数据不足（缺作者/年份），未入库——请启动 GROBID 或手动补充"}
             existing = bibmod.find_by_title(self.bib_path, title)
             if existing is not None:
                 return {"key": existing.key, "created": False, "note": "已在库"}
