@@ -39,7 +39,11 @@ def _normalize(text: str) -> str:
 
 
 def ensure_file(path: str | Path) -> None:
-    """bib 文件不存在时创建（带头部注释）；父目录自动建。"""
+    """bib 文件不存在时创建（带头部注释）；父目录自动建。
+
+    Args:
+        path: bib 文件的路径（字符串或 Path 对象）。
+    """
     p = Path(path)
     if not p.exists():
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -47,7 +51,15 @@ def ensure_file(path: str | Path) -> None:
 
 
 def _entry_body(text: str, start: int) -> str:
-    """从条目体起点（条目 '{' 之后）括号配对截取到外层右括号。"""
+    """从条目体起点（条目 '{' 之后）括号配对截取到外层右括号。
+
+    Args:
+        text: 完整的 bib 文件内容。
+        start: 条目 `{` 之后的下标（即 `m.end()`，指向体开始）。
+
+    Returns:
+        括号配对截取到的字符串（不含最外层右括号，即从 `start` 到配对 `}` 之前的内容）。
+    """
     i, depth = start, 1
     while i < len(text):
         if text[i] == "{":
@@ -61,11 +73,19 @@ def _entry_body(text: str, start: int) -> str:
 
 
 def _fields_of(body: str) -> dict[str, str]:
-    """提取条目体内的 name = {value} 字段（值内嵌套花括号按深度配对）。"""
+    """提取条目体内的 name = {value} 字段（值内嵌套花括号按深度配对）。
+
+    Args:
+        body: 条目的体内容（不含 `@type{key,` 前缀，也不含最外层右括号）。
+
+    Returns:
+        字段名到字段值的字典。字段值去掉了外层花括号。
+    """
     fields = {}
     for m in re.finditer(r"(\w+)\s*=\s*\{", body):
         name = m.group(1)
         j, d = m.end(), 1
+        # 括号深度计数，找到配对关闭的花括号
         while j < len(body):
             if body[j] == "{":
                 d += 1
@@ -83,12 +103,23 @@ def parse_entries(path: str | Path) -> list[BibEntry]:
 
     条目起始 ``@type{key,``，字段按括号配对提取（不解析嵌套语法）。
     raw 保留条目原文（含 @type{...} 到配对右括号），供 bibtex 渲染。
+
+    Args:
+        path: bib 文件路径。
+
+    Returns:
+        解析出的 `BibEntry` 列表。若文件不存在或为空，返回空列表。
+
+    边界：
+        - 条目必须严格遵循 `@type{key,` 格式，key 后紧跟逗号，否则无法识别。
+        - 若条目体内有非字段的花括号，不影响字段提取（按深度配对）。
     """
     p = Path(path)
     if not p.exists():
         return []
     text = p.read_text(encoding="utf-8")
     entries = []
+    # 匹配 `@类型{键,` 注意 key 不能包含逗号和花括号
     for m in re.finditer(r"@(\w+)\s*\{([^,{]+)\s*,", text):
         entry_type, key = m.group(1), m.group(2).strip()
         body = _entry_body(text, m.end())
@@ -105,7 +136,15 @@ def parse_entries(path: str | Path) -> list[BibEntry]:
 
 
 def find_by_title(path: str | Path, title: str) -> BibEntry | None:
-    """按标题找条目（归一化比较）；用于去重。无命中返回 None。"""
+    """按标题找条目（归一化比较）；用于去重。无命中返回 None。
+
+    Args:
+        path: bib 文件路径。
+        title: 待匹配的标题（原始字符串，函数内部归一化）。
+
+    Returns:
+        匹配的 `BibEntry` 对象，若未命中返回 `None`。
+    """
     norm = _normalize(title)
     for e in parse_entries(path):
         if e.title and _normalize(e.title) == norm:
@@ -114,7 +153,20 @@ def find_by_title(path: str | Path, title: str) -> BibEntry | None:
 
 
 def append_entry(path: str | Path, entry_text: str) -> None:
-    """追加一条已格式化的 bib 条目（append-only，保留原内容与注释）。"""
+    """追加一条已格式化的 bib 条目（append-only，保留原内容与注释）。
+
+    不会重写现有内容，保留用户手工添加的分节注释。若文件不存在则先创建。
+    追加前确保条目以换行结尾，避免与后续内容粘连。
+    写操作持进程内可重入锁，防止同一进程内并发写冲突。
+
+    Args:
+        path: bib 文件路径。
+        entry_text: 完整的 BibTeX 条目文本（可含前导注释，但建议不含尾部多余换行）。
+                    函数会自动补一个换行符，并前导一个空行以分隔条目。
+
+    线程安全：使用 `_write_lock` (RLock) 保护写入操作，同一进程内任意线程串行。
+              多进程同时写入不会阻塞，但在正常使用中极少发生，故未加文件锁。
+    """
     p = Path(path)
     ensure_file(p)
     text = entry_text if entry_text.endswith("\n") else entry_text + "\n"

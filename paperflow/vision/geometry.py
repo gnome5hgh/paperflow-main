@@ -24,7 +24,13 @@ class Position:
 
 @dataclass(frozen=True)
 class Word:
-    """一个词：文本 + 包围盒 + 其各字符的排版信息列表。"""
+    """一个词：文本 + 包围盒 + 其各字符的排版信息列表。
+
+    Attributes:
+        text: 词的文本。
+        boundary: 词的外接矩形。
+        positions: 每个字符的排版信息，长度应与词内字符数一致。
+    """
 
     text: str
     boundary: Box
@@ -38,7 +44,13 @@ class Word:
 
 @dataclass(frozen=True)
 class Line:
-    """一行词：词列表 + 整行包围盒 + 是否水平（brief 接口显式传入，不做推导）。"""
+    """一行词：词列表 + 整行包围盒 + 是否水平（brief 接口显式传入，不做推导）。
+
+    Attributes:
+        words: 该行包含的词（按阅读顺序）。
+        boundary: 整行的外接矩形。
+        is_horizontal: 行是否为水平方向（非旋转/竖直文本）。
+    """
 
     words: list[Word]
     boundary: Box
@@ -59,6 +71,10 @@ class Paragraph:
 
     与 Paragraph.scala 的 ParagraphContainer 语义一致：boundary 由调用方用
     Box_container 对各行 boundary 求并集后传入。
+
+    Attributes:
+        lines: 该段包含的行（按阅读顺序）。
+        boundary: 段落的外接矩形。
     """
 
     lines: list[Line]
@@ -114,7 +130,15 @@ class Box:
 
         margin 把 other 向四周扩 margin 后再判重叠：正 margin 允许隔着空隙也算相交，
         负 margin 要求两侧真正重叠 |margin| 以上（边界接触不算）。
+
+        Args:
+            other: 另一个矩形框。
+            margin: 扩展容差。正 margin 表示允许两框之间有空隙仍算相交（即扩大 other）；
+                    负 margin 要求两框必须相互覆盖至少 |margin| 距离（边界接触不算）。
+        Returns:
+            True 若相交，否则 False。
         """
+        # 检查在 x 和 y 方向上是否都不分离：self.x2 < other.x1 - margin 等四个条件。
         return not (
             self.x2 < other.x1 - margin
             or self.x1 > other.x2 + margin
@@ -123,7 +147,13 @@ class Box:
         )
 
     def intersectRegion(self, other: "Box") -> "Box | None":
-        """两框的交叠区域；不相交返回 None。"""
+        """两框的交叠区域；不相交返回 None。
+
+        Args:
+            other: 另一个矩形框。
+        Returns:
+            表示交叠区域的新 Box，或 None。
+        """
         if not self.intersects(other):
             return None
         return Box(
@@ -134,12 +164,25 @@ class Box:
         )
 
     def intersectArea(self, other: "Box") -> float:
-        """与 other 的交叠面积；不相交为 0。"""
+        """与 other 的交叠面积；不相交为 0。
+
+        Args:
+            other: 另一个矩形框。
+        Returns:
+            交叠面积（浮点数）。
+        """
         overlap = self.intersectRegion(other)
         return overlap.area if overlap is not None else 0.0
 
     def contains(self, other: "Box", margin: float = 0.0) -> bool:
-        """other 是否在 self 内（other 向外扩 margin 后仍不越界即算含）。"""
+        """判断 other 是否被当前框包含（允许容差 margin）。
+
+        Args:
+            other: 被检查的矩形框。
+            margin: 容差，为正时允许 other 向外扩展 margin 仍算包含（即边界可略微超出）。
+        Returns:
+            True 若 other 在 self 内（含边界）.
+        """
         return (
             self.x1 <= other.x1 + margin
             and self.y1 <= other.y1 + margin
@@ -148,7 +191,13 @@ class Box:
         )
 
     def container(self, other: "Box") -> "Box":
-        """与 other 的最小外接矩形（并集）。"""
+        """返回包含当前框和 other 的最小外接矩形（并集）。
+
+        Args:
+            other: 另一个矩形框。
+        Returns:
+            一个新的 Box，其边界为两框的并集。
+        """
         return Box(
             min(self.x1, other.x1),
             min(self.y1, other.y1),
@@ -157,12 +206,26 @@ class Box:
         )
 
     def copy(self, **kw) -> "Box":
-        """返回改字段后的新 Box（frozen 实例不能直接改，用 replace 换新）。"""
+        """返回修改指定字段后的新 Box（因为 dataclass frozen 不可变，用 replace 换新）。
+
+        Args:
+            **kw: 要修改的字段名和值，如 x1=10, y1=20。
+        Returns:
+            新的 Box 实例。
+        """
         return replace(self, **kw)
 
 
 def Box_container(boxes: list[Box]) -> Box:
-    """所有 box 的最小外接矩形；空列表报错（对应 Scala 的 require）。"""
+    """计算所有框的最小外接矩形（并集）。
+
+    Args:
+        boxes: 非空的 Box 列表。
+    Returns:
+        一个 Box，其边界包含所有输入框。
+    Raise:
+        ValueError: 如果 boxes 为空。
+    """
     if not boxes:
         raise ValueError("Box_container 不能对空列表求并集")
     return Box(
@@ -179,6 +242,17 @@ def Box_crop(box: Box, boxes: list[Box], margin: float = 0.0) -> "Box | None":
     语义照抄 Box.scala 的 crop：返回仍与 boxes「在相同位置相交」的尽可能小的 box，
     即内容在 box 内的外接边界；若 box 内没有任何内容相交则返回 None。
     margin 为相交容差（同 intersects），与内容共享边界视为相交与否由此容差决定。
+
+    算法:
+        对每个内容框，计算它相对 box 四边的内缩量（左、右、上、下），取各方向最小内缩，
+        然后应用这些内缩量（非负）得到收缩后的框。
+
+    Args:
+        box: 待裁剪的原始矩形。
+        boxes: 内容框列表（通常为图形、文本等）。
+        margin: 与内容框相交的容差，同 Box.intersects。
+    Returns:
+        裁剪后的 Box，或 None（若 box 与任何内容框都不相交）。
     """
     shrink_left = box.width
     shrink_right = box.width
@@ -208,6 +282,17 @@ def find_empty_horizontal_blocks(region: Box, content: list[Box]) -> list[Box]:
     照抄 Box.scala 的 findEmptyHorizontalBlocks：从 region 出发，对每个 content 框
     把与其相交的空白带裁成一块或多块。产出等宽（保持 region 的 x1/x2）、极大扩展、
     彼此互不相交、也不与 content 相交的空白带。
+
+    算法:
+        初始空白带为 region。遍历每个 content 框，若与某个空白带相交，则根据 content
+        框的纵向位置，将空白带切分为上方、下方或中间两块（或被覆盖掉），从而逐步细化。
+
+    Args:
+        region: 搜索区域（通常为一个候选图区域）。
+        content: 内容框列表（如文本、图形等），用于界定空白带的边界。
+    Returns:
+        一个 Box 列表，每个代表一个水平方向的空白带状区域（宽度与 region 相同，
+        高度由内容框夹出），它们互不重叠且不包含任何 content 框。
     """
     empty_blocks = [region]
     for content_box in content:

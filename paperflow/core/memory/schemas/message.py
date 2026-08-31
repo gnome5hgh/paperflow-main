@@ -18,7 +18,14 @@ __all__ = ["Message", "MessageRole"]
 
 
 class MessageRole(Enum):
-    """对话消息的角色枚举（与 OpenAI wire 的角色名一致）。"""
+    """对话消息的角色枚举（与 OpenAI wire 的角色名一致）。
+
+    用于标识每条消息的来源角色：
+        - system: 系统提示词
+        - user: 用户输入
+        - assistant: 模型输出
+        - tool: 工具调用结果（与 tool_call_id 关联）
+    """
 
     system = "system"
     user = "user"
@@ -31,16 +38,40 @@ class Message(BaseModel):
 
     tool_calls / tool_call_id 记录工具调用轨迹；step_id / run_id / otid 是
     审计与轨迹追踪的关联键。
+
+    与 paperflow.core.llm.Message（wire 格式）的区别：
+        - wire 格式的 content 可以是 str、list 或 dict（多模态或结构化内容），
+          而本模型 content 保证为 str | None，便于 SQLite 存储与统一检索。
+        - 本模型增加了持久化辅助字段：id、created_at，以及追踪字段 step_id 等。
+        - 转换由 MessageManager._wire_to_schema 完成，确保类型安全。
     """
 
+    # 自动生成唯一 ID（格式："message-<32位hex>"）
+    # 由 ORM 层在插入时使用，不作为业务主键（实际上确实是主键）
     id: str = Field(default_factory=lambda: f"message-{uuid.uuid4().hex}")
+
+    # 消息角色（枚举）
     role: MessageRole
+
+    # 消息内容，保证为字符串或 None（单轮对话中可能为 None，如纯工具调用消息）
+    # 落盘时不做 JSON 类型猜测，直接存储字符串，回放时按原样使用
     content: str | None = None
-    # 内容为：[{"id": "call_00_6u3sYDficDiQyUUyKrdF4993", "type": "function", "function": {"name": "memory_insert", "arguments": "{\"label\": \"human\", \"new_string\": \"- 论文阅读标准（导师要求）：仅接受 JCR Q2 及以上期刊论文；检索/推荐/下载论文时默认以此过滤。\\n\", \"insert_line\": -1}"}}]
+
+    # 工具调用列表（仅 assistant 消息携带），每个元素为字典，结构如：
+    # {"id": "call_xxx", "type": "function", "function": {"name": "...", "arguments": "..."}}
+    # 由 LLM 生成后原样序列化为 JSON 存储。
     tool_calls: list[dict] = Field(default_factory=list)
-    # 用于 role = "tool"的消息，对应 tool_calls 中的 “id”
+
+    # 工具调用 ID，用于 role="tool" 的消息，关联到对应的 assistant 工具调用。
+    # 空字符串或 None 表示非 tool 消息或无关联。
     tool_call_id: str | None = None
-    step_id: str | None = None
-    run_id: str | None = None
-    otid: str | None = None
+
+    # ---------- 审计与轨迹追踪字段 ----------
+    # 这些字段由上层执行引擎（如 Agent 循环）赋值，用于跨步骤/跨运行追踪。
+    step_id: str | None = None       # 工作流中的步骤标识
+    run_id: str | None = None        # 单次运行标识（一组 step 的集合）
+    otid: str | None = None          # 开放追踪 ID（如 OpenTelemetry trace ID）
+
+    # 消息创建时间（UTC），由 ORM 层在插入时自动填充。
+    # 若调用方未提供，则在 insert_message 中取当前时间。
     created_at: datetime | None = None

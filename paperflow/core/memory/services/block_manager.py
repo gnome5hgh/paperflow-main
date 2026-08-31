@@ -24,10 +24,25 @@ class BlockManager:
     """核心块业务层：持有 read_only / limit 不变式，维护写前快照历史链。"""
 
     def __init__(self, db: MemoryDB):
+        """初始化块管理器。
+
+        Args:
+            db: 数据库连接（需已初始化并持有全局写锁）。
+        """
         self.db = db
 
     def _to_schema(self, row: dict) -> Block:
-        """把 DB 行转回 Block 模型（metadata_ / read_only 从 JSON/整型还原）。"""
+        """把 DB 行转回 Block 模型（metadata_ / read_only 从 JSON/整型还原）。
+
+        Args:
+            row: 数据库行（dict 形式，含 id, label, value, limit, description,
+                metadata_, read_only, version）。
+
+        Returns:
+            填充好的 Block 实例。
+
+        注意：metadata_ 在 DB 中为 JSON 字符串，需反序列化为 dict。
+        """
         import json
         return Block(
             id=row["id"], label=row["label"], value=row["value"], limit=row["limit"],
@@ -38,7 +53,14 @@ class BlockManager:
         )
 
     def _db_history(self, label: str) -> list[dict]:
-        """测试辅助：按 label 取该块的历史快照。"""
+        """测试辅助：按 label 取该块的历史快照。
+
+        Args:
+            label: 块的标签名称。
+
+        Returns:
+            该块的历史快照列表（block_history 表行），若块不存在返回空列表。
+        """
         row = block_orm.select_block_by_label(self.db, label)
         if row is None:
             return []
@@ -47,7 +69,18 @@ class BlockManager:
     def create_block(self, label: str, value: str, limit: int = 2000,
                      description: str | None = None,
                      read_only: bool = False) -> Block:
-        """新建块并落盘（初始版本号 1）。"""
+        """新建块并落盘（初始版本号 1）。
+
+        Args:
+            label: 块的标签（唯一标识符，如 "persona", "human"）。
+            value: 块的内容文本。
+            limit: 字符上限（默认 2000），更新时若超过将拒绝。
+            description: 块的描述（可选，用于展示）。
+            read_only: 是否为只读块（只读块不可更新/删除，默认 False）。
+
+        Returns:
+            新创建的 Block 实例（含自动生成的 id 和初始 version=1）。
+        """
         b = Block.new(label, value)
         b.limit = limit
         b.description = description
@@ -56,23 +89,44 @@ class BlockManager:
         return b
 
     def get_block(self, block_id: str) -> Block:
-        """按 id 取块；不存在抛 KeyError（变异工具硬失败的来源）。"""
+        """按 id 取块；不存在抛 KeyError（变异工具硬失败的来源）。
+
+        Args:
+            block_id: 块的唯一标识。
+
+        Returns:
+            块对象。
+
+        Raises:
+            KeyError: 当 block_id 不存在时。
+        """
         row = block_orm.select_block(self.db, block_id)
         if row is None:
             raise KeyError(f"block {block_id} not found")
         return self._to_schema(row)
 
     def get_block_by_label(self, label: str) -> Block | None:
-        """按 label 取块；不存在返回 None（工具层据此判断「该建还是该报错」）。"""
+        """按 label 取块；不存在返回 None（工具层据此判断「该建还是该报错」）。
+
+        Args:
+            label: 块的标签名称。
+
+        Returns:
+            块对象或 None。
+        """
         row = block_orm.select_block_by_label(self.db, label)
         return self._to_schema(row) if row else None
 
     def ensure_default_blocks(self) -> list[str]:
         """播种默认核心记忆块：persona/human 各自缺失才创建，绝不覆盖已有块。
 
-        返回实际创建的 label 列表（无创建时为空）。persona 是助手身份、human 是
-        用户画像引导占位——两者是 Memory.compile() 每轮渲染的 system/ 块，缺失时
-        记忆系统呈空壳。幂等：已存在的块（含用户经 self-editing 改过的）不动。
+        Returns:
+            实际创建的 label 列表（无创建时为空）。
+
+        设计意图：
+            - persona 是助手身份、human 是用户画像引导占位——两者是 Memory.compile()
+              每轮渲染的 system/ 块，缺失时记忆系统呈空壳。
+            - 幂等性：已存在的块（含用户经 self-editing 改过的）不动，避免意外覆盖。
         """
         created: list[str] = []
         for label, value in (("persona", DEFAULT_PERSONA),
@@ -83,16 +137,33 @@ class BlockManager:
         return created
 
     def list_blocks(self) -> list[Block]:
-        """返回全部块（按创建时间排序），供 Memory 重建与 head 编译。"""
+        """返回全部块（按创建时间排序），供 Memory 重建与 head 编译。
+
+        Returns:
+            所有块的列表（按 DB 插入顺序，即创建时间升序）。
+        """
         return [self._to_schema(r) for r in block_orm.select_blocks(self.db)]
 
     def update_block_value(self, label: str, value: str) -> Block:
         """更新块值：先校验（存在 / read_only / 长度），再快照旧值进历史并 +1 版本。
 
-        这是「乐观锁非 CAS」的核心：每次更新把当前版本写进 block_history 快照，
-        版本号单调 +1——版本列只做写入标注与历史链排序，不做「读时≠写时拒绝」
-        的比较交换。单用户 + 全局写锁下并发已被串行化，比较交换没有用武之地。
+        Args:
+            label: 块的标签。
+            value: 新的内容文本。
+
+        Returns:
+            更新后的 Block 对象（含新的 version）。
+
+        Raises:
+            KeyError: label 不存在。
+            ValueError: 块为 read_only 或新 value 超限。
+
+        版本策略：
+            - 每次更新把当前版本写进 block_history 快照，版本号单调 +1。
+            - 版本列只做写入标注与历史链排序，不做「读时≠写时拒绝」的 CAS 比较交换。
+            - 单用户 + 全局写锁下并发已被串行化，比较交换没有用武之地。
         """
+        # 1. 读取当前块并校验不变式
         row = block_orm.select_block_by_label(self.db, label)
         if row is None:
             raise KeyError(f"block {label} not found")
@@ -100,16 +171,30 @@ class BlockManager:
             raise ValueError(_READ_ONLY)
         if len(value) > row["limit"]:
             raise ValueError(_LIMIT.format(limit=row["limit"]))
+
+        # 2. 计算新版本号并创建快照（旧值保存到 block_history）
         new_version = row["version"] + 1
         # checkpoint：改动前快照 → block_history（撤销/重做依据）
         block_orm.checkpoint_block(self.db, row["id"], row["label"], row["value"],
                                    row["limit"], row["description"],
                                    {}, row["version"])
+
+        # 3. 更新 blocks 表
         block_orm.update_block(self.db, row["id"], value, new_version)
         return self.get_block(row["id"])
 
     def delete_block(self, block_id: str) -> None:
-        """删除块。read_only 块拒绝（与 update_block_value 一致），防误删保护块。"""
+        """删除块。read_only 块拒绝（与 update_block_value 一致），防误删保护块。
+
+        Args:
+            block_id: 块的唯一标识。
+
+        Raises:
+            KeyError: block_id 不存在。
+            ValueError: 块为 read_only。
+
+        注意：实际删除委托给 _delete() 钩子，便于子类扩展（如 GitEnabled 清理投影）。
+        """
         row = block_orm.select_block(self.db, block_id)
         if row is None:
             raise KeyError(f"block {block_id} not found")
@@ -118,17 +203,44 @@ class BlockManager:
         self._delete(block_id)
 
     def _delete(self, block_id: str) -> None:
-        """底层删除钩子（rename 复用）：不检查 read_only，由 GitEnabled 子类扩展投影清理。"""
+        """底层删除钩子（rename 复用）：不检查 read_only，由 GitEnabled 子类扩展投影清理。
+
+        Args:
+            block_id: 块的唯一标识。
+
+        设计意图：将实际删除逻辑抽离，使子类可重写此方法添加清理动作（如删除对应 .md 文件），
+        同时基类的 delete_block 保持只读校验不变。
+        """
         block_orm.delete_block(self.db, block_id)
 
     def checkpoint_block(self, block_id: str) -> None:
-        """手动快照：把当前块状态写进 block_history（version 记为 0，表示非更新前快照）。"""
+        """手动快照：把当前块状态写进 block_history（version 记为 0，表示非更新前快照）。
+
+        Args:
+            block_id: 块的唯一标识。
+
+        用途：允许在未发生更新的情况下手动保存一个检查点，例如在重大操作前备份。
+        version=0 用于区分「手动检查点」和「更新前自动快照」（更新前快照的 version 为旧版本号）。
+        """
         b = self.get_block(block_id)
         block_orm.checkpoint_block(self.db, b.id, b.label, b.value, b.limit,
                                    b.description, b.metadata_, 0)
 
     def restore_block(self, block_history_id: int) -> Block:
-        """按历史快照回滚块：把快照的值与版本写回 blocks 行，返回回滚后的块。"""
+        """按历史快照回滚块：把快照的值与版本写回 blocks 行，返回回滚后的块。
+
+        Args:
+            block_history_id: block_history 表的自增主键 ID。
+
+        Returns:
+            回滚后的 Block 对象。
+
+        回滚逻辑：
+            - 从 block_history 读取快照数据（包含 block_id, value, version）。
+            - 用快照的值和版本直接覆盖 blocks 表的对应行。
+            - 注意：回滚不会生成新的历史记录（不记录“回滚操作”本身），
+              如需可撤销的回滚，调用方可在回滚后手动调用 checkpoint_block。
+        """
         snap = block_orm.restore_block_history(self.db, block_history_id)
         block_orm.update_block(self.db, snap["block_id"], snap["value"], snap["version"])
         return self.get_block(snap["block_id"])
@@ -143,6 +255,12 @@ class GitEnabledBlockManager(BlockManager):
     """
 
     def __init__(self, db, memfs_dir: Path | None = None):
+        """初始化 Git 增强块管理器。
+
+        Args:
+            db: 数据库连接。
+            memfs_dir: 记忆文件系统根目录（默认取 db.path 的父目录）。
+        """
         super().__init__(db)
         from paperflow.core.memory.services.memfs import MemFS
         self.memfs = MemFS(memfs_dir or Path(db.path).parent, db=db)
@@ -152,6 +270,7 @@ class GitEnabledBlockManager(BlockManager):
     def _init_git(self) -> None:
         """惰性初始化 git 仓库（dulwich）。目录不存在时先创建（Repo.init 不建父目录）。"""
         from dulwich.repo import Repo
+        # 确保目录存在（Repo.init 不创建父目录）
         self._memfs_dir.mkdir(parents=True, exist_ok=True)
         git_dir = self._memfs_dir / ".git"
         if not git_dir.exists():
@@ -159,58 +278,107 @@ class GitEnabledBlockManager(BlockManager):
         self._repo = Repo(str(self._memfs_dir))
 
     def _git_log(self) -> list[str]:
-        """返回最近最多 50 条 commit 的 sha（无提交历史时返回空列表）。"""
+        """返回最近最多 50 条 commit 的 sha（无提交历史时返回空列表）。
+
+        Returns:
+            commit SHA 字符串列表，按时间倒序（最新优先）。
+
+        注意：dulwich 1.x 的 get_walker() 返回 WalkEntry，commit 在 .commit 属性上。
+        """
         from dulwich.repo import Repo
         repo = Repo(str(self._memfs_dir))
         try:
             repo.head()
         except KeyError:
+            # 无任何 commit 时返回空列表
             return []
         # dulwich 1.x 的 get_walker() 返回 WalkEntry，commit 在 .commit 上
         return [c.commit.id.decode() for c in repo.get_walker(max_entries=50)]
 
     def _commit(self, message: str) -> str | None:
-        """只跟踪 *.md，无变更返回 None（不产生空 commit）。"""
+        """只跟踪 *.md，无变更返回 None（不产生空 commit）。
+
+        Args:
+            message: commit 信息。
+
+        Returns:
+            commit SHA（字符串），若无变更则返回 None。
+
+        实现细节：
+            1. 用 dulwich.porcelain.add 添加所有 *.md 文件（无论是否变更）。
+            2. 用 porcelain.status 检查 staged 区是否有新增或修改。
+            3. 若无 staged 变更，返回 None 避免空 commit。
+            4. 使用固定作者信息 "paperFlow <paperflow@local>"。
+        """
         import dulwich.porcelain as porcelain
         from dulwich.repo import Repo
         repo = Repo(str(self._memfs_dir))
+
+        # 1. 添加所有 *.md 文件到暂存区（add 对未变更文件也是幂等的）
         changed = False
         for path in sorted(self._memfs_dir.rglob("*.md")):
             rel = str(path.relative_to(self._memfs_dir))
             porcelain.add(repo, rel)
             changed = True
+
+        # 2. 若没有找到任何 .md 文件，直接返回（无需 commit）
         if not changed:
             return None
+
+        # 3. 检查 staged 区是否有实际变更（新增或修改）
         status = porcelain.status(repo)
         staged = status.staged.get("add", []) + status.staged.get("modify", [])
         if not staged:
             return None
+
+        # 4. 执行 commit
         author = b"paperFlow <paperflow@local>"
         sha = porcelain.commit(repo, message=message, author=author, committer=author)
         return sha.decode() if isinstance(sha, bytes) else str(sha)
 
     def create_block(self, label: str, value: str, **kwargs) -> Block:
+        """创建块并同步到 markdown 投影 + git commit。"""
         b = super().create_block(label, value, **kwargs)
         self.memfs.sync_block_to_file(b)
         self._commit(f"create block {label}")
         return b
 
     def update_block_value(self, label: str, value: str) -> Block:
+        """更新块值并同步到 markdown 投影 + git commit。"""
         b = super().update_block_value(label, value)
         self.memfs.sync_block_to_file(b)
         self._commit(f"update block {label}")
         return b
 
     def delete_block(self, block_id: str) -> None:
+        """删除块：先执行基类校验（read_only 检查），然后走 _delete 清理投影。"""
         # 基类 delete_block 校验 read_only 后走 self._delete()（投影清理 + git commit）
         super().delete_block(block_id)
 
     def _delete(self, block_id: str) -> None:
-        """删 SQL + 同步删 MemFS 投影 .md + git commit + 重建索引（不留孤儿投影/陈旧索引）。"""
+        """删 SQL + 同步删 MemFS 投影 .md + git commit + 重建索引（不留孤儿投影/陈旧索引）。
+
+        Args:
+            block_id: 要删除的块 ID。
+
+        清理顺序：
+            1. 获取块对象（用于定位 .md 文件路径）。
+            2. 调用父类 _delete 删除 SQL 记录。
+            3. 删除对应的 .md 投影文件（若存在）。
+            4. 重建 memory_filesystem.md 索引（去掉该块条目）。
+            5. 提交 git commit。
+        """
+        # 先获取块信息（以便后续删除文件），再删除 SQL 记录
         b = self.get_block(block_id)
         super()._delete(block_id)
+
+        # 删除对应的 markdown 投影文件
         path = self.memfs._file_for(b)
         if path.exists():
             path.unlink()
+
+        # 重建文件树索引（确保索引中不再包含被删除的块）
         self.memfs.regenerate_index()
+
+        # 提交 git
         self._commit(f"delete block {b.label}")

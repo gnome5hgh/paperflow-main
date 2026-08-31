@@ -64,6 +64,7 @@ cutFilterIntervalMin = 0.1
 cutFilterIntervalMax = 0.9
 boundaryFilterMinDistance = 30
 
+
 @dataclass(frozen=True)
 class Proposal:
     """一个「图注 + 候选图区域」的 proposal。
@@ -143,6 +144,12 @@ def _find_center_column(page: PageWithBodyText) -> tuple[float, float]:
     先取全页文本（正文+图内文本+图注）外接矩形的水平中心做基准，再尝试用正文
     栏边界修正：左栏最右 x2、右栏最左 x1 若与中心相距 <10pt 就用它们。栏缝
     估计不准会直接带偏左右方向的候选区域，这是双栏 proposal 的关键输入。
+
+    Args:
+        page: 已分类的页面。
+
+    Returns:
+        (中心线左边界, 中心线右边界) 的元组，即栏缝的左右位置。
     """
     all_boundaries = [p.boundary for p in page.body_text + page.other_text] + [
         c.boundary for c in page.captions
@@ -172,6 +179,13 @@ def _split_region_horizontally(
     边界都超过 区域高/SplitVerticalRegionMinHeightFraction（否则只是页边空白）、
     且高 >2pt。取面积最大的空白带，沿它把区域裁成上下两块（crop 到内容外接）。
     拆不出或拆出的任一块过小（<MinProposalHeight）返回 None。
+
+    Args:
+        proposal_region: 待拆分的区域。
+        content: 内容框列表（用于裁剪）。
+
+    Returns:
+        若成功拆分，返回 (上块, 下块, 空白带)；否则 None。
     """
     intersects = [c for c in content if c.intersects(proposal_region)]
     empty_blocks = find_empty_horizontal_blocks(proposal_region, intersects)
@@ -207,6 +221,13 @@ def _split_proposals(proposals: list[Proposal], content: list[Box]) -> list[Prop
     图注在图上方）、下块归下方图注（Up 方向），并各自记下 splitWith（另一半
     图注 + 空白带）供打分。拆不动（没有居中的空白带）就原样保留重叠的组——
     这类配置会被 no-overlap 打分判非法而淘汰。
+
+    Args:
+        proposals: 同一配置中的 proposal 列表。
+        content: 内容框列表（用于拆分时的裁剪）。
+
+    Returns:
+        拆分（或原样）后的 proposal 列表。
     """
     grouped_by_collision: list[list[Proposal]] = []
     proposal_to_check = list(proposals)
@@ -237,6 +258,7 @@ def _split_proposals(proposals: list[Proposal], content: list[Box]) -> list[Prop
             split_attempt = _split_region_horizontally(region, content)
             if split_attempt is not None:
                 upper_split, lower_split, whitespace = split_attempt
+                # Up 方向表示图注在区域下方，因此拆分后上块属于 Down 方向的 proposal
                 upper_prop = [p for p in group if p.dir == "Down"]
                 lower_prop = [p for p in group if p.dir == "Up"]
                 split_proposals.append(
@@ -266,6 +288,15 @@ def _crop_to_center(caption: Box, proposal: Box, in_center: list[Box], center: f
     双栏页中图通常只占一栏：若图注本身不跨栏缝、候选区域却跨了，且区域内没有
     跨栏缝的元素，就把区域裁到栏缝一侧（图注在哪侧裁哪侧），避免区域横跨两栏。
     区域含跨栏缝元素时不裁（可能是通栏大图）。
+
+    Args:
+        caption: 图注边界。
+        proposal: 候选区域边界。
+        in_center: 跨越栏缝的元素列表（图形/图内文本）。
+        center: 栏缝位置（x 坐标）。
+
+    Returns:
+        裁剪后的 proposal 区域（可能不变）。
     """
     caption_crosses = caption.x2 > center and caption.x1 <= center
     proposal_crosses = proposal.x2 > center and proposal.x1 < center
@@ -290,6 +321,15 @@ def _clip_upward_region(
     （距离阈值按文本面积大小区分，图形用更宽的阈值），直到没有新的并入对象；
     最后把簇与区域求交得到裁剪后的区域。簇内没有大图形时（纯文本/小图形）
     无法定位图本体，不做裁剪，原样返回。
+
+    Args:
+        caption: 图注边界（未直接使用，但保留以匹配 Scala 接口）。
+        region: 初始候选区域（向上扩展后的区域）。
+        graphics: 图形区列表。
+        other_text: 图内文本段落列表。
+
+    Returns:
+        裁剪后的区域（若无可聚类的大图形则返回原 region）。
     """
     contained_graphics = [
         g
@@ -303,6 +343,7 @@ def _clip_upward_region(
     remaining_graphics = [g for g in contained_graphics if g.area <= ClipRegionMinGraphicSize]
     remaining_other_text = [p for p in other_text if region.intersects(p.boundary)]
     done = False
+    # 反复扩展簇：将紧邻簇上缘的图内文本和小图形并入簇
     while not done:
         in_cluster_text = []
         out_cluster_text = []
@@ -340,7 +381,15 @@ def _clip_upward_region(
 
 
 def _box_alignment(box1: Box, box2: Box) -> tuple[int, int]:
-    """box1 相对 box2 的水平/垂直位置：-1 左/上、0 重叠、1 右/下（照 boxAlignment）。"""
+    """box1 相对 box2 的水平/垂直位置：-1 左/上、0 重叠、1 右/下（照 boxAlignment）。
+
+    Args:
+        box1: 第一个框。
+        box2: 第二个框。
+
+    Returns:
+        (水平关系, 垂直关系) 元组。
+    """
     h = -1 if box1.x2 < box2.x1 else (1 if box1.x1 > box2.x2 else 0)
     v = -1 if box1.y2 < box2.y1 else (1 if box1.y1 > box2.y2 else 0)
     return (h, v)
@@ -351,6 +400,14 @@ def _box_expand_lr(box: Box, boxes: list[Box], bounds: Box) -> Box:
 
     用于上/下方向 proposal：区域上下边界已定，左右要尽量张开到内容外接，
     但被同一竖直带里的左右邻内容挡住时停在它们边缘。
+
+    Args:
+        box: 待扩展的框。
+        boxes: 阻挡内容列表。
+        bounds: 最大扩展边界。
+
+    Returns:
+        扩展后的框。
     """
     x1 = bounds.x1
     x2 = bounds.x2
@@ -369,6 +426,14 @@ def _box_expand_ud(box: Box, boxes: list[Box], bounds: Box) -> Box:
 
     用于左/右方向 proposal：区域左右边界已定，上下要尽量张开，
     但被同一水平带里的上下邻内容挡住时停在它们边缘。
+
+    Args:
+        box: 待扩展的框。
+        boxes: 阻挡内容列表。
+        bounds: 最大扩展边界。
+
+    Returns:
+        扩展后的框。
     """
     y1 = bounds.y1
     y2 = bounds.y2
@@ -395,6 +460,16 @@ def _score_proposal(
     proposal 另加空白带面积加权分，并按上下两半是否同类型打折。左/右方向（图注在
     侧面）整体折扣。None 表示该区域与其它候选抢同一块地——配置里出现 None 会被
     计数惩罚，从而偏向「各图注各占一块」的配置。
+
+    Args:
+        proposal: 待打分的 proposal。
+        graphics: 图形区列表。
+        other_text: 图内文本边界列表（未直接使用，保留接口）。
+        other_proposals: 同配置中的其他 proposal（用于重叠检测）。
+        bounds: 全页内容外接矩形。
+
+    Returns:
+        得分（float）或 None（若与其它 proposal 重叠）。
     """
     boundary = proposal.region
     if any(p.region.intersects(boundary, -2) for p in other_proposals):
@@ -417,6 +492,7 @@ def _score_proposal(
 
 
 def _in_cut_interval(d: float) -> bool:
+    """判断比值是否落在拦腰切图区间内 [0.1, 0.9]。"""
     return cutFilterIntervalMin <= d <= cutFilterIntervalMax
 
 
@@ -430,6 +506,13 @@ def _box_cuts_figure(box: Box, possible_figure_content: list[Box]) -> bool:
 
     完全包含（≈100%）或完全无关（0%）才放行；拦腰切掉一半的区域多半是误把
     图形切分，丢弃。零面积图元素无法算占比，跳过。
+
+    Args:
+        box: 候选区域。
+        possible_figure_content: 可能的图内容（图形 + 图内文本边界）。
+
+    Returns:
+        True 若该区域拦腰切开了某个图形元素。
     """
     for fig in possible_figure_content:
         if fig.area == 0:
@@ -461,6 +544,13 @@ def _build_proposals(page: PageWithBodyText, layout: DocumentLayout) -> list[lis
     左/右/下方向的区域直接 crop 收边；上方向多一步 clipUpwardRegion 聚类裁剪
     （上图注常与正文混排，正文分类又可能出错）。最后统一 crop 到内容外接，并
     按尺寸、拦腰切图、贴边界三关过滤。双栏时左右/上下方向还做中心线裁剪。
+
+    Args:
+        page: 已分类的页面。
+        layout: 文档布局统计。
+
+    Returns:
+        列表的列表：外层索引对应 page.captions 中的图注，内层是该图注的 Proposal 列表。
     """
     non_figure_content, possible_figure_content = _content_of_page(page)
     all_content = non_figure_content + possible_figure_content
@@ -592,6 +682,13 @@ def _remove_text_in_regions(paragraphs: list[Paragraph], regions: list[Box]) -> 
 
     一行被任一图区域包含即从段落中移除；段落所有行都被移除则该段整体丢弃。
     剩余行重新合成段落，边界按剩余行重算（对应 Scala 的 Paragraph.apply）。
+
+    Args:
+        paragraphs: 待清理的段落列表（通常为 body_text + other_text）。
+        regions: 已确定的图区域列表。
+
+    Returns:
+        清理后的段落列表（仅含不在图区域内的行）。
     """
     if not regions:
         return list(paragraphs)
@@ -621,6 +718,18 @@ def located_figures(
     Returns:
         该页图检测结果：figures 是每张图的占位 dict，failed_captions 是配不到图
         的图注。
+
+    算法：
+        1. 若 layout 为 None，直接返回空结果（无图检测）。
+        2. 调用 _build_proposals 为每个图注生成候选区域列表。
+        3. 筛选出有候选的图注，计算所有配置的笛卡尔积数量；若超过 50 万则放弃枚举。
+        4. 枚举每个配置：
+           a. 对配置中的 proposals 调用 _split_proposals 尝试拆分重叠项。
+           b. 对拆分后的每个 proposal 调用 _score_proposal 打分（若与同配置其他 proposal 重叠则返回 None）。
+           c. 计算总分为有效得分之和减去非法项数量（惩罚）。
+        5. 选择总分最高的配置，其中得分为 None 的 proposal 视为失败图注。
+        6. 从成功 proposal 中构建 figures 列表，失败图注归入 failed_captions。
+        7. 清理非图文本：移除被图区域包含的行，加上失败图注段落，按阅读序排序。
     """
     # layout 信息不足：无从判断双栏/中心线，也缺少可靠边界，直接放弃检测
     if layout is None:

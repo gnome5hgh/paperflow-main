@@ -1,3 +1,4 @@
+# paperflow/cli.py
 """CLI REPL：交互式终端,无子命令,/exit 退出。
 
 每轮:读 stdin → 合并挂起的澄清(若有)→ supervisor.run(query, force_dispatch) →
@@ -55,10 +56,24 @@ _embedder: "BgeEmbedder | None" = None
 
 
 def _rag_embedder(config: PaperFlowConfig) -> "BgeEmbedder":
-    """懒加载共享 bge embedder（单例）。
+    """
+    懒加载共享的 BGE 嵌入模型单例。
 
-    MessageManager/PassageManager 的语义检索与意图管线的稠密路由共用它；模型路径
-    本地优先（resolve_model_dir：workspace/models/<name>，否则回退 HF 名）。
+    用途：
+        - MessageManager / PassageManager 的语义检索
+        - 意图管线的稠密路由（HybridRouter）
+    所有组件共享同一实例，避免重复加载模型权重（首次加载需数秒，且占用内存）。
+
+    Args:
+        config: 全局配置，包含 workspace 和 embed_model 名称。
+
+    Returns:
+        BgeEmbedder: 共享的嵌入模型实例。
+
+    Notes:
+        - 模型路径优先本地：resolve_model_dir 在 workspace/models/<name> 查找，
+          若不存在则回退 HuggingFace 缓存。
+        - 该函数在进程生命周期内只加载一次。
     """
     global _embedder
     if _embedder is None:
@@ -68,23 +83,47 @@ def _rag_embedder(config: PaperFlowConfig) -> "BgeEmbedder":
 
 
 def _make_print_fn(console):
-    """生产 print_fn。console 非 None（TTY）经 rich 输出（style 生效，工具行 dim）；
-    console 为 None（非 TTY）用内置 print（吸收 style，不产生 ANSI）。"""
+    """
+    根据终端类型构造打印函数。
+
+    Args:
+        console: rich.Console 实例，若为 None（非 TTY）则使用内置 print。
+
+    Returns:
+        打印函数，接受 *args, style=None, end="\n", flush=False 等参数。
+            若 console 非 None，使用 console.print 并支持 style（如 dim 样式）；
+            若 console 为 None，使用内置 print 并忽略 style（不产生 ANSI 转义）。
+    """
     if console is None:
         def _plain(*args, style=None, **kwargs):
             print(*args, **kwargs)
         return _plain
 
     def _rich(*args, style=None, end="\n", flush=False):
-        console.print(*args, style=style, end=end, overflow="fold")   # ignore → fold：长行换行不硬切
+        # overflow="fold"：长行自动换行而非截断
+        console.print(*args, style=style, end=end, overflow="fold")
     return _rich
 
 
 def _confirm_diff_preview(tool_name: str, params: dict) -> str | None:
-    """写/编辑工具的确认 diff 预览：读旧内容、算 would-be 差异；算不出返回 None。
+    """
+    为写/编辑工具生成确认前的 diff 预览文本。
 
-    非文件工具/缺参数/读失败都返回 None（走纯确认，无预览）。edit 场景先对旧内容
-    应用替换再 diff。复用 terminal.diff 的计算与截断。
+    Args:
+        tool_name: 工具名称（"write_file" 或 "edit_file"）。
+        params: 工具参数字典，需包含 "path"，write_file 还需 "content"，
+                edit_file 还需 "old_text" 和 "new_text"。
+
+    Returns:
+        str | None: 若预览可用则返回截断后的 unified diff 字符串；
+                    若工具不是写/编辑、参数缺失、文件读取失败或编辑替换条件不满足，
+                    则返回 None（表示走纯确认，无预览）。
+
+    关键边界条件（edit_file）：
+        - edit_file 工具仅在 old_text 在文件中恰好出现一次时才执行替换。
+          若 count != 1，则实际不会写入，此时预览与当前内容无异，反而干扰用户，
+          因此直接返回 None，只走纯确认。
+        - 若文件不存在，old 为空字符串，count=0，亦返回 None。
     """
     if tool_name not in {"write_file", "edit_file"}:
         return None
@@ -102,9 +141,7 @@ def _confirm_diff_preview(tool_name: str, params: dict) -> str | None:
         old_text, new_text = params.get("old_text"), params.get("new_text")
         if old_text is None or new_text is None:
             return None
-        # 只在替换确实会应用时预览：edit_file 要求 old_text 在文件里恰好出现一次
-        # （count==1 才写盘）。count>1 / count==0 / 空 old_text 时旧内容不变——
-        # 预览与纯确认无异反而干扰，直接返回 None 走纯确认。
+        # 仅在替换确实会应用时预览：要求 old_text 在文件中恰好出现一次
         if old.count(old_text) != 1:
             return None
         new = old.replace(old_text, new_text)
@@ -112,11 +149,21 @@ def _confirm_diff_preview(tool_name: str, params: dict) -> str | None:
 
 
 def _make_confirm_callback(io: InputIO, renderer: StreamRenderer):
-    """构造 async 确认回调（Agent 执行器以 await 方式调用）。
+    """
+    构造异步确认回调函数，供 Agent 执行器在工具执行前调用。
 
-    写/编辑工具确认前先渲染 diff 预览（_confirm_diff_preview 读旧内容 vs 新内容），
-    用户看清将改动什么再 Yes/No。确认等待放 worker 线程（to_thread），不冻结事件
-    循环；fail-safe：EOF 与 Ctrl+C 都返回 False（拒绝）。
+    Args:
+        io: 输入适配器（用于读取用户确认）。
+        renderer: 渲染器（用于显示 diff 预览和暂停 live）。
+
+    Returns:
+        async callable: 接收一个 ConfirmRequest 对象，返回 bool（True 表示确认继续）。
+
+    行为：
+        1. 若工具是写/编辑，先计算 diff 预览并通过 renderer.print_diff 显示。
+        2. 调用 renderer.suspend() 停止实时渲染（避免与 prompt_toolkit 提示框冲突）。
+        3. 通过 asyncio.to_thread 在单独线程中执行 io.confirm（避免阻塞事件循环）。
+        4. 捕获 EOFError/KeyboardInterrupt 返回 False（保守拒绝）。
     """
     async def _confirm(cr) -> bool:
         preview = _confirm_diff_preview(cr.tool_name, getattr(cr, "params", None))
@@ -134,12 +181,20 @@ def _make_confirm_callback(io: InputIO, renderer: StreamRenderer):
 
 
 def _make_ask_callback(io: InputIO, renderer: StreamRenderer):
-    """构造 ask_user 回调：读开放问题答案，Ctrl-D/EOF/Ctrl+C → 空串。
+    """
+    构造 ask_user 回调：读取开放问题的答案。
 
-    PromptToolkitIO（TTY）的 ask 不捕 EOFError，这里兜底返回空串（与非 TTY
-    FallbackIO 行为一致，两实现可替换）；Supervisor ReAct 收到空串自行处理。
-    ask 提示框前先 renderer.suspend() 停 live——rich Live 与 prompt_toolkit 提示框
-    并发会互相干扰（ask 后卡在 spinner，用户无法作答）。
+    Args:
+        io: 输入适配器。
+        renderer: 渲染器（用于暂停 live）。
+
+    Returns:
+        callable: 接受 question 字符串，返回答案字符串。
+                  遇到 EOF/Ctrl+C 返回空串（fail-safe）。
+
+    行为：
+        - 先 suspend 停止 live 渲染，避免与输入框冲突。
+        - 调用 io.ask，捕获异常返回空串。
     """
     def _ask(question: str) -> str:
         renderer.suspend()
@@ -151,31 +206,51 @@ def _make_ask_callback(io: InputIO, renderer: StreamRenderer):
 
 
 def _merge_pending(conversation: ConversationState, raw: str) -> tuple[str, bool]:
-    """合并跨轮澄清输入,返回 (query, force_dispatch)。
+    """
+    合并跨轮澄清输入，返回 (query, force_dispatch)。
 
-    round < 2 → 合并澄清上下文重跑;round >= 2 → 超轮终止:force_dispatch=True、
-    以累积澄清上下文的 original_input 调度——绝不重跑后再次挂起。
+    当上一轮产生了澄清问题且未超轮（round < 2），本轮输入视为对澄清的回答，
+    将其与原始查询拼接作为新查询，并设置 force_dispatch=False 以便重新运行 intent 管线。
+    若澄清轮数已达上限（round >= 2），则强制调度（force_dispatch=True），
+    使用原始查询（不含用户澄清）直接进入 ReAct 循环，避免无限澄清循环。
+
+    Args:
+        conversation: 会话状态（包含 pending_intent）。
+        raw: 当前轮的用户输入。
+
+    Returns:
+        (query: str, force_dispatch: bool)
+            - query: 实际用于 supervisor.run 的查询文本。
+            - force_dispatch: 若为 True，则跳过意图识别，直接执行 ReAct 循环。
     """
     p = conversation.pending_intent
     if p is None:
         return raw, False
     if p.round >= 2:
+        # 超轮：强制调度，清除 pending 状态
         conversation.pending_intent = None
         return p.original_input, True
+    # 未超轮：合并澄清内容，清除 pending
     conversation.pending_intent = None
     return f"{p.original_input}（用户澄清：{raw}）", False
 
 
 def _shorten_path(p: str) -> str:
-    """路径 home 前缀缩写为 ~（banner 里 workspace 显示更紧凑）。"""
+    """将路径中的 home 目录缩写为 '~'，用于 banner 显示。"""
     home = str(Path.home())
     return "~" + p[len(home):] if str(p).startswith(home) else str(p)
 
 
 def _render_banner(model: str, workspace: str) -> str:
-    """启动横幅：方框 + >_ 名称 + model/workspace，无 emoji/版本/标语。
+    """
+    生成启动横幅，使用 box-drawing 字符绘制方框。
 
-    框宽随最长内容行自适应；box-drawing 字符 TTY/非 TTY 通用。
+    Args:
+        model: 模型名称（如 "gpt-4"）。
+        workspace: 工作区路径（已缩写）。
+
+    Returns:
+        str: 多行横幅字符串，包含标题、模型和工作区信息。
     """
     lines = [
         ">_ paperFlow Academic Assistant",
@@ -193,18 +268,33 @@ def _render_banner(model: str, workspace: str) -> str:
 async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 io: InputIO, renderer: StreamRenderer, sleeptime=None,
                 config: PaperFlowConfig | None = None) -> None:
-    """REPL 主循环。io/renderer 可注入（测试）。
+    """
+    REPL 主循环。
 
-    Ctrl+C 三态：输入框空（io.read 抛 KeyboardInterrupt）→ 退出；输入框有内容 →
-    输入框内清空（PromptToolkitIO 键绑定）；agent 运行中 → 临时注册 SIGINT handler
-    取消当前 run 任务 → 捕获 CancelledError → 打印 "Cancelled" 回到输入框（不杀 REPL）。
-    SIGINT handler 只在 run 期间存在：prompt_toolkit 提示期间无冲突（Ctrl+C 由其
-    键绑定处理，终端处 raw 模式不产生 SIGINT）。
+    每轮：
+        1. 触发后台记忆整合（Sleeptime）。
+        2. 读取用户输入（通过 io.read，工作线程）。
+        3. 若有挂起的澄清，合并查询（_merge_pending）。
+        4. 重置渲染器（renderer.reset），注册 SIGINT 处理器以取消运行中的任务。
+        5. 异步执行 supervisor.run(query, force_dispatch)。
+        6. 根据结果：
+            - 若任务被取消（Ctrl+C）：打印 "Cancelled"，继续循环。
+            - 若超轮：提示并继续。
+            - 若产生澄清且未强制：挂起澄清（pending_intent），打印问题，继续下一轮。
+            - 否则：结束渲染（finalize），根据 should_print 决定是否打印最终答案。
 
-    澄清挂起：last_intent.clarification 非空且非 force → 存 pending（round 链式
-    累计，用旧值 +1，绝不重置为 0）+ 打印问题，等下一轮；否则打印结果。
+    Ctrl+C 三态处理：
+        - 输入框为空时：io.read 抛出 KeyboardInterrupt，退出 REPL。
+        - 输入框有内容时：PromptToolkitIO 键绑定清空输入框，不退出。
+        - Agent 运行时：SIGINT 处理器取消当前 run_task，捕获 CancelledError 后继续。
 
-    :param config: 仅供启动横幅展示 model/workspace；None 回退 PaperFlowConfig.from_env()
+    Args:
+        supervisor: 主 Agent 实例。
+        conversation: 跨轮状态。
+        io: 输入适配器。
+        renderer: 渲染器。
+        sleeptime: 后台记忆整合调度器（可选）。
+        config: 配置（仅用于横幅，若为 None 则从环境加载）。
     """
     cfg = config or PaperFlowConfig.from_env()
     renderer.print(_render_banner(cfg.llm.model, _shorten_path(cfg.workspace)))
@@ -296,7 +386,26 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
 
 
 def main() -> None:
-    """装配全部依赖并启动 REPL（__main__ 转调）。"""
+    """
+    装配全部依赖并启动 REPL。
+
+    装配顺序（依赖关系）：
+        1. 终端 IO 和渲染器（输入/输出适配）。
+        2. 会话 ID（用于记忆服务键控）。
+        3. 记忆服务层：DB → BlockManager → MessageManager → PassageManager → ArchiveManager → AgentManager。
+        4. 嵌入模型（单例）注入 MessageManager/PassageManager。
+        5. AgentManager 回填到 MessageManager（用于读取 AgentState）。
+        6. 创建 AgentState 和结构化输出。
+        7. 设置记忆工具上下文（包括标题提取器）。
+        8. 构造安全中间件、意图管线。
+        9. 构造 Supervisor Agent 和 Sleeptime。
+        10. 运行 REPL 主循环。
+
+    关键依赖顺序：
+        - AgentManager 依赖 BlockManager 和 MessageManager；MessageManager 需要 AgentManager 来获取 in-context 窗口，
+          因此创建顺序为：先建 AgentManager，再回填 MessageManager.agent_manager。
+        - 记忆工具上下文需要 TitleExtractor，它依赖 GrobidClient 和 StructuredOutput。
+    """
     config = PaperFlowConfig.from_env()
     is_tty = sys.stdin.isatty()
     io = make_input_io(config)

@@ -40,15 +40,15 @@ class CaptionStart:
     - paragraph_start: 是否为所在段落的首行（保底消歧用的弱信号）。
     """
 
-    header: str
-    name: str
-    fig_type: FigureType
-    number_syntax: str
-    line: Line
-    next_line: Line | None
-    page: int
-    paragraph_start: bool
-    line_end: bool
+    header: str          # 图注起始词（如 "Figure", "Fig.", "TABLE"）
+    name: str            # 图号（如 "1", "3.1", "III"）
+    fig_type: FigureType # 类型：Figure 或 Table
+    number_syntax: str   # 图号后的分隔符：":" 或 "." 或 ""（行尾）
+    line: Line           # 起始行对象
+    next_line: Line | None  # 同一段内的下一行（用于左对齐检查）
+    page: int            # 页码（0-based）
+    paragraph_start: bool # 该行是否为其所在段落的首行
+    line_end: bool       # 图号词是否占满行尾（即后面无其他词）
 
     @property
     def colon_match(self) -> bool:
@@ -143,8 +143,19 @@ _CAPTION_NUMBER_RE = re.compile(
 def find_caption_candidates(pages: list[Page]) -> list[CaptionStart]:
     """找出所有可能是图注起始行的候选（含误报，消歧交给 select_caption_candidates）。
 
-    逐段逐行：起始词命中图注词表 + 次词命中图号正则 + 行高合理 → 构成候选。
-    次词与图号正则的取法照 Scala：起始词命中后，图号就是第二个词。
+    Args:
+        pages: 所有页的文本结构（Page 列表）。
+
+    Returns:
+        原始的 CaptionStart 候选列表，可能包含大量误报（如正文中的引用）。
+
+    算法：
+        逐段逐行：
+        1. 检查第一个词是否匹配图注起始词表（_CAPTION_START_RE）。
+        2. 若匹配，取第二个词（若第一个词是 "Fig" 后跟 "."，则将 "Fig" + "." 合并作为起始词，图号为第三个词）。
+        3. 第二个词（或第三个）是否匹配图号正则（_CAPTION_NUMBER_RE）。
+        4. 行高需小于 MaxHeightForCaptionLines（排除异常行）。
+        5. 记录 line_end、paragraph_start 等特征供后续过滤器使用。
     """
     candidates: list[CaptionStart] = []
     for page in pages:
@@ -190,17 +201,21 @@ def find_caption_candidates(pages: list[Page]) -> list[CaptionStart]:
     return candidates
 
 
+# ---- 以下为各个过滤器函数（每个返回 bool，True 表示保留该候选） ----
+# 过滤器按顺序组成一个 sieve，每轮挑一个可裁掉一些候选但不会整组裁掉的过滤器应用。
+
 def _colon_only(cc: CaptionStart) -> bool:
+    """保留图号后跟冒号的候选（如 "Figure 1:"）。"""
     return cc.colon_match
 
 
 def _all_caps_fig_only(cc: CaptionStart) -> bool:
-    # 「FIG」开头的图注；表注天然不冲突，直接放行
+    """保留全大写 FIG 开头的图注；表注不受此限制。"""
     return cc.all_caps_fig or cc.fig_type == FigureType.Table
 
 
 def _all_caps_table_only(cc: CaptionStart) -> bool:
-    # 「TABLE」的图注；图注天然不冲突，直接放行
+    """保留全大写 TABLE 的表注；图注不受此限制。"""
     return cc.all_caps_table or cc.fig_type == FigureType.Figure
 
 
@@ -209,49 +224,53 @@ def _non_standard_font(
 ) -> Callable[[CaptionStart], bool]:
     """构造 NonStandardFont 过滤器：被过滤图型若首字符用的不是标准字体则剔除。
 
-    只用起始行首字符的字体名近似判断（对照 Scala 的 first position getFont）。
-    """
+    Args:
+        standard_font: 文档中最常见的字体名。
+        types: 需要应用此过滤器的图注类型集合。
 
+    Returns:
+        过滤器函数，接受 CaptionStart 返回 bool。
+    """
     def accept(cc: CaptionStart) -> bool:
         return (
             cc.fig_type not in types
             or cc.line.words[0].positions[0].font_name != standard_font
         )
-
     return accept
 
 
 def _abbreviated_fig_only(cc: CaptionStart) -> bool:
-    # 「Fig.」缩写图注；表注直接放行
+    """保留缩写 "Fig." 的图注；表注不受限制。"""
     return cc.fig_abbreviated or cc.fig_type == FigureType.Table
 
 
 def _figure_has_following_text_only(cc: CaptionStart) -> bool:
-    # 表注通常很短，直接放行；图注要求「不是行尾」——行尾才出现说明后面没有图注正文
+    """图注要求图号词不在行尾（即后面有正文）；表注直接放行。"""
     return cc.fig_type == FigureType.Table or not cc.line_end
 
 
 def _period_only(cc: CaptionStart) -> bool:
+    """保留图号后跟句点的候选（如 "Figure 3."）。"""
     return cc.period_match
 
 
 def _left_aligned_only(figure_only: bool) -> Callable[[CaptionStart], bool]:
     """构造左对齐过滤器：图注起始行与下一行左缘对齐（±1pt）才放行。
 
-    只约束图注（figure_only=True 时表注直接放行）；无下一行时无从比较，放行。
+    Args:
+        figure_only: 若为 True，则只对 Figure 类型应用此过滤，Table 直接放行。
     """
-
     def accept(cc: CaptionStart) -> bool:
         if figure_only and cc.fig_type == FigureType.Table:
             return True
         if cc.next_line is None:
             return True
         return abs(cc.line.boundary.x1 - cc.next_line.boundary.x1) < 1
-
     return accept
 
 
 def _line_end_only(cc: CaptionStart) -> bool:
+    """保留图号词在行尾的候选。"""
     return cc.line_end
 
 
@@ -261,9 +280,22 @@ def select_caption_candidates(
 ) -> list[CaptionStart]:
     """按过滤器逐轮裁剪重复的 (图型, 图号) 候选组。
 
-    每轮挑一个「能裁掉至少一个候选、又不会整组裁掉」的过滤器（整组裁掉说明该组
-    格式一致，是真实重复而非混入误报）。格式过滤器都无能为力时，退回用段落首行
-    判别。最后仍无法消歧的组（同图号候选 >3 或同页 >2）整体放弃。
+    Args:
+        candidates: 所有候选。
+        filters: (过滤器名称, 过滤器函数) 列表，按顺序尝试。
+
+    Returns:
+        消歧后的候选列表（每个 (图型,图号) 组内最多保留一个候选，若无法消歧则整组放弃）。
+
+    算法（filter sieve）：
+        1. 按 (fig_type, name) 分组。
+        2. 反复迭代：
+           a. 遍历 filters，找第一个满足「能裁掉至少一个候选」且「不会把整组都裁掉」的过滤器。
+           b. 若找到，则应用该过滤器，从每组中剔除不满足的候选。
+           c. 若找不到这样的过滤器，则退回到「段落首行」判别：保留 paragraph_start=True 的候选；
+              若这样能减少候选数，则继续循环；否则停止。
+        3. 最后，对于每个组，若组内候选数 > MaxDuplicateCaptionNames 或同一页内候选数 > MaxSamePageDuplicateCaptionNames，
+           则整个组放弃；否则保留组内所有候选（通常此时只剩一个）。
     """
     grouped_by_id: dict[tuple[FigureType, str], list[CaptionStart]] = {}
     for c in candidates:
@@ -273,9 +305,11 @@ def select_caption_candidates(
     while removed_any and any(len(v) > 1 for v in grouped_by_id.values()):
         filter_to_use = None
         for name, accept in filters:
+            # 检查是否有组能因此裁掉至少一个候选（removes_any）
             removes_any = any(
                 any(not accept(c) for c in group) for group in grouped_by_id.values()
             )
+            # 检查是否有组会被全部裁掉（removes_group），这种情况要避免
             removes_group = any(
                 all(not accept(c) for c in group) for group in grouped_by_id.values()
             )
@@ -327,6 +361,20 @@ def find_captions(pages: list[Page], layout) -> list[CaptionStart]:
 
     Returns:
         消歧后的图注起始候选列表；layout 为 None 时返回空列表。
+
+    构造过滤器列表顺序（照 Scala 实现）：
+        1. Colon Only
+        2. All Caps Figures Only
+        3. All Caps Table Only
+        4. Non Standard Font (Figure & Table) —— 若标准字体占比 > MinCommonFontPercentage
+        5. Non Standard Font (Table)
+        6. Non Standard Font (Figure)
+        7. Abbreviated Fig Only
+        8. Figure Following Text
+        9. Period Only
+        10. Left Aligned (all)
+        11. Left Aligned Figures
+        12. Line End Only
     """
     if layout is None:
         return []  # 布局信息不足（文本几乎抽不出），无字体信息可做消歧 → 放弃
@@ -406,14 +454,16 @@ class _CaptionBuilder:
 
     lines: list[Line]
     boundary: Box
-    font: str | None
-    centered: bool
+    font: str | None          # 图注整体使用的字体（若所有行同一字体）
+    centered: bool            # 是否仍保持居中（用于判断右对齐/居中是否被破坏）
 
     @property
     def last_line_right_aligned(self) -> bool:
+        """最后一行是否与整个图注的右边界对齐（即不缩进）。"""
         return abs(self.boundary.x2 - self.lines[-1].boundary.x2) < 2.0
 
     def add_line(self, line: Line, new_boundary: Box, line_font: str | None) -> "_CaptionBuilder":
+        """添加一行并更新状态。"""
         # 新旧字体一致才延续「图注字体」标记，否则置 None（后续行换字体可据此停手）
         if self.font is not None and line_font is not None and self.font == line_font:
             new_font = line_font
@@ -446,9 +496,26 @@ def _build_caption(
 ) -> CaptionParagraph:
     """把单个 CaptionStart 扩展成 CaptionParagraph。
 
-    从起始行向后逐行考察：行距太远/撞上新的图注起始行/撞上图形区/换了字体 →
-    停止扩展；距正常行距且左对齐 → 并入。最后的兜底分支看水平重叠与是否破坏
-    右对齐/居中，尽量不把紧贴的后续正文吞进图注。
+    Args:
+        candidate: 图注起始候选。
+        caption_start_ids: 所有图注起始行的对象 id 集合（用于避免跨过另一个图注）。
+        lines_with_paragraphs: (行, 所属段落) 列表，按顺序。
+        graphics_locations: 图形区边界列表，用于避让。
+        safe_line_spacing: 正常行距上限（= 中位行距 + padding）。
+
+    Returns:
+        扩展后的 CaptionParagraph。
+
+    算法（逐行判断是否并入）：
+        从起始行的下一行开始遍历，对每行评估：
+        1. 若 y 间距 < _MIN_Y_DIST_BETWEEN_LINES 或 > safe_line_spacing + _MAX_ADDITIONAL_SPACING → 不并入。
+        2. 若该行与图形区相交（除与首行重叠的图形外）→ 不并入。
+        3. 若该行是另一个图注的起始行 → 不并入。
+        4. 若该行是上一行的右侧续行（y 差小且 x 左缘靠近上一行右缘）→ 并入。
+        5. 若换了字体且不是首行后立即（允许首行后换字体）→ 不并入。
+        6. 若间距正常且左对齐 → 并入。
+        7. 兜底：若水平重叠、不是大段开头、且不破坏右对齐/居中 → 并入。
+        8. 否则停止。
     """
     start_idx = None
     for i, (line, _) in enumerate(lines_with_paragraphs):
@@ -573,6 +640,10 @@ def build_captions(
 
     Returns:
         扩展后的图注段落列表（顺序与 starts 一致）。
+
+    说明：
+        每个 CaptionStart 扩展时，需要知道所有图注起始行的 id，以避免吞并其他图注。
+        同时传入页面对象以获取所有行列表。
     """
     if not starts:
         return []

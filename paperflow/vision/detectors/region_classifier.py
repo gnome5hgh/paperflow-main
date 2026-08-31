@@ -106,6 +106,15 @@ def classify_regions(
     Returns:
         分类后的页：body_text/other_text 分别为正文与图内文本段；
         graphics/non_figure_graphics 是图形包围盒检测后的结果。
+
+    算法：
+        1. 用 _split_around_captions 拆分与图注重叠的段落，避免图注污染正文分类。
+        2. 用一组顺序固定的分类器逐个判定每个段落，首个返回非 None 者定案：
+           图内文本信号（图形重叠/竖排/宽间距/小字号）先识别，正文信号（行宽/标题/边距）后识别；
+           若所有分类器都返回 None，则默认归为正文。
+        3. 图形包围盒检测：若某图形完整包含图注、且无任何段落跨越图形边界，
+           则该图形是图的过程边框（如方框边框），将其四边作为 non_figure_graphics，
+           图形内部裁 3pt 后保留在 graphics 中。
     """
     # 段落若与图注重叠，先按行拆开（图注与正文常被合并进同一段）
     separated = [
@@ -144,11 +153,13 @@ def classify_regions(
     figures_bounding_box_graphics = []
     rest_graphics = []
     for graphic in graphics:
+        # 条件1：图形包含至少一个图注，且图注面积占图形面积 < 50%（否则图形本身就是图注）
         contains_caption = any(
             graphic.contains(c.boundary)
             and graphic.intersectArea(c.boundary) / graphic.area < _FIGURE_BBOX_CAPTION_RATIO
             for c in captions
         )
+        # 条件2：没有段落跨越图形边界（即段落要么完全在图形内，要么完全在图形外）
         has_straddling_paragraph = any(
             not graphic.contains(p.boundary) and p.boundary.intersects(graphic)
             for p in page.paragraphs
@@ -158,6 +169,7 @@ def classify_regions(
         else:
             rest_graphics.append(graphic)
 
+    # 将包围盒拆成四条零宽/零高的边框线（左边框、右边框、上边框、下边框）
     figure_bounding_boxes = [
         border
         for box in figures_bounding_box_graphics
@@ -168,6 +180,7 @@ def classify_regions(
             box.copy(y1=box.y2),   # 下边框（零高）
         )
     ]
+    # 图形本体向内收缩 3pt，避免裁到边框本身
     cropped_figure_graphics = [
         box.copy(
             x1=box.x1 + _BORDER_CROP,
@@ -200,11 +213,19 @@ def _split_around_captions(
     """段落与图注重叠时按行拆成不再叠图注的子段；无法拆时原样返回。
 
     图注常被 PDFBox 与相邻正文合并成同一段，不拆开的话正文段会被图注污染。
-    判定：段落外接矩形与图注重叠（负容差要求真叠 2pt）；且至少有一行不叠图注
-    才拆——所有行都叠说明这段本身就在图注里，无从分离。
 
-    返回的子段按阅读序排列（首段在前）。有意偏离 Scala 原实现的 `::` 前插
-    倒序，理由见下方累积注释。
+    Args:
+        paragraph: 待拆分的段落。
+        captions: 该页的图注列表。
+
+    Returns:
+        拆分后的段落列表（若无需拆分则返回 [paragraph]）。
+
+    算法：
+        1. 检查段落的整体边界是否与任一图注重叠（容差 _CAPTION_SPLIT_MARGIN=-2，要求真正重叠）。
+        2. 若所有行都与图注重叠，说明整段就是图注本身，无法拆分，原样返回。
+        3. 否则逐行累积：每当累积行的外接矩形碰上图注，就在此处切段。
+        4. 返回的子段按阅读序排列（首段在前）——有意偏离 Scala 的 :: 前插倒序。
     """
     caption_boundaries = [
         c.boundary
@@ -247,7 +268,15 @@ def _intersects_any(box: Box, boxes: list[Box]) -> bool:
 
 
 def _graphic_overlaps(paragraph: Paragraph, graphics: list[Box]) -> bool | None:
-    """与图形区重叠面积 >20% 的段 → 图内文本（图内文字浮在图形上）。"""
+    """与图形区重叠面积 >20% 的段 → 图内文本（图内文字浮在图形上）。
+
+    Args:
+        paragraph: 待判定的段落。
+        graphics: 图形区边界列表。
+
+    Returns:
+        False（图内文本）若重叠比例超阈值，否则 None。
+    """
     b = paragraph.boundary
     if b.area == 0:
         return None  # 零面积段无从算重叠比例，交给后续启发式
@@ -257,7 +286,14 @@ def _graphic_overlaps(paragraph: Paragraph, graphics: list[Box]) -> bool | None:
 
 
 def _vertical_text(paragraph: Paragraph) -> bool | None:
-    """全行竖直/旋转文本 → 图内文本（竖直轴标签、旋转标注等）。"""
+    """全行竖直/旋转文本 → 图内文本（竖直轴标签、旋转标注等）。
+
+    Args:
+        paragraph: 待判定的段落。
+
+    Returns:
+        False（图内文本）若所有行都不是水平方向，否则 None。
+    """
     if all(not line.is_horizontal for line in paragraph.lines):
         return False
     return None
@@ -271,6 +307,14 @@ def _spacing(
     """宽词距（且非大字）→ 图内文本：图例/轴标常被排成稀疏词距。
 
     大字排除：全角大字段更可能是标题而非图内文本，先排除再谈宽间距。
+
+    Args:
+        paragraph: 待判定的段落。
+        standard_font_size: 文档标准字号（可能为 None）。
+        average_word_spacing: 文档平均词间距。
+
+    Returns:
+        False（图内文本）若平均词距 > 平均词距 + 5pt 且非大字，否则 None。
     """
     word_spaces = [
         pair[1].boundary.x1 - pair[0].boundary.x2
@@ -298,7 +342,16 @@ def _spacing(
 
 
 def _line_width(paragraph: Paragraph, standard_width_bucketed: float | None) -> bool | None:
-    """多行且行宽≈标准行宽的段 → 正文（正文整段铺满栏宽，图内文本通常窄）。"""
+    """多行且行宽≈标准行宽的段 → 正文（正文整段铺满栏宽，图内文本通常窄）。
+
+    Args:
+        paragraph: 待判定的段落。
+        standard_width_bucketed: 文档标准行宽（2pt 桶，可能为 None）。
+
+    Returns:
+        True（正文）若行数 >2 且段落宽度接近标准行宽（误差 < LINE_WIDTH_BUCKET_SIZE），
+        否则 None。
+    """
     if (
         len(paragraph.lines) > 2
         and standard_width_bucketed is not None
@@ -309,7 +362,15 @@ def _line_width(paragraph: Paragraph, standard_width_bucketed: float | None) -> 
 
 
 def _small_font(paragraph: Paragraph, standard_font_size: float | None) -> bool | None:
-    """>95% 字符低于标准字号 0.1pt → 图内小字（轴标、标注、图注正文）。"""
+    """>95% 字符低于标准字号 0.1pt → 图内小字（轴标、标注、图注正文）。
+
+    Args:
+        paragraph: 待判定的段落。
+        standard_font_size: 文档标准字号（可能为 None）。
+
+    Returns:
+        False（图内文本）若小字号字符占比 > _FONT_RATIO，否则 None。
+    """
     if standard_font_size is None:
         return None
     total = 0
@@ -331,6 +392,13 @@ def _is_title(paragraph: Paragraph, layout: DocumentLayout) -> bool | None:
     简化近似：本子项目不移植 SectionTitleExtractor，isTitleStyle 用
     「全行同一字体字号 + 全大写或非常见字体」近似（见 _is_title_style），
     对齐与起头判定照抄原 isAlignedOrCentered / isTitleStartText。
+
+    Args:
+        paragraph: 待判定的段落。
+        layout: 文档布局统计。
+
+    Returns:
+        True（正文）若满足标题特征，否则 None。
     """
     if (
         _aligned_or_centered(paragraph.boundary, layout)
@@ -347,6 +415,13 @@ def _aligned_or_centered(region: Box, layout: DocumentLayout) -> bool:
     左对齐 = 区域左缘落在常见左边距；居中 = 区域中轴落到「标准行宽中点对准的
     左边距」（中轴线 = xCenter - standardWidth / 2）。左边距按左缘取整后两边
     查表再求和，与区域宽度无关。
+
+    Args:
+        region: 待判定的区域。
+        layout: 文档布局统计。
+
+    Returns:
+        True 若区域左对齐或居中。
     """
     is_center = False
     if layout.standard_width_bucketed is not None:
@@ -366,13 +441,27 @@ def _aligned_or_centered(region: Box, layout: DocumentLayout) -> bool:
 
 
 def _is_title_start_text(line: Line) -> bool:
-    """首行是否像标题起头：非单字符且以大写字母或编号/小节前缀开头（照 isTitleStartText）。"""
+    """首行是否像标题起头：非单字符且以大写字母或编号/小节前缀开头（照 isTitleStartText）。
+
+    Args:
+        line: 段落的首行。
+
+    Returns:
+        True 若该行看起来像标题的开头。
+    """
     text = line.text
     return len(text) > 1 and (text[0].isupper() or _is_prefixed(line))
 
 
 def _is_prefixed(line: Line) -> bool:
-    """首词是否带编号前缀（如「1.」「3.2」「III」「(a)」或附录词），照 isPrefixed。"""
+    """首词是否带编号前缀（如「1.」「3.2」「III」「(a)」或附录词），照 isPrefixed。
+
+    Args:
+        line: 待检查的行。
+
+    Returns:
+        True 若首词匹配编号前缀正则。
+    """
     if len(line.words) == 1:
         return False
     first = line.words[0].text
@@ -390,6 +479,13 @@ def _is_title_style(line: Line, layout: DocumentLayout) -> bool:
     SectionTitleExtractor.isTitleStyle 的简化：原实现还核对非标准字符集与
     字号相对标准的差异，这里只保留「样式统一 + 与正文可区分」两个核心信号。
     全小写的正文行（同字体同字号）不会命中，避免把普通段落误判成标题。
+
+    Args:
+        line: 待检查的行。
+        layout: 文档布局统计（提供 font_counts）。
+
+    Returns:
+        True 若该行样式符合标题特征（样式统一且全大写或使用罕见字体）。
     """
     styles = [(pos.font_name, pos.font_size) for w in line.words for pos in w.positions]
     if not styles:
@@ -410,6 +506,14 @@ def _margins(
 
     不信任左边距时只看面积（>7000pt² 才可能是正文段）；
     信任时需「左缘落在常见左边距上」且面积 >100pt²。
+
+    Args:
+        paragraph: 待判定的段落。
+        trust_left_margin: 是否信任左边距统计。
+        left_margins: 左边距字典（x1 取整 → 占比）。
+
+    Returns:
+        True（正文）若满足边距条件，否则 False（图内文本）。
     """
     b = paragraph.boundary
     if not trust_left_margin:

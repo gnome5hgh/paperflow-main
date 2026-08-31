@@ -17,18 +17,37 @@ from paperflow.vision.geometry import Box
 
 
 def render_figure(page, region: Box, dpi: int = 150) -> tuple[bytes, str]:
-    """把一个图区域渲染成 PNG 字节。
+    """将检测出的图区域从 PDF 页面渲染为 PNG 图像字节。
+
+    本函数使用 PyMuPDF 的 get_pixmap 按给定区域裁剪并渲染，
+    产出的 PNG 字节可直接用于 base64 编码或落盘。
 
     Args:
-        page: PyMuPDF Page 对象（所属文档须保持打开）。
-        region: 图区域（Box，pt 坐标，原点左上、y 向下）。
-        dpi: 渲染分辨率。默认 150，在视觉模型看图清晰度与 token/传输成本间取平衡。
+        page: PyMuPDF Page 对象，所属文档必须保持打开状态（在调用期间不能关闭）。
+        region: 图区域，Box 类型，坐标单位为 pt，原点在页面左上角，y 轴向下。
+        dpi: 渲染分辨率（dots per inch），默认 150。
+            该值在视觉模型清晰度与传输/处理成本之间取得平衡：
+            - 太低（如 72）会导致文字模糊，影响模型识别。
+            - 太高（如 300）会显著增加图片字节数，增加推理延迟和 token 消耗。
 
     Returns:
-        (PNG bytes, "image/png")：直接可用于 base64 data URL / 落盘。
+        tuple[bytes, str]:
+            - PNG 格式的图像字节（可直接写入文件或传输）。
+            - MIME 类型字符串，固定为 "image/png"。
+
+    边界条件与注意事项：
+        1. 若 region 部分或全部超出页面边界，`clip &= page.rect` 会将其裁剪到页面可视区域，
+           get_pixmap 同样会自动裁剪，但显式求交可避免传递无效矩形。
+        2. 本实现不向图区域四周扩展边界（与 pdffigures2 的 FigureRenderer 不同）。
+           若图注或图形边缘紧贴 region 边界，渲染结果可能裁掉少量紧邻的文字/图形元素。
+           这是为了严格遵循下游视觉模型的输入预期（只包含检测区域），且避免引入无关内容。
+        3. 图像输出始终为 PNG 格式，因为 PNG 无损且广泛支持。
     """
+    # 将 Box 转换为 PyMuPDF 的 Rect 对象
     clip = fitz.Rect(region.x1, region.y1, region.x2, region.y2)
-    # 区域可能贴页面边缘，get_pixmap 会自行裁到页内；与页面矩形求交只为显式兜底
+    # 若区域超出页面边界，裁剪到页面内（防御性操作，get_pixmap 也会自动处理）
     clip &= page.rect
+    # 按指定 DPI 渲染该区域为像素图
     pix = page.get_pixmap(clip=clip, dpi=dpi)
+    # 输出为 PNG 格式字节流
     return pix.tobytes("png"), "image/png"

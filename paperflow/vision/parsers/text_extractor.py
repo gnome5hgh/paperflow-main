@@ -80,7 +80,17 @@ def strip_formatting(pages: list[Page]) -> list[Page]:
     页码 = 底缘、纯数字、跨页重复出现的行。命中门槛是至少 minConsistent 页同时出现,
     避免把单页偶然出现的顶部/底部文本误当排版噪音删掉。
 
-    返回的新 Page 复用未删除的段落/行对象(对象身份不变,便于后续溯源)。
+    Args:
+        pages: 原始抽取出的 Page 列表。
+
+    Returns:
+        新的 Page 列表，移除了页眉/页脚/页码行，保留的段落/行对象身份不变。
+
+    算法:
+        1. 计算一致性门槛 min_consistent（随总页数变化）。
+        2. 调用 _find_headers 找出每页的页眉段落。
+        3. 调用 _find_page_number 找出每页的页码行。
+        4. 遍历每页，剔除页眉段落；若段落包含页码行则移除该行，若行全部移除则整段丢弃。
     """
     min_consistent = _min_consistent_pages(len(pages))
     headers = _find_headers(pages, min_consistent)
@@ -109,7 +119,14 @@ def strip_formatting(pages: list[Page]) -> list[Page]:
 
 
 def _collect_lines(raw: dict) -> list[Line]:
-    """把一页的 rawdict 拍平成按阅读顺序排列的 Line 列表;非文本块跳过。"""
+    """把一页的 rawdict 拍平成按阅读顺序排列的 Line 列表;非文本块跳过。
+
+    Args:
+        raw: PyMuPDF 的 page.get_text("rawdict") 返回的字典。
+
+    Returns:
+        该页所有文本行的 Line 对象列表（按 rawdict 中的顺序）。
+    """
     lines: list[Line] = []
     for block in raw["blocks"]:
         if block.get("type", 0) != 0:
@@ -124,9 +141,16 @@ def _collect_lines(raw: dict) -> list[Line]:
 def _line_to_line(raw_line: dict) -> Optional[Line]:
     """把 rawdict 的一条 line 转成 geometry 的 Line。
 
-    词切分:span 内按空白字符切词,词严格不跨 span(照 brief「span 内按空格切词」);
-    每个字符贡献一条 Position(记录所在 span 的 size/font)。
-    is_horizontal 由整行首末非空白字符的 bbox 关系判定。
+    Args:
+        raw_line: rawdict 中的一个 "lines" 项。
+
+    Returns:
+        转换后的 Line 对象，若无有效词则返回 None。
+
+    算法:
+        1. 遍历 span，按其 chars 切分单词（遇到空白字符切分，词不跨 span）。
+        2. 每个字符生成一个 Position 记录字体和字号。
+        3. 用首末非空白字符的 y 区间是否重叠判断行是否水平。
     """
     words: list[Word] = []
     first_bbox: Optional[tuple] = None  # 整行首/末非空白字符 bbox,供 is_horizontal 判定
@@ -161,7 +185,16 @@ def _line_to_line(raw_line: dict) -> Optional[Line]:
 
 
 def _make_word(chars: list[tuple[tuple, str]], size: float, font: str) -> Optional[Word]:
-    """把一组 (bbox, 字符) 打包成一个 Word:bbox 取 container,positions 逐字符记录。"""
+    """把一组 (bbox, 字符) 打包成一个 Word:bbox 取 container,positions 逐字符记录。
+
+    Args:
+        chars: (bbox, 字符) 元组的列表，其中 bbox 是 (x0,y0,x1,y1) 元组。
+        size: 该 span 的字号（所有字符共享）。
+        font: 该 span 的字体名。
+
+    Returns:
+        生成的 Word 对象，若 chars 为空则返回 None。
+    """
     if not chars:
         return None
     boundary = Box_container([Box(*bbox) for bbox, _ in chars])
@@ -170,7 +203,15 @@ def _make_word(chars: list[tuple[tuple, str]], size: float, font: str) -> Option
 
 
 def _is_horizontal(first_bbox: Optional[tuple], last_bbox: Optional[tuple]) -> bool:
-    """水平行 = 首末字符的 y 区间重叠(位于同一条基线附近);竖直/旋转文本则无重叠。"""
+    """水平行 = 首末字符的 y 区间重叠(位于同一条基线附近);竖直/旋转文本则无重叠。
+
+    Args:
+        first_bbox: 整行第一个非空白字符的 bbox 元组。
+        last_bbox: 整行最后一个非空白字符的 bbox 元组。
+
+    Returns:
+        True 如果水平，否则 False。若任一为 None 则默认 True。
+    """
     if first_bbox is None or last_bbox is None:
         return True
     _, fy1, _, fy2 = first_bbox
@@ -186,8 +227,17 @@ def _is_horizontal(first_bbox: Optional[tuple], last_bbox: Optional[tuple]) -> b
 def _group_paragraphs(lines: list[Line]) -> list[Paragraph]:
     """按行间隙/缩进把 Line 聚合为 Paragraph(对应 TextExtractor 的段落分组)。
 
-    连续两行间距超过 1.5 倍行高、或新行明显右缩进(段落首行缩进)→ 新段开始;
-    其余情况并入当前段。段落 boundary = 各行 boundary 的外接矩形。
+    Args:
+        lines: 已排序的行列表。
+
+    Returns:
+        段落列表。
+
+    算法:
+        从第一行开始累积。对每一新行：
+        - 若 gap > 1.5 * max(prev.height, line.height) → 新段落
+        - 若 line 的左缘比 prev 的左缘大超过 0.3 * height（首行缩进）→ 新段落
+        - 否则并入当前段落
     """
     paragraphs: list[Paragraph] = []
     current: list[Line] = [lines[0]]
@@ -206,6 +256,14 @@ def _group_paragraphs(lines: list[Line]) -> list[Paragraph]:
 
 
 def _make_paragraph(lines: list[Line]) -> Paragraph:
+    """用行列表构造 Paragraph，边界取各行的外接矩形。
+
+    Args:
+        lines: 行列表（非空）。
+
+    Returns:
+        Paragraph 对象。
+    """
     return Paragraph(lines, Box_container([ln.boundary for ln in lines]))
 
 
@@ -218,6 +276,12 @@ def _min_consistent_pages(n_pages: int) -> int:
     """一致性门槛:页数越少要求越严格(照 FormattingTextExtractor)。
 
     页数越少越难凑齐跨页重复,故门槛随页数减少而收紧,防止误删。
+
+    Args:
+        n_pages: 总页数。
+
+    Returns:
+        需要出现一致现象的最少页数。
     """
     if n_pages < 3:
         return n_pages - 0
@@ -229,8 +293,16 @@ def _min_consistent_pages(n_pages: int) -> int:
 def _find_headers(pages: list[Page], min_consistent: int) -> list[list[Paragraph]]:
     """找每页页眉(照 findHeaders):每页取顶部两个候选,再跨页一致性筛选。
 
-    原实现靠 startLineNumber 唯一标识段落;Python 的 Paragraph 不带行号,这里用
-    对象身份(paragraph is candidate)代替——同一段落在页内唯一,语义等价。
+    Args:
+        pages: 所有页。
+        min_consistent: 一致性门槛。
+
+    Returns:
+        每页的页眉段落列表（每页可能 0、1 或 2 个）。
+
+    算法:
+        对每页取顶部区域内、行数<=3、且不与相邻段落重叠的两个独立段落作为候选。
+        先对第一候选进行跨页文本/高度一致性筛选，再对第二候选（仅在第一候选被采纳的页上）筛选。
     """
     first_candidates: list[Optional[Paragraph]] = []
     second_candidates: list[Optional[Paragraph]] = []
@@ -274,8 +346,19 @@ def _select_header_candidates(
 ) -> list[Optional[Paragraph]]:
     """从各页候选页眉里挑出跨页一致的真实页眉(照 selectHeaderCandidates)。
 
-    先按文本完全一致分组;候选数达标则整组采纳。文本不尽一致时退回
-    「高度一致」的次优判定——页眉常夹带页码或作者/会议名交替,文本不同但位置稳定。
+    Args:
+        pages: 所有页。
+        candidates: 每页的一个候选段落（或 None）。
+        min_consistent: 一致性门槛。
+
+    Returns:
+        每页筛选后的段落（或 None）。
+
+    算法:
+        1. 若有效候选数 < min_consistent，全部放弃。
+        2. 优先按文本完全一致分组，若某组数量达门槛，则采纳该组。
+        3. 否则按高度（y1,y2）一致（±1pt）分组，若某组数量达门槛则采纳该组。
+        4. 否则全部放弃。
     """
     non_empty = [c for c in candidates if c is not None]
     if len(non_empty) < min_consistent:
@@ -325,7 +408,13 @@ def _is_above_other_text(
 ) -> bool:
     """候选是否「悬在其他文本之上」:与任一其他段落在垂直方向重叠(±3pt 内)即不合格。
 
-    Scala 里用 startLineNumber 唯一标识段落来排除候选自身,这里用对象身份等效替代。
+    Args:
+        candidate: 待检查的段落。
+        top_paragraphs: 顶部区域的所有段落。
+        also_exclude: 另一个需要排除的段落（通常是第一候选）。
+
+    Returns:
+        True 如果 candidate 不与其他任何段落（除自身和 also_exclude）在垂直方向重叠。
     """
     excluded = {id(candidate)}
     if also_exclude is not None:
@@ -341,8 +430,16 @@ def _find_page_number(
 ) -> list[Optional[Line]]:
     """每页底缘的纯数字行页码(照 findPageNumber)。
 
-    取每页视觉上最靠下的段落,其最后一行若形如「12」「3」这类十进制数则候选;
-    跨页候选数达到门槛才真正当作页码剔除,防误伤正文里恰好是数字的行。
+    Args:
+        pages: 所有页。
+        min_consistent: 一致性门槛。
+
+    Returns:
+        每页的页码行（或 None）。
+
+    算法:
+        取每页最下方的段落的最后一行，若该行文本为纯数字（如 "12"）则作为候选。
+        若候选数达到 min_consistent，则全部返回；否则全部放弃。
     """
     candidates: list[Optional[Line]] = []
     for page in pages:

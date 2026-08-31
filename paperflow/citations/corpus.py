@@ -40,12 +40,20 @@ class CorpusIndex:
 
     # —— 惰性依赖（RAG 式，首次访问才构造重组件）——
     def _rag(self):
+        """惰性获取 RAG 服务实例，仅在首次调用 PDF 解析时初始化。
+
+        避免在仅使用笔记索引时加载重量级的 GROBID 客户端及相关依赖。
+        """
         if self._rag_service is None:
             from paperflow.rag.services.rag_service import get_rag_service
             self._rag_service = get_rag_service()
         return self._rag_service
 
     def _te(self):
+        """惰性获取 TitleExtractor 实例，作为 GROBID 解析失败时的回退。
+
+        回退链包含 pdftitle/pymupdf 等层级，但最终入库前会经 _TRUSTED_TITLE_SOURCES 过滤。
+        """
         if self._title_extractor is None:
             from paperflow.core.memory.services.title_extractor import TitleExtractor
             from paperflow.rag.parsers.grobid_client import GrobidClient
@@ -62,20 +70,30 @@ class CorpusIndex:
     def refresh(self) -> None:
         """增量重建：扫描 vault 目录，只对新增/变更文件重提标题，删除的移除。"""
         with self._lock:
+            # 1. 分别遍历笔记目录（*.md）与 PDF 目录（*.pdf），收集当前所有文件的绝对路径与 mtime。
             current: dict[str, int] = {}
             for root, pattern, kind in ((self.config.vault_note_dir, "*.md", "note"),
                                         (self.config.vault_pdf_dir, "*.pdf", "pdf")):
                 if not root:
                     continue
+
                 for p in Path(root).rglob(pattern):
                     st = p.stat()
                     path = str(p)
                     current[path] = st.st_mtime_ns
+
+                    # 2. 若某路径不在 _mtime 中，或其 mtime 发生变化，则调用 _upsert 重新提取标题。
+                    # 仅当文件新增或内容变更时才重新提取，未变更的文件直接沿用缓存
                     if self._mtime.get(path) != st.st_mtime_ns:
                         self._upsert(path, kind)
+
+            # 3. 对 _mtime 中存在但当前扫描未出现的路径，调用 _remove 摘除其引用。
+            # 移除在 current 中不存在的文件（即被删除或移出的文件）
             for path in list(self._mtime):
                 if path not in current:
                     self._remove(path)
+
+            # 4. 更新 _mtime 为当前快照，并将 _records 持久化到磁盘缓存。
             self._mtime = current
             self.save()
 
@@ -87,70 +105,113 @@ class CorpusIndex:
             self._mtime = {k: int(v) for k, v in data.get("mtime", {}).items()}
 
     def save(self) -> None:
+        """将当前内存索引持久化到 JSON 缓存文件。"""
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
         self._cache_path.write_text(json.dumps(
             {"records": self._records, "mtime": self._mtime}, ensure_ascii=False), encoding="utf-8")
 
     def _upsert(self, path: str, kind: str) -> None:
+        """更新或插入一条记录：根据 kind 提取标题，写入或合并到 _records。
+
+        关键算法/边界处理（Ghost Record 防御）：
+            文件路径和标题都可能发生变化。若某 PDF 文件之前属于标题 A，现在标题变为 B，
+            在更新 B 的记录前，必须先将该路径从标题 A 的记录中移除（置为 None），
+            否则同一文件路径会同时出现在 A 和 B 两条记录中，形成幽灵记录。
+            具体做法：遍历所有现有记录，若记录的 field（pdf_path/note_path）等于当前路径，
+            则先将该字段置空，再写入新记录。
+
+        Args:
+            path: 文件绝对路径（字符串）。
+            kind: "pdf" 或 "note"，决定提取方式与写入的字段。
+        """
         if kind == "pdf":
             title, biblio = self._pdf_meta(path)
         else:
             title, biblio = self._note_title(path), {}
+        # 若提不出有效标题，则不索引该文件（避免损坏文件或空标题污染索引）
         if not title:
             return  # 提不出标题的不索引（如损坏 PDF）
         norm = self.normalize(title)
         field = "pdf_path" if kind == "pdf" else "note_path"
-        # 文件标题变更时（同路径 mtime 变化），先把本路径从其他记录的引用里
-        # 解绑，避免新旧两个标题同时指向同一文件（ghost record）
+
+        # 幽灵记录清理：将该路径从其他记录的相同字段引用中解绑
         for other in self._records.values():
             if other.get(field) == path:
                 other[field] = None
+
+        # 获取或创建归一化标题对应的记录，合并路径与书目元数据
         rec = self._records.setdefault(norm, {"title": title, "note_path": None,
                                               "pdf_path": None, "biblio": {}})
-        rec["title"] = title
+        rec["title"] = title # 更新标题为最新提取值（标题也可能修正）
         rec[field] = path
         if kind == "pdf" and biblio:
             rec["biblio"] = biblio
 
     def _remove(self, path: str) -> None:
-        """从所有包含该路径的记录里摘除引用；记录空壳则删除。"""
+        """从所有包含该路径的记录里摘除引用；记录空壳则删除。
+
+        Args:
+            path: 需要移除的文件路径。
+        """
         for norm, rec in list(self._records.items()):
             if rec.get("pdf_path") == path:
                 rec["pdf_path"] = None
+
             if rec.get("note_path") == path:
                 rec["note_path"] = None
+
+            # 记录中既无 PDF 也无笔记时，移除该记录（避免空壳占用归一化标题 key）
             if not rec.get("pdf_path") and not rec.get("note_path"):
                 del self._records[norm]
 
     def _pdf_meta(self, path: str) -> tuple[str, dict]:
         """标题+书目：复用 GROBID 解析（ParsedDoc.title/biblio），空时回退 TitleExtractor。
 
-        TitleExtractor 回退只接受 grobid/pdftitle 层级（见 _TRUSTED_TITLE_SOURCES）
-        ——pymupdf 字体启发式把期刊名/页眉当标题，GROBID 挂时实测污染 corpus 与 bib，
-        宁缺毋滥：提取不可靠就返回空串，由调用方不索引/不建条目，而不是垃圾标题凑数。
+        解析策略（可靠层级优先）：
+            1. 优先使用 RAG 服务（内部调用 GROBID）解析，获得 ParsedDoc.title 与 biblio。
+            2. 若 GROBID 返回空标题或抛出异常，则回退到 TitleExtractor（5 级链）。
+            3. **关键过滤**：TitleExtractor 的结果中，只接受 source 为 "grobid" 或 "pdftitle"
+               的层级。pymupdf 等字体启发式层级容易将期刊名、页眉、arXiv 头误识别为标题，
+               实测会严重污染索引与 bib，因此宁缺毋滥——不可靠来源直接返回空串。
+
+        Returns:
+            (title, biblio)。若无法提取可靠标题，title 返回空字符串，调用方将不索引该 PDF。
         """
+        # 1. 首选 GROBID 解析（RAG 服务内部有缓存）
         try:
             doc = self._rag().parse_pdf_cached(path)
             if doc.title:
                 return doc.title, doc.biblio
         except Exception:
             pass
+
+        # 2. 回退到 TitleExtractor，但仅信任指定层级
         try:
             r = self._te().extract(pdf_path=path)
+            # TitleExtractor 回退只接受 grobid/pdftitle 层级（见 _TRUSTED_TITLE_SOURCES）
             if r.title and r.source in _TRUSTED_TITLE_SOURCES:
                 return r.title, {}
         except Exception:
             pass
+
+        # 3. 不可靠或提取失败：返回空标题，调用方跳过索引
         return "", {}
 
     @staticmethod
     def _note_title(path: str) -> str:
-        """笔记标题：跳过 frontmatter（`---…---`，Obsidian 常见开头）后取首个 `# ` H1。
+        """从笔记文件中提取第一个一级标题（H1，即以 `# ` 开头的行）。
 
-        旧实现只读首行——frontmatter 笔记首行是 `---`，归一化后成空串，导致所有
-        frontmatter 笔记塌缩到同一空 key 记录。先跳过 frontmatter 块，再取第一个
-        非空 `# ` 标题行；无 frontmatter 的笔记（paperFlow 生成的，首行即 `# `）
-        行为不变。
+        边界/兼容性处理（针对 Obsidian Frontmatter）：
+            Obsidian 笔记常以 YAML frontmatter 块开头（`---` 起始，`---` 闭合）。
+            旧版实现直接读取首行，若首行为 `---`，归一化后变为空串，导致所有
+            带 frontmatter 的笔记全部塌缩到同一空 key 记录，造成数据污染。
+            改进后的逻辑：
+                1. 若文件首行为 `---`，则扫描至下一个单独的 `---` 行，跳过该块。
+                2. 跳过 frontmatter 后，取第一个以 `#` 开头的非空行，去掉 `#` 前缀返回。
+                3. 无 frontmatter 的笔记（如 paperFlow 自动生成，首行即 `# 标题`）行为保持不变。
+
+        Returns:
+            提取出的标题字符串，若无法提取则返回空字符串。
         """
         try:
             lines = Path(path).read_text(encoding="utf-8").splitlines()
@@ -162,6 +223,7 @@ class CorpusIndex:
                 if lines[i].strip() == "---":
                     lines = lines[i + 1:]
                     break
+        # 遍历正文行，找第一个 H1 标题行
         for line in lines:
             line = line.strip()
             if line.startswith("#"):
@@ -182,4 +244,5 @@ class CorpusIndex:
         return None
 
     def record_by_title(self, title: str) -> dict | None:
+        """按标题查询记录（同 match 的别名，保持接口语义一致性）。"""
         return self.match(title)
