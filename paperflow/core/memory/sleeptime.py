@@ -19,11 +19,14 @@ logger = logging.getLogger(__name__)
 __all__ = ["Sleeptime", "MemoryEditBatch", "MemoryEdit",
            "MemoryEditValidationError"]
 
-#: 可写记忆文件白名单（LLM 输出不可信，写入前必须校验）
-# 允许的路径模式：
-#   - system/<name>.md，其中 name 仅含字母数字下划线
+# ============================================================================
+# 常量：可写记忆文件白名单（正则表达式）
+# ============================================================================
+# LLM 输出不可信，写入前必须校验目标文件是否在允许列表中。
+# 允许的模式：
+#   - system/<name>.md，其中 name 仅含字母数字下划线（即 system/persona.md, system/human.md）
 #   - <name>.md（顶层块，如 feedback_*, project_*, reference_*, 或通用块）
-# 使用正则确保路径安全，防止目录遍历或非法后缀
+# 使用正则确保路径安全，防止目录遍历或非法后缀。
 _EDIT_FILE_PATTERN = re.compile(
     r"^(system/[A-Za-z0-9_]+|[A-Za-z0-9_]+|feedback_[A-Za-z0-9_]+|"
     r"project_[A-Za-z0-9_]+|reference_[A-Za-z0-9_]+)\.md\Z")
@@ -106,21 +109,23 @@ class Sleeptime:
 
         任一条件不满足（未启用 / 已在跑 / 新增消息不足 frequency / 距上次
         不足 min_interval_s）都直接返回——每轮 REPL 的开销极小。
+
+        注意：此方法为异步，但内部实际执行 _run_once 也是异步；此处只做入口。
         """
-        # 未启用
+        # 未启用或已在运行（防止并发重叠）
         if not self.enable or self._running:
             return
 
         # 新增消息不足 frequency
-
         size = self.message_manager.size(self.agent_state.agent_id)
         if size - self._cursor < self.frequency:
             return
 
-        # 距上次不足 min_interval_s
+        # 距上次整合不足 min_interval_s（防止频繁调用 LLM）
         if time.monotonic() - self._last_run < self.min_interval_s:
             return
 
+        # 通过所有检查，开始执行
         self._running = True
         try:
             await self._run_once()
@@ -129,43 +134,67 @@ class Sleeptime:
             self._last_run = time.monotonic()
 
     async def _run_once(self) -> None:
-        """读取新消息 → LLM 编辑指令 → 全量预验证 → 逐条应用 → commit → 推进。"""
-        # 获取当前 Agent 的所有消息
+        """读取新消息 → LLM 编辑指令 → 全量预验证 → 逐条应用 → commit → 推进。
+
+        整个流程分为两个阶段：
+            1. 全量预验证（_validate_edit）：校验文件白名单和删除保护。
+               若任一编辑非法，则整体抛出 MemoryEditValidationError，一条都不写。
+            2. 若全部合法，则逐条应用编辑（_apply_edit）。
+               应用期间若有任何异常（如块超限/read_only），计入连败计数；
+               连败达 3 次则强制推进游标，避免死循环。
+
+        游标推进时机：
+            - 成功完成整合后，游标更新为当前 messages 表总行数。
+            - 阶段 2 应用异常且连败累计达 3 次，则同样强制推进游标（跳过这批问题消息），
+              防止同一批编辑被反复重放导致无限循环。
+            - 若新消息为空（游标可能超前），则校准游标到当前总行数并返回。
+        """
+        # 获取该 agent 当前所有消息
         new_msgs = self.message_manager.get_messages_by_agent_id(
             self.agent_state.agent_id)
 
-        # 从游标处切出「尚未整合」的新消息。游标可能超前于当前行数（消息被清理、
-        # 或上次连败后强制推进过）——此时切片为空，把游标校准回当前行数后返回，
-        # 避免下次重复计算这段空区间。
+        # 从游标处切出尚未整合的新消息。
+        # 游标可能超前于当前总行数（如消息被清理或上次连败强制推进），此时切片为空，
+        # 需校准游标，避免下次重复计算空区间。
         new_msgs = new_msgs[self._cursor:]
         if not new_msgs:
             self._cursor = self.message_manager.size(self.agent_state.agent_id)
             return
 
+        # 构建提示词
         prompt = self._build_prompt(new_msgs)
         try:
+            # 调用 LLM 获取编辑指令批次
             batch = await self.structured.extract(
                 prompt=prompt, schema=MemoryEditBatch,
                 fallback=lambda: MemoryEditBatch(edits=[]))
+
             # 阶段 1：全量预验证——任一非法则整体失败，一条都不写。
             # 校验失败（MemoryEditValidationError）上抛给调用方，不计入连败
             for edit in batch.edits:
                 self._validate_edit(edit)
+
             # 阶段 2：全量通过后逐条应用（映射到 block 编辑）
             for edit in batch.edits:
                 self._apply_edit(edit)
-            if self.block_manager.memfs is not None:
+
+            # 若 block_manager 支持 git，则提交变更
+            if hasattr(self.block_manager, '_commit') and callable(self.block_manager._commit):
                 self.block_manager._commit(f"sleeptime: {len(new_msgs)} 条历史")
+
+            # 成功后推进游标到当前总行数，并重置失败计数
             self._cursor = self.message_manager.size(self.agent_state.agent_id)
             self._failures = 0
+
         except MemoryEditValidationError:
-            raise    # 阶段 1 校验失败：原子性失败不吞掉，直接暴露
+            # 阶段 1 校验失败：原子性失败不吞掉，直接向上抛出，由调用方处理。
+            raise
         except Exception:
-            # 含阶段 2 应用期错误（块超限/read_only 的 ValueError）：
+            # 阶段 2 应用期错误（如块超限/read_only 的 ValueError）：
             # 计入连败，3 次强制前进游标，避免同一批编辑被无限重放
             self._failures += 1
             if self._failures >= 3:
-                # 防卡死：连败 3 次，强制前进游标
+                # 防卡死：连败 3 次，强制推进游标（跳过这批消息）
                 self._cursor = self.message_manager.size(self.agent_state.agent_id)
 
     def _build_prompt(self, new_msgs: list) -> str:
@@ -173,15 +202,22 @@ class Sleeptime:
 
         定向建议是让 LLM 把「用户身份/偏好」写到 system/human.md、把「助手
         角色认知变化」写到 system/persona.md——与两个默认块的定位一致。
+
+        Args:
+            new_msgs: 尚未整合的消息列表（已按时间升序）。
+
+        Returns:
+            构造好的提示文本（字符串）。
         """
         parts = [
             "你是 paperFlow 的记忆整合器（sleeptime）。分析以下新对话，输出记忆编辑指令。",
-            "可编辑：feedback_*.md / project_*.md / reference_*.md / system/*.md。",
+            "可编辑：feedback_*.md / project_*.md / reference_*.md / system/*。md",
             "规则：值得长期记住才写；合并重复；旧条目被推翻时 replace 为新结论。",
             "定向：从对话学到用户身份/偏好/背景 → append/replace system/human.md；",
-            "助手角色或工作方式认知变化 → replace system/persona.md。",
+            "助手角色或工作方式认知变化 → replace system/persona。md",
             "", "新对话：",
         ]
+        # 将每条消息的 role 和 content 以文本形式拼入
         for m in new_msgs:
             parts.append(f"[{m.role.value}] {m.content}")
         return "\n".join(parts)
@@ -195,6 +231,9 @@ class Sleeptime:
 
         Args:
             edit: MemoryEdit，待校验的编辑指令。
+
+        Raises:
+            MemoryEditValidationError: 若文件不在白名单内或试图删除 system/ 块。
         """
         if not _EDIT_FILE_PATTERN.match(edit.file):
             raise MemoryEditValidationError(f"非法编辑目标: {edit.file}")
@@ -213,23 +252,25 @@ class Sleeptime:
         # label 由 file 移除 .md 后缀并去除 "system/" 前缀得到（system/ 下的块 label 即文件名）。
         label = edit.file.removesuffix(".md").replace("system/", "")
 
-        # delete：若块存在则删除，否则忽略。
+        # 处理 delete 动作
         if edit.action == "delete":
             b = self.block_manager.get_block_by_label(label)
             if b is not None:
                 self.block_manager.delete_block(b.id)
             return
+
+        # 处理 append / replace 动作
         b = self.block_manager.get_block_by_label(label)
 
-        # append：若块不存在则创建，否则将内容追加到现有值后（换行连接）。
         if edit.action == "append":
             if b is None:
+                # 若块不存在，则创建新块
                 self.block_manager.create_block(label, edit.content)
             else:
+                # 否则追加内容（换行分隔）
                 self.block_manager.update_block_value(
                     label, b.value + "\n" + edit.content)
 
-        # replace：若块不存在则创建，否则直接替换为内容。
         elif edit.action == "replace":
             if b is None:
                 self.block_manager.create_block(label, edit.content)
