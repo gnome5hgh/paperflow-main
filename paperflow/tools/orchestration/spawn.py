@@ -89,7 +89,7 @@ async def _extract_digest(llm, agent_type: str, text: str,
 
     复用 StructuredOutput 的三层防御(json 模式 + 模型校验 + 重试);独立超时 30s,
     与子 agent 执行超时解耦——摘要提取是"锦上添花",卡死不能拖垮 spawn 主流程。
-    只取 text 尾部 2000 字符控制 prompt 长度:子 agent 回答可能很长(如 writer 的
+    只取 text 尾部 2000 字符控制 prompt 长度:子 agent 回答可能很长(如 noter 的
     整篇笔记),结构化摘要只需要结论性尾部。
 
     :param telemetry_callback: 摘要 LLM 调用的元数据回调,None = 零开销跳过(不接线审计)
@@ -372,9 +372,9 @@ class SpawnSubAgentTool(Tool):
         result = None
         try:
             # ③ 构造子 agent:继承父的安全中间件、会话 ID(同一审计链)、确认回调与
-            #    问用户回调——确认回调是关键:writer 的写盘工具要求用户确认,不传则
-            #    默认回调始终拒绝,spawn 出的 writer 永远写不出笔记;问用户回调同理,
-            #    writer/qa-agent 靠它中途向用户提问。不传意图管线/会话 → 子 agent 不做
+            #    问用户回调——确认回调是关键:noter 的写盘工具要求用户确认,不传则
+            #    默认回调始终拒绝,spawn 出的 noter 永远写不出笔记;问用户回调同理,
+            #    noter/qa-agent 靠它中途向用户提问。不传意图管线/会话 → 子 agent 不做
             #    意图识别(子任务是结构化任务,非用户意图)。
             # 流式统一：子 agent 只透传工具行（前缀由渲染器统一加）、不流 content——
             # 与并行场景同一代码路径（多路并发不串字）。

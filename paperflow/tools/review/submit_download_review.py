@@ -74,7 +74,7 @@ class SubmitDownloadReviewTool(Tool):
             return ToolResult(text="verdict=pass 但无任何 pass 条目——pass 语义是存在可下载/推荐项，应至少有一个 pass（verdict 与 items 不一致）")
         if verdict == "fail" and any(i.get("decision") == "pass" for i in items):
             return ToolResult(text="verdict=fail 但存在 pass 条目——verdict 与 items 不一致（fail = 无任何合格项）")
-        # ④ 格式化：verdict 行 + 每条目 PASS/FAIL 标签 + 原因 + 来源链接（writer 确定性可读）
+        # ④ 格式化：verdict 行 + 每条目 PASS/FAIL 标签 + 原因 + 来源链接（searcher 确定性可读）
         lines = [f"审查裁决：{verdict}"]
         for item in items:
             tag = "PASS" if item["decision"] == "pass" else "FAIL"

@@ -1,7 +1,7 @@
 """共享 ask_user_question 工具——向用户提问并等待回答。
 
-原属 supervisor 私有,子 agent(writer/qa-agent)接入中途问用户后上移共享层:
-一处定义、多处装配。权限卡在装配面——searcher/reviewer 不装配即无权问。
+原属 supervisor 私有,子 agent(noter/qa-agent/searcher)接入中途问用户后上移共享层:
+一处定义、多处装配。权限卡在装配面——reviewer 不装配即无权问。
 """
 from paperflow.core.tool import Tool, ToolResult
 
