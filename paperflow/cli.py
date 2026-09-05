@@ -476,7 +476,7 @@ def main() -> None:
     # (resolve_model_dir:data/models/<name>,否则回退 HF 名)。
     router = HybridRouter(
         encoder=embedder,
-        routes=load_routes(), alpha=0.6)
+        routes=load_routes(), alpha=0.5)
     pipeline = IntentPipeline(router=router, structured=structured)
 
     conversation = ConversationState()

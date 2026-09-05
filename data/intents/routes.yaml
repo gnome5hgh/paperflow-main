@@ -1,12 +1,5 @@
-# 交付态标定注释：score_threshold 全 0.0 是 verify_intent fit 标定后的写回交付态（启动只
-# load 零 fit）。路由器从不主动 punt 到 general——general 仅零匹配命中才产出（Q1 泄漏
-# 0.000 已由 verify_intent 验证）。请勿手工调阈值；重标定写回会丢 inline 注释，
-# 需手动恢复下方 K2/K3 回归锁注释。
 routes:
 - name: menu_selection
-  # 菜单选项答复意图——主路径由管线选项检测（option_reply 正则）在路由之前短路产出，
-  # 本块语料仅为「枚举=路由名集合」契约的兜底：覆盖常见选择形态，防检测漏网形态
-  # （如「2）」「选项 2」带空格变体）落入其他路由的 0 阈值误命中。
   utterances:
   - 选项1
   - 选项2
@@ -65,8 +58,18 @@ routes:
   - 有没有 drug-target association prediction 的论文
   - 找一篇 heterogeneous graph transformer 的文章
   - 搜一下 circRNA 鉴定的经典文献
-  - 帮我搜索circRNA关联预测的最新论文  # 与集成测试 K2 输入逐字重合，确定性回归锁（FakeEmbedder 下 BM25 部分匹配太弱），勿误当泛化用例删改
+  - 帮我搜索circRNA关联预测的最新论文
   - 搜一下circRNA关联预测的最新进展
+  - 帮我找找异构图神经网络方向的文献
+  - 查一下链路预测领域的论文有哪些
+  - 搜搜药物靶点相关的最新文章
+  - 找几篇图神经网络方向的综述文献
+  - 帮我检索 circRNA 鉴定方法的文章
+  - 有没有讲多关联预测的论文可以下载
+  - 帮我找几篇最近顶会发表的图神经网络论文
+  - 下载那篇关于 RNA 修饰的论文
+  - 查查图神经网络近年来的研究进展
+  - 找最新发表的蛋白质相互作用预测文章
   score_threshold: 0.0
 - name: generate_note
   utterances:
@@ -110,14 +113,10 @@ routes:
   - 梳理一下我可以研究的方向
   - 帮我看看读过的文献里有哪些研究空白
   - 根据我的笔记给几个候选题目
-  # 主题词+动作复合句（路由是检索式，纯动作句对「<课题>的方向」类 query 匹配不足——
-  # 主题词精确命中 search_paper/set_research_topic 语料会主导，需 research_discovery 自带主题锚点）
   - 帮我看看异构图神经网络方向能做什么研究
   - circRNA关联预测方向有什么值得做的课题
   - 链路预测领域有什么研究空白
   - 帮我找药物靶点方向的研究切入点
-  # 笔记→方向转换（「把X的笔记做成方向」的「笔记」锚点会被 generate_note 抢走——
-  # 补通用转换句强化 research_discovery 在该形态的锚定）
   - 根据我整理好的笔记帮我定个研究方向
   - 把我读过的论文变成研究计划
   score_threshold: 0.0
@@ -184,6 +183,12 @@ routes:
   - 我的待读清单
   - 显示我的待读列表
   - 把这篇标记为待读
+  - 我之前读过哪些文献
+  - 我的收藏夹里都有什么
+  - 我整理过的笔记列表
+  - 回顾一下我近期读过的论文
+  - 我的学习记录里有哪些内容
+  - 打开我的阅读记录
   score_threshold: 0.0
 - name: set_research_topic
   utterances:
@@ -231,7 +236,7 @@ routes:
   - 现在改成研究图对比学习
   - 转向药物靶点方向
   - 不搞circRNA了看异构图
-  - 换个话题看看图对比学习  # 与集成测试 K3 输入近重合，确定性回归锁（FakeEmbedder 下 BM25 部分匹配太弱），勿误当泛化用例删改
+  - 换个话题看看图对比学习
   score_threshold: 0.0
 - name: chitchat
   utterances:
