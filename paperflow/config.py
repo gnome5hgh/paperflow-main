@@ -133,9 +133,9 @@ class PaperFlowConfig:
     #: 或 config.yaml 提供。
     vault_pdf_dir: str = ""
 
-    #: Obsidian vault 大纲目录(数据源 outline/)——同 vault_note_dir,经 .env
-    #: (PAPERFLOW_VAULT_OUTLINE_DIR)或 config.yaml 提供;空则由 factory 回退 workspace/outline。
-    vault_outline_dir: str = ""
+    #: Obsidian vault 研究目录(数据源 research/)——同 vault_note_dir,经 .env
+    #: (PAPERFLOW_VAULT_RESEARCH_DIR)或 config.yaml 提供;空则由 factory 回退 workspace/research。
+    vault_research_dir: str = ""
 
     #: references.bib 路径（引用库真相源）。空则回退 workspace/citations/references.bib
     citations_bib_path: str = ""
@@ -208,7 +208,7 @@ class PaperFlowConfig:
 
         # 顶层配置字段(含 vault / RAG 键,均可通过 config.yaml 顶层覆盖默认值)
         for key in ("workspace", "agents_dir", "max_risk",
-                    "vault_note_dir", "vault_pdf_dir", "vault_outline_dir",
+                    "vault_note_dir", "vault_pdf_dir", "vault_research_dir",
                     "citations_bib_path",
                     "grobid_endpoint", "milvus_uri", "milvus_collection",
                     "embed_model", "rerank_model",
@@ -230,7 +230,7 @@ class PaperFlowConfig:
             PAPERFLOW_MAX_RISK      → max_risk
             PAPERFLOW_VAULT_NOTE_DIR → vault_note_dir
             PAPERFLOW_VAULT_PDF_DIR  → vault_pdf_dir
-            PAPERFLOW_VAULT_OUTLINE_DIR → vault_outline_dir
+            PAPERFLOW_VAULT_RESEARCH_DIR → vault_research_dir
             PAPERFLOW_CITATIONS_BIB_PATH → citations_bib_path
             PAPERFLOW_GROBID_ENDPOINT → grobid_endpoint
             PAPERFLOW_EMBED_MODEL    → embed_model
@@ -255,7 +255,7 @@ class PaperFlowConfig:
             "PAPERFLOW_MAX_RISK": (None, "max_risk"),
             "PAPERFLOW_VAULT_NOTE_DIR": (None, "vault_note_dir"),
             "PAPERFLOW_VAULT_PDF_DIR": (None, "vault_pdf_dir"),
-            "PAPERFLOW_VAULT_OUTLINE_DIR": (None, "vault_outline_dir"),
+            "PAPERFLOW_VAULT_RESEARCH_DIR": (None, "vault_research_dir"),
             "PAPERFLOW_CITATIONS_BIB_PATH": (None, "citations_bib_path"),
             "PAPERFLOW_GROBID_ENDPOINT": (None, "grobid_endpoint"),
             "PAPERFLOW_MILVUS_URI": (None, "milvus_uri"),
