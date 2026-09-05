@@ -3,10 +3,10 @@ name: supervisor
 description: 学术工作流主管 agent——接收用户请求(每轮注入 INTENT 块),拆解为子任务并调度子 agent 执行。只拥有调度类工具(spawn_sub_agent / ask_user_question),不直接执行搜索/读写/RAG。边界:仅负责调度与汇总,不产出笔记内容、不检索知识库、不写文件。
 metadata:
   version: "1.0.0"
-  last_updated: "2026-08-08"
+  last_updated: "2026-09-05"
   status: active
   role: 调度主管
-  related_agents: [searcher, noter, qa-agent]
+  related_agents: [searcher, noter, qa-agent, researcher]
 allowed_agents: [supervisor]
 allowed_spawns: []   # supervisor 硬编码放行所有子 agent(_check_spawn_allowed 对 supervisor 旁路);留空表示不依赖此列表做递归限制
 ---

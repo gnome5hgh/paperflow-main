@@ -56,7 +56,7 @@ Good comments explain the reason, not the mechanics:
 
 ## Architecture
 
-paperFlow 是 LLM 驱动的学术研究流程助手（ADR 0003）。单根 agent（supervisor）接收每一轮用户输入 → 意图识别（INTENT 块注入）→ ReAct 循环 → 拆解子任务 spawn 子 agent（searcher/noter/reviewer/qa-agent）→ 聚合各子 agent 的结构化摘要（digest）→ 汇总回答。
+paperFlow 是 LLM 驱动的学术研究流程助手（ADR 0003）。单根 agent（supervisor）接收每一轮用户输入 → 意图识别（INTENT 块注入）→ ReAct 循环 → 拆解子任务 spawn 子 agent（searcher/noter/reviewer/qa-agent/researcher）→ 聚合各子 agent 的结构化摘要（digest）→ 汇总回答。
 
 代码分层（自底向上）:
 
@@ -84,14 +84,15 @@ Every agent lives in `agents/<name>/` with two files:
 
 `AgentRegistry(agents_dir)` scans this directory at init time, parses frontmatter, dynamically imports `TOOLS` from each `tools.py`, and exposes `get_config(agent_type) -> AgentConfig` plus `list_agents()`. It is the single entry point for agent discovery — no separate tool/skill registries.
 
-现有 5 个 agent（`agents/` 下）:
+现有 6 个 agent（`agents/` 下）:
 
 | agent | 职责 | allowed_spawns | 工具要点 |
 |---|---|---|---|
 | `supervisor` | 调度主管:拆解任务、spawn、汇总 | 硬编码放行所有（绕过白名单） | 仅 2 个调度工具 + 13 个记忆工具（`get_memory_tools()`） |
 | `searcher` | 多源搜索 → reviewer 门禁 → 可选下载 | `[reviewer]` | web_search + fetch_pdf + ask_user + spawn |
 | `noter` | 纯笔记生成：基于指定 PDF 起草结构化笔记,内部 reviewer 审稿 ≤3 轮 | `[reviewer]` | 原子文件工具 + ask_user + spawn + glob/grep + 4 引用工具(lookup/add/format/list) + analyze_figures |
-| `reviewer` | 叶子审稿:笔记审稿 / 下载门禁两种模式 | `[]` | 只读 + submit_review / submit_download_review + 溯源核验(list_citations/lookup_citation) |
+| `researcher` | 选题发现:基于本地语料盘点→survey/gaps→idea 卡→外部新颖性验证→研究计划,产物自己落盘 research 根,内部 spawn searcher(补料/新颖性)+ reviewer(plan_review) | `[searcher, reviewer]` | read/write/edit + rag_retrieve + spawn + 4 引用工具(自产自写) |
+| `reviewer` | 叶子审稿:笔记审稿 / 下载门禁 / 研究计划审稿(plan_review)三种模式 | `[]` | 只读 + submit_review / submit_download_review + 溯源核验(list_citations/lookup_citation) |
 | `qa-agent` | 回答论文/笔记/阅读记忆问题 | `[]` | rag_retrieve + 只读文件工具 + ask_user + analyze_figures |
 
 `allowed_agents` / `allowed_spawns` 已由 spawn 工具在运行时强制（见 Orchestration）。**只有 supervisor 装配记忆工具**（`get_memory_tools()`）——记忆是 supervisor 的专属工具面，子 agent 不越权。
@@ -188,7 +189,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 3. **混合路由**（`HybridRouter`）— 稠密（bge 嵌入）+ 稀疏（jieba BM25）融合（`dense × alpha + sparse × (1-alpha)`，生产 `alpha=0.6`）；`load_routes()` 读 `data/intents/routes.yaml`（唯一知识库源，含各意图示例句 + 标定阈值）；命中阈值则产出
 4. **LLM 兜底** — 无路由命中时注入 top-3 近邻候选，经 `StructuredOutput` 分类，最终兜底 `IntentionResult(GENERAL, 0.0)`
 
-产出 `IntentOutput`（intent_type/confidence/entities/rewritten_query/source/steps/clarification）注入 ReAct head 的 `INTENT:` 块。`INTENT_META` 是意图元数据的**单一真相源**：14 个 `IntentType` 值分 3 类（business 业务派发 / dialogue 会话状态 / system 直接回答），`dispatch_allowed` 决定 spawn 门禁（chitchat/out_of_scope 等永远不能 spawn）。
+产出 `IntentOutput`（intent_type/confidence/entities/rewritten_query/source/steps/clarification）注入 ReAct head 的 `INTENT:` 块。`INTENT_META` 是意图元数据的**单一真相源**：14 个 `IntentType` 值分 3 类（business 业务派发 / dialogue 会话状态 / system 直接回答），`dispatch_allowed` 决定 spawn 门禁（chitchat/out_of_scope 等永远不能 spawn）。业务意图与子 agent 的对应：search_paper→searcher、generate_note→noter、ask_question/analyze_paper/manage_memory→qa-agent、research_discovery→researcher（选题发现）。
 
 跨轮澄清：`IntentPipeline` 产出 `clarification` → Agent 早退返回问题（不落盘）→ CLI `ConversationState.pending_intent` 挂起、下一轮合并重跑；`round >= 2` 超轮终止（force_dispatch 强制调度，绝不重跑后再次挂起）。`prev_intent`/`prev_user_input` 供追问判别。
 
@@ -204,13 +205,13 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `BgeEmbedder` — `BAAI/bge-small-zh-v1.5`（CPU，L2 归一化，维度从模型读取）；`BgeReranker` — `BAAI/bge-reranker-v2-m3` CrossEncoder
 - 加载路径 `resolve_model_dir(workspace, model_name)`：本地优先（`<workspace>/models/<name>/` 存在用本地），否则回退 HF 名自动下载
 
-消费方：`RagRetrieveTool`（`tools/rag/`，`rag_retrieve`）装配进 qa-agent（researcher 属下一 plan，届时再加装配）；`ReadPdfTool` 用 `parse_pdf_cached`；`write_file`/`edit_file`/`fetch_pdf` 写盘后自动触发 `index_document`。embedder 单例与意图管线/记忆语义检索共享（`cli.py` `_rag_embedder`）。
+消费方：`RagRetrieveTool`（`tools/rag/`，`rag_retrieve`）装配进 qa-agent 与 researcher（researcher 用它按课题盘点语料）；`ReadPdfTool` 用 `parse_pdf_cached`；`write_file`/`edit_file`/`fetch_pdf` 写盘后自动触发 `index_document`。embedder 单例与意图管线/记忆语义检索共享（`cli.py` `_rag_embedder`）。
 
 ### Citations
 
 `paperflow/citations/` — 引用管理（溯源落地）。`references.bib` 是引用库**真相源**：append-only 追加、绝不重写（用户手工维护的分节注释原样保留）。`bib.py` 轻量扫描条目（查找/去重）；`corpus.py` 是「语料里有哪些论文」的易变投影（note H1 + PDF 解析标题 → 全标题精确匹配，按 (path, mtime_ns) 增量重建）；`manager.py` 编排：引用解析（干净全标题/路径 → key+status）、入库（语料内 PDF / 库外 EXTERNAL）、去重、渲染（author-year/numbered/bibtex/gbt7714）、调和（渲染视图回填空字段，bib 文件不动）。懒加载单例 `get_citation_manager()`，重组件（corpus 索引、TitleExtractor）首次使用才构造。
 
-4 个引用工具（`tools/citations/`）装配给 **noter**（`lookup_citation`/`add_citation`/`format_citations`/`list_citations`）；**reviewer** 装配 `list_citations`+`lookup_citation` 做溯源核验（核验 `[来源:key§节]` 的 key 真实存在于 references.bib，不信任标注本身）。
+4 个引用工具（`tools/citations/`）装配给 **noter** 与 **researcher**（researcher 自产自写：survey/gaps/idea 卡/研究计划的溯源标注与参考文献渲染）；**reviewer** 装配 `list_citations`+`lookup_citation` 做溯源核验（核验 `[来源:key§节]` 的 key 真实存在于 references.bib，不信任标注本身）。
 
 产物溯源标注：
 - **笔记**头部写 `**论文引用**: [key]`（落盘前经 `lookup_citation` 确认 key 真实性），各节关键论断标节级 `[来源:§X]`，供 reviewer 沿链回溯核对原文
@@ -223,8 +224,8 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `search/` — `web_search`（按 source 搜：arxiv/openalex，`_SOURCE_REGISTRY` 注册；单源一次调用，多源由 searcher 并行多次调、结果自动去重入池）、`fetch_pdf`（下载）；`clients/` 是纯 API 客户端（共享 `_HttpClientMixin` SSRF 校验 + 逐跳重定向校验）；`_common.py` 有 `SearchRunState` 跨调用去重池（`wants_run_state` opt-in）、查询 LRU 缓存、源级熔断器
 - `review/` — `submit_review` / `submit_download_review`（reviewer 的裁决工具）
 - `rank/` — `lookup_venue_rank`（期刊/会议等级查询）
-- `citations/` — 4 引用工具（`lookup_citation`/`add_citation`/`format_citations`/`list_citations`，装配 noter；reviewer 装 list+lookup 溯源核验）
-- `rag/` — `rag_retrieve`（`RagRetrieveTool`：惰性取 RAGService 单例 + 持锁检索 + 格式化结果；装配 qa-agent，researcher 下一 plan 加）
+- `citations/` — 4 引用工具（`lookup_citation`/`add_citation`/`format_citations`/`list_citations`，装配 noter 与 researcher；reviewer 装 list+lookup 溯源核验）
+- `rag/` — `rag_retrieve`（`RagRetrieveTool`：惰性取 RAGService 单例 + 持锁检索 + 格式化结果；装配 qa-agent 与 researcher）
 - `vision/` — `analyze_figures`（`needs_parent=True`：视觉 LLM 调用归属父 agent 轮次进审计）。图提取走 pdffigures2 管线（proposal 候选 + 打分选优 + no-overlap 互斥），随后视觉模型结构化看图分析 + 嵌入落盘；key 缺失/无图/失败全降级
 - `memory/` — 13 个记忆工具（`get_memory_tools()` 惰性单例 + `set_memory_context`/`get_memory_context` 运行时上下文；blocks/archival/recall/paper_lists 四组；装配 supervisor，子 agent 各装子集）
 - `orchestration/` — `spawn_sub_agent` / `ask_user_question` / `SubAgentMode`（见下）
@@ -241,12 +242,12 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 3. **spawn 权限**：`_check_spawn_allowed` — supervisor 硬编码放行；其余 agent 查自己的 `AgentConfig.allowed_spawns` 白名单
 4. **去重注册表**（`_SPAWN_REGISTRY`，按 session_id + 任务指纹）：**无路径任务** 运行中去重 + 完成结果 300s 内可复用；**含路径任务** 只做运行中去重（文件可能中途变化，完成不缓存）
 5. **子 agent 构造**：继承父的 security_middleware / session_id / confirm_callback / ask_user_callback（子 agent 能中途问用户）；**不传**意图管线/会话（子任务是结构化任务非用户意图）；`mode` 经「当前模式：{mode}」注入 system prompt
-6. **预算执行**：超时 = 基座超时（`config.agent_timeouts`，noter 600s/searcher 300s/reviewer 180s）+ 累计用户确认等待（`_UserWaitClock` 排除人工等待）；`asyncio.TimeoutError`→timeout、`PermissionError`→denied、其他异常→failed
-7. **摘要提取**：末尾 2000 字符经 `StructuredOutput` 抽结构化 `digest`（按 agent_type 选 `SearcherDigest`/`ReviewerDigest`/`NoterDigest`/`GenericDigest`），失败回退全文摘要
+6. **预算执行**：超时 = 基座超时（`config.agent_timeouts`，noter 600s/searcher 300s/reviewer 180s/researcher 900s）+ 累计用户确认等待（`_UserWaitClock` 排除人工等待）；`asyncio.TimeoutError`→timeout、`PermissionError`→denied、其他异常→failed
+7. **摘要提取**：末尾 2000 字符经 `StructuredOutput` 抽结构化 `digest`（按 agent_type 选 `SearcherDigest`/`ReviewerDigest`/`NoterDigest`/`ResearcherDigest`/`GenericDigest`），失败回退全文摘要
 
-返回 `ToolResult(text=SubAgentResult.model_dump_json(), summary=model_dump())`。`SubAgentResult.status` ∈ {success, failed, timeout, denied}，`needs_attention=True` 表示「被拒且需用户介入」。只有 supervisor（和需要 reviewer 的 searcher/noter）装配此工具——权限最小化：叶子 agent 不递归。
+返回 `ToolResult(text=SubAgentResult.model_dump_json(), summary=model_dump())`。`SubAgentResult.status` ∈ {success, failed, timeout, denied}，`needs_attention=True` 表示「被拒且需用户介入」。只有 supervisor（和需要 reviewer/searcher 的 searcher/noter/researcher）装配此工具——权限最小化：叶子 agent 不递归。
 
-**AskUserQuestionTool**（`ask_user_question`，`needs_parent=True`）：读 `parent.ask_user_callback`（CLI 注入，worker 线程读 stdin）；回调为 None 时 fail-safe 返回「无法交互，请基于已有信息决定」，绝不挂起。装配权限在装配层（supervisor/searcher/noter/qa-agent 有，reviewer 无）。
+**AskUserQuestionTool**（`ask_user_question`，`needs_parent=True`）：读 `parent.ask_user_callback`（CLI 注入，worker 线程读 stdin）；回调为 None 时 fail-safe 返回「无法交互，请基于已有信息决定」，绝不挂起。装配权限在装配层（supervisor/searcher/noter/qa-agent/researcher 有，reviewer 无）。
 
 ### Terminal
 
@@ -274,7 +275,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | `grobid_endpoint` | GROBID 服务地址，默认 `http://localhost:8070` |
 | `milvus_uri` / `milvus_collection` / `embed_model` / `rerank_model` | Milvus 地址（默认 `http://localhost:19530`）/ 集合名（默认 `paperflow`）/ bge 嵌入 / 重排模型 |
 | `citations_bib_path` | references.bib 路径（引用库真相源）。默认 `workspace/citations/references.bib`，可指向任意论文项目目录；空则回退默认 |
-| `agent_timeouts` | 子 agent 超时覆盖表（noter 600 / searcher 300 / reviewer 180） |
+| `agent_timeouts` | 子 agent 超时覆盖表（noter 600 / searcher 300 / reviewer 180 / researcher 900） |
 
 环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_VAULT_NOTE_DIR` / `PAPERFLOW_VAULT_PDF_DIR` / `PAPERFLOW_VAULT_RESEARCH_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY` / `PAPERFLOW_CITATIONS_BIB_PATH`。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
 
