@@ -133,9 +133,9 @@ class PaperFlowConfig:
     #: 或 config.yaml 提供。
     vault_pdf_dir: str = ""
 
-    #: Obsidian vault 大纲目录(数据源 outline/)——同 vault_note_dir,经 .env
-    #: (PAPERFLOW_VAULT_OUTLINE_DIR)或 config.yaml 提供;空则由 factory 回退 workspace/outline。
-    vault_outline_dir: str = ""
+    #: Obsidian vault 研究目录(数据源 research/)——同 vault_note_dir,经 .env
+    #: (PAPERFLOW_VAULT_RESEARCH_DIR)或 config.yaml 提供;空则由 factory 回退 workspace/research。
+    vault_research_dir: str = ""
 
     #: references.bib 路径（引用库真相源）。空则回退 workspace/citations/references.bib
     citations_bib_path: str = ""
@@ -160,10 +160,11 @@ class PaperFlowConfig:
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
 
     #: 子 agent 超时覆盖表(按 agent 类型→秒数)。默认 120s 对完整流程太短:
-    #: writer 端到端(读+起草+写盘+最多 3 轮审稿)远超默认,searcher 完整门禁链路
+    #: noter 端到端(读+起草+写盘+最多 3 轮审稿)远超默认,searcher 完整门禁链路
     #: (搜索→等级查询→审查裁决→下载)在多候选下也远超——短超时会把整条链路误判为
-    #: 超时。YAML 顶层 agent_timeouts 可覆盖;dict 无环境变量形态。
-    agent_timeouts: dict[str, int] = field(default_factory=lambda: {"writer": 600, "searcher": 300, "reviewer": 180})
+    #: 超时。researcher 选题发现含多次 rag + spawn 补料/检索 + 审稿循环,给足预算。
+    #: YAML 顶层 agent_timeouts 可覆盖;dict 无环境变量形态。
+    agent_timeouts: dict[str, int] = field(default_factory=lambda: {"noter": 600, "searcher": 300, "reviewer": 180, "researcher": 900})
 
     @classmethod
     def from_env(cls, config_path: str | None = None) -> "PaperFlowConfig":
@@ -208,7 +209,7 @@ class PaperFlowConfig:
 
         # 顶层配置字段(含 vault / RAG 键,均可通过 config.yaml 顶层覆盖默认值)
         for key in ("workspace", "agents_dir", "max_risk",
-                    "vault_note_dir", "vault_pdf_dir", "vault_outline_dir",
+                    "vault_note_dir", "vault_pdf_dir", "vault_research_dir",
                     "citations_bib_path",
                     "grobid_endpoint", "milvus_uri", "milvus_collection",
                     "embed_model", "rerank_model",
@@ -230,7 +231,7 @@ class PaperFlowConfig:
             PAPERFLOW_MAX_RISK      → max_risk
             PAPERFLOW_VAULT_NOTE_DIR → vault_note_dir
             PAPERFLOW_VAULT_PDF_DIR  → vault_pdf_dir
-            PAPERFLOW_VAULT_OUTLINE_DIR → vault_outline_dir
+            PAPERFLOW_VAULT_RESEARCH_DIR → vault_research_dir
             PAPERFLOW_CITATIONS_BIB_PATH → citations_bib_path
             PAPERFLOW_GROBID_ENDPOINT → grobid_endpoint
             PAPERFLOW_EMBED_MODEL    → embed_model
@@ -255,7 +256,7 @@ class PaperFlowConfig:
             "PAPERFLOW_MAX_RISK": (None, "max_risk"),
             "PAPERFLOW_VAULT_NOTE_DIR": (None, "vault_note_dir"),
             "PAPERFLOW_VAULT_PDF_DIR": (None, "vault_pdf_dir"),
-            "PAPERFLOW_VAULT_OUTLINE_DIR": (None, "vault_outline_dir"),
+            "PAPERFLOW_VAULT_RESEARCH_DIR": (None, "vault_research_dir"),
             "PAPERFLOW_CITATIONS_BIB_PATH": (None, "citations_bib_path"),
             "PAPERFLOW_GROBID_ENDPOINT": (None, "grobid_endpoint"),
             "PAPERFLOW_MILVUS_URI": (None, "milvus_uri"),

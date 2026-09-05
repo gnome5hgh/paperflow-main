@@ -1,4 +1,4 @@
-"""WebSearchTool：按 source 指定网站的通用论文搜索工具（arxiv / openalex）。
+"""WebSearchTool：按 source 指定网站的通用论文搜索工具（arxiv / openalex / semantic_scholar）。
 
 由原 arxiv_search/openalex_search 双工具合并而来：一次调用只搜一个
 网站，source 参数选源，客户端经 _SOURCE_REGISTRY 分发。多源搜索由 searcher 同一轮
@@ -16,16 +16,21 @@ from paperflow.tools.search._common import (
 )
 from paperflow.tools.search.clients.arxiv_client import ArxivClient
 from paperflow.tools.search.clients.openalex_client import OpenAlexClient
+from paperflow.tools.search.clients.semantic_scholar_client import SemanticScholarClient
 
 #: source → 客户端类。后续加源：此表加一行 + 客户端类 + parameters.enum 加一个值。
-_SOURCE_REGISTRY: dict[str, type] = {"arxiv": ArxivClient, "openalex": OpenAlexClient}
+_SOURCE_REGISTRY: dict[str, type] = {
+    "arxiv": ArxivClient,
+    "openalex": OpenAlexClient,
+    "semantic_scholar": SemanticScholarClient,
+}
 
 
 class WebSearchTool(Tool):
     """按 source 搜索论文的通用工具（纯只读，下载走 fetch_pdf）。"""
 
     name = "web_search"
-    description = "搜索论文（按 source 指定网站：arxiv / openalex）。结果自动去重入池。"
+    description = "搜索论文（按 source 指定网站：arxiv / openalex / semantic_scholar）。结果自动去重入池。"
     parameters = {
         "type": "object",
         "properties": {

@@ -57,11 +57,19 @@ class ReviewerDigest(BaseModel):
     download_list: list[str] = []
 
 
-class WriterDigest(BaseModel):
-    """writer 的结果摘要:note_path/outline_path 是产物绝对路径,status 描述写盘结果。"""
+class NoterDigest(BaseModel):
+    """noter 的结果摘要:note_path 是产物绝对路径,status 描述写盘结果。"""
     note_path: str = ""
-    outline_path: str = ""
     status: str
+
+
+class ResearcherDigest(BaseModel):
+    """researcher 的结果摘要:四个产物路径 + 状态,supervisor 据此汇报。"""
+    status: str
+    survey_path: str = ""
+    gaps_path: str = ""
+    ideas_path: str = ""
+    plan_path: str = ""
 
 
 class GenericDigest(BaseModel):
@@ -80,7 +88,8 @@ def digest_schema_for(agent_type: str) -> type[BaseModel]:
     return {
         "searcher": SearcherDigest,
         "reviewer": ReviewerDigest,
-        "writer": WriterDigest,
+        "noter": NoterDigest,
+        "researcher": ResearcherDigest,
     }.get(agent_type, GenericDigest)
 
 
@@ -90,7 +99,7 @@ async def _extract_digest(llm, agent_type: str, text: str,
 
     复用 StructuredOutput 的三层防御(json 模式 + 模型校验 + 重试);独立超时 30s,
     与子 agent 执行超时解耦——摘要提取是"锦上添花",卡死不能拖垮 spawn 主流程。
-    只取 text 尾部 2000 字符控制 prompt 长度:子 agent 回答可能很长(如 writer 的
+    只取 text 尾部 2000 字符控制 prompt 长度:子 agent 回答可能很长(如 noter 的
     整篇笔记),结构化摘要只需要结论性尾部。
 
     :param telemetry_callback: 摘要 LLM 调用的元数据回调,None = 零开销跳过(不接线审计)
@@ -295,8 +304,8 @@ class SpawnSubAgentTool(Tool):
             "task": {"type": "string", "description": "子任务文本（含实体，已拼入上下文）"},
             "mode": {"type": "string",
                      "enum": [m.value for m in SubAgentMode],
-                     "description": "子 agent 运行模式(可选)。writer: note/outline;"
-                                    "reviewer: note_review/outline_review/download_review;"
+                     "description": "子 agent 运行模式(可选)。noter: note;"
+                                    "reviewer: note_review/download_review;"
                                     "不传 = 子 agent 默认模式"},
         },
         "required": ["agent_type", "task"],
@@ -373,9 +382,9 @@ class SpawnSubAgentTool(Tool):
         result = None
         try:
             # ③ 构造子 agent:继承父的安全中间件、会话 ID(同一审计链)、确认回调与
-            #    问用户回调——确认回调是关键:writer 的写盘工具要求用户确认,不传则
-            #    默认回调始终拒绝,spawn 出的 writer 永远写不出笔记;问用户回调同理,
-            #    writer/qa-agent 靠它中途向用户提问。不传意图管线/会话 → 子 agent 不做
+            #    问用户回调——确认回调是关键:noter 的写盘工具要求用户确认,不传则
+            #    默认回调始终拒绝,spawn 出的 noter 永远写不出笔记;问用户回调同理,
+            #    noter/qa-agent 靠它中途向用户提问。不传意图管线/会话 → 子 agent 不做
             #    意图识别(子任务是结构化任务,非用户意图)。
             # 流式统一：子 agent 只透传工具行（前缀由渲染器统一加）、不流 content——
             # 与并行场景同一代码路径（多路并发不串字）。

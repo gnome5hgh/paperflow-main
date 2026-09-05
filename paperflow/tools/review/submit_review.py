@@ -40,13 +40,13 @@ class SubmitReviewTool(Tool):
     risk_level = "low"                     # 只读格式化，无副作用
     # 审稿流目标是 scratch/note 草稿路径；execute 不读文件内容（只格式化提交字段），
     # 放开 scratch 根零安全影响（与 SuggestEditTool 同款，防真实 WorkspacePolicy 拦截）。
-    allowed_roots = ["note", "scratch", "outline"]
+    allowed_roots = ["note", "scratch", "research"]
 
     def execute(self, path: str, verdict: str, issues: list) -> ToolResult:
         """校验并格式化审查裁决;非法输入返回可行动报错文本。
 
         三步校验:verdict 枚举 → 逐 issue 枚举/必需字段 → verdict 与 issues 一致性
-        (pass 当且仅当无 blocking)。通过后按 severity 分组渲染,供 writer 确定性读取。
+        (pass 当且仅当无 blocking)。通过后按 severity 分组渲染,供 noter 确定性读取。
         """
         # ① verdict 枚举校验（enum_check 共享，同 submit_download_review）
         bad = enum_check(verdict, VERDICTS, "verdict")
@@ -69,7 +69,7 @@ class SubmitReviewTool(Tool):
             return ToolResult(text="verdict=pass 但存在 blocking 意见——pass 当且仅当无 blocking")
         if verdict == "fail" and not has_blocking:
             return ToolResult(text="verdict=fail 但无 blocking 意见——fail 必须含至少一个 blocking")
-        # ④ 格式化：verdict 行 + 按 severity 分组 issue 清单（writer 确定性可读）
+        # ④ 格式化：verdict 行 + 按 severity 分组 issue 清单（noter 确定性可读）
         lines = [f"审查裁决：{verdict}"]
         for sev in SEVERITIES:
             for issue in issues:

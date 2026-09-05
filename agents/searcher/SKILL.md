@@ -28,8 +28,8 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
 
 ## 角色边界(不做什么)
 
-- ❌ 不阅读论文全文(read_pdf 是 reviewer/writer 的职责)
-- ❌ 不生成笔记(那是 writer 的职责)
+- ❌ 不阅读论文全文(read_pdf 是 reviewer/noter 的职责)
+- ❌ 不生成笔记(那是 noter 的职责)
 - ❌ 不回答开放问题(那是 qa-agent 的职责)
 
 ## 核心流程(严格按序)

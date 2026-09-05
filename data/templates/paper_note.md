@@ -1,6 +1,6 @@
 # <论文标题>
 > **元数据**：作者/年份/会议(期刊)/代码链接 | **阅读日期**：YYYY-MM-DD | **相关度**：
-> **论文引用**：[key]（references.bib key，writer 落盘前经 lookup_citation/add_citation 确认）
+> **论文引用**：[key]（references.bib key，noter 落盘前经 lookup_citation/add_citation 确认）
 > **一句话总结**：[概括这篇论文的核心贡献，不超过50字]
 > **节级溯源**：每节关键论断标注 [来源:§论文章节]（如 [来源:§方法]）——key 在头部统一，
 > 节内只记论文里的章节位置，供 reviewer 沿链回溯核验。

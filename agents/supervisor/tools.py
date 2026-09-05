@@ -6,7 +6,7 @@ SpawnSubAgentTool 在共享层 paperflow/tools/orchestration/spawn.py 定义,
 supervisor 直接读各结果的 digest + needs_attention 组织最终回答。
 记忆工具按「谁干活谁记录」分发:supervisor 只保留核心记忆管理(blocks/ 的
 persona/human 自编辑)与组织回答用的检索工具;清单/历史/archival 写入工具下放
-searcher/writer/qa-agent(见各自 tools.py)。工具是 paperflow.tools.memory
+searcher/noter/qa-agent(见各自 tools.py)。工具是 paperflow.tools.memory
 的无状态类,经 make_tools 实例化,执行时才取运行时上下文。
 """
 from paperflow.config import PaperFlowConfig

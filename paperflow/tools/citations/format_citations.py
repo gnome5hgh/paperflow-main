@@ -1,10 +1,10 @@
-"""format_citations：把引用 key 渲染成参考文献段（大纲末尾用）。"""
+"""format_citations：把引用 key 渲染成参考文献段（文档末尾用）。"""
 from paperflow.core.tool import Tool, ToolResult
 
 
 class FormatCitationsTool(Tool):
     name = "format_citations"
-    description = "把引用 key 列表渲染成参考文献段，追加到大纲/文档末尾。"
+    description = "把引用 key 列表渲染成参考文献段，追加到文档末尾。"
     parameters = {
         "type": "object",
         "properties": {
