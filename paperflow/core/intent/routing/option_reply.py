@@ -1,0 +1,32 @@
+"""选项式答复检测:判断用户输入是否为纯编号的菜单选择动作。
+
+意图管线在追问检测之前调用本检测:命中即产出 MENU_SELECTION 意图
+(confidence=1.0)短路后续级联,不经混合路由/LLM 兜底重分类——对齐业界
+惯例(Rasa 按钮 payload 绕过 NLU、Lex intent disambiguation):选项答复
+是「选择」动作而非自由文本,重新分类会用微小分数误命中任意意图
+(score_threshold=0.0 下任何输入都有 argmax),覆盖用户真实意图。
+
+判定从宽设计为「纯编号」:带任何实义内容(动作动词/量词/其他文字)的
+输入一律不命中,走正常级联——宁可在正常路径里兜底,不可在这里吃掉
+真实请求。
+"""
+import re
+
+#: 纯编号答复:可选「选项/第」前缀 + 1-3 位数字 + 可选标点(./、/:/)) +
+#: 可选「个/项/号」后缀。中文数字不在此列(菜单均以阿拉伯数字编号)。
+OPTION_REPLY_RE = re.compile(
+    r"^\s*(?:选项|第)?\s*[0-9０-９]{1,3}\s*[.、,，)）:：]?\s*(?:[个项号])?\s*$"
+)
+
+
+def is_option_reply(query: str) -> bool:
+    """判定 query 是否为纯编号的菜单选项答复。
+
+    Args:
+        query: 用户当前输入文本(调用前已清洗 surrogate)。
+
+    Returns:
+        True 表示纯编号答复(如「1」「1.」「选项2」「第3个」),意图管线应
+        短路产出 MENU_SELECTION;False 表示含实义内容,走正常四级级联。
+    """
+    return bool(OPTION_REPLY_RE.match(query))

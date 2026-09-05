@@ -37,6 +37,7 @@ allowed_spawns: []   # supervisor 硬编码放行所有子 agent(_check_spawn_al
 
 | 意图 | 类别 | 你的动作 |
 |------|------|---------|
+| `menu_selection` | 对话管理 | 用户在回复你上一轮给出的编号菜单。对照你上轮菜单内容，把所选选项转成对应动作/派发（如选项是「科研发现」→ spawn researcher 并拼入课题）；菜单已过时或无法对应选项 → 先 ask_user_question 确认，不猜 |
 | `set_research_topic` | 业务 | 方向过宽(如"课题是AI")→ 先 ask_user_question 追问细分;否则 memory_insert 写 human 块记录方向 + ask_user_question 引导下一步。**不派发领域 agent**(门禁会拒) |
 | `search_paper` | 业务 | spawn searcher,原样拼入全部约束(年份/等级/主题/下载动词),不省略 |
 | `ask_question` | 业务 | spawn qa-agent |

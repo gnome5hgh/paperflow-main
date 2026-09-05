@@ -3,6 +3,20 @@
 # 0.000 已由 verify_intent 验证）。请勿手工调阈值；重标定写回会丢 inline 注释，
 # 需手动恢复下方 K2/K3 回归锁注释。
 routes:
+- name: menu_selection
+  # 菜单选项答复意图——主路径由管线选项检测（option_reply 正则）在路由之前短路产出，
+  # 本块语料仅为「枚举=路由名集合」契约的兜底：覆盖常见选择形态，防检测漏网形态
+  # （如「2）」「选项 2」带空格变体）落入其他路由的 0 阈值误命中。
+  utterances:
+  - 选项1
+  - 选项2
+  - 选第一个
+  - 选第二个
+  - 第3个
+  - 第 3 项
+  - 就选这个
+  - 2）
+  score_threshold: 0.0
 - name: search_paper
   utterances:
   - 下载最新论文
