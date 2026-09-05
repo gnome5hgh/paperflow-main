@@ -242,6 +242,23 @@ def _wrap_confirm_callback(orig, clock: _UserWaitClock):
     return wrapped
 
 
+def _wrap_ask_user_callback(orig, clock: _UserWaitClock):
+    """包装问用户回调(同步契约):同款 begin/end 计时,把用户思考时间记入 clock。
+
+    ask_user_callback 是同步 Callable[[str], str](AskUserQuestionTool 在线程池里
+    直接调用,与 async 的 confirm_callback 契约不同,故单独一个同步包装)。语义与
+    confirm 版一致:用户思考/输入是交互等待,不计入子 agent 执行预算——实测一次
+    ask_user 的用户回答耗时 117.9s,不排除会吃掉预算的 13%。
+    """
+    def wrapped(question):
+        clock.begin()
+        try:
+            return orig(question)
+        finally:
+            clock.end()
+    return wrapped
+
+
 async def _run_child_with_budget(coro, timeout: float, clock: _UserWaitClock):
     """运行子 agent 协程,预算 = 基础超时 + 用户确认等待累积(确认期间超时不暂停)。
 
@@ -429,6 +446,10 @@ class SpawnSubAgentTool(Tool):
         # 此处只外包计时。
         clock = _UserWaitClock()
         child.confirm_callback = _wrap_confirm_callback(child.confirm_callback, clock)
+        # 问用户回调同款计时:用户思考/输入也是交互等待,不计入执行预算
+        # (callback 可为 None——程序化/测试环境无交互,零开销跳过)。
+        if child.ask_user_callback is not None:
+            child.ask_user_callback = _wrap_ask_user_callback(child.ask_user_callback, clock)
 
         async def _run_and_extract():
             # 先跑子 agent(带预算),再对最终文本提取摘要——两段串在同一事件循环里,
