@@ -11,7 +11,7 @@ worker 并发调用（spawn 子 agent 的 tool 事件经上层加前缀透传）
 渲染——同一事件的多段输出整体原子，避免并行子 agent 的工具行交错串字。
 should_print / reset / finalize / interrupt 只在主线程调用；suspend 例外——
 AskUserQuestionTool.execute 在工具执行器的线程池 worker 里经 ask_user 回调
-（cli 的 _make_ask_callback）也会调它，内部持 _lock 与并发 on_event 串行化，
+（terminal.repl 的 _make_ask_callback）也会调它，内部持 _lock 与并发 on_event 串行化，
 线程安全。
 """
 import threading
