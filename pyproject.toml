@@ -21,6 +21,9 @@ dependencies = [
     "prompt_toolkit>=3.0.0",
 ]
 
+[project.scripts]
+paperflow = "paperflow.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",

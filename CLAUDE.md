@@ -15,17 +15,20 @@ conda run -n paperflow python -m pytest tests/ -v
 conda run -n paperflow python -m pytest tests/agent/test_agent.py::TestExecTool -v
 
 # Start 依赖服务栈（Milvus Standalone RAG 向量库 + GROBID PDF 解析）；单测用 Milvus Lite 内嵌，无需此服务
+# `paperflow` 启动时会自动拉起，此命令用于手动管理
 # GROBID 首次需先一次性初始化（复制 grobid-home 到 data/grobid/），见 docs/测试指南/ §2.3
 docker compose up -d
 
 # Run the app — 交互式 REPL（⚠️ 不能经 conda run）
-# conda run 不转发 stdin 给子进程 → 交互式 REPL 的 input() 立即 EOF 退出。
-# 必须先在激活的 env 里跑，或用 env 的 python 直接跑：
-conda activate paperflow && python -m paperflow
-# 或 /opt/miniconda3/envs/paperflow/bin/python -m paperflow
+# conda run 不转发 stdin 给子进程 → 交互式 REPL 的 input() 立即 EOF 退出。必须先激活 env：
+conda activate paperflow && paperflow
+# 等价：python -m paperflow（同一 env 内）
+# 启动时自动探测依赖服务（Milvus/GROBID），未起则自动 docker compose up -d 并等待健康；
+# 失败只警告不阻塞（软依赖降级）。手动管理服务仍用 docker compose up -d；
+# 跳过预检：PAPERFLOW_SKIP_BOOTSTRAP=1
 ```
 
-Always use `conda run -n paperflow` for 非交互命令（测试/脚本/安装）——never bare `python` or `pip`. **例外：交互式 REPL（`python -m paperflow`）不能经 `conda run`**——它不转发 stdin，REPL 一启动就 EOF 退出；需 `conda activate paperflow` 后直接 `python -m paperflow`。
+Always use `conda run -n paperflow` for 非交互命令（测试/脚本/安装）——never bare `python` or `pip`. **例外：交互式 REPL（`paperflow`）不能经 `conda run`**——它不转发 stdin，REPL 一启动就 EOF 退出；需 `conda activate paperflow` 后直接 `paperflow`。
 
 **API key 配置**：key 从 `.env`（gitignored，复制 `.env.example` 填 `PAPERFLOW_API_KEY`）或环境变量 `PAPERFLOW_API_KEY` 读取，**不硬编码在代码里**。未配置时启动即报「LLM API key 未配置」。
 
