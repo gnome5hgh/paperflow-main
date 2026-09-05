@@ -57,10 +57,9 @@ class ReviewerDigest(BaseModel):
     download_list: list[str] = []
 
 
-class WriterDigest(BaseModel):
-    """writer 的结果摘要:note_path/outline_path 是产物绝对路径,status 描述写盘结果。"""
+class NoterDigest(BaseModel):
+    """noter 的结果摘要:note_path 是产物绝对路径,status 描述写盘结果。"""
     note_path: str = ""
-    outline_path: str = ""
     status: str
 
 
@@ -80,7 +79,7 @@ def digest_schema_for(agent_type: str) -> type[BaseModel]:
     return {
         "searcher": SearcherDigest,
         "reviewer": ReviewerDigest,
-        "writer": WriterDigest,
+        "noter": NoterDigest,
     }.get(agent_type, GenericDigest)
 
 
@@ -295,8 +294,8 @@ class SpawnSubAgentTool(Tool):
             "task": {"type": "string", "description": "子任务文本（含实体，已拼入上下文）"},
             "mode": {"type": "string",
                      "enum": [m.value for m in SubAgentMode],
-                     "description": "子 agent 运行模式(可选)。writer: note/outline;"
-                                    "reviewer: note_review/outline_review/download_review;"
+                     "description": "子 agent 运行模式(可选)。noter: note;"
+                                    "reviewer: note_review/download_review;"
                                     "不传 = 子 agent 默认模式"},
         },
         "required": ["agent_type", "task"],
