@@ -159,12 +159,17 @@ class PaperFlowConfig:
     #: 重排模型（Cross-encoder）
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
 
-    #: 子 agent 超时覆盖表(按 agent 类型→秒数)。默认 120s 对完整流程太短:
-    #: noter 端到端(读+起草+写盘+最多 3 轮审稿)远超默认,searcher 完整门禁链路
-    #: (搜索→等级查询→审查裁决→下载)在多候选下也远超——短超时会把整条链路误判为
-    #: 超时。researcher 选题发现含多次 rag + spawn 补料/检索 + 审稿循环,给足预算。
+    #: 子 agent 超时覆盖表(按 agent 类型→秒数)。默认 120s 对完整流程太短,各值由
+    #: audit 历史数据校准(2026-09-05,45 次 spawn 实测 + research_discovery 链路分解,
+    #: 见 docs/superpowers/specs/2026-09-05-agent-timeout-recalibration-design.md):
+    #: - noter 900:纯笔记端到端实测稳态 610-670s(含内审重试),600 帽 4/4 任务超线;
+    #: - searcher 420:常规检索 max 130s,但新颖性大批量检索实测 1/4 撞 300s 帽;
+    #: - reviewer 300:全文审阅类稳态 ≈185-278s,180 帽 5/7 任务撞线;
+    #: - researcher 1800:完整链路实测 1202s 被截断,估算 1300-1500s + 余量;
+    #: - qa-agent 180:显式化(此前隐式落 120s 类默认),精读任务留 2 倍余量。
+    #: 撞帽复测触发点:任一 agent 再撞新帽即需重新评估该值,而非继续调大。
     #: YAML 顶层 agent_timeouts 可覆盖;dict 无环境变量形态。
-    agent_timeouts: dict[str, int] = field(default_factory=lambda: {"noter": 600, "searcher": 300, "reviewer": 180, "researcher": 900})
+    agent_timeouts: dict[str, int] = field(default_factory=lambda: {"noter": 900, "searcher": 420, "reviewer": 300, "researcher": 1800, "qa-agent": 180})
 
     @classmethod
     def from_env(cls, config_path: str | None = None) -> "PaperFlowConfig":
