@@ -1,11 +1,29 @@
 # data/intents/eval.yaml —— held-out 评估集（验收契约，与 routes 严格逐字不相交）
-# 规模：14 意图 ≈ 255 条（9 个新意图各 ≥10 条 held-out；整体硬负样本 ≥30%）
+# 规模：15 意图 ≈ 261 条（9 个新意图各 ≥10 条 held-out；整体硬负样本 ≥30%）
 # 构成：近义改写 + 边界案例（复合意图取主意图 / 追问无 prev 上下文归 general / chitchat）
 # 硬负样本：hard: true 标记——与其他意图近形的混淆样本（如「讲讲这篇论文讲的什么」标
 #   analyze_paper 但形似 ask_question），让 per-intent 门槛对新意图有约束（Q2，防"自己给自己打分"）
 # 领域：生物信息学/计算生物学（circRNA / miRNA / 异构图神经网络 / 链路预测 / 图对比学习 / 药物-靶点关联预测），中英混合
 # ⚠️ 本集与 data/intents/routes.yaml 逐字不相交（含 general）——不相交测试 test_eval_disjoint_from_routes 兜底（泛化非记忆）
 eval:
+  # menu_selection —— 菜单选项答复（对话管理，可派发；主由管线选项检测产出，
+  # eval 样本覆盖 held-out 的选择形态）
+  - query: "1"
+    intent: menu_selection
+  - query: "2"
+    intent: menu_selection
+  - query: 选项3
+    intent: menu_selection
+    hard: true
+  - query: 第2个
+    intent: menu_selection
+    hard: true
+  - query: 就选1
+    intent: menu_selection
+    hard: true
+  - query: "3."
+    intent: menu_selection
+    hard: true
   # search_paper —— 近义改写、下载意图、年代/主题限定、复合意图取主意图
   - query: 帮我找找关于 circRNA 的最新研究
     intent: search_paper

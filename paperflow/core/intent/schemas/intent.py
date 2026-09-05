@@ -2,10 +2,10 @@
 """意图识别输出契约——识别管线各阶段产出的统一数据结构。
 
 这是"输出契约"：定义识别结果的形态，与 schemas/route.py 的"路由契约"（路由器
-输入/输出）职责不同。识别管线分四级：实体提取 / 追问检测 / 混合路由 /
+输入/输出）职责不同。识别管线分五级：实体提取 / 选项答复检测 / 追问检测 / 混合路由 /
 LLM 兜底，本模块定义的几个类型是它们共同使用的产出契约：
 
-- ``IntentType``: 14 类意图枚举（枚举值即路由名，对应 routes.yaml 的 route 名集合）。
+- ``IntentType``: 15 类意图枚举（枚举值即路由名，对应 routes.yaml 的 route 名集合）。
 - ``IntentCategory``: 意图类别（business/dialogue/system）——消费分组，非路由层级。
 - ``INTENT_META``: intent → (category, dispatch_allowed) 单一真相源映射。
 - ``IntentStep``: 产出阶段枚举——审计/监控据此区分"这条意图是路由层定的
@@ -26,10 +26,11 @@ class IntentType(str, Enum):
     """意图类型枚举，value 与路由名一致（routes.yaml 中的 name）。
 
     枚举 = 契约 = 当前实现集——不允许"枚举允许但系统无处理路径"的悬空值。
-    14 值按三类组织（category 见 INTENT_META），类别是消费分组不是路由层级。
+    15 值按三类组织（category 见 INTENT_META），类别是消费分组不是路由层级。
     """
 
     SET_RESEARCH_TOPIC = "set_research_topic"  # 设定研究方向（业务；记录+引导，不派发）
+    MENU_SELECTION = "menu_selection"          # 菜单选项答复（对话管理；选择动作不重分类，派发权在 supervisor 对照菜单）
     SEARCH_PAPER = "search_paper"              # 搜索/查找论文（业务；槽位 query/source/year/download）
     ASK_QUESTION = "ask_question"              # 具体问答（业务）
     GENERATE_NOTE = "generate_note"            # 撰写笔记（业务）
@@ -57,6 +58,7 @@ class IntentCategory(str, Enum):
 # dispatch_allowed=False 的意图由 spawn 门禁代码级拒绝派发
 INTENT_META: dict[IntentType, tuple[IntentCategory, bool]] = {
     IntentType.SET_RESEARCH_TOPIC: (IntentCategory.BUSINESS, False), # set_research_topic 是业务但非派发——记录+引导
+    IntentType.MENU_SELECTION:     (IntentCategory.DIALOGUE, True), # menu_selection 是对话管理但派发——选择动作，派发权在 supervisor 对照菜单
     IntentType.SEARCH_PAPER:       (IntentCategory.BUSINESS, True),
     IntentType.ASK_QUESTION:       (IntentCategory.BUSINESS, True),
     IntentType.GENERATE_NOTE:      (IntentCategory.BUSINESS, True),
@@ -77,6 +79,7 @@ class IntentStep(str, Enum):
     """产出阶段枚举——让审计/监控能看出意图由哪一级产出。"""
 
     ENTITIES = "entities"                  # 实体提取阶段
+    OPTION = "option"                      # 选项答复检测阶段（纯编号菜单选择，确定性正则）
     FOLLOWUP = "followup"                  # 追问检测阶段（依赖会话上下文）
     ROUTER = "router"                      # 混合路由阶段
     LLM = "llm"                            # LLM 兜底阶段

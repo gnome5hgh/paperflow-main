@@ -1,8 +1,9 @@
 # paperflow/core/intent/pipeline.py
-"""意图识别四级级联编排。
+"""意图识别五级级联编排。
 
-四级级联（自顶向下逐级判定，前级未定夺才落到后级）：
+五级级联（自顶向下逐级判定，前级未定夺才落到后级）：
 - 实体提取：正则提取 PDF 路径/arXiv ID/DOI/Figure 等实体
+- 选项答复检测：纯编号菜单选择直接产出 MENU_SELECTION（确定性正则，不重分类）
 - 追问检测：判断是否承接上一轮意图（依赖会话中的上一轮意图）
 - 混合路由：命中非 general 直接产出；confidence 为融合分数 clip 到 [0,1]
   （cosine 可为负、稀疏点积可 >1，非概率）
@@ -15,10 +16,11 @@ from paperflow.core.intent.schemas.intent import (
 )
 from paperflow.core.intent.routing.entities import extract_entities
 from paperflow.core.intent.routing.followup import detect_followup
+from paperflow.core.intent.routing.option_reply import is_option_reply
 
 
 class IntentPipeline:
-    """意图识别四级级联编排：依赖混合路由器与结构化输出模块。"""
+    """意图识别五级级联编排：依赖混合路由器与结构化输出模块。"""
 
     def __init__(self, router, structured,
                  llm_fallback_schema: type[BaseModel] = IntentionResult):
@@ -37,11 +39,13 @@ class IntentPipeline:
                   prev_user_input: str = "") -> IntentOutput:
         """对一次用户输入做完整意图识别，返回结构化意图结果。
 
-        四级级联判定流程：
+        五级级联判定流程：
             1. 实体提取（正则）——从当前 query 提取所有实体。
-            2. 追问检测（词表规则）——若为追问，继承上一轮意图，实体合并（本轮覆盖上轮）。
-            3. 混合路由（BM25+稠密）——若命中非 general，直接产出。
-            4. LLM 兜底（结构化输出）——注入近失候选，让 LLM 确认或改判。
+            2. 选项答复检测（正则）——纯编号菜单选择直接产出 MENU_SELECTION，
+               不经路由/LLM 重分类（选择动作的语义由发菜单的一方承载）。
+            3. 追问检测（词表规则）——若为追问，继承上一轮意图，实体合并（本轮覆盖上轮）。
+            4. 混合路由（BM25+稠密）——若命中非 general，直接产出。
+            5. LLM 兜底（结构化输出）——注入近失候选，让 LLM 确认或改判。
 
         Args:
             query: 用户当前输入的原始文本。
@@ -58,7 +62,20 @@ class IntentPipeline:
         # 从当前输入中提取所有可能实体，不依赖任何模型
         entities = self._extract_entities(query)
 
-        # ====== 第2级：追问检测（词表启发式） ======
+        # ====== 第2级：选项答复检测（确定性正则，在追问之前） ======
+        # 纯编号菜单选择是「选择」动作而非自由文本，不经 NLU 重分类——
+        # 否则 score_threshold=0.0 的路由会以微小分数误命中任意意图（如实测
+        # 「1」被路由到 set_research_topic），spawn 门禁随之误拦真实意图。
+        # 命中即短路：MENU_SELECTION 可派发，派发权在 supervisor 对照其菜单。
+        if is_option_reply(query):
+            return IntentOutput(
+                intent_type=IntentType.MENU_SELECTION, confidence=1.0,
+                entities=entities, source=IntentStep.OPTION,
+                prev_intent=prev_intent,
+                rewritten_query=query,  # 选择动作不改写原文
+            )
+
+        # ====== 第3级：追问检测（词表启发式） ======
         # 若判定为追问，则继承上一轮意图，同时合并实体：上轮实体 + 本轮实体（同键覆盖）
         if self._detect_followup(query, prev_intent):
             # 若存在上轮输入，则重跑实体提取（获取上轮实体）
@@ -74,7 +91,7 @@ class IntentPipeline:
                 rewritten_query=query # 追问不改写原文
             )
 
-        # ====== 第3级：混合路由 ======
+        # ====== 第4级：混合路由 ======
         # 调用混合路由器进行判定，若命中且结果不是 "general"，则直接产出
         choice = self.router(query)
         if choice is not None and choice.name != "general":
@@ -85,7 +102,7 @@ class IntentPipeline:
                 entities=entities, source=IntentStep.ROUTER, prev_intent=prev_intent,
                 rewritten_query=query)
 
-        # ====== 第4级：LLM 兜底 ======
+        # ====== 第5级：LLM 兜底 ======
         # 获取路由层近失候选（top-k 融合分数），供 LLM 参考，避免盲猜
         near_miss = self.router.scores(query, k=3)
 
