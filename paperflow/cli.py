@@ -19,6 +19,7 @@ from pathlib import Path
 
 from rich.console import Console
 
+from paperflow.bootstrap import ensure_services
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.agent_registry import AgentRegistry
@@ -410,6 +411,13 @@ def main() -> None:
     is_tty = sys.stdin.isatty()
     io = make_input_io(config)
     console = Console() if is_tty else None
+    # 启动预检：依赖服务（Milvus/GROBID）未起时自动 docker compose 拉起（仅 TTY，
+    # 管道/CI 跳过）。软依赖：任何失败只产出警告不阻塞——服务缺席时 RAG/PDF 降级。
+    service_warnings = ensure_services(
+        config, is_tty=is_tty,
+        notify=(lambda msg: console.print(msg, style="dim")) if console else None)
+    for w in service_warnings:
+        (console.print(w, style="yellow") if console else print(w))
     llm = LLMClient(config.llm)
     registry = AgentRegistry(config.agents_dir)
 
