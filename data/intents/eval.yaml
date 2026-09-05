@@ -1,5 +1,5 @@
 # data/intents/eval.yaml —— held-out 评估集（验收契约，与 routes 严格逐字不相交）
-# 规模：13 意图 ≈ 234 条（8 个新意图各 ≥10 条 held-out；整体硬负样本 ≥30%）
+# 规模：14 意图 ≈ 255 条（9 个新意图各 ≥10 条 held-out；整体硬负样本 ≥30%）
 # 构成：近义改写 + 边界案例（复合意图取主意图 / 追问无 prev 上下文归 general / chitchat）
 # 硬负样本：hard: true 标记——与其他意图近形的混淆样本（如「讲讲这篇论文讲的什么」标
 #   analyze_paper 但形似 ask_question），让 per-intent 门槛对新意图有约束（Q2，防"自己给自己打分"）
@@ -142,6 +142,59 @@ eval:
     hard: true
   - query: 查完这篇 miRNA 论文帮我写个笔记
     intent: generate_note
+    hard: true
+  # research_discovery —— 选题发现（business，派发）：基于本地语料找方向/课题/研究空白。
+  # 正例 held-out 改写自 routes 主题域，均不与路由例句逐字重合；hard 为形似
+  # search_paper/generate_note/analyze_paper/ask_question 的混淆句（label 仍为本意图）。
+  - query: 帮我找一个可行的研究方向
+    intent: research_discovery
+  - query: 看看我目前适合做什么研究
+    intent: research_discovery
+  - query: 帮我确定一个合适的课题来做
+    intent: research_discovery
+  - query: 基于我积累的笔记帮我选个题
+    intent: research_discovery
+  - query: 我读过的这些论文能支撑哪些研究
+    intent: research_discovery
+  - query: 从我的笔记里挖几个可以做的方向
+    intent: research_discovery
+  - query: 梳理一下我有哪些可以做的方向
+    intent: research_discovery
+  - query: 看看读过的文献里存在哪些研究空白
+    intent: research_discovery
+  - query: 根据我的阅读笔记给几个候选课题
+    intent: research_discovery
+  - query: 帮我看看异构图神经网络能做什么研究
+    intent: research_discovery
+  - query: circRNA关联预测有哪些值得做的课题
+    intent: research_discovery
+  - query: 给我几个药物靶点方向的研究切入点
+    intent: research_discovery
+  - query: 把阅读笔记变成研究计划
+    intent: research_discovery
+  - query: 结合我读过的文献推荐一个课题
+    intent: research_discovery
+  # hard：形似搜索/笔记/精读/问答的混淆句（label 仍是 research_discovery）
+  - query: 帮我搜搜看有哪些可以研究的新方向
+    intent: research_discovery
+    hard: true
+  - query: 把方向整理成一份候选清单给我
+    intent: research_discovery
+    hard: true
+  - query: 查查我这些笔记能做成什么
+    intent: research_discovery
+    hard: true
+  - query: 精读我的笔记帮我找找研究空档
+    intent: research_discovery
+    hard: true
+  - query: 讲讲我看过的文献里还能挖什么坑
+    intent: research_discovery
+    hard: true
+  - query: 帮我盘点一下读过的论文有哪些方向
+    intent: research_discovery
+    hard: true
+  - query: 帮我查查科研选题方面有哪些新进展
+    intent: research_discovery
     hard: true
   # ask_question —— 概念/机制/Figure/公式/方法解释的多种表述
   - query: 链路预测是怎么做的
