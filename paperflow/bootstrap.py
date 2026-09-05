@@ -70,12 +70,14 @@ def _compose_up(compose_dir: Path) -> str | None:
             ["docker", "compose", "up", "-d"],
             cwd=compose_dir, capture_output=True, text=True,
             timeout=_COMPOSE_TIMEOUT_S)
-    except FileNotFoundError:
-        return "docker 命令无法执行（不存在或不可用）"
+    except OSError as e:
+        return f"docker 命令无法执行（不存在或不可用）：{e}"
     except subprocess.TimeoutExpired:
         return f"docker compose up -d 超时（{_COMPOSE_TIMEOUT_S:.0f}s）"
     if proc.returncode != 0:
         output = (proc.stderr or proc.stdout or "").strip().splitlines()
+        if not output:
+            output = ["无错误输出"]
         return "docker compose up -d 失败：" + "；".join(output[-3:])
     return None
 
@@ -120,13 +122,13 @@ def ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
     if all(_port_open(h, p) for _, h, p in endpoints):
         return []
 
-    if notify:
-        notify("依赖服务未就绪，正在拉起（docker compose up -d，首次启动较慢）…")
     if shutil.which("docker") is None:
         return [_NO_DOCKER_WARN]
     compose_dir = _find_compose_dir()
     if compose_dir is None:
         return [_NO_COMPOSE_WARN]
+    if notify:
+        notify("依赖服务未就绪，正在拉起（docker compose up -d，首次启动较慢）…")
     err = _compose_up(compose_dir)
     if err is not None:
         return [f"{err}；{_DEGRADE_NOTE}"]
