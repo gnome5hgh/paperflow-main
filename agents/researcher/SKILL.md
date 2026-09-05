@@ -54,12 +54,12 @@ Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent�
    - `write_file` 落盘 v1 到 `<research_root>/<slug>/survey.md` 与 `gaps.md`。
 6. **阶段③想法卡**:`read_file` 读模板 `research_idea.md`;基于 gaps 生成 3–5 个候选 idea;
    每卡:名称与一句话主张/动机(Gap 来源,溯源)/核心假设/验证思路(复用哪些笔记证据)/
-   Interestingness、Feasibility 打分。
+   Interestingness、Feasibility 打分。`write_file` 落盘 `<research_root>/<slug>/ideas.md`。
 7. **阶段④外部新颖性验证**(默认执行):对每个 idea
    `spawn_sub_agent(agent_type=searcher, task=检索与<idea>最相似的已存在工作,不下载,源优先
    semantic scholar)` → 拿回相似论文 → 回填 idea 卡的 similar_works 与判定
-   (novel/not_novel/需验证)。S2 不可用时 searcher 回退 arxiv/openalex;检索失败 → 该卡如实
-   标注「未经外部验证」,不编造相似工作。
+   (novel/not_novel/需验证),并用 `edit_file` 同步更新 ideas.md 的判定字段。S2 不可用时
+   searcher 回退 arxiv/openalex;检索失败 → 该卡如实标注「未经外部验证」,不编造相似工作。
 8. **阶段⑤方向确认**:`ask_user_question` 展示 idea 卡摘要,请用户挑 1 个方向深化;
    无法交互 → 选综合打分最高者。
 9. **阶段⑥研究计划成稿**:`read_file` 读模板 `research_plan.md`;对选中方向产出 plan.md:
