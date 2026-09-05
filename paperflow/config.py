@@ -162,8 +162,9 @@ class PaperFlowConfig:
     #: 子 agent 超时覆盖表(按 agent 类型→秒数)。默认 120s 对完整流程太短:
     #: noter 端到端(读+起草+写盘+最多 3 轮审稿)远超默认,searcher 完整门禁链路
     #: (搜索→等级查询→审查裁决→下载)在多候选下也远超——短超时会把整条链路误判为
-    #: 超时。YAML 顶层 agent_timeouts 可覆盖;dict 无环境变量形态。
-    agent_timeouts: dict[str, int] = field(default_factory=lambda: {"noter": 600, "searcher": 300, "reviewer": 180})
+    #: 超时。researcher 选题发现含多次 rag + spawn 补料/检索 + 审稿循环,给足预算。
+    #: YAML 顶层 agent_timeouts 可覆盖;dict 无环境变量形态。
+    agent_timeouts: dict[str, int] = field(default_factory=lambda: {"noter": 600, "searcher": 300, "reviewer": 180, "researcher": 900})
 
     @classmethod
     def from_env(cls, config_path: str | None = None) -> "PaperFlowConfig":

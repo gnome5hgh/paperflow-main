@@ -63,6 +63,15 @@ class NoterDigest(BaseModel):
     status: str
 
 
+class ResearcherDigest(BaseModel):
+    """researcher 的结果摘要:四个产物路径 + 状态,supervisor 据此汇报。"""
+    status: str
+    survey_path: str = ""
+    gaps_path: str = ""
+    ideas_path: str = ""
+    plan_path: str = ""
+
+
 class GenericDigest(BaseModel):
     """未注册摘要 schema 的兜底:抽出简短摘要与关键条目,supervisor 不致无从下手。"""
     summary_short: str
@@ -80,6 +89,7 @@ def digest_schema_for(agent_type: str) -> type[BaseModel]:
         "searcher": SearcherDigest,
         "reviewer": ReviewerDigest,
         "noter": NoterDigest,
+        "researcher": ResearcherDigest,
     }.get(agent_type, GenericDigest)
 
 
