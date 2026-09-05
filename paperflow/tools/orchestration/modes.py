@@ -5,7 +5,7 @@ agent 的 system prompt；子 agent 的 SKILL 据此判别走哪个流程。值�
 字符串字面量。只覆盖有确定性 ground truth 的父子对——qa-agent 自选不传（枚举不含
 其值，不传 mode 的 spawn 行为不受影响）。
 
-noter: 笔记生成；reviewer: 笔记审稿 / 下载门禁。
+noter: 笔记生成；reviewer: 笔记审稿 / 下载门禁 / 研究计划审稿。
 """
 
 from enum import Enum
@@ -22,6 +22,8 @@ class SubAgentMode(str, Enum):
     NOTE_REVIEW = "note_review"
     #: reviewer：下载门禁（searcher spawn）
     DOWNLOAD_REVIEW = "download_review"
+    #: reviewer：研究计划审稿（researcher 选题发现流程 spawn）
+    PLAN_REVIEW = "plan_review"
 
 
 #: 合法 mode 值集合——spawn 运行时校验兜底（schema enum 约束 LLM 生成层，
