@@ -8,9 +8,9 @@
 eval:
   # menu_selection —— 菜单选项答复（对话管理，可派发；主由管线选项检测产出，
   # eval 样本覆盖 held-out 的选择形态）
-  - query: 1
+  - query: "1"
     intent: menu_selection
-  - query: 2
+  - query: "2"
     intent: menu_selection
   - query: 选项3
     intent: menu_selection
@@ -21,7 +21,7 @@ eval:
   - query: 就选1
     intent: menu_selection
     hard: true
-  - query: 3.
+  - query: "3."
     intent: menu_selection
     hard: true
   # search_paper —— 近义改写、下载意图、年代/主题限定、复合意图取主意图

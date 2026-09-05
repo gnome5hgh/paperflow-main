@@ -1,7 +1,7 @@
 # paperflow/core/intent/pipeline.py
-"""意图识别四级级联编排。
+"""意图识别五级级联编排。
 
-四级级联（自顶向下逐级判定，前级未定夺才落到后级）：
+五级级联（自顶向下逐级判定，前级未定夺才落到后级）：
 - 实体提取：正则提取 PDF 路径/arXiv ID/DOI/Figure 等实体
 - 选项答复检测：纯编号菜单选择直接产出 MENU_SELECTION（确定性正则，不重分类）
 - 追问检测：判断是否承接上一轮意图（依赖会话中的上一轮意图）
@@ -20,7 +20,7 @@ from paperflow.core.intent.routing.option_reply import is_option_reply
 
 
 class IntentPipeline:
-    """意图识别四级级联编排：依赖混合路由器与结构化输出模块。"""
+    """意图识别五级级联编排：依赖混合路由器与结构化输出模块。"""
 
     def __init__(self, router, structured,
                  llm_fallback_schema: type[BaseModel] = IntentionResult):
@@ -39,7 +39,7 @@ class IntentPipeline:
                   prev_user_input: str = "") -> IntentOutput:
         """对一次用户输入做完整意图识别，返回结构化意图结果。
 
-        四级级联判定流程：
+        五级级联判定流程：
             1. 实体提取（正则）——从当前 query 提取所有实体。
             2. 选项答复检测（正则）——纯编号菜单选择直接产出 MENU_SELECTION，
                不经路由/LLM 重分类（选择动作的语义由发菜单的一方承载）。
