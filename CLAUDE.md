@@ -91,7 +91,7 @@ Every agent lives in `agents/<name>/` with two files:
 | `supervisor` | 调度主管:拆解任务、spawn、汇总 | 硬编码放行所有（绕过白名单） | 仅 2 个调度工具 + 13 个记忆工具（`get_memory_tools()`） |
 | `searcher` | 多源搜索 → reviewer 门禁 → 可选下载 | `[reviewer]` | web_search + fetch_pdf + ask_user + spawn |
 | `noter` | 纯笔记生成：基于指定 PDF 起草结构化笔记,内部 reviewer 审稿 ≤3 轮 | `[reviewer]` | 原子文件工具 + ask_user + spawn + glob/grep + 4 引用工具(lookup/add/format/list) + analyze_figures |
-| `researcher` | 选题发现:基于本地语料盘点→survey/gaps→idea 卡→外部新颖性验证→研究计划,产物自己落盘 research 根,内部 spawn searcher(补料/新颖性)+ reviewer(plan_review) | `[searcher, reviewer]` | read/write/edit + rag_retrieve + spawn + 4 引用工具(自产自写) |
+| `researcher` | 选题发现:基于本地语料盘点→survey/gaps→idea 卡→外部新颖性验证(源优先 semantic scholar,失败如实标「未经外部验证」)→研究计划,产物自己落盘 research 根,内部 spawn searcher(补料/新颖性)+ reviewer(plan_review) | `[searcher, reviewer]` | read/write/edit + rag_retrieve + spawn + 4 引用工具(自产自写) |
 | `reviewer` | 叶子审稿:笔记审稿 / 下载门禁 / 研究计划审稿(plan_review)三种模式 | `[]` | 只读 + submit_review / submit_download_review + 溯源核验(list_citations/lookup_citation) |
 | `qa-agent` | 回答论文/笔记/阅读记忆问题 | `[]` | rag_retrieve + 只读文件工具 + ask_user + analyze_figures |
 
@@ -221,7 +221,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 `paperflow/tools/` — 原子工具，一工具一文件，按域分包；`paperflow/tools/__init__.py` 再导出全部 13 个工具供消费方统一导入（导出符号名稳定，内部路径随便拆）：
 
 - `file/` — 读/写/编辑/glob/grep/read_pdf/format_check（+ `atomic.py` 原子写盘）
-- `search/` — `web_search`（按 source 搜：arxiv/openalex，`_SOURCE_REGISTRY` 注册；单源一次调用，多源由 searcher 并行多次调、结果自动去重入池）、`fetch_pdf`（下载）；`clients/` 是纯 API 客户端（共享 `_HttpClientMixin` SSRF 校验 + 逐跳重定向校验）；`_common.py` 有 `SearchRunState` 跨调用去重池（`wants_run_state` opt-in）、查询 LRU 缓存、源级熔断器
+- `search/` — `web_search`（按 source 搜：arxiv/openalex/semantic_scholar，`_SOURCE_REGISTRY` 注册；单源一次调用，多源由 searcher 并行多次调、结果自动去重入池；semantic_scholar 走 `PAPERFLOW_S2_API_KEY`，缺 key 用公共端点，源失败沿熔断降级）、`fetch_pdf`（下载）；`clients/` 是纯 API 客户端（共享 `_HttpClientMixin` SSRF 校验 + 逐跳重定向校验）；`_common.py` 有 `SearchRunState` 跨调用去重池（`wants_run_state` opt-in）、查询 LRU 缓存、源级熔断器
 - `review/` — `submit_review` / `submit_download_review`（reviewer 的裁决工具）
 - `rank/` — `lookup_venue_rank`（期刊/会议等级查询）
 - `citations/` — 4 引用工具（`lookup_citation`/`add_citation`/`format_citations`/`list_citations`，装配 noter 与 researcher；reviewer 装 list+lookup 溯源核验）
@@ -277,7 +277,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | `citations_bib_path` | references.bib 路径（引用库真相源）。默认 `workspace/citations/references.bib`，可指向任意论文项目目录；空则回退默认 |
 | `agent_timeouts` | 子 agent 超时覆盖表（noter 600 / searcher 300 / reviewer 180 / researcher 900） |
 
-环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_VAULT_NOTE_DIR` / `PAPERFLOW_VAULT_PDF_DIR` / `PAPERFLOW_VAULT_RESEARCH_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY` / `PAPERFLOW_CITATIONS_BIB_PATH`。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
+环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_VAULT_NOTE_DIR` / `PAPERFLOW_VAULT_PDF_DIR` / `PAPERFLOW_VAULT_RESEARCH_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY` / `PAPERFLOW_CITATIONS_BIB_PATH` / `PAPERFLOW_S2_API_KEY`（Semantic Scholar 检索的可选 key，由 search 客户端直读环境变量，配置后走高配额端点）。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
 
 ### Key design decisions
 
