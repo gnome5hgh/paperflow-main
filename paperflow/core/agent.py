@@ -966,7 +966,12 @@ class Agent:
         # 特殊处理：若工具声明了 wants_run_state=True（搜索类工具），则注入一个按 trace_id 键控的去重池（_run_state），用于跨调用共享已访问的 URL 或文件，避免重复抓取。
         # 该注入通过额外参数 _run_state 传递，不写入 ctx.args，因为 ctx.args 会被序列化用于审计，而去重池不可序列化。
         try:
-            if getattr(tool, "wants_run_state", False):
+            if getattr(tool, "async_execute", False):
+                # 异步工具（如 spawn）：在当前事件循环上直接 await——子 agent 与父
+                # 同循环，父被取消（Ctrl+C）时 CancelledError 沿 await 链级联传播，
+                # 整棵 agent 树一起终止（P0-2 根治），不再经 to_thread 留孤儿线程。
+                raw = await tool.aexecute(**ctx.args)
+            elif getattr(tool, "wants_run_state", False):
                 from paperflow.tools.search._common import get_run_state
                 raw = await asyncio.to_thread(
                     tool.execute, **ctx.args, _run_state=get_run_state(self._trace_id))
@@ -1015,11 +1020,19 @@ class Agent:
                     return await self.confirm_callback(cr)
 
                 # 串行化确认（若提供了锁）
-                if confirm_lock is not None:
-                    async with confirm_lock:
+                try:
+                    if confirm_lock is not None:
+                        async with confirm_lock:
+                            confirmed = await _decide()
+                    else:
                         confirmed = await _decide()
-                else:
-                    confirmed = await _decide()
+                except asyncio.CancelledError:
+                    # 取消路径审计闭环（P0-3）：approval_requested 已发出但决策
+                    # 未落——显式结算为 cancelled 后再抛，审计不再出现「有 requested
+                    # 无 decided」的悬空；确认集合不加键（下次同路径仍会询问）。
+                    for mw in self.security_middleware:
+                        await mw.on_approval(ctx, "decided", approval_outcome="cancelled")
+                    raise
 
                 # 根据确认结果和是否有人工回调，标记决策类型
                 # 决策语义:确认通过 → user_confirmed;被拒时按是否有真实人工回调区分

@@ -144,6 +144,8 @@ class StreamRenderer:
         self._cancelled = False          # 中断标志，过滤中断后收到的孤儿事件
         self._current_agent = root_agent_type   # 当前显示的 agent 名称（用于 spinner）
         self._lock = threading.Lock()    # 渲染锁：on_event 跨线程并发调用，锁内串行
+        self._suppressed = False         # 确认/提问弹框期间的渲染抑制标志（P0-1）
+        self._suppressed_dropped = 0     # 抑制期间被丢弃的事件计数（恢复时提示）
 
     def reset(self) -> None:
         """
@@ -184,10 +186,31 @@ class StreamRenderer:
         with self._lock:
             if self._cancelled:
                 return                 # 已中断：丢弃孤儿事件
+            if self._suppressed:
+                # 确认/提问弹框在前台（P0-1）：任何渲染事件都会重启 Live 把
+                # 输入框盖掉（正是并行场景确认框「从不出现」的机制），丢弃并计数
+                self._suppressed_dropped += 1
+                return
             if ev.kind == "content":
                 self._on_content(ev)
             elif ev.kind == "tool":
                 self._on_tool(ev)
+
+    def suppress(self, on: bool) -> int:
+        """
+        确认中心专用：开启/关闭渲染抑制，返回关闭时被丢弃的事件数。
+
+        弹框前置 True（并终态渲染当前块，与 suspend 等效），弹框结束后置 False。
+        线程安全：确认中心消费者与 on_event 可能在不同线程，锁内串行。
+        """
+        with self._lock:
+            self._end_block()
+            self._suppressed = on
+            if not on:
+                dropped = self._suppressed_dropped
+                self._suppressed_dropped = 0
+                return dropped
+            return 0
 
     def _on_content(self, ev) -> None:
         """

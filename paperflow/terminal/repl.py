@@ -91,58 +91,65 @@ def _confirm_diff_preview(tool_name: str, params: dict) -> str | None:
     return truncate_diff(compute_diff(old, new, fromfile=str(p), tofile=str(p)))
 
 
-def _make_confirm_callback(io: InputIO, renderer: StreamRenderer):
+def _make_confirm_callback(io: InputIO, renderer: StreamRenderer, center=None):
     """
     构造异步确认回调函数，供 Agent 执行器在工具执行前调用。
 
     Args:
-        io: 输入适配器（用于读取用户确认）。
+        io: 输入适配器（保留参数供无 center 时兜底）。
         renderer: 渲染器（用于显示 diff 预览和暂停 live）。
+        center: ConfirmCenter（确认中心，单一消费者）。None 时创建独立实例
+                （仅测试/无 REPL 装配场景）。
 
     Returns:
-        async callable: 接收一个 ConfirmRequest 对象，返回 bool（True 表示确认继续）。
+        async callable: 接收一个 ConfirmRequired，返回 bool（True 表示确认继续）。
 
     行为：
-        1. 若工具是写/编辑，先计算 diff 预览并通过 renderer.print_diff 显示。
-        2. 调用 renderer.suspend() 停止实时渲染（避免与 prompt_toolkit 提示框冲突）。
-        3. 通过 asyncio.to_thread 在单独线程中执行 io.confirm（避免阻塞事件循环）。
-        4. 捕获 EOFError/KeyboardInterrupt 返回 False（保守拒绝）。
+        1. 经确认中心排队（跨线程桥接到主循环唯一消费者），弹框期间渲染抑制，
+           其他 agent 的事件不会盖掉确认框。
+        2. 三态决策：y=本次放行；a=本会话同 (工具,路径) 放行（pre-confirm 进
+           PolicyEngine 已确认集合，agent 后续的 cr.confirm() 重复加键无害）；
+           n=拒绝。
+        3. 看门狗超时自动拒绝（fail-safe）。
     """
+    from paperflow.terminal.confirm_center import ConfirmCenter
+    center = center or ConfirmCenter(io, renderer)
+
     async def _confirm(cr) -> bool:
-        preview = _confirm_diff_preview(cr.tool_name, getattr(cr, "params", None))
-        if preview:
-            renderer.print_diff(preview)
-        # 确认框前无条件停 live（spinner/残留内容块）：rich Live 与 prompt_toolkit
-        # 提示框并发会互相干扰（方向键不响应）。print_diff 已停一次，这里兜底。
-        renderer.suspend()
         try:
-            return await asyncio.to_thread(
-                io.confirm, f"[Confirm] {cr.tool_name}?")
+            choice = await center.confirm(cr)
         except (EOFError, KeyboardInterrupt):
+            # deny 语义：确认框内 EOF/Ctrl+C = 拒绝，与 fail-safe 同效
             return False
+        if choice == "a":
+            # 会话级授权：提前把 (tool, path) 记入已确认集合——同一文件本会话内
+            # 后续写/编辑不再询问（ADR 0012；对齐 Claude Code 编辑类批准仅会话有效）
+            cr.confirm()
+            return True
+        return choice == "y"
     return _confirm
 
 
-def _make_ask_callback(io: InputIO, renderer: StreamRenderer):
+def _make_ask_callback(io: InputIO, renderer: StreamRenderer, center=None):
     """
     构造 ask_user 回调：读取开放问题的答案。
 
     Args:
-        io: 输入适配器。
+        io: 输入适配器（center 为 None 时的兜底路径）。
         renderer: 渲染器（用于暂停 live）。
+        center: ConfirmCenter——提问与确认共用同一消费者串行化，避免并行场景
+                下确认框与提问框互抢 stdin。
 
     Returns:
         callable: 接受 question 字符串，返回答案字符串。
                   遇到 EOF/Ctrl+C 返回空串（fail-safe）。
-
-    行为：
-        - 先 suspend 停止 live 渲染，避免与输入框冲突。
-        - 调用 io.ask，捕获异常返回空串。
     """
+    from paperflow.terminal.confirm_center import ConfirmCenter
+    center = center or ConfirmCenter(io, renderer)
+
     def _ask(question: str) -> str:
-        renderer.suspend()
         try:
-            return io.ask(question)
+            return center.ask(question)
         except (EOFError, KeyboardInterrupt):
             return ""
     return _ask
@@ -211,7 +218,7 @@ def _render_banner(model: str, workspace: str) -> str:
 async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 io: InputIO, renderer: StreamRenderer, sleeptime=None,
                 config: PaperFlowConfig | None = None,
-                resume_hint: str | None = None) -> None:
+                resume_hint: str | None = None, confirm_center=None) -> None:
     """
     REPL 主循环。
 
@@ -252,86 +259,97 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
     run_task = None
     read_failures = 0
 
+    # 确认中心：主循环上的唯一消费者。cli.main 把同一实例注入 confirm/ask 回调，
+    # 这里负责启动与收尾；未注入（测试/裸跑）时自建。
+    from paperflow.terminal.confirm_center import ConfirmCenter
+    center = confirm_center or ConfirmCenter(io, renderer)
+    center.start()
+
     def _cancel_run():
         if run_task is not None and not run_task.done():
             run_task.cancel()
 
-    while True:
-        # 每轮循环顶部触发后台记忆整合——放在读 stdin 之前，让用户思考期间累积的
-        # 对话被整合，整合不阻塞本轮输入。
-        if sleeptime is not None:
+    try:
+        while True:
+            # 每轮循环顶部触发后台记忆整合——放在读 stdin 之前，让用户思考期间累积的
+            # 对话被整合，整合不阻塞本轮输入。
+            if sleeptime is not None:
+                try:
+                    await sleeptime.run_once_if_due()
+                except Exception:  # Sleeptime 失败不打断 REPL
+                    logger.warning("sleeptime tick failed", exc_info=True)
             try:
-                await sleeptime.run_once_if_due()
-            except Exception:  # Sleeptime 失败不打断 REPL
-                logger.warning("sleeptime tick failed", exc_info=True)
-        try:
-            # io.read 必须经 to_thread 在 worker 线程执行：PromptToolkitIO.read 内部
-            # session.prompt() 会自建事件循环（asyncio.run），而 _repl 跑在主事件循环
-            # 线程——直接同步调用会抛 "asyncio.run() cannot be called from a running
-            # event loop"。confirm/ask 回调已是 to_thread，read 对齐之。
-            raw = await asyncio.to_thread(io.read, "> ")
-        except (EOFError, KeyboardInterrupt):
-            break                # Ctrl-D / 空框 Ctrl+C：与 /exit 同效，优雅退出
-        except Exception as e:
-            # 输入适配器故障不杀 REPL：打印后继续；但连续失败说明故障是持久的，
-            # 无限刷错误比退出更糟——3 次后放弃。
-            read_failures += 1
-            renderer.print(f"Input error: {e}")
-            if read_failures >= 3:
-                renderer.print("Input failing repeatedly. Exiting.")
+                # io.read 必须经 to_thread 在 worker 线程执行：PromptToolkitIO.read 内部
+                # session.prompt() 会自建事件循环（asyncio.run），而 _repl 跑在主事件循环
+                # 线程——直接同步调用会抛 "asyncio.run() cannot be called from a running
+                # event loop"。confirm/ask 回调已是 to_thread，read 对齐之。
+                raw = await asyncio.to_thread(io.read, "> ")
+            except (EOFError, KeyboardInterrupt):
+                break                # Ctrl-D / 空框 Ctrl+C：与 /exit 同效，优雅退出
+            except Exception as e:
+                # 输入适配器故障不杀 REPL：打印后继续；但连续失败说明故障是持久的，
+                # 无限刷错误比退出更糟——3 次后放弃。
+                read_failures += 1
+                renderer.print(f"Input error: {e}")
+                if read_failures >= 3:
+                    renderer.print("Input failing repeatedly. Exiting.")
+                    break
+                continue
+            read_failures = 0
+            if raw.strip() == "/exit":
                 break
-            continue
-        read_failures = 0
-        if raw.strip() == "/exit":
-            break
-        if not raw.strip():
-            # 纯空白输入（真实使用测试 P3-2）：直接忽略，不进意图管线——
-            # 否则一次完整 LLM 调用后才被兜底拒绝，白烧 token。轻提示一次，
-            # 避免用户以为卡死。
-            renderer.print("（空输入已忽略）", style="dim")
-            continue
-        p = conversation.pending_intent
-        query, force = _merge_pending(conversation, raw)
-        renderer.reset()                    # 每轮清残留：异常/澄清路径不消费 should_print
-        # 先注册 SIGINT handler 再 create_task：注册与建任务之间的同步间隙若落一个
-        # SIGINT，默认 handler 会在主线程抛 KeyboardInterrupt 崩 REPL。handler 已就位
-        # 则 _cancel_run 吞掉它（run_task 尚未赋值 → no-op，不崩）。
-        run_task = None
-        if can_sigint:
-            try:
-                loop.add_signal_handler(signal.SIGINT, _cancel_run)
-            except (NotImplementedError, RuntimeError):
-                # 信号注册失败（如非主线程/平台不支持）→ 降级为默认 Ctrl+C，不崩 REPL
-                can_sigint = False
-        run_task = asyncio.create_task(supervisor.run(query, force_dispatch=force))
-        try:
-            result = await run_task
-        except asyncio.CancelledError:
-            # Ctrl+C 优雅中断：渲染器过滤孤儿事件（to_thread 无法真正取消）、打印
-            # 提示、回到输入框。安全阀语义与 MaxTurnsExceeded 一致——不杀 REPL。
-            renderer.interrupt()
-            renderer.print("Cancelled")
-            continue
-        except MaxTurnsExceeded:
-            renderer.print("Task exceeded max turns. Please rephrase and retry.")
-            continue
-        except Exception as e:
-            renderer.print(f"Error: {e}")
-            continue
-        finally:
+            if not raw.strip():
+                # 纯空白输入（真实使用测试 P3-2）：直接忽略，不进意图管线——
+                # 否则一次完整 LLM 调用后才被兜底拒绝，白烧 token。轻提示一次，
+                # 避免用户以为卡死。
+                renderer.print("（空输入已忽略）", style="dim")
+                continue
+            p = conversation.pending_intent
+            query, force = _merge_pending(conversation, raw)
+            renderer.reset()                    # 每轮清残留：异常/澄清路径不消费 should_print
+            # 先注册 SIGINT handler 再 create_task：注册与建任务之间的同步间隙若落一个
+            # SIGINT，默认 handler 会在主线程抛 KeyboardInterrupt 崩 REPL。handler 已就位
+            # 则 _cancel_run 吞掉它（run_task 尚未赋值 → no-op，不崩）。
+            run_task = None
             if can_sigint:
                 try:
-                    loop.remove_signal_handler(signal.SIGINT)
+                    loop.add_signal_handler(signal.SIGINT, _cancel_run)
                 except (NotImplementedError, RuntimeError):
-                    pass
-        intent = supervisor.last_intent
-        if intent is not None and intent.clarification and not force:
-            # 未超轮：挂起澄清，round 链式累计（REPL 重建时用 p.round，不重置为 0）
-            prev_round = p.round if p is not None else 0
-            conversation.pending_intent = PendingClarification(
-                question=intent.clarification, original_input=query,
-                round=prev_round + 1)
-            renderer.print(intent.clarification)
-            continue
-        renderer.finalize()
-        renderer.print(renderer.should_print(result))
+                    # 信号注册失败（如非主线程/平台不支持）→ 降级为默认 Ctrl+C，不崩 REPL
+                    can_sigint = False
+            run_task = asyncio.create_task(supervisor.run(query, force_dispatch=force))
+            try:
+                result = await run_task
+            except asyncio.CancelledError:
+                # Ctrl+C 优雅中断：渲染器过滤孤儿事件（to_thread 无法真正取消）、打印
+                # 提示、回到输入框。安全阀语义与 MaxTurnsExceeded 一致——不杀 REPL。
+                renderer.interrupt()
+                renderer.print("Cancelled")
+                continue
+            except MaxTurnsExceeded:
+                renderer.print("Task exceeded max turns. Please rephrase and retry.")
+                continue
+            except Exception as e:
+                renderer.print(f"Error: {e}")
+                continue
+            finally:
+                if can_sigint:
+                    try:
+                        loop.remove_signal_handler(signal.SIGINT)
+                    except (NotImplementedError, RuntimeError):
+                        pass
+            intent = supervisor.last_intent
+            if intent is not None and intent.clarification and not force:
+                # 未超轮：挂起澄清，round 链式累计（REPL 重建时用 p.round，不重置为 0）
+                prev_round = p.round if p is not None else 0
+                conversation.pending_intent = PendingClarification(
+                    question=intent.clarification, original_input=query,
+                    round=prev_round + 1)
+                renderer.print(intent.clarification)
+                continue
+            renderer.finalize()
+            renderer.print(renderer.should_print(result))
+
+    finally:
+        # 确认中心收尾：取消消费者任务，避免退出后任务泄漏告警
+        await center.stop()

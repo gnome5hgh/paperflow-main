@@ -405,6 +405,12 @@ def main(argv: list[str] | None = None) -> None:
 
     conversation = ConversationState()
 
+    # 确认中心：确认/提问的唯一消费者，跑在 REPL 主事件循环上（启动/收尾在
+    # _repl 内）。confirm/ask 回调经它跨线程桥接，弹框期间渲染抑制——并行多
+    # agent 的确认框不再被其他 agent 的渲染事件盖掉（真实使用测试 P0-1/P0-3）。
+    from paperflow.terminal.confirm_center import ConfirmCenter
+    center = ConfirmCenter(io, renderer)
+
     supervisor = Agent(
         llm=llm, agent_registry=registry, agent_type="supervisor",
         memory=agent_state.memory,
@@ -414,8 +420,8 @@ def main(argv: list[str] | None = None) -> None:
         structured=structured,
         security_middleware=middlewares,
         intent_enabled=True, intent_pipeline=pipeline, conversation=conversation,
-        confirm_callback=_make_confirm_callback(io, renderer),
-        ask_user_callback=message_manager.make_ask_recorder(_make_ask_callback(io, renderer),
+        confirm_callback=_make_confirm_callback(io, renderer, center),
+        ask_user_callback=message_manager.make_ask_recorder(_make_ask_callback(io, renderer, center),
                                                             session_id),
         session_id=session_id,
     )
@@ -426,4 +432,5 @@ def main(argv: list[str] | None = None) -> None:
 
     asyncio.run(_repl(supervisor, conversation,
                       io=io, renderer=renderer, sleeptime=sleeptime,
-                      config=config, resume_hint=resume_hint))
+                      config=config, resume_hint=resume_hint,
+                      confirm_center=center))

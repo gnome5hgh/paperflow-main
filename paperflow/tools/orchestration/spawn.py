@@ -270,24 +270,36 @@ async def _run_child_with_budget(coro, timeout: float, clock: _UserWaitClock):
     实现用 asyncio.wait({task}, timeout) 轮询:超时一轮只是本轮 wait 到期,任务继续
     运行未取消;下一轮重算剩余再等。任务完成则返回其结果(异常原样上抛,如
     MaxTurnsExceeded 由调用方映射为 failed)。
+
+    取消级联(真实使用测试 P0-2):父任务被取消(Ctrl+C)时,把取消传播给子任务并等它
+    收尾后再抛——aexecute 在父事件循环上直接 await 本协程,级联取消即整棵 agent 树
+    一起终止,不再留孤儿子 agent 继续跑、烧 token。
     """
     loop = asyncio.get_running_loop()
     task = asyncio.ensure_future(coro)
     base_deadline = loop.time() + timeout
-    while not task.done():
-        remaining = (base_deadline + clock.total()) - loop.time()
-        if remaining <= 0:
-            # 纯执行超时(无用户等待兜底)→ 取消子 agent,抛 TimeoutError
-            task.cancel()
-            try:
-                await task
-            except BaseException:
-                pass
-            raise asyncio.TimeoutError()
-        done, _ = await asyncio.wait({task}, timeout=remaining)
-        if done:
-            return task.result()
-    return task.result()
+    try:
+        while not task.done():
+            remaining = (base_deadline + clock.total()) - loop.time()
+            if remaining <= 0:
+                # 纯执行超时(无用户等待兜底)→ 取消子 agent,抛 TimeoutError
+                task.cancel()
+                try:
+                    await task
+                except BaseException:
+                    pass
+                raise asyncio.TimeoutError()
+            done, _ = await asyncio.wait({task}, timeout=remaining)
+            if done:
+                return task.result()
+        return task.result()
+    except asyncio.CancelledError:
+        task.cancel()
+        try:
+            await task
+        except BaseException:
+            pass
+        raise
 
 
 def _make_child_stream_callback(parent) -> Callable[[StreamEvent], None] | None:
@@ -330,6 +342,11 @@ class SpawnSubAgentTool(Tool):
     #: 需要父 Agent 引用(构造时只注入声明者)
     needs_parent = True
     risk_level = "low"
+    #: 异步工具：Agent 在父事件循环上直接 await aexecute——子 agent 与父同循环，
+    #: 父被取消（Ctrl+C）时 CancelledError 沿 await 链传播进子 agent，整棵任务树
+    #: 级联终止（真实使用测试 P0-2 的根治）。execute 保留为同步兼容路径
+    #: （asyncio.run 包装，供测试/无循环上下文调用）。
+    async_execute = True
     #: 子 agent 超时秒数的类默认(config 的 agent_timeouts 命中时被覆盖)。
     #: 保留为类属性:既是无配置时的兜底,也是测试覆盖点(测例可设极小值验证超时路径)。
     timeout = 120
@@ -344,11 +361,20 @@ class SpawnSubAgentTool(Tool):
         return self._agent_timeouts.get(agent_type, self.timeout)
 
     def execute(self, agent_type: str, task: str, mode: str | None = None) -> ToolResult:
-        """派发一个子 agent,返回 SubAgentResult 的序列化结果。
+        """同步兼容路径：在调用方线程新建事件循环跑 aexecute。
 
-        依次过四道闸:mode 枚举校验 → 意图派发门禁 → spawn 白名单 → 同会话去重;
-        全部通过才构造子 agent 并执行。无路径任务完成可缓存 done 供窗口内复用,有路径
-        任务完成即清条目。所有拒绝路径都返回 status=denied 的结构化结果,不抛异常。
+        Agent 执行器对 async_execute 工具走 aexecute（父循环 await，级联取消）；
+        本方法仅供测试/无事件循环上下文直接调用。
+        """
+        return asyncio.run(self.aexecute(agent_type, task, mode))
+
+    def _admit(self, agent_type: str, task: str,
+               mode: str | None) -> "ToolResult | tuple[str, bool]":
+        """派发前的四道闸（mode/意图/白名单/去重）。
+
+        通过时返回 (任务指纹, 是否含路径)——调用方负责在执行完的 finally 里
+        按 has_path 决定 done 缓存或清条目；拒绝时直接返回 denied/去重命中的
+        ToolResult。
         """
         parent = self._parent
         # mode 参数校验：非法值直接拒绝（schema enum 约束 LLM 生成层，
@@ -376,8 +402,8 @@ class SpawnSubAgentTool(Tool):
             result = SubAgentResult(status="denied", summary=denied)
             return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
-        # ② 同会话同指纹去重(机械安全网):execute 跑在线程池 worker 里,并行 spawn
-        #    并发访问注册表,检查+注册须持锁整体原子。门控规则由 _task_has_path 区分:
+        # ② 同会话同指纹去重(机械安全网):并行 spawn 并发访问注册表,检查+注册
+        #    须持锁整体原子。门控规则由 _task_has_path 区分:
         #    - 无路径任务(纯文本,世界不变)→ running 提示 + done 窗口内缓存复用
         #    - 有路径任务(引用真实文件,世界可变)→ 只 running 去重,完成即清条目、
         #      永不缓存 done——子 agent 执行期间文件可能已改,缓存旧结果会交付陈旧裁决
@@ -395,6 +421,19 @@ class SpawnSubAgentTool(Tool):
                     and now - hit["started_at"] < _SPAWN_REUSE_WINDOW_S:
                 return hit["result"]
             reg[fp] = {"state": "running", "result": None, "started_at": now}
+        return fp, has_path
+
+    async def aexecute(self, agent_type: str, task: str,
+                       mode: str | None = None) -> ToolResult:
+        """派发一个子 agent（父事件循环上 await），返回 SubAgentResult 序列化结果。
+
+        与同步路径同一套门禁与去重；子 agent 与父同循环——取消级联、流式事件、
+        审计归属全部天然对齐，不再经工作线程 + 独立事件循环。
+        """
+        admitted = self._admit(agent_type, task, mode)
+        if isinstance(admitted, ToolResult):
+            return admitted
+        fp, has_path = admitted
 
         result = None
         try:
@@ -405,6 +444,7 @@ class SpawnSubAgentTool(Tool):
             #    意图识别(子任务是结构化任务,非用户意图)。
             # 流式统一：子 agent 只透传工具行（前缀由渲染器统一加）、不流 content——
             # 与并行场景同一代码路径（多路并发不串字）。
+            parent = self._parent
             child = Agent(
                 llm=parent.llm, agent_registry=parent.agent_registry,
                 agent_type=agent_type, security_middleware=parent.security_middleware,
@@ -415,13 +455,13 @@ class SpawnSubAgentTool(Tool):
             if mode:
                 child.system_prompt = f"当前模式：{mode}\n{child.system_prompt}"
             # 传解析后的超时:_run_child 用实际生效值(config > 类默认)
-            result = self._run_child(child, agent_type, task)
+            result = await self._run_child(child, agent_type, task)
         finally:
             # 完成收尾:无路径写 done 供窗口内复用;有路径/异常 → 清条目不缓存
             # (有路径任务世界可变永不缓存 done;result 为 None 表示构造/执行异常,
             # 防 None 入缓存污染后续复用)。注册表读写全在锁内。
             with _SPAWN_LOCK:
-                reg = _SPAWN_REGISTRY.setdefault(parent.session_id, {})
+                reg = _SPAWN_REGISTRY.setdefault(self._parent.session_id, {})
                 # 完成写盘同样先清理超窗 done 条目(防长会话注册表无限膨胀)
                 _evict_stale_spawn_entries(reg, time.monotonic())
                 if result is None or has_path:
@@ -431,13 +471,12 @@ class SpawnSubAgentTool(Tool):
                                "started_at": time.monotonic()}
         return result
 
-    def _run_child(self, child: Agent, agent_type: str, task: str) -> ToolResult:
-        """执行子 agent.run + 提取摘要,映射为 SubAgentResult。
+    async def _run_child(self, child: Agent, agent_type: str, task: str) -> ToolResult:
+        """在父事件循环上执行子 agent.run + 提取摘要,映射为 SubAgentResult。
 
-        asyncio.run 桥接:execute 跑在线程池 worker 线程(无事件循环),必须新建事件
-        循环跑子 agent(嵌套 asyncio.run 会抛 RuntimeError)。子 agent 拿到最终文本后,
-        同一事件循环内提取摘要——不再开新循环,否则会丢失本循环状态,且确认时钟只在
-        本次循环内有效。
+        取消语义:父任务被取消时 CancelledError 沿 await 链传入
+        _run_child_with_budget（内部把取消传播给子任务）,再原样上抛——
+        _exec_tool 不捕 BaseException,gather 与 run() 的历史自愈随后接力。
         """
         timeout = self._resolve_timeout(agent_type)
         # 用户确认等待不计入执行预算:包装子 agent 的确认回调记录等待时长,
@@ -464,7 +503,7 @@ class SpawnSubAgentTool(Tool):
             return text, digest
 
         try:
-            text, digest = asyncio.run(_run_and_extract())
+            text, digest = await _run_and_extract()
             result = SubAgentResult(status="success", summary=text, digest=digest)
         except asyncio.TimeoutError:
             result = SubAgentResult(status="timeout", summary="子任务执行超时",

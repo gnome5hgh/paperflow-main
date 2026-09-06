@@ -58,6 +58,15 @@ class InputIO:
         """
         raise NotImplementedError
 
+    def confirm_choice(self, text: str) -> str:
+        """
+        三态确认：返回 "y"（本次放行）/ "a"（本会话同路径放行）/ "n"（拒绝）。
+
+        默认实现基于 confirm() 折叠为二态（"y"/"n"）；TTY 实现识别 a 键。
+        EOF/中断返回 "n"（fail-safe 拒绝）。
+        """
+        return "y" if self.confirm(text) else "n"
+
     def ask(self, question: str) -> str:
         """
         读取一个开放问题的答案（自由文本输入）。
@@ -117,6 +126,28 @@ class FallbackIO(InputIO):
             except EOFError:
                 # EOF/Ctrl-D：无法获得输入时保守拒绝
                 return False
+
+    def confirm_choice(self, text: str) -> str:
+        """
+        三态确认：y=yes / a=all（本会话同路径放行）/ 其余拒绝。
+
+        Args:
+            text (str): 确认提示。
+
+        Returns:
+            str: "y" / "a" / "n"。EOF 返回 "n"（fail-safe）。
+        """
+        with _confirm_lock:
+            print(f"{text} (y/a/N) ", end="", flush=True)
+            try:
+                raw = input().strip().lower()
+            except EOFError:
+                return "n"
+            if raw in {"y", "yes", "是", "确定"}:
+                return "y"
+            if raw in {"a", "all", "全部"}:
+                return "a"
+            return "n"
 
     def ask(self, question: str) -> str:
         """
@@ -188,37 +219,44 @@ def _session_key_bindings() -> KeyBindings:
 
 def _confirm_key_bindings():
     """
-    构造确认框的键绑定配置（用于 PromptToolkitIO.confirm）。
+    构造确认框的键绑定配置（用于 PromptToolkitIO.confirm / confirm_choice）。
 
     绑定策略：
-        - y / Y：立即接受（返回 True）。
-        - n / N：立即拒绝（返回 False）。
+        - y / Y：立即接受（返回 "y"）。
+        - a / A：本会话同 (工具,路径) 放行（返回 "a"）。
+        - n / N：立即拒绝（返回 "n"）。
         - Enter：默认拒绝（保守策略，防止误操作放行）。
 
     仅支持字母键输入，不依赖方向键（方向键在某些终端不可靠）。
-    默认拒绝行为与非 TTY 的 (y/N) 空输入拒绝保持一致，确保两种实现可互换。
+    默认拒绝行为与非 TTY 的 (y/a/N) 空输入拒绝保持一致，确保两种实现可互换。
 
     Returns:
         KeyBindings: 可应用于临时 prompt 的键绑定对象。
     """
     kb = KeyBindings()
 
-    # 键入 y/Y 立即接受（result=True 结束确认框）
+    # 键入 y/Y 立即接受（result="y" 结束确认框）
     @kb.add("y")
     @kb.add("Y")
     def _yes(event):
-        event.app.exit(result=True)
+        event.app.exit(result="y")
+
+    # 键入 a/A：本会话同 (工具,路径) 放行
+    @kb.add("a")
+    @kb.add("A")
+    def _all(event):
+        event.app.exit(result="a")
 
     # 键入 n/N 立即拒绝
     @kb.add("n")
     @kb.add("N")
     def _no(event):
-        event.app.exit(result=False)
+        event.app.exit(result="n")
 
     # Enter 默认拒绝：误按回车不误放行（写盘等高危操作保守处理）
     @kb.add("enter")
     def _accept(event):
-        event.app.exit(result=False)
+        event.app.exit(result="n")
     return kb
 
 
@@ -282,14 +320,35 @@ class PromptToolkitIO(InputIO):
         Notes:
             - 使用独立的一次性 prompt，不与主 session 共享历史，避免污染。
             - 持锁 _confirm_lock 串行化，防止并发确认时提示交错或 session 冲突。
-            - 键绑定只识别 y/Y/n/N/Enter，Enter 默认拒绝，与非 TTY 实现一致。
+            - 键绑定只识别 y/Y/n/N/Enter（confirm_choice 另识别 a/A），
+              Enter 默认拒绝，与非 TTY 实现一致。
             - 异常（如 Ctrl+C）由调用方捕获并返回 False。
+        """
+        return self.confirm_choice(text) == "y"
+
+    def confirm_choice(self, text: str) -> str:
+        """
+        使用 prompt_toolkit 临时提示进行三态确认。
+
+        Args:
+            text (str): 确认提示文本。
+
+        Returns:
+            str: "y"（本次放行）/ "a"（本会话同路径放行）/ "n"（拒绝）。
+                 EOF/异常返回 "n"（fail-safe 拒绝）。
+
+        Notes:
+            - 持锁 _confirm_lock 串行化，防止并发确认时提示交错或 session 冲突。
+            - 键绑定识别 y/Y/a/A/n/N/Enter，Enter 默认拒绝。
         """
         with _confirm_lock:
             from prompt_toolkit.shortcuts import prompt as _pt_prompt
-            result = _pt_prompt(f"{text} (y/N) ",
-                                key_bindings=_confirm_key_bindings())
-            return bool(result)
+            try:
+                result = _pt_prompt(f"{text} (y/a/N) ",
+                                    key_bindings=_confirm_key_bindings())
+            except (EOFError, KeyboardInterrupt):
+                return "n"
+            return result if result in ("y", "a") else "n"
 
     def ask(self, question: str) -> str:
         """
