@@ -35,6 +35,8 @@ class ToolResult:
     summary: dict = field(default_factory=dict)
     #: 终端完成摘要（如 "File written: <path>"），_exec_tool 见非空则发完成状态行
     completion: str | None = None
+    #: 错误结果标记：安全扫描对错误结果不套「外部内容」横幅（ADR 0013，P3-3）
+    is_error: bool = False
 
 
 class Tool(ABC):
@@ -92,6 +94,12 @@ class Tool(ABC):
 
     #: 需要 _exec_tool 注入 per-run 搜索状态（搜索类工具 opt-in；默认 False）
     wants_run_state: bool = False
+
+    #: 终止型工具（ADR 0013）：成功执行即代表该 Agent 本轮任务终结——Agent.run
+    #: 检测到 summary["terminal"] 的结果后直接结束 ReAct 循环，不再进下一轮 LLM
+    #: 调用（reviewer 的 submit 类工具；重复提交是成本事故）。校验失败的结果由
+    #: 工具侧不置位 terminal 标记，模型仍可修正后重试。
+    terminal: bool = False
 
     @abstractmethod
     def execute(self, **kwargs) -> ToolResult:

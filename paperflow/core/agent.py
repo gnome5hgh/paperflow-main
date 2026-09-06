@@ -827,6 +827,19 @@ class Agent:
                 self._append_to_messages(tool_msg)
                 self._persist_conversation([tool_msg])
 
+            # 终止型工具（ADR 0013）：submit 类成功提交即本 agent 任务终结——直接
+            # 结束 ReAct 循环，不再进下一轮 LLM 调用（实测 reviewer 曾重复提交 95 次，
+            # 每轮 ~1.5 万 tokens）。返回值即提交文本：spawn 的 digest 提取依赖裁决
+            # 全文，不能只回一句「已提交」。on_finish 钩子照常执行（安全扫描一致性）。
+            if any(r.summary.get("terminal") for r in results):
+                final_text = next(r.text for r in results if r.summary.get("terminal"))
+                for mw in self.security_middleware:
+                    final_text = await mw.on_finish(self, final_text)
+                final = Message(role="assistant", content=final_text)
+                self._append_to_messages(final)
+                self._persist_conversation([final])
+                return final_text
+
             # 本轮工具调用处理完毕，循环继续（回到开头，将新的上下文送交 LLM 进行下一轮推理）。
 
         # 安全阀触发：LLM 陷入了无法在限定轮数内退出的循环。

@@ -31,6 +31,8 @@ class SubmitDownloadReviewTool(Tool):
         "required": ["verdict", "items"],
     }
     risk_level = "low"                     # 只读格式化，无副作用（同 SubmitReviewTool）
+    # 终止型工具（ADR 0013）：同 SubmitReviewTool——提交成功即任务终结
+    terminal = True
 
     def execute(self, verdict: str, items: list) -> ToolResult:
         """校验并格式化下载审查裁决;非法输入返回可行动报错文本。
@@ -80,4 +82,5 @@ class SubmitDownloadReviewTool(Tool):
             tag = "PASS" if item["decision"] == "pass" else "FAIL"
             reason = "；".join(item.get("reasons") or [])
             lines.append(f"- [{tag}] {item['title']} | {reason} | {item.get('source_link')}")
-        return ToolResult(text="\n".join(lines))
+        # 终止标记：同 submit_review——裁决全文即最终回答（digest 提取依赖它）
+        return ToolResult(text="\n".join(lines), summary={"terminal": True})

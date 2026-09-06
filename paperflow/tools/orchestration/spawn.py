@@ -144,6 +144,17 @@ _SPAWN_LOCK = threading.Lock()
 #: 重跑——避免过期结果被当作新结果交付。有路径任务完成即清条目,无 done 可复用。
 _SPAWN_REUSE_WINDOW_S = 300
 
+#: 失败升级(ADR 0013):同 (会话, agent_type) 连续 N 次非 success(timeout/failed)
+#: 后,在结果文本追加强指令「勿再派发,改用 ask_user」——业界共识是重试预算 3-5 次
+#: 后升级给人;本项目每次重试是分钟级多工具子任务,取更紧的 2。仅对 supervisor 生效
+#: (子 agent 无 ask_user 工具,升级无从谈起);成功即清零,不按任务文本指纹化。
+_FAILURE_ESCALATION_THRESHOLD = 2
+_SPAWN_FAILURE_COUNTS: dict[tuple[str, str], int] = {}
+_FAILURE_ESCALATION_NOTE = (
+    "\n\n⚠️ 该类型子任务已连续 {n} 次失败。请勿再次派发同类型子任务——"
+    "改用 ask_user_question 向用户说明失败情况并请示（放弃 / 换思路 / 坚持重试）。"
+)
+
 #: 任务文本中绝对路径的启发式正则(_task_has_path 的布尔判据):抓 "/" 开头、不含空白/
 #: 中文标点/半角逗号分号冒号/引号的最长串。只做「是否含路径」的布尔判断,不读文件。
 #: 排除集不含半角括号(如 file(v2).md 能完整识别);中文全角括号仍是分隔符。
@@ -456,6 +467,20 @@ class SpawnSubAgentTool(Tool):
                 child.system_prompt = f"当前模式：{mode}\n{child.system_prompt}"
             # 传解析后的超时:_run_child 用实际生效值(config > 类默认)
             result = await self._run_child(child, agent_type, task)
+            # 失败升级(ADR 0013)：仅 supervisor 的派发计数——连续 N 次非 success
+            # 后追加强指令，把「继续自动重试」的决策权交回用户（实测曾对不可能
+            # 成功的下载连续派发 4 轮 searcher，每轮 ~7 分钟）。
+            if parent.agent_type == "supervisor":
+                key = (parent.session_id, agent_type)
+                if result.summary.get("status") == "success":
+                    _SPAWN_FAILURE_COUNTS.pop(key, None)
+                else:
+                    n = _SPAWN_FAILURE_COUNTS.get(key, 0) + 1
+                    _SPAWN_FAILURE_COUNTS[key] = n
+                    if n >= _FAILURE_ESCALATION_THRESHOLD:
+                        result = ToolResult(
+                            text=result.text + _FAILURE_ESCALATION_NOTE.format(n=n),
+                            summary=result.summary)
         finally:
             # 完成收尾:无路径写 done 供窗口内复用;有路径/异常 → 清条目不缓存
             # (有路径任务世界可变永不缓存 done;result 为 None 表示构造/执行异常,
