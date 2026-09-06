@@ -54,6 +54,16 @@ class LLMConfig:
     #: 采样温度，0.0 表示确定性输出（适合工具调用场景）
     temperature: float = 0.0
 
+    #: LLM HTTP 连接超时（秒）——连接挂死时秒级暴露而非无限等待
+    timeout_connect: float = 10.0
+
+    #: LLM HTTP 读超时（秒，含流式 chunk 间隔）——长输出（max_tokens 上限下单次
+    #: 可跑数分钟）不能被误杀，取 300s；两个相邻 chunk 间隔超过此值即判定服务挂死
+    timeout_read: float = 300.0
+
+    #: 传输层自动重试次数（连接错误/5xx 时 SDK 原生重试，与上层业务重试无关）
+    max_retries: int = 2
+
     #: 模型上下文窗口——deepseek-v4-flash 官方 1M。ContextCompressor.resolve_context_size
     #: 取半窗口 = 500K → 压缩阈值 400K、reserve 50K，正常对话永不压缩（1M 上下文的预期）。
     context_window: int = 1000000
@@ -231,6 +241,9 @@ class PaperFlowConfig:
             PAPERFLOW_API_KEY       → llm.api_key
             PAPERFLOW_BASE_URL      → llm.base_url
             PAPERFLOW_MODEL         → llm.model
+            PAPERFLOW_LLM_TIMEOUT_CONNECT → llm.timeout_connect
+            PAPERFLOW_LLM_TIMEOUT_READ    → llm.timeout_read
+            PAPERFLOW_LLM_MAX_RETRIES     → llm.max_retries
             PAPERFLOW_WORKSPACE     → workspace
             PAPERFLOW_AGENTS_DIR    → agents_dir
             PAPERFLOW_MAX_RISK      → max_risk
@@ -253,6 +266,9 @@ class PaperFlowConfig:
             "PAPERFLOW_API_KEY": ("llm", "api_key"),
             "PAPERFLOW_BASE_URL": ("llm", "base_url"),
             "PAPERFLOW_MODEL": ("llm", "model"),
+            "PAPERFLOW_LLM_TIMEOUT_CONNECT": ("llm", "timeout_connect"),
+            "PAPERFLOW_LLM_TIMEOUT_READ": ("llm", "timeout_read"),
+            "PAPERFLOW_LLM_MAX_RETRIES": ("llm", "max_retries"),
             "PAPERFLOW_VISION_BASE_URL": ("vision", "base_url"),
             "PAPERFLOW_VISION_API_KEY": ("vision", "api_key"),
             "PAPERFLOW_VISION_MODEL": ("vision", "model"),
@@ -283,4 +299,6 @@ class PaperFlowConfig:
                     val = val.lower() in ("1", "true", "yes")
                 elif isinstance(current, int):
                     val = int(val)
+                elif isinstance(current, float):
+                    val = float(val)
                 setattr(obj, attr, val)

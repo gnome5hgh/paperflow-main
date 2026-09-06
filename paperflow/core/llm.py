@@ -28,6 +28,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 
+import httpx
 from openai import OpenAI
 
 from paperflow.config import LLMConfig
@@ -95,8 +96,21 @@ class LLMClient:
                 "LLM API key 未配置：请在 .env 文件设置 PAPERFLOW_API_KEY（参考 .env.example），"
                 "或设置环境变量 PAPERFLOW_API_KEY，或在 config.yaml 的 llm.api_key 提供"
             )
-        #: OpenAI SDK 客户端实例（底层 httpx 连接池，线程安全）
-        self.client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+        #: OpenAI SDK 客户端实例（底层 httpx 连接池，线程安全）。
+        #: 显式超时（真实使用测试 P3-1）：SDK 默认 read 600s，一次 HTTP 挂死曾让
+        #: UI 空转 20+ 分钟。read 超时同时约束流式相邻 chunk 的间隔——首包超时
+        #: 天然覆盖，无需另写逻辑；write/pool 对齐 read/connect 的量级。
+        self.client = OpenAI(
+            base_url=config.base_url,
+            api_key=config.api_key,
+            timeout=httpx.Timeout(
+                connect=config.timeout_connect,
+                read=config.timeout_read,
+                write=config.timeout_read,
+                pool=config.timeout_connect,
+            ),
+            max_retries=config.max_retries,
+        )
 
         #: 模型名称，每次 chat 调用传给 API
         self.model = config.model
