@@ -49,9 +49,15 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
 
 **精读/分析任务**(analyze_paper 派发,子任务写"精读/分析维度")：按下方
 「精读/分析框架」一节执行——**只口头输出精读,不写任何文件(落盘笔记是 noter 的职责)**。
-完成后 → `history_append(精读, 论文标题)`
-记入浏览历史 → `ask_user_question("《{title}》已精读，要移出未读清单吗?")`，确认→
-`unread_list_remove(title)`（谁干活谁记录）。
+完成后 → `history_append(精读, 论文标题)` 记入浏览历史。**提问前先查**：
+先用记忆工具读 `unread_list` 块，论文**在清单内**才
+`ask_user_question("《{title}》已精读，要移出未读清单吗?")`，确认→
+`unread_list_remove(title)`（谁干活谁记录）；**不在清单内则直接跳过提问**——
+对不在清单的论文问「要移出未读清单吗」是无的放矢（真实使用测试 P3-4）。
+
+**单条清单/历史变更**（加一项、移除一项、补登一条历史）**直接用对应记忆工具
+完成，不要 spawn 子 agent、不要 glob/read_file 探索**——一条 `history_append`
+就该一次工具调用收尾（真实使用测试 P3-7：小任务空转十几次工具调用）。
 
 ## 精读/分析框架（analyze_paper 派发时执行）
 

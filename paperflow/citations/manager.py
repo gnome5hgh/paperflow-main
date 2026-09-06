@@ -40,6 +40,11 @@ class ResolvedCitation:
     year: str = ""
     note_path: str | None = None
     pdf_path: str | None = None
+    #: key 是否已落地在 references.bib（bib 真相源）。in_corpus 只说明语料标题
+    #: 索引命中——key 可能是现场生成、尚未入库的（真实使用测试 P1-5 的溯源链
+    #: 断裂根因）。in_bib=False 时标注 [来源:key§节] 属于无据声称，必须先
+    #: add_citation 成功或降级为 [⚠未入库]。
+    in_bib: bool = False
 
 
 def _shorttitle(title: str) -> str:
@@ -164,14 +169,16 @@ class CitationManager:
                 return ResolvedCitation(None, "missing")
             title = rec["title"]
             biblio = rec.get("biblio", {})
-            # 若 bib 库中已存在同标题条目，直接沿用其 key，避免重复生成
+            # 若 bib 库中已存在同标题条目，直接沿用其 key，避免重复生成；
+            # 否则现场生成 key——此时 in_bib=False，lookup_citation 会给出强指令
             existing = bibmod.find_by_title(self.bib_path, title)
             key = existing.key if existing else gen_key(title, biblio.get("authors", ""),
                                                         biblio.get("year", ""))
             return ResolvedCitation(key=key, status="in_corpus", title=title,
                                     year=biblio.get("year", ""),
                                     note_path=rec.get("note_path"),
-                                    pdf_path=rec.get("pdf_path"))
+                                    pdf_path=rec.get("pdf_path"),
+                                    in_bib=existing is not None)
 
     # —— 入库 ——
     def _unique_key(self, key: str) -> str:
@@ -210,8 +217,13 @@ class CitationManager:
                 return {"key": None, "created": False, "note": "PDF 标题提取失败，未入库"}
             # 严格校验：没有作者或年份的条目是废条目，拒绝写入
             if not biblio.get("authors") or not biblio.get("year"):
+                # 拒绝信息必须可行动（真实使用测试 P1-5：模型忽略了单纯一句 note）：
+                # 给出三条明确出路，任选其一，不允许带着「已确认」的假引用继续
                 return {"key": None, "created": False,
-                        "note": "PDF 元数据不足（缺作者/年份），未入库——请启动 GROBID 或手动补充"}
+                        "note": "PDF 元数据不足（缺作者/年份），拒绝入库。三选一："
+                                "① 启动 GROBID 后重试（解析作者/年份）；"
+                                "② 用 add_external 手动提供作者/年份入库（需用户确认字段）；"
+                                "③ 笔记中该引用降级标注为 [⚠未入库]，不得写「经 lookup_citation 确认」。"}
             # 标题去重：若已存在同标题条目，直接返回已有 key（不重复追加）
             existing = bibmod.find_by_title(self.bib_path, title)
             if existing is not None:

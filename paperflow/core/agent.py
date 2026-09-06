@@ -509,6 +509,50 @@ class Agent:
         for m in loaded:
             self._messages.append(_schema_to_wire(m))
         self._message_ids = [m.id for m in loaded]
+        self._patch_orphan_history()
+
+    def _patch_orphan_history(self) -> None:
+        """回放窗口校验：为孤儿 tool_calls 就地补合成 tool 消息（历史自愈兜底）。
+
+        历史数据里可能存在 assistant(tool_calls) 无配对 tool 消息的坏记录
+        （历史版本在取消路径直接崩溃、没来得及合成消息），原样回放给 OpenAI
+        会报 400「tool_calls 后必须紧跟 tool 消息」。这里扫描整个窗口，对每个
+        未被响应的 tool_call 在其 assistant 消息后补一条 ``{"decision":
+        "cancelled"}`` 的 tool 消息，并落盘保持窗口 id 对齐——压缩依赖
+        _messages 与 _message_ids 严格平行，插入时必须同步维护两边。
+        """
+        if self.message_manager is None or not self._messages:
+            return
+        answered = {
+            m.tool_call_id for m in self._messages
+            if m.role == "tool" and m.tool_call_id
+        }
+        new_msgs: list[Message] = []
+        new_ids: list[str] = []
+        changed = False
+        for m, mid in zip(self._messages, self._message_ids):
+            new_msgs.append(m)
+            new_ids.append(mid)
+            tcs = m.tool_calls or []
+            missing = [
+                tc for tc in tcs
+                if isinstance(tc, dict) and tc.get("id") and tc["id"] not in answered
+            ]
+            if missing:
+                changed = True
+                for tc in missing:
+                    synth = Message(
+                        role="tool",
+                        content='{"decision":"cancelled"}',
+                        tool_call_id=tc["id"],
+                    )
+                    new_ids.append(self.message_manager.add_message(self.session_id, synth).id)
+                    new_msgs.append(synth)
+        if changed:
+            self._messages = new_msgs
+            self._message_ids = new_ids
+            if self.agent_manager is not None:
+                self.agent_manager.update_agent(self.session_id, message_ids=new_ids)
 
     def _persist_conversation(self, msgs: list[Message]) -> None:
         """把对话消息全量落盘（Recall）并更新 in-context 窗口追踪。
@@ -754,7 +798,23 @@ class Agent:
             #    后续通过 zip(response.tool_calls, results) 可安全地将结果
             #    与 tool_call_id 对应，确保 LLM 下一轮推理上下文正确。
             # ============================================================
-            results = await asyncio.gather(*(_run_one(tc) for tc in response.tool_calls))
+            try:
+                results = await asyncio.gather(*(_run_one(tc) for tc in response.tool_calls))
+            except asyncio.CancelledError:
+                # 取消/中断路径的历史自愈：assistant(tool_calls) 已先落盘，被取消时
+                # tool 结果消息永远等不到——缺配对消息的坏历史会让下一轮回放直接
+                # 触发 OpenAI 400。这里为本 message 的每个 tool_call 合成一条
+                # cancelled tool 消息（进窗口 + 落盘）后再抛出。gather 里已完成的
+                # 调用其结果一并丢弃，按「本轮作废」语义统一记为 cancelled（文件
+                # 等盘上副作用不回滚）。
+                synth = [
+                    Message(role="tool", content='{"decision":"cancelled"}',
+                            tool_call_id=tc["id"])
+                    for tc in response.tool_calls
+                ]
+                self._append_to_messages(synth)
+                self._persist_conversation(synth)
+                raise
 
             # 将工具执行结果以 tool 角色消息加入 in-context，并持久化
             # tool_call_id 字段将结果与对应的 tool_call 请求关联，LLM 在下一轮推理时能看到每个调用的返回值。
@@ -766,6 +826,19 @@ class Agent:
                 )
                 self._append_to_messages(tool_msg)
                 self._persist_conversation([tool_msg])
+
+            # 终止型工具（ADR 0013）：submit 类成功提交即本 agent 任务终结——直接
+            # 结束 ReAct 循环，不再进下一轮 LLM 调用（实测 reviewer 曾重复提交 95 次，
+            # 每轮 ~1.5 万 tokens）。返回值即提交文本：spawn 的 digest 提取依赖裁决
+            # 全文，不能只回一句「已提交」。on_finish 钩子照常执行（安全扫描一致性）。
+            if any(r.summary.get("terminal") for r in results):
+                final_text = next(r.text for r in results if r.summary.get("terminal"))
+                for mw in self.security_middleware:
+                    final_text = await mw.on_finish(self, final_text)
+                final = Message(role="assistant", content=final_text)
+                self._append_to_messages(final)
+                self._persist_conversation([final])
+                return final_text
 
             # 本轮工具调用处理完毕，循环继续（回到开头，将新的上下文送交 LLM 进行下一轮推理）。
 
@@ -906,7 +979,12 @@ class Agent:
         # 特殊处理：若工具声明了 wants_run_state=True（搜索类工具），则注入一个按 trace_id 键控的去重池（_run_state），用于跨调用共享已访问的 URL 或文件，避免重复抓取。
         # 该注入通过额外参数 _run_state 传递，不写入 ctx.args，因为 ctx.args 会被序列化用于审计，而去重池不可序列化。
         try:
-            if getattr(tool, "wants_run_state", False):
+            if getattr(tool, "async_execute", False):
+                # 异步工具（如 spawn）：在当前事件循环上直接 await——子 agent 与父
+                # 同循环，父被取消（Ctrl+C）时 CancelledError 沿 await 链级联传播，
+                # 整棵 agent 树一起终止（P0-2 根治），不再经 to_thread 留孤儿线程。
+                raw = await tool.aexecute(**ctx.args)
+            elif getattr(tool, "wants_run_state", False):
                 from paperflow.tools.search._common import get_run_state
                 raw = await asyncio.to_thread(
                     tool.execute, **ctx.args, _run_state=get_run_state(self._trace_id))
@@ -955,11 +1033,19 @@ class Agent:
                     return await self.confirm_callback(cr)
 
                 # 串行化确认（若提供了锁）
-                if confirm_lock is not None:
-                    async with confirm_lock:
+                try:
+                    if confirm_lock is not None:
+                        async with confirm_lock:
+                            confirmed = await _decide()
+                    else:
                         confirmed = await _decide()
-                else:
-                    confirmed = await _decide()
+                except asyncio.CancelledError:
+                    # 取消路径审计闭环（P0-3）：approval_requested 已发出但决策
+                    # 未落——显式结算为 cancelled 后再抛，审计不再出现「有 requested
+                    # 无 decided」的悬空；确认集合不加键（下次同路径仍会询问）。
+                    for mw in self.security_middleware:
+                        await mw.on_approval(ctx, "decided", approval_outcome="cancelled")
+                    raise
 
                 # 根据确认结果和是否有人工回调，标记决策类型
                 # 决策语义:确认通过 → user_confirmed;被拒时按是否有真实人工回调区分

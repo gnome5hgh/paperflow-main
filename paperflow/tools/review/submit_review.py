@@ -38,6 +38,9 @@ class SubmitReviewTool(Tool):
         "required": ["path", "verdict", "issues"],
     }
     risk_level = "low"                     # 只读格式化，无副作用
+    # 终止型工具（ADR 0013）：校验通过的提交即本 agent 任务终结，Agent.run 直接
+    # 结束 ReAct 循环——重复提交是成本事故（实测一次门禁重复提交 6 次）。
+    terminal = True
     # 审稿流目标是 scratch/note 草稿路径；execute 不读文件内容（只格式化提交字段），
     # 放开 scratch 根零安全影响（与 SuggestEditTool 同款，防真实 WorkspacePolicy 拦截）。
     allowed_roots = ["note", "scratch", "research"]
@@ -75,4 +78,6 @@ class SubmitReviewTool(Tool):
             for issue in issues:
                 if issue["severity"] == sev:
                     lines.append(f"- [{sev.upper()}] {issue['dimension']} | {issue['location']} | {issue['action']}")
-        return ToolResult(text="\n".join(lines))
+        # 终止标记：Agent.run 见 summary["terminal"] 即结束循环，裁决全文即最终回答
+        # （spawn 的 digest 提取依赖裁决全文，不能只回一句「已提交」）
+        return ToolResult(text="\n".join(lines), summary={"terminal": True})

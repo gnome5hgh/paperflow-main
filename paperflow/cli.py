@@ -161,7 +161,40 @@ def _wait_healthy(endpoints: list[tuple[str, str, int]],
     return [(n, h, p) for n, h, p in endpoints if not _port_open(h, p)]
 
 
+def _probe_app_layer(endpoints: list[tuple[str, str, int]]) -> list[str]:
+    """端口可达之后的应用层探活（真实使用测试 P1-4/P3-6 的应用侧互补）。
+
+    此前 bootstrap 只做 TCP 连通探测——容器「端口开了随即 Exited(1)」（etcd TSO
+    超时崩溃）与「半健康栈」都能通过预检，RAG 静默降级 3.5 小时无人知晓。
+    Milvus 用 pymilvus 语义级连接（list_collections），GROBID 用 /api/isalive。
+    任何异常只产出警告、绝不抛出——软依赖语义不变。
+
+    Returns:
+        警告文本列表（空 = 应用层全部健康）。
+    """
+    warnings: list[str] = []
+    for name, host, port in endpoints:
+        try:
+            if name == "Milvus":
+                from pymilvus import MilvusClient
+                client = MilvusClient(uri=f"http://{host}:{port}")
+                client.list_collections()
+                client.close()
+            elif name == "GROBID":
+                import httpx
+                r = httpx.get(f"http://{host}:{port}/api/isalive", timeout=5.0)
+                if r.status_code != 200 or r.text.strip().lower() != "true":
+                    raise RuntimeError(f"isalive 返回 {r.status_code}: {r.text[:50]}")
+        except Exception as e:
+            warnings.append(
+                f"{name} 端口可达但应用层探活失败（{e}）——服务可能已中途崩溃，"
+                f"RAG/PDF 解析将降级。建议：docker compose restart 后重启 paperflow；"
+                f"{_DEGRADE_NOTE}")
+    return warnings
+
+
 def _ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
+                     skip: bool = False,
                      wait_timeout_s: float = _WAIT_TIMEOUT_S,
                      poll_interval_s: float = _POLL_INTERVAL_S) -> list[str]:
     """
@@ -170,6 +203,7 @@ def _ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
     Args:
         config: 全局配置（读 milvus_uri / grobid_endpoint 两个端点）。
         is_tty: 是否交互终端——False（管道/CI/测试）直接跳过。
+        skip: 显式跳过开关（--skip-bootstrap flag，与环境变量等价）。
         notify: 进度回调（str → None），拉起/等待阶段逐条调用；None 静默。
         wait_timeout_s: 等待服务健康的总时长（默认覆盖 Milvus start_period 90s）。
         poll_interval_s: 端口轮询间隔。
@@ -178,7 +212,7 @@ def _ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
         警告文本列表（空 = 服务全部就绪或预检被跳过）。调用方负责呈现；
         本函数绝不抛异常——软依赖缺席不应阻塞 REPL 启动。
     """
-    if not is_tty or os.environ.get("PAPERFLOW_SKIP_BOOTSTRAP") == "1":
+    if not is_tty or skip or os.environ.get("PAPERFLOW_SKIP_BOOTSTRAP") == "1":
         return []
 
     endpoints = [
@@ -186,7 +220,7 @@ def _ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
         ("GROBID", *_host_port(config.grobid_endpoint)),
     ]
     if all(_port_open(h, p) for _, h, p in endpoints):
-        return []
+        return _probe_app_layer(endpoints)      # 端口在 → 应用层语义健康再确认
 
     if shutil.which("docker") is None:
         return [_NO_DOCKER_WARN]
@@ -202,22 +236,65 @@ def _ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
         notify(f"等待服务健康（最长 {wait_timeout_s:.0f}s）…")
 
     warnings = []
-    for name, host, port in _wait_healthy(endpoints, wait_timeout_s,
-                                          poll_interval_s):
+    not_ready = _wait_healthy(endpoints, wait_timeout_s, poll_interval_s)
+    for name, host, port in not_ready:
         w = f"{name} 服务未在 {wait_timeout_s:.0f}s 内就绪（{host}:{port}）；{_DEGRADE_NOTE}"
         if name == "GROBID":
             w += f"；{_GROBID_RUNBOOK_HINT}"
         warnings.append(w)
+    # 端口就绪的子集再做应用层探活（未就绪的不重复报）
+    ready = [(n, h, p) for n, h, p in endpoints if (n, h, p) not in not_ready]
+    warnings.extend(_probe_app_layer(ready))
     return warnings
 
 
-def main() -> None:
+def _select_resume_session(agent_manager: AgentManager, io) -> str | None:
+    """列出历史会话并让用户选择要恢复的会话（`--resume` 不带 id 时）。
+
+    Args:
+        agent_manager: 记忆服务层句柄（读 agent_state / messages 表）。
+        io: 输入适配器（读用户选择）。
+
+    Returns:
+        选中的 session_id；取消（空输入）或无历史会话时返回 None。
+
+    选择方式：输入菜单编号，或直接粘贴会话 id。非法输入返回 None 并打印原因。
+    """
+    sessions = agent_manager.list_sessions(limit=10)
+    if not sessions:
+        print("没有可恢复的历史会话。")
+        return None
+    print("历史会话（新→旧）：")
+    for i, s in enumerate(sessions, 1):
+        print(f"  {i}. [{s['created_at'][:19]}] {s['agent_id']}"
+              f"（{s['message_count']} 条消息）{s['preview']}")
+    try:
+        raw = io.read("输入编号恢复（回车取消）：").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if not raw:
+        return None
+    if raw.isdigit() and 1 <= int(raw) <= len(sessions):
+        return sessions[int(raw) - 1]["agent_id"]
+    if any(s["agent_id"] == raw for s in sessions):
+        return raw
+    print(f"无效选择：{raw}")
+    return None
+
+
+def main(argv: list[str] | None = None) -> None:
     """
     装配全部依赖并启动 REPL。
 
+    命令行参数（argparse，P2-5）：
+        --help / --version：用法与版本。
+        --resume [SESSION_ID]：恢复历史会话；不带 id 时列出历史会话供选择。
+        --skip-bootstrap：跳过依赖服务启动预检（等价 PAPERFLOW_SKIP_BOOTSTRAP=1）。
+    无参数行为与历史版本完全一致：装配后进入新会话 REPL。
+
     装配顺序（依赖关系）：
         1. 终端 IO 和渲染器（输入/输出适配）。
-        2. 会话 ID（用于记忆服务键控）。
+        2. 会话 ID（用于记忆服务键控；--resume 时复用已落盘会话）。
         3. 记忆服务层：DB → BlockManager → MessageManager → PassageManager → ArchiveManager → AgentManager。
         4. 嵌入模型（单例）注入 MessageManager/PassageManager。
         5. AgentManager 回填到 MessageManager（用于读取 AgentState）。
@@ -232,6 +309,28 @@ def main() -> None:
           因此创建顺序为：先建 AgentManager，再回填 MessageManager.agent_manager。
         - 记忆工具上下文需要 TitleExtractor，它依赖 GrobidClient 和 StructuredOutput。
     """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="paperflow",
+        description="paperFlow 学术研究工作流助手（交互式 REPL，自然语言即命令）")
+    parser.add_argument("--version", action="store_true",
+                        help="显示版本号并退出")
+    parser.add_argument("--resume", nargs="?", const="", default=None,
+                        metavar="SESSION_ID",
+                        help="恢复历史会话；不带 id 则列出历史会话供选择")
+    parser.add_argument("--skip-bootstrap", action="store_true",
+                        help="跳过依赖服务（Milvus/GROBID）启动预检")
+    args = parser.parse_args(argv)
+
+    if args.version:
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            print(version("paperflow"))
+        except PackageNotFoundError:
+            print("unknown（开发环境：见 pyproject.toml）")
+        return
+
     config = PaperFlowConfig.from_env()
     is_tty = sys.stdin.isatty()
     io = make_input_io(config)
@@ -239,11 +338,16 @@ def main() -> None:
     # 启动预检：依赖服务（Milvus/GROBID）未起时自动 docker compose 拉起（仅 TTY，
     # 管道/CI 跳过）。软依赖：任何失败只产出警告不阻塞——服务缺席时 RAG/PDF 降级。
     service_warnings = _ensure_services(
-        config, is_tty=is_tty,
+        config, is_tty=is_tty, skip=args.skip_bootstrap,
         notify=(lambda msg: console.print(msg, style="dim")) if console else None)
     for w in service_warnings:
         (console.print(w, style="yellow") if console else print(w))
-    llm = LLMClient(config.llm)
+    try:
+        llm = LLMClient(config.llm)
+    except RuntimeError as e:
+        # 未配置 API key（P2-4）：用户语言的红字提示，不再是裸 traceback
+        (console.print(f"[red]{e}[/red]") if console else print(f"错误：{e}"))
+        sys.exit(1)
     registry = AgentRegistry(config.agents_dir)
 
     # 终端装配：TTY → prompt_toolkit 输入 + rich Live 渲染；非 TTY（管道/CI/测试）→
@@ -256,14 +360,10 @@ def main() -> None:
         is_tty=is_tty, console=console,
     )
 
-    # 会话标识：本次进程启动即一个会话。AgentManager.create_agent 的 agent_id 与
-    # Agent.session_id 必须一致——记忆工具（SQL 按 agent_id 键控）与 Sleeptime
-    # 都挂在它下面，三者对不上会各自读到空数据。
-    session_id = uuid.uuid4().hex[:8]
-
-    # 记忆服务层组装：MemoryDB → managers → set_memory_context 绑定记忆工具
-    # 运行时上下文 → agent 状态。装配顺序即依赖方向：先 DB，再块/消息/段落管理，
-    # 再归档（依赖段落管理）、agent 管理（依赖块+消息）。
+    # 会话标识：本次进程启动即一个会话；--resume 时复用已落盘会话 id。
+    # AgentManager.create_agent 的 agent_id 与 Agent.session_id 必须一致——
+    # 记忆工具（SQL 按 agent_id 键控）与 Sleeptime 都挂在它下面，三者对不上
+    # 会各自读到空数据。
     memory_dir = Path(config.workspace) / "memory"
     db = MemoryDB(memory_dir / "memory.db")
     block_manager = GitEnabledBlockManager(db, memfs_dir=memory_dir)
@@ -273,10 +373,36 @@ def main() -> None:
     passage_manager = PassageManager(db, embedder=embedder)
     archive_manager = ArchiveManager(db, passage_manager)
     agent_manager = AgentManager(db, block_manager, message_manager)
+
+    resume_hint: str | None = None
+    if args.resume is not None:
+        if args.resume:
+            # 带 id：会话必须存在，否则给出友好列表后退出
+            try:
+                agent_manager.get_agent(args.resume)
+            except KeyError:
+                print(f"未找到会话 {args.resume}。可运行 `paperflow --resume` 查看历史会话列表。")
+                sys.exit(1)
+            session_id = args.resume
+        else:
+            session_id = _select_resume_session(agent_manager, io)
+            if session_id is None:
+                sys.exit(0)
+    else:
+        session_id = uuid.uuid4().hex[:8]
+        # 无参启动保持新会话；检测到历史会话时提示可恢复（不自动询问）
+        last = agent_manager.list_sessions(limit=1)
+        if last and last[0]["message_count"] > 0:
+            preview = last[0]["preview"] or "（无预览）"
+            resume_hint = f"检测到上次会话（{preview}），paperflow --resume 可恢复"
+
     # MessageManager 经 agent_manager 读 AgentState.message_ids（in-context 窗口），
     # 压缩后的摘要/尾部要跨轮回放——装配顺序上 agent_manager 后置，故在此回填。
     message_manager.agent_manager = agent_manager
-    agent_state = agent_manager.create_agent(session_id)
+    if args.resume is not None:
+        agent_state = agent_manager.get_agent(session_id)
+    else:
+        agent_state = agent_manager.create_agent(session_id)
 
     structured = StructuredOutput(llm)
 
@@ -314,6 +440,12 @@ def main() -> None:
 
     conversation = ConversationState()
 
+    # 确认中心：确认/提问的唯一消费者，跑在 REPL 主事件循环上（启动/收尾在
+    # _repl 内）。confirm/ask 回调经它跨线程桥接，弹框期间渲染抑制——并行多
+    # agent 的确认框不再被其他 agent 的渲染事件盖掉（真实使用测试 P0-1/P0-3）。
+    from paperflow.terminal.confirm_center import ConfirmCenter
+    center = ConfirmCenter(io, renderer)
+
     supervisor = Agent(
         llm=llm, agent_registry=registry, agent_type="supervisor",
         memory=agent_state.memory,
@@ -323,8 +455,8 @@ def main() -> None:
         structured=structured,
         security_middleware=middlewares,
         intent_enabled=True, intent_pipeline=pipeline, conversation=conversation,
-        confirm_callback=_make_confirm_callback(io, renderer),
-        ask_user_callback=message_manager.make_ask_recorder(_make_ask_callback(io, renderer),
+        confirm_callback=_make_confirm_callback(io, renderer, center),
+        ask_user_callback=message_manager.make_ask_recorder(_make_ask_callback(io, renderer, center),
                                                             session_id),
         session_id=session_id,
     )
@@ -335,4 +467,5 @@ def main() -> None:
 
     asyncio.run(_repl(supervisor, conversation,
                       io=io, renderer=renderer, sleeptime=sleeptime,
-                      config=config))
+                      config=config, resume_hint=resume_hint,
+                      confirm_center=center))

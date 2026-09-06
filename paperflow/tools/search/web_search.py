@@ -8,6 +8,7 @@
 from paperflow.core.security.network import SSRFError
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.tools.search._common import (
+    all_breakers_open,
     breaker_is_open,
     breaker_register_failure,
     breaker_register_success,
@@ -90,7 +91,8 @@ class WebSearchTool(Tool):
         """
         # 未知 source 直接报错并列合法源，不触网——LLM 可据此改传参
         if source not in _SOURCE_REGISTRY:
-            return ToolResult(text=f"未知搜索源: {source}，可用: {', '.join(_SOURCE_REGISTRY)}")
+            return ToolResult(text=f"未知搜索源: {source}，可用: {', '.join(_SOURCE_REGISTRY)}",
+                              is_error=True)
         # 兜底钳制:模型可能绕过参数 schema 传极端数量(如 1 或 100)，越界会让下游
         # reviewer 门禁超预算,故 clamp 到 [3,50] 保证结果规模可控。
         max_results = min(max(3, max_results), 50)
@@ -100,20 +102,30 @@ class WebSearchTool(Tool):
         cached = query_cache_get(ckey)
         if cached is not None:
             return ToolResult(text=f"（缓存）该 query 已搜索过，结果同上；如需不同结果请调整检索词。\n{cached}")
-        # 源熔断:连续失败达到阈值时本来源短期短路,提示改用其他源(由 LLM 决策)。
+        # 源熔断:连续失败达到阈值时本来源短期短路。全源熔断时注入强信号文本让
+        # 模型直接放弃(如实报告搜索不可用、不得编造检索结果)——三源各自独立短路
+        # 时模型只会逐源试错白烧 token(ADR 0013；实测全熔断后仍反复调 web_search)。
         if breaker_is_open(source):
-            return ToolResult(text=f"{source} 连续失败已熔断，本次任务请改用其他 source 或稍后重试")
+            if all_breakers_open():
+                return ToolResult(
+                    text="⚠️ 本轮所有搜索源（arxiv / semantic_scholar / openalex）均已连续失败熔断，"
+                         "搜索基础设施当前不可用。请停止调用 web_search，如实向父任务报告"
+                         "「外部搜索不可用」并按已有资料继续，不得编造检索结果。",
+                    is_error=True)
+            return ToolResult(
+                text=f"{source} 连续失败已熔断，本次任务请改用其他 source 或稍后重试",
+                is_error=True)
         client = self._get_client(source)
         try:
             papers = client.search(query, max_results, year_from, year_to)
             breaker_register_success(source)
         except SSRFError as e:
             # SSRF 违规是安全拦截而非源故障,不计数熔断;返回错误让 LLM 调整目标
-            return ToolResult(text=f"SSRF blocked: {e}")
+            return ToolResult(text=f"SSRF blocked: {e}", is_error=True)
         except Exception as e:
             # 网络超时/连接错误等真实源故障 → 记一次失败(熔断计数)
             breaker_register_failure(source)
-            return ToolResult(text=f"Tool error: {e}")
+            return ToolResult(text=f"Tool error: {e}", is_error=True)
         if _run_state is not None:
             # 结果入每轮共享去重池(add 内部按 DOI→arXiv ID→规范化标题四级键去重合并,
             # 跨源同论文只留一条)。_run_state 由执行器作为独立 kwarg 传入,不进审计参数。

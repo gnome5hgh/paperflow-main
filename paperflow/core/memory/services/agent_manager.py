@@ -153,3 +153,39 @@ class AgentManager:
         """
         st = self.get_agent(agent_id)
         st.memory = Memory(blocks=self.block_manager.list_blocks())
+    def list_sessions(self, limit: int = 10) -> list[dict]:
+        """列出历史会话（新→旧），供会话恢复菜单展示。
+
+        Args:
+            limit: 最多返回的会话数。
+
+        Returns:
+            dict 列表，每项含：
+                - agent_id: 会话标识（--resume 的目标 id）
+                - created_at: 会话创建时间
+                - message_count: 该会话落盘消息总数
+                - preview: 首条用户消息的截断预览（无消息则为空串）
+
+        说明：逐会话查询消息表（单用户场景会话数量少，无需 JOIN）。
+        """
+        from paperflow.core.memory.orm.message import count_messages
+
+        rows = [dict(r) for r in self.db.execute(
+            "SELECT agent_id, created_at FROM agent_state"
+            " ORDER BY created_at DESC, agent_id LIMIT ?", (limit,)).fetchall()]
+        sessions = []
+        for r in rows:
+            agent_id = r["agent_id"]
+            first_user = self.db.execute(
+                "SELECT content FROM messages WHERE agent_id=? AND role='user'"
+                " ORDER BY created_at, rowid LIMIT 1", (agent_id,)).fetchone()
+            preview = ""
+            if first_user is not None and first_user["content"]:
+                preview = str(first_user["content"]).strip().replace("\n", " ")[:60]
+            sessions.append({
+                "agent_id": agent_id,
+                "created_at": r["created_at"],
+                "message_count": count_messages(self.db, agent_id),
+                "preview": preview,
+            })
+        return sessions

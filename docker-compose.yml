@@ -16,11 +16,14 @@ services:
     volumes:
       - ./data/milvus/etcd:/etcd
     command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 30s
       timeout: 20s
       retries: 3
+      # 启动初期 TSO 尚未就绪会连续失败：给足宽限期，避免启动即被判 unhealthy
+      start_period: 15s
 
   minio:
     container_name: milvus-minio
@@ -33,11 +36,14 @@ services:
       # Docker 为未覆盖的 /data 自动创建匿名卷（落在 OrbStack volumes 目录的 hash 目录）。
       - ./data/milvus/minio:/data
     command: minio server /data --console-address ":9001"
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      # minio/minio 镜像不带 curl（用 curl 探活会永远 unhealthy），用镜像自带的 mc
+      test: ["CMD", "mc", "ready", "local"]
       interval: 30s
       timeout: 20s
       retries: 3
+      start_period: 10s
 
   standalone:
     container_name: milvus-standalone
@@ -57,15 +63,21 @@ services:
     ports:
       - "19530:19530"
       - "9091:9091"
+    restart: unless-stopped
     depends_on:
-      - etcd
-      - minio
+      # 顺序 + 健康双条件：standalone 必须等 etcd/minio 真正 healthy 才启动
+      # （此前列表形式不等健康，etcd TSO 超时导致 standalone 启动即 Exited(1)）
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   grobid:
     container_name: grobid
     image: lfoppiano/grobid:0.8.0
     ports:
       - "8070:8070"
+    restart: unless-stopped
     volumes:
       # 持久化 grobid-home（模型+配置），须先一次性从镜像复制内容到 ./data/grobid/grobid-home
       - ./data/grobid/grobid-home:/opt/grobid/grobid-home

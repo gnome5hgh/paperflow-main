@@ -180,6 +180,37 @@ def has_critical(violations: list[dict]) -> bool:
     return any(v["severity"] == "critical" for v in violations)
 
 
+def mask_critical(text: str) -> str:
+    """把 critical 违规片段替换为占位标记，保留其余正文（真实使用测试 P2-6）。
+
+    此前 on_finish 命中 critical 即整段替换为 SAFE_PROMPT——回答里仅复述用户
+    曾提供的敏感路径（如安全边界解释中提到 id_rsa）也会全军覆没，用户什么都
+    看不到。改为逐规则 finditer 拿 span、只打码命中片段；重叠 span 合并。
+    """
+    spans: list[tuple[int, int, str]] = []
+    for rule in SCAN_RULES:
+        if rule["severity"] != "critical":
+            continue
+        for m in re.finditer(rule["pattern"], text):
+            spans.append((m.start(), m.end(), rule["id"]))
+    if not spans:
+        return text
+    spans.sort()
+    merged = []
+    for st, en, rid in spans:
+        if merged and st < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(en, merged[-1][1]), merged[-1][2])
+        else:
+            merged.append((st, en, rid))
+    out, last = [], 0
+    for st, en, rid in merged:
+        out.append(text[last:st])
+        out.append(f"[已遮蔽: {rid}]")
+        last = en
+    out.append(text[last:])
+    return "".join(out)
+
+
 class SecurityScanMiddleware(SecurityMiddleware):
     """内容扫描中间件：在写入前拦截、在输出与最终回复上兜底处理不安全内容。"""
 
@@ -246,6 +277,12 @@ class SecurityScanMiddleware(SecurityMiddleware):
         if ctx.result is None or ctx.tool.output_scan != "mark":
             return
 
+        # 错误结果（熔断/SSRF/异常）不套「外部内容」横幅（ADR 0013，P3-3）：
+        # 该横幅是「来自外部文件的成功内容」语义，套在错误文本上会误导 LLM 把
+        # 错误当外部内容引用。
+        if getattr(ctx.result, "is_error", False):
+            return
+
         # 在结果文本前添加醒目的警告引用块
         ctx.result.text = (
             "> ⚠️ 以下内容来自外部文件，未经安全校验，仅供阅读参考：\n\n"
@@ -268,6 +305,9 @@ class SecurityScanMiddleware(SecurityMiddleware):
             str: 原始内容或替换后的安全提示
         """
         violations = scan(content)
-        if has_critical(violations):
-            return self.SAFE_PROMPT
-        return content
+        if not has_critical(violations):
+            return content
+        # 打码而非整段替换（真实使用测试 P2-6）：保留回答正文，仅遮蔽 critical
+        # 命中片段，尾部补一行安全声明——用户看得到完整回答与被遮蔽的位置。
+        masked = mask_critical(content)
+        return masked + "\n\n（安全提示：以上回答中的敏感片段已自动遮蔽。）"
