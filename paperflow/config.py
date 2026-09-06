@@ -95,6 +95,15 @@ class VisionLLMConfig:
     #: 单次视觉输出上限（逐图分析，几行结构化文本，2048 足够）
     max_tokens: int = 2048
 
+    #: LLM HTTP 连接超时（秒）——字段与 LLMConfig 对齐（LLMClient 按字段读 config）
+    timeout_connect: float = 10.0
+
+    #: LLM HTTP 读超时（秒）——逐图分析输出短，取文本 LLM 的一半
+    timeout_read: float = 120.0
+
+    #: 传输层自动重试次数
+    max_retries: int = 2
+
     #: 采样温度，0.0 确定性输出
     temperature: float = 0.0
 
