@@ -97,12 +97,15 @@ class FetchPdfTool(Tool):
         try:
             self._fetch(client, ssrf_check, url, dest)
         except _HttpxStatusError as e:
-            # HTTP 状态错误：4xx 属永久性失败（URL 错误/无权限），记入负缓存并
-            # 明示「勿重试」；5xx/网关类交给通用失败路径（可能瞬时）。
-            reason = f"HTTP {e.response.status_code}（永久性失败，勿重试）"
-            if _run_state is not None:
-                _run_state.failed_urls[url] = reason
-            return ToolResult(text=f"下载失败: {reason}——{e}", is_error=True)
+            status = e.response.status_code
+            if 400 <= status < 500:
+                # 4xx 属永久性失败（URL 不存在/无权限）：记入负缓存并明示「勿重试」
+                reason = f"HTTP {status}（永久性失败，勿重试）"
+                if _run_state is not None:
+                    _run_state.failed_urls[url] = reason
+                return ToolResult(text=f"下载失败: {reason}——{e}", is_error=True)
+            # 5xx/网关类是瞬时故障，交通用失败路径（允许重试）
+            return ToolResult(text=f"下载失败: {e}", is_error=True)
         except Exception as e:
             # 含 SSRF 拦截、重定向未解析完整、响应非 PDF、网络异常等情况。
             # 不记负缓存：这些可能是瞬时故障（网络抖动/服务暂不可用），允许重试；
