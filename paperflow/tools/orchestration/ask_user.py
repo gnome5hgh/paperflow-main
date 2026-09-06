@@ -35,4 +35,7 @@ class AskUserQuestionTool(Tool):
             return ToolResult(text="无法交互：当前环境未提供用户回调，请基于已有信息决定")
         # cb 由 CLI 注入,在 worker 线程里读 stdin(阻塞等待用户输入,不冻结事件循环)
         answer = cb(question)
+        if not answer.strip():
+            # 裸空串会诱发模型脑补（真实会话复验：把空回答编造成「任务被外部打断」）
+            return ToolResult(text="用户回答：（空/超时/中断，未给出回答——请基于已有信息自行决策，勿推测用户另有指示）")
         return ToolResult(text=f"用户回答：{answer}")

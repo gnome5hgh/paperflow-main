@@ -8,8 +8,17 @@ from paperflow.core.intent.schemas.route import Route
 from paperflow.core.intent.schemas.intent import IntentType
 
 
-def load_routes(path: Path = Path("data/intents/routes.yaml")) -> list[Route]:
+#: 仓库安装根下的 routes.yaml（默认路径不可用时回退：从非仓库目录启动、
+#: 或 cwd 相对路径不存在时——routes.yaml 是随仓库发布的知识资产，恒锚仓库根，
+#: 不随 PAPERFLOW_WORKSPACE 重定向）
+_INSTALL_ROOT_ROUTES = Path(__file__).resolve().parents[4] / "data" / "intents" / "routes.yaml"
+
+
+def load_routes(path: Path | None = None) -> list[Route]:
     """yaml → [Route(name, utterances, score_threshold)]。只读加载。
+
+    路径解析：显式传入用之；否则 cwd 相对 data/intents/routes.yaml 优先
+    （历史行为，仓库内启动零变化），不存在则回退仓库安装根副本。
 
     校验：① route 名必须在 IntentType 枚举中——否则 pipeline 的
     IntentType(choice.name) 会抛 ValueError 崩溃（routes.yaml 拼错/未同步枚举）
@@ -24,6 +33,9 @@ def load_routes(path: Path = Path("data/intents/routes.yaml")) -> list[Route]:
     Raises:
         ValueError: 当 route 名不在 IntentType 中，或 utterances 为空时。
     """
+    if path is None:
+        path = (Path("data/intents/routes.yaml") if Path("data/intents/routes.yaml").is_file()
+                else _INSTALL_ROOT_ROUTES)
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
@@ -83,6 +95,9 @@ def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, st
     Raises:
         ValueError: 当 eval 中的意图标签不在 IntentType 中时。
     """
+    if path is None:
+        path = (Path("data/intents/routes.yaml") if Path("data/intents/routes.yaml").is_file()
+                else _INSTALL_ROOT_ROUTES)
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     valid_names = {t.value for t in IntentType}

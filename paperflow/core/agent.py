@@ -84,6 +84,16 @@ def _intent_block(intent) -> str:
     return "INTENT: " + intent.model_dump_json(exclude={"clarification", "prev_intent"})
 
 
+#: 取消路径合成的 tool 消息（历史自愈）。自解释措辞：真实会话复验发现，裸的
+#: "cancelled" 会让模型把中断编造成「子任务失败/被外部打断」等错误叙述——
+#: 这里明确因果（用户主动 Ctrl+C）并禁止错误归因。
+_CANCELLED_TOOL_MSG = (
+    '{"decision":"cancelled",'
+    '"reason":"用户主动中断(Ctrl+C)，本轮工具调用作废。'
+    '这不是子任务失败或超时，请勿将中断归因于其他原因。"}'
+)
+
+
 def _schema_to_wire(m) -> Message:
     """schemas.Message（Recall 持久化视图）→ wire llm.Message（回放进 in-context 窗口）。
 
@@ -554,7 +564,7 @@ class Agent:
                 for tc in missing:
                     synth = Message(
                         role="tool",
-                        content='{"decision":"cancelled"}',
+                        content=_CANCELLED_TOOL_MSG,
                         tool_call_id=tc["id"],
                     )
                     new_ids.append(self.message_manager.add_message(self.session_id, synth).id)
@@ -819,7 +829,7 @@ class Agent:
                 # 调用其结果一并丢弃，按「本轮作废」语义统一记为 cancelled（文件
                 # 等盘上副作用不回滚）。
                 synth = [
-                    Message(role="tool", content='{"decision":"cancelled"}',
+                    Message(role="tool", content=_CANCELLED_TOOL_MSG,
                             tool_call_id=tc["id"])
                     for tc in response.tool_calls
                 ]
