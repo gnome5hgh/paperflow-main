@@ -104,7 +104,7 @@ class WebSearchTool(Tool):
             return ToolResult(text=f"（缓存）该 query 已搜索过，结果同上；如需不同结果请调整检索词。\n{cached}")
         # 源熔断:连续失败达到阈值时本来源短期短路。全源熔断时注入强信号文本让
         # 模型直接放弃(如实报告搜索不可用、不得编造检索结果)——三源各自独立短路
-        # 时模型只会逐源试错白烧 token(ADR 0013；实测全熔断后仍反复调 web_search)。
+        # 时模型只会逐源试错白烧 token（实测全熔断后仍反复调 web_search）。
         if breaker_is_open(source):
             if all_breakers_open():
                 return ToolResult(

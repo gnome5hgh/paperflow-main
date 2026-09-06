@@ -31,7 +31,7 @@ class SubmitDownloadReviewTool(Tool):
         "required": ["verdict", "items"],
     }
     risk_level = "low"                     # 只读格式化，无副作用（同 SubmitReviewTool）
-    # 终止型工具（ADR 0013）：同 SubmitReviewTool——提交成功即任务终结
+    # 终止型工具：同 SubmitReviewTool——提交成功即任务终结
     terminal = True
 
     def execute(self, verdict: str, items: list) -> ToolResult:
