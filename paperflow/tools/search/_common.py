@@ -25,10 +25,16 @@ def _norm_title(title: str) -> str:
 
 
 class SearchRunState:
-    """每轮自动去重论文池。pool: 去重键 → paper dict(同一键跨源合并)。"""
+    """每轮自动去重论文池。pool: 去重键 → paper dict(同一键跨源合并)。
+
+    failed_urls: 本任务内下载失败的 URL → 失败原因（负缓存）。真实会话复验
+    （2026-09-06）发现：对 404 这类永久性失败，模型会在单次任务内反复重试同一
+    URL（实测 19 次直到撞轮数上限）——fetch_pdf 据此拒绝重复尝试。
+    """
 
     def __init__(self) -> None:
         self.pool: dict[str, dict] = {}
+        self.failed_urls: dict[str, str] = {}
 
     @staticmethod
     def dedup_key(p: dict) -> str:

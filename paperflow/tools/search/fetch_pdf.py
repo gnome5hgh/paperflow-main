@@ -6,6 +6,7 @@
 校验 + %PDF magic bytes 校验，绝不把非 PDF 响应体写盘。
 """
 import httpx
+from httpx import HTTPStatusError as _HttpxStatusError
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -36,6 +37,8 @@ class FetchPdfTool(Tool):
     side_effects = ["network", "write_file"]
     #: 返回本地路径与状态，无外部内容——不需打 mark 横幅
     output_scan = None
+    #: 注入 per-run 状态：失败 URL 负缓存（同 URL 本任务内不重复尝试）
+    wants_run_state = True
 
     def __init__(self):
         super().__init__()
@@ -76,16 +79,35 @@ class FetchPdfTool(Tool):
             raise ValueError(f"响应不是 PDF（缺 %PDF magic bytes）: {url}")
         dest.write_bytes(r.content)
 
-    def execute(self, url: str, download_to: str) -> ToolResult:
-        """下载 PDF 到本地并触发索引热更新；失败返回可行动报错文本。"""
+    def execute(self, url: str, download_to: str,
+                _run_state=None) -> ToolResult:
+        """下载 PDF 到本地并触发索引热更新；失败返回可行动报错文本。
+
+        负缓存（真实会话复验发现）：同 URL 在本任务内失败过即拒绝重复调用——
+        404 等永久性失败重试只会白烧轮次（实测单任务内重复 19 次）。
+        """
+        if _run_state is not None and url in getattr(_run_state, "failed_urls", {}):
+            return ToolResult(
+                text=f"该 URL 本任务内已失败过（{_run_state.failed_urls[url]}），"
+                     "这是重复调用——不得重试，请如实报告下载失败并给出替代方案。",
+                is_error=True)
         client, ssrf_check = self._client or self._make_client()
         dest = Path(download_to)
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             self._fetch(client, ssrf_check, url, dest)
+        except _HttpxStatusError as e:
+            # HTTP 状态错误：4xx 属永久性失败（URL 错误/无权限），记入负缓存并
+            # 明示「勿重试」；5xx/网关类交给通用失败路径（可能瞬时）。
+            reason = f"HTTP {e.response.status_code}（永久性失败，勿重试）"
+            if _run_state is not None:
+                _run_state.failed_urls[url] = reason
+            return ToolResult(text=f"下载失败: {reason}——{e}", is_error=True)
         except Exception as e:
-            # 含 SSRF 拦截、重定向未解析完整、响应非 PDF 等情况
-            return ToolResult(text=f"下载失败: {e}")
+            # 含 SSRF 拦截、重定向未解析完整、响应非 PDF、网络异常等情况。
+            # 不记负缓存：这些可能是瞬时故障（网络抖动/服务暂不可用），允许重试；
+            # 只有 4xx 这类确定性失败才进负缓存。
+            return ToolResult(text=f"下载失败: {e}", is_error=True)
         note = ""
         try:
             get_rag_service().index_document(str(dest))   # 写盘后做索引热更新
