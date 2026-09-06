@@ -210,7 +210,8 @@ def _render_banner(model: str, workspace: str) -> str:
 
 async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 io: InputIO, renderer: StreamRenderer, sleeptime=None,
-                config: PaperFlowConfig | None = None) -> None:
+                config: PaperFlowConfig | None = None,
+                resume_hint: str | None = None) -> None:
     """
     REPL 主循环。
 
@@ -242,6 +243,8 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
     cfg = config or PaperFlowConfig.from_env()
     renderer.print(_render_banner(cfg.llm.model, _shorten_path(cfg.workspace)))
     renderer.print("\n  Tip: Type a research task to begin, or /exit to quit")
+    if resume_hint:
+        renderer.print(f"  {resume_hint}", style="dim")
     supervisor.stream_callback = renderer.on_event
     loop = asyncio.get_running_loop()
     can_sigint = (hasattr(loop, "add_signal_handler")
