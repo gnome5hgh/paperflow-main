@@ -19,6 +19,7 @@ from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.intent.conversation_state import (
     ConversationState, PendingClarification)
 from paperflow.terminal.diff import compute_diff, truncate_diff
+from paperflow.terminal.errors import translate_error
 from paperflow.terminal.io import InputIO
 from paperflow.terminal.render import StreamRenderer
 
@@ -330,7 +331,8 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 renderer.print("Task exceeded max turns. Please rephrase and retry.")
                 continue
             except Exception as e:
-                renderer.print(f"Error: {e}")
+                # 错误 → 用户语言翻译（真实使用测试 P3-2）：API 原文不直接当唯一呈现
+                renderer.print(translate_error(e), style="red")
                 continue
             finally:
                 if can_sigint:

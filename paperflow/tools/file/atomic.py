@@ -18,6 +18,12 @@ def atomic_write(path: Path, content: str) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".tmp-", suffix=".paperflow")
     try:
+        # mkstemp 默认 0600，与 Obsidian 同步盘/常见 0644 习惯不一致（真实使用
+        # 测试 P3-2；用户决策：默认 0644）。PAPERFLOW_FILE_MODE 可覆盖（如 0600）。
+        try:
+            os.chmod(tmp, int(os.environ.get("PAPERFLOW_FILE_MODE", "644"), 8))
+        except (OSError, ValueError):
+            pass  # 权限设置失败不阻断写入（如非 owner 文件系统）
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
             f.flush()

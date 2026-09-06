@@ -6,11 +6,19 @@ remove 按行首 `- {key}` 前缀匹配删行，找不到返回明确错误不�
 """
 __all__ = ["ensure_block", "append_line", "remove_line_by_key"]
 
+#: 建块时预置的 markdown 标题（真实使用测试 P3-2：unread_list.md 投影文件
+#: 首行直接是 frontmatter 列表，缺标题样式，人工阅读/手改体验差）。
+#: 标题进块值（方案 a）——MemFS 投影「正文==块值」的比对机制不被破坏。
+_BLOCK_TITLES = {
+    "unread_list": "# 待读清单",
+    "history_list": "# 浏览历史",
+}
+
 
 def ensure_block(bm, block_label: str) -> None:
-    """目标块缺失时创建（append 的自动建块入口）。"""
+    """目标块缺失时创建（append 的自动建块入口），清单类块预置标题行。"""
     if bm.get_block_by_label(block_label) is None:
-        bm.create_block(block_label, "")
+        bm.create_block(block_label, _BLOCK_TITLES.get(block_label, ""))
 
 
 def append_line(bm, block_label: str, line: str) -> str:
