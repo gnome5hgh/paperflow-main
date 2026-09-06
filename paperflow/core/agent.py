@@ -63,6 +63,17 @@ from paperflow.core.security.text import sanitize_surrogates
 #: 模块级 logger:意图管线的网络异常/解析失败降级时在此留痕,供运维排查而不是静默吞掉。
 logger = logging.getLogger(__name__)
 
+#: 同路径写/编辑串行锁注册表（键 = 目标文件路径）。真实会话复验发现：同一 message
+#: 并行发两个 edit_file 改同一文件时，双方都在对方决策前弹确认（「a」授权只覆盖
+#: 先到者），且并发读改写同一文件有丢写竞态——requires_confirm 的写类工具按路径
+#: 加锁串行化，后到者等前者完整走完确认+执行，授权键已入集合则不再弹框。
+_path_locks: dict[str, asyncio.Lock] = {}
+
+
+def _path_lock(path: str) -> asyncio.Lock:
+    """取目标路径的串行锁（无则建；setdefault 原子，多循环场景安全）。"""
+    return _path_locks.setdefault(path, asyncio.Lock())
+
 
 def _intent_block(intent) -> str:
     """把 IntentOutput 格式化为 INTENT 块（ReAct context 的强提示，非命令）。
@@ -955,14 +966,24 @@ class Agent:
         # 这种异常情况也会被记录在 ctx.args 中供审计。
         ctx.args = raw_args if isinstance(raw_args, dict) else {}
 
+        # 同路径写/编辑串行化（见 _path_locks 说明）：仅对需确认的写类工具生效，
+        # 锁覆盖「确认决策 + 执行」全程；其余工具零开销直通。
+        if getattr(tool, "requires_confirm", False) and isinstance(ctx.args.get("path"), str):
+            async with _path_lock(ctx.args["path"]):
+                return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
+        return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
+
+    async def _exec_tool_guarded(self, tool, ctx, _confirm_lock, turn) -> ToolResult:
+        """确认与执行段（_exec_tool 的 5-8 步）：同路径锁保护下运行。"""
+
         # 5. 处理未知工具（LLM 幻觉或 prompt injection）
         # 若工具不存在（tool is None），记录错误，执行 after 钩子，并返回可用工具列表，帮助 LLM 纠正。
         # 注意：此时不会执行 before 钩子（因为无工具可执行），但 after 钩子仍会运行，确保审计覆盖。
         if tool is None:
-            ctx.error = ValueError(f"Unknown tool: {name}")
+            ctx.error = ValueError(f"Unknown tool: {ctx.tool_name}")
             await self._run_after_hooks(ctx)
             return ToolResult(
-                text=f"Unknown tool: {name}. Available: {list(self.tools.keys())}"
+                text=f"Unknown tool: {ctx.tool_name}. Available: {list(self.tools.keys())}"
             )
 
         # 6. before 阶段：顺序执行所有安全中间件的 before 钩子。
