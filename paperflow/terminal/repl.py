@@ -281,6 +281,12 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
         read_failures = 0
         if raw.strip() == "/exit":
             break
+        if not raw.strip():
+            # 纯空白输入（真实使用测试 P3-2）：直接忽略，不进意图管线——
+            # 否则一次完整 LLM 调用后才被兜底拒绝，白烧 token。轻提示一次，
+            # 避免用户以为卡死。
+            renderer.print("（空输入已忽略）", style="dim")
+            continue
         p = conversation.pending_intent
         query, force = _merge_pending(conversation, raw)
         renderer.reset()                    # 每轮清残留：异常/澄清路径不消费 should_print
