@@ -7,8 +7,9 @@
 """
 import httpx
 from pathlib import Path
+from urllib.parse import urljoin
 
-from paperflow.core.security.network import resolve_url_target, validate_url_target
+from paperflow.core.security.network import validate_url_target
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.rag.services.rag_service import get_rag_service
 
@@ -48,17 +49,28 @@ class FetchPdfTool(Tool):
         return httpx.Client(transport=transport, timeout=30.0), (ssrf_check or validate_url_target)
 
     def _fetch(self, client, ssrf_check, url: str, dest: Path) -> None:
-        """逐跳 SSRF 校验重定向链，绝不把 3xx 或非 PDF 响应体写盘。
+        """真实 GET 上逐跳跟随重定向，每跳做 SSRF 校验，绝不把 3xx 或非 PDF 响应体写盘。
 
-        重定向链走 resolve_url_target 逐跳校验；残余 3xx（HEAD 与 GET 的重定向路径
-        可能分叉）或响应缺 %PDF magic bytes（服务器 200 但返回 HTML/登录墙）一律
-        抛错，宁可失败也不写脏数据。
+        背景（真实使用测试 P1-2）：此前先以 HEAD 预解析重定向链、再对最终 URL 做
+        禁跟随的 GET——Springer/DOI 直链的 HEAD 与 GET 重定向路径分叉（cookie/URL
+        编码差异），HEAD 预解析结果对 GET 无效，「重定向未解析完整」100% 失败。
+        现改为在真实 GET 上逐跳跟随：每一跳的目标 URL 都过 ssrf_check（校验的是
+        真实请求链，安全性不弱于 HEAD 方案），最多 5 跳防循环。响应缺 %PDF magic
+        bytes（服务器 200 但返回 HTML/登录墙）一律抛错，宁可失败也不写脏数据。
         """
-        resolved = resolve_url_target(url)      # HEAD 逐跳 SSRF 校验，返回最终 URL
-        ssrf_check(resolved)                    # 最终 URL 也校验（validate_url_target 要求公网 IP）
-        r = client.get(resolved, follow_redirects=False)
-        if r.is_redirect:
-            raise RuntimeError(f"重定向未解析完整: {url} -> {resolved}")
+        ssrf_check(url)                         # 起始 URL 校验（validate_url_target 要求公网 IP）
+        current = url
+        for _ in range(5):
+            r = client.get(current, follow_redirects=False)
+            if not r.is_redirect:
+                break
+            location = r.headers.get("location", "")
+            if not location:
+                raise RuntimeError(f"重定向缺 Location 头: {current}")
+            current = urljoin(current, location)
+            ssrf_check(current)                 # 每一跳都校验（防先跳合法站再跳私网）
+        else:
+            raise RuntimeError(f"重定向超过 5 跳: {url}")
         r.raise_for_status()                    # 4xx/5xx
         if not r.content.startswith(b"%PDF"):
             raise ValueError(f"响应不是 PDF（缺 %PDF magic bytes）: {url}")

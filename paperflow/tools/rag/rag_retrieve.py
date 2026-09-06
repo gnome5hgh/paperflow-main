@@ -51,9 +51,19 @@ class RagRetrieveTool(Tool):
         # 1. 获取 RAGService 单例（若已注入则使用注入的实例）。
         svc = self._service or get_rag_service()
 
-        # 2. 持锁调用检索器（保证与索引操作的互斥）。
-        with svc.lock:
-            chunks = svc.get_retriever().retrieve(query, top_k)
+        # 2. 持锁调用检索器（保证与索引操作的互斥）。Milvus 中途崩溃（真实使用
+        # 测试 P1-4：容器 Exited(1) 静默降级 3.5 小时无人知晓）时异常透传会变成
+        # 千篇一律的 Tool error——这里捕获并返回固定降级声明，让上层明确知道
+        # 「检索结果可能不完整/不可用」而非怀疑工具本身。
+        try:
+            with svc.lock:
+                chunks = svc.get_retriever().retrieve(query, top_k)
+        except Exception as e:
+            return ToolResult(
+                text="⚠️ 向量检索不可用（Milvus 异常），本次检索失败，结果可能不完整。"
+                     f"原始错误：{e}。可尝试 `docker compose up -d` 重启依赖服务后重试；"
+                     "或基于已有资料继续，如实说明检索不可用。",
+                is_error=True)
 
         # 3. 若无结果，返回结构化提示信息。
         if not chunks:

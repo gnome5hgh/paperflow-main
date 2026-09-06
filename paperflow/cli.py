@@ -161,6 +161,38 @@ def _wait_healthy(endpoints: list[tuple[str, str, int]],
     return [(n, h, p) for n, h, p in endpoints if not _port_open(h, p)]
 
 
+def _probe_app_layer(endpoints: list[tuple[str, str, int]]) -> list[str]:
+    """端口可达之后的应用层探活（真实使用测试 P1-4/P3-6 的应用侧互补）。
+
+    此前 bootstrap 只做 TCP 连通探测——容器「端口开了随即 Exited(1)」（etcd TSO
+    超时崩溃）与「半健康栈」都能通过预检，RAG 静默降级 3.5 小时无人知晓。
+    Milvus 用 pymilvus 语义级连接（list_collections），GROBID 用 /api/isalive。
+    任何异常只产出警告、绝不抛出——软依赖语义不变。
+
+    Returns:
+        警告文本列表（空 = 应用层全部健康）。
+    """
+    warnings: list[str] = []
+    for name, host, port in endpoints:
+        try:
+            if name == "Milvus":
+                from pymilvus import MilvusClient
+                client = MilvusClient(uri=f"http://{host}:{port}")
+                client.list_collections()
+                client.close()
+            elif name == "GROBID":
+                import httpx
+                r = httpx.get(f"http://{host}:{port}/api/isalive", timeout=5.0)
+                if r.status_code != 200 or r.text.strip().lower() != "true":
+                    raise RuntimeError(f"isalive 返回 {r.status_code}: {r.text[:50]}")
+        except Exception as e:
+            warnings.append(
+                f"{name} 端口可达但应用层探活失败（{e}）——服务可能已中途崩溃，"
+                f"RAG/PDF 解析将降级。建议：docker compose restart 后重启 paperflow；"
+                f"{_DEGRADE_NOTE}")
+    return warnings
+
+
 def _ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
                      skip: bool = False,
                      wait_timeout_s: float = _WAIT_TIMEOUT_S,
@@ -188,7 +220,7 @@ def _ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
         ("GROBID", *_host_port(config.grobid_endpoint)),
     ]
     if all(_port_open(h, p) for _, h, p in endpoints):
-        return []
+        return _probe_app_layer(endpoints)      # 端口在 → 应用层语义健康再确认
 
     if shutil.which("docker") is None:
         return [_NO_DOCKER_WARN]
@@ -204,12 +236,15 @@ def _ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
         notify(f"等待服务健康（最长 {wait_timeout_s:.0f}s）…")
 
     warnings = []
-    for name, host, port in _wait_healthy(endpoints, wait_timeout_s,
-                                          poll_interval_s):
+    not_ready = _wait_healthy(endpoints, wait_timeout_s, poll_interval_s)
+    for name, host, port in not_ready:
         w = f"{name} 服务未在 {wait_timeout_s:.0f}s 内就绪（{host}:{port}）；{_DEGRADE_NOTE}"
         if name == "GROBID":
             w += f"；{_GROBID_RUNBOOK_HINT}"
         warnings.append(w)
+    # 端口就绪的子集再做应用层探活（未就绪的不重复报）
+    ready = [(n, h, p) for n, h, p in endpoints if (n, h, p) not in not_ready]
+    warnings.extend(_probe_app_layer(ready))
     return warnings
 
 

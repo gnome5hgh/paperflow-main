@@ -26,9 +26,20 @@ class LookupCitationTool(Tool):
         r = self.manager.resolve(path or title or "")
         text = (f"status: {r.status}\n"
                 f"key: {r.key or '（无）'}\n"
+                f"in_bib: {r.in_bib}\n"
                 f"title: {r.title or '（未命中）'}\n"
                 f"year: {r.year or '（未知）'}\n"
                 f"note: {r.note_path or '无'}\n"
-                f"pdf: {r.pdf_path or '无'}\n"
-                f"（in_corpus → [来源:key§节]；missing → [⚠无支撑]，不编造）")
-        return ToolResult(text=text, summary={"status": r.status, "key": r.key})
+                f"pdf: {r.pdf_path or '无'}\n")
+        if r.status == "in_corpus" and r.in_bib:
+            text += "（已入库 → 可标 [来源:key§节]）"
+        elif r.status == "in_corpus":
+            # bib 真相校验（ADR：溯源链闭环）——key 现场生成、未落地 references.bib，
+            # 此前模型会无视降级提示直接声称「经 lookup_citation 确认」（P1-5 根因）
+            text += ("（⚠️ 该 key 尚未存在于 references.bib。引用标注前必须先 add_citation "
+                     "成功入库；无法入库则该引用降级标注为 [⚠未入库]，不得写「经 "
+                     "lookup_citation 确认」或 [来源:key§节]）")
+        else:
+            text += "（missing → [⚠无支撑]，不编造）"
+        return ToolResult(text=text,
+                          summary={"status": r.status, "key": r.key, "in_bib": r.in_bib})
