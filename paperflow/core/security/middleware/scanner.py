@@ -277,7 +277,7 @@ class SecurityScanMiddleware(SecurityMiddleware):
         if ctx.result is None or ctx.tool.output_scan != "mark":
             return
 
-        # 错误结果（熔断/SSRF/异常）不套「外部内容」横幅（ADR 0013，P3-3）：
+        # 错误结果（熔断/SSRF/异常）不套「外部内容」横幅（P3-3）：
         # 该横幅是「来自外部文件的成功内容」语义，套在错误文本上会误导 LLM 把
         # 错误当外部内容引用。
         if getattr(ctx.result, "is_error", False):

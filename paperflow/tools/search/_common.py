@@ -118,7 +118,7 @@ def breaker_is_open(source: str) -> bool:
 #: 三源清单（web_search 的合法 source 集合）：all_breakers_open 遍历用。
 #: 与 web_search._SOURCE_REGISTRY 的键保持一致（延迟导入避免循环依赖）。
 def all_breakers_open() -> bool:
-    """是否所有搜索源同时处于熔断状态（ADR 0013）。
+    """是否所有搜索源同时处于熔断状态。
 
     全源熔断意味着搜索基础设施本轮不可用——web_search 据此注入强信号文本让
     模型直接放弃外部验证、如实报告，而不是逐源试错白烧 token。

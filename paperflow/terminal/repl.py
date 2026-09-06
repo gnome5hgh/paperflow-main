@@ -124,7 +124,7 @@ def _make_confirm_callback(io: InputIO, renderer: StreamRenderer, center=None):
             return False
         if choice == "a":
             # 会话级授权：提前把 (tool, path) 记入已确认集合——同一文件本会话内
-            # 后续写/编辑不再询问（ADR 0012；对齐 Claude Code 编辑类批准仅会话有效）
+            # 后续写/编辑不再询问（对齐 Claude Code 编辑类批准仅会话有效）
             cr.confirm()
             return True
         return choice == "y"
