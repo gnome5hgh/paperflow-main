@@ -348,7 +348,11 @@ def main(argv: list[str] | None = None) -> None:
         # 未配置 API key（P2-4）：用户语言的红字提示，不再是裸 traceback
         (console.print(f"[red]{e}[/red]") if console else print(f"错误：{e}"))
         sys.exit(1)
-    registry = AgentRegistry(config.agents_dir)
+    # agents 插件目录：配置路径不存在时回退安装根（从非仓库目录启动也能找到插件；
+    # 与 _find_compose_dir 的「cwd 优先、安装根回退」同一模式）
+    agents_dir = (config.agents_dir if Path(config.agents_dir).is_dir()
+                  else str(Path(__file__).resolve().parents[1] / "agents"))
+    registry = AgentRegistry(agents_dir)
 
     # 终端装配：TTY → prompt_toolkit 输入 + rich Live 渲染；非 TTY（管道/CI/测试）→
     # FallbackIO + PlainBlock 降级。renderer 须在 supervisor 前构造——confirm_callback
@@ -422,7 +426,10 @@ def main(argv: list[str] | None = None) -> None:
     # 安全管道：四中间件（经验记忆中间件已移除——工具调用经验不再注入 prompt，
     # 改由 Sleeptime 后台整合进核心记忆块）。
     middlewares = [
-        AuditMiddleware(),
+        # 审计目录从 workspace 派生（真实会话复验发现：默认 cwd 相对导致
+        # PAPERFLOW_WORKSPACE 重定向时审计仍写进仓库 data/audit，与真实会话混写；
+        # 且 cwd 下的 data/audit 在 WorkspacePolicy 的 ws/audit 保护约定之外）
+        AuditMiddleware(audit_dir=str(Path(config.workspace) / "audit")),
         WorkspacePolicyMiddleware(workspace=config.workspace),
         SecurityScanMiddleware(),
         PolicyEngineMiddleware(max_risk=config.max_risk),

@@ -167,7 +167,15 @@ class ConfirmCenter:
                 self._renderer.print(f"（确认期间省略了 {dropped} 条渲染事件）", style="dim")
 
     async def _render_and_read_ask(self, question: str) -> str:
-        """渲染问题 → 抑制渲染 → 读开放答案（带看门狗，超时按空回答）。"""
+        """渲染问题 → 抑制渲染 → 读开放答案（带看门狗，超时按空回答）。
+
+        回答模式横幅（真实会话复验发现）：提问期间用户输入的新任务指令会被
+        当成回答吞掉——弹框前明确「此刻输入 = 对提问的回答」，降低误归属。
+        """
+        self._renderer.print(
+            "⌨️ [回答模式] 子任务向你提问——此刻输入将作为对下面问题的回答，"
+            "不是新任务；提交新任务请先回答完本轮再等 REPL 提示符。",
+            style="yellow")
         self._renderer.suspend()
         self._renderer.suppress(True)
         try:

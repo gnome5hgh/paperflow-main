@@ -166,7 +166,7 @@ class FallbackIO(InputIO):
         with _confirm_lock:
             print(question)
             try:
-                return input("> ").strip()
+                return input("[回答模式] > ").strip()
             except EOFError:
                 # EOF/Ctrl-D：返回空串而非抛错，上层（ask_user 回调）自行处理
                 return ""
@@ -368,7 +368,8 @@ class PromptToolkitIO(InputIO):
         with _confirm_lock:
             print(question)
             from prompt_toolkit.shortcuts import prompt as _pt_prompt
-            return _pt_prompt("> ")
+            # 前缀明示输入归属（配合回答模式横幅）：此刻输入是回答，不是新任务
+            return _pt_prompt("[回答模式] > ")
 
 
 def make_input_io(config) -> InputIO:
