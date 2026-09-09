@@ -30,7 +30,7 @@ class Chunk:
 class AcademicChunker:
     """两级切分：先按章节切，超长章节再按 token 数二次切分并带重叠。
 
-    bge-small-zh-v1.5 嵌入模型的最大输入长度正好是 512，顶满上限有被截断的风险，所以默认 max_tokens=512 留出余量；
+    嵌入模型（Qwen3-Embedding-0.6B 支持 32K 上下文）对分块长度没有硬约束，max_tokens=512 是检索粒度的选择：块太大召回噪声多、太小语义碎片化；
     overlap 让相邻块重叠一部分，重叠让跨块语义连贯。token 计数用 cl100k_base 近似即可，不必精确。
     """
 

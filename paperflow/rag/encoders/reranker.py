@@ -30,20 +30,23 @@ class Reranker(Protocol):
         ...
 
 
-class BgeReranker:
-    """基于 bge-reranker-v2-m3 的 Cross-encoder 重排模型。
+class SbertReranker:
+    """基于 Qwen3-Reranker-0.6B 的 Cross-encoder 重排模型。
 
     特性：
     - 惰性加载：模型在首次调用 __call__ 时才加载，避免启动时耗时。
     - CPU 推理：适合离线环境，不依赖 GPU。
-    - 使用 Cross-encoder 架构，对 query 和每个 doc 进行联合编码，精排质量优于双编码器（bi-encoder）。
+    - Cross-encoder 架构：对 query 和每个 doc 进行联合编码，精排质量优于双编码器（bi-encoder）。
+    - 千问重排模型底层是因果注意力 + last-token pooling 的生成式打分结构，
+      由 sentence-transformers（>=5.4）的包装层负责拼接内部模板并输出相关性分数，
+      调用方仍只需 `predict([[query, doc], ...])`。
     """
 
-    def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3"):
+    def __init__(self, model_name: str = "Qwen/Qwen3-Reranker-0.6B"):
         """记下模型名并预留惰性加载槽位（模型首次使用才真正加载）。
 
         Args:
-            model_name: 模型名称或本地路径，默认使用 BGE 官方重排模型。
+            model_name: 模型名称或本地路径，默认使用千问重排模型。
         """
         self._model_name = model_name
         self._model = None # 真实模型实例，首次调用时加载
@@ -62,7 +65,10 @@ class BgeReranker:
         global CrossEncoder
         if CrossEncoder is None:
             from sentence_transformers import CrossEncoder
-        self._model = CrossEncoder(self._model_name)
+        # activation_fn="sigmoid"：千问重排模型的原始输出是 yes/no 两个 token 的
+        # logit，包装层经 sigmoid 映射成 0–1 的相关性概率；分数越大越相关，
+        # 单调性与原始分数一致，下游排序逻辑无需感知激活函数差异。
+        self._model = CrossEncoder(self._model_name, activation_fn="sigmoid")
 
     def __call__(self, query: str, docs: list[str], top_k: int) -> list[int]:
         """对每个候选文档给出与 query 的相关性分数，按分数降序返回前 top_k 个文档的下标。
@@ -86,7 +92,7 @@ class BgeReranker:
             self._load()
 
         # 2. 构造输入对：`[[query, doc1], [query, doc2], ...]`，批量推理
-        # bge-reranker 的输入是 [query, doc] 对，输出每对的相关性分数
+        # 重排模型的输入是 [query, doc] 对，输出每对的相关性分数
         pairs = [[query, d] for d in docs]
 
         # 3. 调用模型的 `predict` 方法，得到每对的相关性分数（float 值，越高越相关）。

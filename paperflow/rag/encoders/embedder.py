@@ -1,6 +1,6 @@
-"""稠密向量编码器：统一的编码契约 + 真实的 bge 模型实现。
+"""稠密向量编码器：统一的编码契约 + 真实的 Qwen3 嵌入模型实现。
 
-真实的 bge 模型同时也被意图识别模块复用为它的向量编码实现；
+真实的千问嵌入模型同时也被意图识别模块复用为它的向量编码实现；
 测试用的确定性假编码器（FixedDenseEncoder / FakeEmbedder）已迁至 tests/conftest.py。
 """
 from pathlib import Path
@@ -48,7 +48,7 @@ def resolve_model_dir(workspace: str, model_name: str) -> str:
 
     Args:
         workspace: 工作区根目录路径。
-        model_name: 模型名，如 "BAAI/bge-small-zh-v1.5" 或本地路径。
+        model_name: 模型名，如 "Qwen/Qwen3-Embedding-0.6B" 或本地路径。
 
     Returns:
         str: 解析后的模型加载路径。
@@ -59,15 +59,21 @@ def resolve_model_dir(workspace: str, model_name: str) -> str:
     return str(local) if local.is_dir() else model_name
 
 
-class BgeEmbedder:
-    """真实的 bge 嵌入模型（基于 sentence-transformers），首次使用时才加载，CPU 推理。
+class SbertEmbedder:
+    """真实的千问嵌入模型（基于 sentence-transformers），首次使用时才加载，CPU 推理。
 
-    向量维度不写死，而是加载后从模型读取：不同 bge 型号维度不同
-    （如 bge-small-zh-v1.5 是 512），硬编码容易出错。
+    向量维度不写死，而是加载后从模型读取：不同型号维度不同
+    （如 Qwen3-Embedding-0.6B 是 1024），硬编码容易出错。
+
+    千问嵌入模型是指令感知模型（instruction aware）：官方建议检索场景下
+    只给 query 侧附加 task instruction（可再提升 1–5%）。当前 Embedder 协议
+    的 `__call__(texts)` 不区分 query 与 doc，调用方（索引器/路由器/检索器）
+    均不加 instruction，属可接受的简化；后续若需榨取精度，可扩展协议加
+    可选 instruction 参数。
     """
 
-    def __init__(self, model_name: str = "BAAI/bge-small-zh-v1.5"):
-        """初始化 BGE 嵌入器，此时不加载模型。
+    def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-0.6B"):
+        """初始化千问嵌入器，此时不加载模型。
         记下模型名并预留惰性加载槽位（模型首次使用才真正加载）。
 
         Args:
@@ -80,7 +86,7 @@ class BgeEmbedder:
     def _load(self) -> None:
         """首次使用才加载模型：惰性导入权重、临时关掉加载进度条、读取向量维度。
 
-        向量维度从模型读取而非硬编码（不同 bge 型号维度不同），新老版本
+        向量维度从模型读取而非硬编码（不同型号维度不同），新老版本
         sentence-transformers 的方法名不同，这里兼容两者。
         """
         # 使用模块级 `SentenceTransformer` 占位符实现真实类的惰性导入，支持测试时用 monkeypatch 替换为假实现。

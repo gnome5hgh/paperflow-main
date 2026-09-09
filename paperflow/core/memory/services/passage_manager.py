@@ -1,6 +1,6 @@
 """PassageManager：archival memory（长期知识）持久化 + 语义检索。
 
-embedder 复用 RAG 的 bge；None 时退化为 tags/时间过滤检索（无语义）。
+embedder 复用 RAG 的千问嵌入模型；None 时退化为 tags/时间过滤检索（无语义）。
 """
 from __future__ import annotations
 

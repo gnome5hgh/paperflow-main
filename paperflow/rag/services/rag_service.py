@@ -35,8 +35,8 @@ class RAGService:
         self.lock = threading.RLock()
 
         # ---- 惰性加载的组件槽位 ----
-        self._embedder = None          # 稠密向量编码器 (BgeEmbedder)
-        self._reranker = None          # 精排模型 (BgeReranker)
+        self._embedder = None          # 稠密向量编码器 (SbertEmbedder)
+        self._reranker = None          # 精排模型 (SbertReranker)
         self._grobid = None            # GROBID 客户端 (GrobidClient)
         self._pymupdf_parser = None    # PyMuPDF 备用解析器
         self._grobid_available = None  # 缓存 GROBID 可用性探测结果 (bool | None)
@@ -60,16 +60,16 @@ class RAGService:
         """惰性获取编码器：首次访问时构造并缓存。
 
         Returns:
-            BgeEmbedder: 编码器实例。
+            SbertEmbedder: 编码器实例。
         """
         # 双重检查加锁：先检查实例变量是否为空，为空则获取锁后再次检查，
         # 确保并发下只有一个线程执行构造，其余线程复用已构造的实例。
         if self._embedder is None:
             with self.lock:
                 if self._embedder is None:
-                    from paperflow.rag.encoders.embedder import BgeEmbedder, resolve_model_dir
+                    from paperflow.rag.encoders.embedder import SbertEmbedder, resolve_model_dir
                     # 模型路径本地优先（工作区 models 目录），否则改用官方模型名
-                    self._embedder = BgeEmbedder(resolve_model_dir(
+                    self._embedder = SbertEmbedder(resolve_model_dir(
                         self.config.workspace, self.config.embed_model))
         return self._embedder
 
@@ -77,15 +77,15 @@ class RAGService:
         """惰性获取重排模型：首次访问时构造并缓存。
 
         Returns:
-            BgeReranker: 重排器实例。
+            SbertReranker: 重排器实例。
         """
         if self._reranker is None:
             with self.lock:
                 if self._reranker is None:
-                    from paperflow.rag.encoders.reranker import BgeReranker
+                    from paperflow.rag.encoders.reranker import SbertReranker
                     from paperflow.rag.encoders.embedder import resolve_model_dir
                     # 模型路径本地优先（工作区 models 目录），否则改用官方模型名
-                    self._reranker = BgeReranker(resolve_model_dir(
+                    self._reranker = SbertReranker(resolve_model_dir(
                         self.config.workspace, self.config.rerank_model))
         return self._reranker
 

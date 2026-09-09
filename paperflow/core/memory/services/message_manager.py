@@ -2,7 +2,7 @@
 
 wire（core/llm.py::Message）→ schemas Message（补 id/created_at）→ messages 表。
 add_message 是全部消息持久化的唯一漏斗：在此清洗 surrogateescape 残留、
-并让 ask_recorder 捕获子 agent 的 Q&A。embedder 可选（复用 RAG bge 做语义
+并让 ask_recorder 捕获子 agent 的 Q&A。embedder 可选（复用 RAG 千问嵌入模型做语义
 检索）；None 时仅 SQL 检索。
 """
 from __future__ import annotations
@@ -80,7 +80,7 @@ class MessageManager:
                 以确定 in-context 窗口。
         """
         self.db = db
-        self.embedder = embedder          # 可选：bge embedder（语义检索）
+        self.embedder = embedder          # 可选：千问 embedder（语义检索）
         self.agent_manager = agent_manager  # 可选：读 AgentState.message_ids（in-context 窗口）
 
     def add_message(self, agent_id: str, wire: WireMessage) -> Message:
