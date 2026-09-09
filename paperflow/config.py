@@ -170,13 +170,13 @@ class PaperFlowConfig:
     #: Milvus 集合名（单一集合，对应迁移前的向量库 collection）
     milvus_collection: str = "paperflow"
 
-    #: 嵌入模型（真实 bge 落地，维度从模型读取不硬编码）
+    #: 嵌入模型（Qwen3-Embedding-0.6B，1024 维；维度从模型读取不硬编码）。
     #: 实际加载路径由 resolve_model_dir 解析：`<workspace>/models/<name>/` 存在则用本地
     #:（HF 权威权重存 data/models/，gitignored），否则回退此 HF 名（首次使用自动下载）。
-    embed_model: str = "BAAI/bge-small-zh-v1.5"
+    embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
 
-    #: 重排模型（Cross-encoder）
-    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    #: 重排模型（Cross-encoder，需 sentence-transformers>=5.4 原生包装）
+    rerank_model: str = "Qwen/Qwen3-Reranker-0.6B"
 
     #: 子 agent 超时覆盖表(按 agent 类型→秒数)。默认 120s 对完整流程太短,各值由
     #: audit 历史数据校准(2026-09-05,45 次 spawn 实测 + research_discovery 链路分解,

@@ -169,7 +169,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 |---|---|
 | `BlockManager` / `GitEnabledBlockManager` | 核心记忆块 CRUD。乐观锁（`version` 递增）+ 写前 `block_history` 快照（undo/redo）；`read_only` 块拒绝读写、块长上限 2000；`ensure_default_blocks()` 播种 persona/human（幂等，不覆盖用户已编辑块）。Git 变体每次变更同步 MemFS markdown 投影并 git commit |
 | `MessageManager` | 对话全量落盘（Recall）。`get_in_context_messages()` 按 `AgentState.message_ids` 回放窗口；`make_ask_recorder()` 把子 agent 的 ask 问答也落盘 |
-| `PassageManager` | 长期记忆（archival）：段落插入（可选 bge embedding）+ 语义检索，`delete_passage` 为软删除 |
+| `PassageManager` | 长期记忆（archival）：段落插入（可选千问 embedding）+ 语义检索，`delete_passage` 为软删除 |
 | `AgentManager` | Agent 生命周期：`AgentState` JSON 行（keyed by agent_id；message_ids = in-context 窗口） |
 | `ArchiveManager` | 可复用 Archive 段落集合（Letta 接口兼容，按需使用） |
 | `MemFS` | Git 托管的 markdown 投影层：`system/persona.md` + `system/human.md` + 其他块；自动生成 `memory_filesystem.md` 索引；`detect_file_changes()` 检测手工编辑回写块（双向同步） |
@@ -190,7 +190,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 1. **实体抽取**（`routing/entities.py`）— 确定性正则，抽 pdf_path/arxiv_id/doi/note_path/figure（只抽实体不判意图）
 2. **选项答复检测**（`routing/option_reply.py`）— 确定性正则识别纯编号菜单选择（`1`/`1.`/`选项2`/`第3个`）；命中直接产出 `MENU_SELECTION`（confidence=1.0），**不经路由/LLM 重分类**——对齐 Rasa 按钮 payload 惯例：选择动作的语义由发菜单的一方（supervisor 对照上轮菜单）承载，避免 0 阈值路由以微小分数误命中任意意图后误拦派发
 3. **追问判别**（`routing/followup.py`）— 词表启发式（那/这/呢/然后 + 无动词无数量词）；命中则继承上一轮意图并合并实体
-4. **混合路由**（`HybridRouter`）— 稠密（bge 嵌入）+ 稀疏（jieba BM25）融合（`dense × alpha + sparse × (1-alpha)`，生产 `alpha=0.5`（2026-09-05 标定实验选定：seed 固定后 0.3-0.6 实测 0.793/0.824/0.831/0.716））；`load_routes()` 读 `data/intents/routes.yaml`（唯一知识库源，含各意图示例句 + 标定阈值）；命中阈值则产出
+4. **混合路由**（`HybridRouter`）— 稠密（千问嵌入）+ 稀疏（jieba BM25）融合（`dense × alpha + sparse × (1-alpha)`，生产 `alpha=0.5`（2026-09-05 标定实验选定：seed 固定后 0.3-0.6 实测 0.793/0.824/0.831/0.716））；`load_routes()` 读 `data/intents/routes.yaml`（唯一知识库源，含各意图示例句 + 标定阈值）；命中阈值则产出
 5. **LLM 兜底** — 无路由命中时注入 top-3 近邻候选，经 `StructuredOutput` 分类，最终兜底 `IntentionResult(GENERAL, 0.0)`
 
 产出 `IntentOutput`（intent_type/confidence/entities/rewritten_query/source/steps/clarification）注入 ReAct head 的 `INTENT:` 块。`INTENT_META` 是意图元数据的**单一真相源**：15 个 `IntentType` 值分 3 类（business 业务派发 / dialogue 会话状态 / system 直接回答），`dispatch_allowed` 决定 spawn 门禁（chitchat/out_of_scope 等永远不能 spawn）。业务意图与子 agent 的对应：search_paper→searcher、generate_note→noter、ask_question/analyze_paper/manage_memory→qa-agent、research_discovery→researcher（选题发现）；`menu_selection`（选项答复，对话管理可派发）由 supervisor 对照上轮菜单转换成对应动作/派发，无法对应先 ask_user 确认。
@@ -201,12 +201,12 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 `paperflow/rag/` — 检索增强栈，`RAGService` 是唯一门面（indexer 与 retriever 是同一实例的两个视图，共享一把锁，增量写入对查询立即可见）。**懒加载单例**：`get_rag_service(config=None)`（双重检查加锁），所有重量组件（embedder/reranker/grobid/vector_store/bm25）首次访问才构造——`rag/__init__.py` 因此在包导入期不拉重型依赖。
 
-端到端链路：**解析**（`GrobidClient` HTTP 解析 TEI XML → `ParsedDoc`；GROBID 不可达时回退 `PyMuPDFParser` 字体启发式分节；按 (path, mtime, size) 缓存）→ **分块**（`AcademicChunker` 两段式：按节 → 长节按 token 512/overlap 64 重切，跳过参考文献；Chunk id = sha1(path:index) 幂等）→ **索引**（`RagIndexer` 增量扫描，state 文件 `index_state.json`；文档级「删旧建新」，Milvus upsert + BM25 同步；含一致性恢复）→ **检索**（`Retriever` 混合：BM25 top-30 + 向量 top-30 → RRF 融合 → `BgeReranker` 重排 → 有序 Chunks）。
+端到端链路：**解析**（`GrobidClient` HTTP 解析 TEI XML → `ParsedDoc`；GROBID 不可达时回退 `PyMuPDFParser` 字体启发式分节；按 (path, mtime, size) 缓存）→ **分块**（`AcademicChunker` 两段式：按节 → 长节按 token 512/overlap 64 重切，跳过参考文献；Chunk id = sha1(path:index) 幂等）→ **索引**（`RagIndexer` 增量扫描，state 文件 `index_state.json`；文档级「删旧建新」，Milvus upsert + BM25 同步；含一致性恢复）→ **检索**（`Retriever` 混合：BM25 top-30 + 向量 top-30 → RRF 融合 → `SbertReranker` 重排 → 有序 Chunks）。
 
 存储与模型：
 - `VectorStore` — Milvus（`pymilvus.MilvusClient`，单 collection `config.milvus_collection`="paperflow"）；`config.milvus_uri` 默认 `http://localhost:19530` 连 Standalone（`docker compose up -d` 起 etcd+minio+milvus，gRPC 19530 / 健康检查 9091，数据落 `data/milvus/`）；传本地文件路径则走 Milvus Lite 内嵌（单测用，无需常驻服务）
 - `Bm25Index` — rank_bm25 + jieba；是向量库文本的**投影**，启动时从 `store.all_documents()` 重建
-- `BgeEmbedder` — `BAAI/bge-small-zh-v1.5`（CPU，L2 归一化，维度从模型读取）；`BgeReranker` — `BAAI/bge-reranker-v2-m3` CrossEncoder
+- `SbertEmbedder` — `Qwen/Qwen3-Embedding-0.6B`（1024 维，CPU，L2 归一化，维度从模型读取）；`SbertReranker` — `Qwen/Qwen3-Reranker-0.6B` CrossEncoder（sentence-transformers≥5.4 原生包装，sigmoid 打分）
 - 加载路径 `resolve_model_dir(workspace, model_name)`：本地优先（`<workspace>/models/<name>/` 存在用本地），否则回退 HF 名自动下载
 
 消费方：`RagRetrieveTool`（`tools/rag/`，`rag_retrieve`）装配进 qa-agent 与 researcher（researcher 用它按课题盘点语料）；`ReadPdfTool` 用 `parse_pdf_cached`；`write_file`/`edit_file`/`fetch_pdf` 写盘后自动触发 `index_document`。embedder 单例与意图管线/记忆语义检索共享（`cli.py` `_rag_embedder`）。
@@ -277,7 +277,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | `sleeptime_enable` / `sleeptime_agent_frequency` | 后台整合开关 / 每 N 条新消息检查一次（默认 50） |
 | `vault_note_dir` / `vault_pdf_dir` / `vault_research_dir` | Obsidian vault 数据源根（个人绝对路径，**无默认值**，须经 .env/config.yaml） |
 | `grobid_endpoint` | GROBID 服务地址，默认 `http://localhost:8070` |
-| `milvus_uri` / `milvus_collection` / `embed_model` / `rerank_model` | Milvus 地址（默认 `http://localhost:19530`）/ 集合名（默认 `paperflow`）/ bge 嵌入 / 重排模型 |
+| `milvus_uri` / `milvus_collection` / `embed_model` / `rerank_model` | Milvus 地址（默认 `http://localhost:19530`）/ 集合名（默认 `paperflow`）/ 千问嵌入 / 重排模型 |
 | `citations_bib_path` | references.bib 路径（引用库真相源）。默认 `workspace/citations/references.bib`，可指向任意论文项目目录；空则回退默认 |
 | `agent_timeouts` | 子 agent 超时覆盖表（noter 900 / searcher 420 / reviewer 300 / researcher 1800 / qa-agent 180;audit 数据校准,见 spec 2026-09-05-agent-timeout-recalibration） |
 

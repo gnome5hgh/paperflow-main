@@ -39,7 +39,7 @@ from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.sleeptime import Sleeptime
 from paperflow.core.intent.pipeline import IntentPipeline
 from paperflow.core.intent.routing.router import HybridRouter
-from paperflow.rag.encoders.embedder import BgeEmbedder, resolve_model_dir
+from paperflow.rag.encoders.embedder import SbertEmbedder, resolve_model_dir
 from paperflow.rag.parsers.grobid_client import GrobidClient
 from paperflow.core.intent.routing.route_loader import load_routes
 from paperflow.terminal.io import make_input_io
@@ -47,15 +47,15 @@ from paperflow.terminal.render import make_renderer
 from paperflow.terminal.repl import (
     _repl, _make_print_fn, _make_confirm_callback, _make_ask_callback)
 
-#: 模块级 embedder 单例：bge 模型首次调用才加载（sentence-transformers 导入数秒），
+#: 模块级 embedder 单例：千问嵌入模型首次调用才加载（sentence-transformers 导入数秒），
 #: 进程内只加载一次。RAG/意图管线/记忆服务共享同一实例——各自 new 一个会让同一
 #: 模型权重被反复加载，启动变慢且占内存。
-_embedder: "BgeEmbedder | None" = None
+_embedder: "SbertEmbedder | None" = None
 
 
-def _rag_embedder(config: PaperFlowConfig) -> "BgeEmbedder":
+def _rag_embedder(config: PaperFlowConfig) -> "SbertEmbedder":
     """
-    懒加载共享的 BGE 嵌入模型单例。
+    懒加载共享的千问嵌入模型单例。
 
     用途：
         - MessageManager / PassageManager 的语义检索
@@ -66,7 +66,7 @@ def _rag_embedder(config: PaperFlowConfig) -> "BgeEmbedder":
         config: 全局配置，包含 workspace 和 embed_model 名称。
 
     Returns:
-        BgeEmbedder: 共享的嵌入模型实例。
+        SbertEmbedder: 共享的嵌入模型实例。
 
     Notes:
         - 模型路径优先本地：resolve_model_dir 在 workspace/models/<name> 查找，
@@ -75,7 +75,7 @@ def _rag_embedder(config: PaperFlowConfig) -> "BgeEmbedder":
     """
     global _embedder
     if _embedder is None:
-        _embedder = BgeEmbedder(
+        _embedder = SbertEmbedder(
             model_name=resolve_model_dir(config.workspace, config.embed_model))
     return _embedder
 
@@ -435,7 +435,7 @@ def main(argv: list[str] | None = None) -> None:
         PolicyEngineMiddleware(max_risk=config.max_risk),
     ]
 
-    # 意图管线:真实混合路由器 + LLM 兜底。bge 小模型经 _rag_embedder 共享单例
+    # 意图管线:真实混合路由器 + LLM 兜底。千问 0.6B 小模型经 _rag_embedder 共享单例
     # (首次加载需几秒,与记忆服务同模型同实例,不重复加载);各意图阈值已由标定脚本
     # 写回 routes.yaml——这里只读已标定阈值,不做训练或阈值搜索。alpha 是稠密/稀疏
     # 信号的融合权重,与标定脚本保持一致。模型路径本地优先
