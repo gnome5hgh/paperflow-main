@@ -65,10 +65,11 @@ class SbertReranker:
         global CrossEncoder
         if CrossEncoder is None:
             from sentence_transformers import CrossEncoder
-        # activation_fn="sigmoid"：千问重排模型的原始输出是 yes/no 两个 token 的
-        # logit，包装层经 sigmoid 映射成 0–1 的相关性概率；分数越大越相关，
-        # 单调性与原始分数一致，下游排序逻辑无需感知激活函数差异。
-        self._model = CrossEncoder(self._model_name, activation_fn="sigmoid")
+        # activation_fn 需传可调用对象而非字符串：千问重排模型的原始输出是
+        # yes/no 两个 token 的 logit，经 sigmoid 映射成 0–1 的相关性概率；
+        # 分数越大越相关，单调性与原始 logit 一致，下游排序逻辑无需感知差异。
+        from torch.nn.functional import sigmoid
+        self._model = CrossEncoder(self._model_name, activation_fn=sigmoid)
 
     def __call__(self, query: str, docs: list[str], top_k: int) -> list[int]:
         """对每个候选文档给出与 query 的相关性分数，按分数降序返回前 top_k 个文档的下标。
