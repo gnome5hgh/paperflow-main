@@ -1,6 +1,6 @@
 """reviewer 的工具装配：笔记审查、下载审查与研究计划审查三种模式的工具并集。
 
-三种模式由父 agent spawn 时注入的「当前模式」判别(SKILL 说明)：
+三种模式由父 agent spawn 时注入的「当前模式」判别(AGENT.md 说明)：
 - note_review → 笔记审查(5 维度审查 + 溯源核验 + submit_review 交裁决)
 - download_review → 下载审查(lookup_venue_rank 查等级 + submit_download_review)
 - plan_review → 研究计划审查(核验「论点 ← 笔记」映射 + 溯源标注 + 素材熔断诚实性,

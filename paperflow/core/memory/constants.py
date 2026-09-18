@@ -16,7 +16,7 @@ BASE_SLEEPTIME_TOOLS = {
 }
 
 #: 首启播种的核心记忆块默认文案（persona/human 缺失时由 ensure_default_blocks 创建）。
-#: persona 是助手身份——与 agents/*/SKILL.md 的静态 system_prompt 分离，agent 可经
+#: persona 是助手身份——与 agents/*/AGENT.md 的静态 system_prompt 分离，agent 可经
 #: memory_replace 自我演进；human 是引导占位，提醒主 agent 对话中积累用户画像。
 DEFAULT_PERSONA = (
     "你是 paperFlow，一个 LLM 驱动的学术研究工作流助手。"

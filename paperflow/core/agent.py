@@ -425,7 +425,7 @@ class Agent:
 
         此方法在每个 ReAct 轮次开始时被调用，用于组装 LLM 输入的前置部分（system 消息）。
         它按顺序拼接四块内容：
-            1. system: SKILL 系统提示（来自 agent 配置，定义角色与行为规范）
+            1. system: AGENT.md 系统提示（来自 agent 配置，定义角色与行为规范）
             2. system: 记忆块（Memory.compile() 输出的 persona/human + 文件树索引，若有）
             3. system: 意图识别块（若启用意图管线且管线成功，格式化为 system 消息的 INTENT 块）
             4. 末尾追加 user task。
@@ -443,7 +443,7 @@ class Agent:
             list[Message]: 头部消息列表。正常返回 [system_prompt, memory(可选), intent(可选), user_task]；
                 澄清早退时返回 [user(clarification)]，长度仅为 1 且 role 为 user。
         """
-        # ====== 第1层：SKILL 系统提示 ======
+        # ====== 第1层：AGENT.md 系统提示 ======
         head: list[Message] = [Message(role="system", content=self.system_prompt)]
 
         # ====== 第2层：记忆块（核心记忆 + 文件系统索引） ======
@@ -671,7 +671,7 @@ class Agent:
         # conversation.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 
-        # head:① SKILL ② Memory.compile()(system/ 记忆块) ③ INTENT 块,每轮重建
+        # head:① AGENT ② Memory.compile()(system/ 记忆块) ③ INTENT 块,每轮重建
         # 不进累积;末尾 user task。澄清早退时 head=[user 澄清文本] → 直接返回,
         # 不落盘不加载(澄清是"非任务轮",只走 CLI 层)。
         head = await self._build_head(task, force_dispatch=force_dispatch)
@@ -715,7 +715,7 @@ class Agent:
                 # 更新内存中的窗口的 _messages 列表
                 self._messages = new_window
 
-                # head[:-1]：System Prompt（SKILL 系统提示词）+ Memory Blocks（核心记忆块，如 persona/human）+ INTENT Block（意图识别结果，若启用）
+                # head[:-1]：System Prompt（AGENT.md 系统提示词）+ Memory Blocks（核心记忆块，如 persona/human）+ INTENT Block（意图识别结果，若启用）
                 # self._messages：从 MessageManager（SQL 持久化层）加载的该会话历史消息，加上本轮已产生的 assistant/tool 交互消息
                 # head[-1]：当前的 user task 消息
                 messages = list(head[:-1]) + self._messages + [head[-1]]

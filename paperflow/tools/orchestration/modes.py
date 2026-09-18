@@ -1,7 +1,7 @@
 """子 agent 运行模式枚举——spawn 派发的跨层契约（单一真相源）。
 
 父 agent spawn 子 agent 时经 mode 参数传入，spawn 注入 `当前模式：{mode}` 到子
-agent 的 system prompt；子 agent 的 SKILL 据此判别走哪个流程。值即 SKILL 里使用的
+agent 的 system prompt；子 agent 的 AGENT.md 据此判别走哪个流程。值即 AGENT.md 里使用的
 字符串字面量。只覆盖有确定性 ground truth 的父子对——qa-agent 自选不传（枚举不含
 其值，不传 mode 的 spawn 行为不受影响）。
 
@@ -14,7 +14,7 @@ __all__ = ["SubAgentMode", "SUB_AGENT_MODES"]
 
 
 class SubAgentMode(str, Enum):
-    """子 agent 运行模式。值 = SKILL 判别用的字符串，str 枚举与字面量等价。"""
+    """子 agent 运行模式。值 = AGENT.md 判别用的字符串，str 枚举与字面量等价。"""
 
     #: noter：笔记流程（generate_note 派发）
     NOTE = "note"
