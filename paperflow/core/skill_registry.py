@@ -14,7 +14,8 @@ Skill 是「注入给现有 agent 的领域知识/流程/轻量工具」，无�
 安全要点：
 - ``allowed_agents`` 空 = 所有子 agent 可见；supervisor 仅在显式列入时可见
 - skill 工具永不并入 supervisor（get_tools_for 代码级红线，延续权限最小化）
-- 校验 fail-fast：name 缺失/不等于目录名、description 为空、Tool 元数据非法
+- 校验 fail-fast：name 缺失/不等于目录名、description 为空、allowed_agents 为
+  标量（会被拆成单字符列表）、Tool 元数据非法
   → 启动即 ValueError（不安全配置不进系统）
 """
 
@@ -114,6 +115,14 @@ class SkillRegistry:
         description = meta.get("description", "")
         if not str(description).strip():
             raise ValueError(f"Skill '{name}': frontmatter 缺少必填字段 'description'")
+        raw_allowed = meta.get("allowed_agents")
+        if raw_allowed is not None and not isinstance(raw_allowed, list):
+            # fail-fast：标量会被 list() 静默拆成单字符列表（"noter" → n,o,t,e,r），
+            # 可见性白名单就此失效——拒绝配置而不是带病运行（与 name/description 同风格）。
+            raise ValueError(
+                f"Skill '{name}': 'allowed_agents' 必须是列表（得到标量 "
+                f"{type(raw_allowed).__name__}: {raw_allowed!r}；"
+                "单 agent 写法用 [noter]）")
         for ignored in _COMMUNITY_FIELDS:
             if ignored in meta:
                 logger.warning("Skill '%s': 忽略社区字段 '%s'（本项目不消费该字段）", name, ignored)
@@ -122,7 +131,7 @@ class SkillRegistry:
             description=str(description),
             instructions=body.strip(),
             metadata=meta.get("metadata") or {},
-            allowed_agents=list(meta.get("allowed_agents") or []),
+            allowed_agents=list(raw_allowed or []),
             tools=self._import_tools(skill_path / "tools.py"),
             path=skill_path,
         )

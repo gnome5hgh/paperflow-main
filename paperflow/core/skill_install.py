@@ -11,8 +11,10 @@ ClawHub 供应链教训的对应防线：
 """
 
 import hashlib
+import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -23,12 +25,22 @@ from pathlib import Path
 
 from paperflow.core.frontmatter import parse_frontmatter
 
+#: skill name 字符集（agentskills.io 规范）：小写字母/数字/连字符，不以连字符
+#: 开头结尾，无连续连字符。只做形态校验，不要求与来源目录名一致（见 describe_skill）。
+_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
 #: manifest 文件名（置于 skills/ 内，与被治理对象同处）
 MANIFEST_NAME = ".manifest.json"
 
 #: 压缩包安全上限：原始字节 / 解压后总字节 / 文件数（防填充炸弹与 zip 炸弹）
 _ARCHIVE_MAX_BYTES = 50 * 1024 * 1024
 _ARCHIVE_MAX_ENTRIES = 2000
+
+#: tarfile extractall 的 ``filter`` 形参能力探测（模块级算一次）：Python 3.11.0–3.11.3
+#: 尚无该参数（3.11.4+ 引入、3.12+ 默认 "data"），传不存在的 kwarg 会 TypeError。
+#: 不支持时保留原 extractall（与旧版行为一致；路径穿越防护由 3.12+ 默认 filter 补齐）。
+_TAR_FILTER_SUPPORTED = "filter" in inspect.signature(
+    tarfile.TarFile.extractall).parameters
 
 #: skill 发现深度：源根目录本身或其一级子目录（兼容单仓多 skill）
 
@@ -91,8 +103,10 @@ def fetch_source(source: str, target: Path) -> Path:
     """
     p = Path(source)
     if p.is_dir():
-        # 保留源目录名——skill 校验要求 frontmatter name == 目录名，落到固定名
-        # （如 "src"）会让单 skill 目录源必然失配；无名目录（"." / "/"）回退 "src"。
+        # 保留源目录名拷入临时目录：让单仓多 skill 的相对结构在发现阶段原样保留
+        #（发现按「根目录本身或一级子目录」找 SKILL.md，与目录名无关）；无名目录
+        #（"." / "/"）回退 "src"。安装落盘名由 frontmatter name 决定
+        #（dest = skills/<name>），与来源目录名是否同名无关。
         dest = target / (p.name or "src")
         shutil.copytree(p, dest, dirs_exist_ok=True)
         return dest
@@ -112,7 +126,11 @@ def fetch_source(source: str, target: Path) -> Path:
                     raise ValueError(f"压缩包超过文件数上限 {_ARCHIVE_MAX_ENTRIES}")
                 if sum(m.size for m in members) > _ARCHIVE_MAX_BYTES:
                     raise ValueError(f"压缩包解压后超过大小上限 {_ARCHIVE_MAX_BYTES} 字节")
-                tf.extractall(target, filter="data")
+                if _TAR_FILTER_SUPPORTED:
+                    tf.extractall(target, filter="data")
+                else:
+                    # Python 3.11.0–3.11.3 无 filter 形参：保留原 extractall
+                    tf.extractall(target)
         return target
     if _is_git_source(source):
         url = source
@@ -142,12 +160,22 @@ def discover_skill_dirs(root: Path) -> list[Path]:
 def describe_skill(path: Path) -> dict:
     """解析 skill 目录的 frontmatter，返回展示与校验所需信息。
 
-    :raises ValueError: 缺 name / name 与目录名不一致 / 缺 description（fail-fast）
+    name 只校验存在/非空 + agentskills.io 字符集（小写字母/数字/连字符，不以
+    连字符开头结尾，无连续连字符），**不要求与来源目录名一致**——git 仓库即包
+    （SKILL.md 在仓库根，克隆目录名是 "repo"）、GitHub Download ZIP（内层
+    xxx-main/）、flat zip（SKILL.md 在压缩包根，解到随机 tempdir）、`install .`
+    （Path('.').name == ''）等业界标准来源形态的目录名都不是 name。
+    「name == 目录名」不变量由 SkillRegistry 注册侧强校验（安装落盘用
+    frontmatter name 命名目标目录 dest = skills/<name>，装好的副本天然满足）。
+
+    :raises ValueError: 缺 name / name 字符集非法 / 缺 description（fail-fast）
     """
     meta, body = parse_frontmatter((path / "SKILL.md").read_text(encoding="utf-8"))
     name = meta.get("name")
-    if not name or name != path.name:
-        raise ValueError(f"skill 目录 '{path.name}' 的 name 缺失或与目录名不一致")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"skill 目录 '{path.name}' 的 name 缺失或非法（agentskills.io 规范："
+            "小写字母/数字/连字符，不以连字符开头结尾，无连续连字符）")
     if not str(meta.get("description", "")).strip():
         raise ValueError(f"skill '{name}' 缺少必填字段 'description'")
     has_code = (path / "tools.py").exists()
@@ -236,8 +264,13 @@ def install_skill(source: str, workspace: Path, *, assume_yes: bool = False,
                 for d in installed:
                     shutil.rmtree(d, ignore_errors=True)
                 raise
+            if allow_code and any(s["has_code"] for s in described):
+                print_fn("提示：捆绑 tools.py 的安全元数据将在下次启动时校验；"
+                         "若装坏了可运行 `paperflow skill uninstall <name>` 恢复。")
             return 0
-    except (ValueError, OSError, subprocess.CalledProcessError) as e:
+    except (ValueError, OSError, subprocess.CalledProcessError,
+            zipfile.BadZipFile, tarfile.TarError) as e:
+        # BadZipFile/TarError：损坏压缩包 → 友好 rc=1，不裸 traceback
         print_fn(f"安装失败: {e}")
         return 1
 

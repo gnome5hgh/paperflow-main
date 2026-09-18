@@ -68,6 +68,10 @@ class LoadSkillTool(Tool):
     def execute(self, name: str, resource: str | None = None) -> ToolResult:
         """加载 skill 正文（L2）或资源（L3），结果带来源头。
 
+        前置：本实例由装配层按 agent type 创建并 attach——``_parent`` 的生命周期
+        为该 agent 实例（不可跨 agent type 共享实例，否则可见性门控读到别的
+        agent 的类型）。
+
         :param name: skill 名称
         :param resource: 可选资源相对路径；缺省加载 SKILL.md 正文
         :returns: ToolResult；失败时 is_error=True + 用户语言错误文本

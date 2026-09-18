@@ -285,9 +285,12 @@ def _select_resume_session(agent_manager: AgentManager, io) -> str | None:
     return None
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int | None:
     """
     装配全部依赖并启动 REPL。
+
+    :returns: skill 子命令（install/list/uninstall）返回退出码 int；--version 与
+        无参 REPL 路径返回 None（REPL 正常退出即成功）。
 
     命令行参数（argparse，P2-5）：
         --help / --version：用法与版本。
@@ -390,7 +393,7 @@ def main(argv: list[str] | None = None) -> None:
     registry = AgentRegistry(agents_dir)
 
     # Skill 体系装配：两级扫描（包内 skills/ + <workspace>/skills/），skill 工具
-    # 并入各 agent 工具表、load_skill 共享实例注入全部 agent（AgentConfig 为共享
+    # 并入各 agent 工具表、load_skill 注入全部 agent（AgentConfig 为共享
     # 对象，此处就地修改即对后续所有 Agent 构造生效）。supervisor 的 skill 工具
     # 并入被 SkillRegistry.get_tools_for 代码级拒绝（权限最小化红线）。
     builtin_skills_dir = Path(__file__).resolve().parents[1] / "skills"
@@ -398,13 +401,19 @@ def main(argv: list[str] | None = None) -> None:
         builtin_dir=str(builtin_skills_dir) if builtin_skills_dir.is_dir() else None,
         workspace_dir=str(Path(config.workspace) / "skills"),
     )
-    load_skill_tool = LoadSkillTool(skill_registry)
     for _agent_type in registry.list_agents():
         _cfg = registry.get_config(_agent_type)
+        # LoadSkillTool 声明 needs_parent=True：Agent.__init__ 构造期即
+        # attach_agent(self) 回写 _parent。共享单个实例会被最后构造的 Agent 覆盖
+        # _parent——spawn 出子 agent 后 supervisor 门控读到的 agent_type 变成子
+        # agent，可见性双向失效（该拒的放行、该放的拒）。因此每个 agent type 一个
+        # 独立实例；同 type 的并发子 agent 共享同一实例是良性的——可见性门控只依赖
+        # agent_type，不依赖每实例状态（_parent 在构造后不再变更）。
+        _load_skill_tool = LoadSkillTool(skill_registry)
         _cfg.tools = merge_tools(
             ("agent", _cfg.tools),
             ("skill", skill_registry.get_tools_for(_agent_type)),
-            ("framework", [load_skill_tool]),
+            ("framework", [_load_skill_tool]),
         )
 
     # 终端装配：TTY → prompt_toolkit 输入 + rich Live 渲染；非 TTY（管道/CI/测试）→
