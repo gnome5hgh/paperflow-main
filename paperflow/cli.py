@@ -21,6 +21,9 @@ from rich.console import Console
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent
 from paperflow.core.agent_registry import AgentRegistry
+from paperflow.core.assembly import merge_tools
+from paperflow.core.skill_registry import SkillRegistry
+from paperflow.tools.skills.load_skill import LoadSkillTool
 from paperflow.core.llm import LLMClient
 from paperflow.core.intent.conversation_state import ConversationState
 from paperflow.core.security import (
@@ -282,14 +285,20 @@ def _select_resume_session(agent_manager: AgentManager, io) -> str | None:
     return None
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int | None:
     """
     装配全部依赖并启动 REPL。
+
+    :returns: skill 子命令（install/list/uninstall）返回退出码 int；--version 与
+        无参 REPL 路径返回 None（REPL 正常退出即成功）。
 
     命令行参数（argparse，P2-5）：
         --help / --version：用法与版本。
         --resume [SESSION_ID]：恢复历史会话；不带 id 时列出历史会话供选择。
         --skip-bootstrap：跳过依赖服务启动预检（等价 PAPERFLOW_SKIP_BOOTSTRAP=1）。
+        skill install/list/uninstall：skill 安装管理子命令（准入通道见
+        paperflow/core/skill_install.py）；分发后短路返回，返回值即退出码，
+        不进入下方 REPL 装配。
     无参数行为与历史版本完全一致：装配后进入新会话 REPL。
 
     装配顺序（依赖关系）：
@@ -321,6 +330,19 @@ def main(argv: list[str] | None = None) -> None:
                         help="恢复历史会话；不带 id 则列出历史会话供选择")
     parser.add_argument("--skip-bootstrap", action="store_true",
                         help="跳过依赖服务（Milvus/GROBID）启动预检")
+    # skill 管理子命令（Task 9）：install/list/uninstall——纯文件操作 + 本地扫描，
+    # 不依赖任何服务；分发在 --version 之后、装配之前短路返回（返回值即退出码）。
+    sub = parser.add_subparsers(dest="command")
+    skill_parser = sub.add_parser("skill", help="skill 安装管理（install/list/uninstall）")
+    skill_action = skill_parser.add_subparsers(dest="skill_action", required=True)
+    skill_inst = skill_action.add_parser("install", help="准入安装：本地目录 | git URL | zip/tar")
+    skill_inst.add_argument("source")
+    skill_inst.add_argument("-y", "--yes", action="store_true", help="跳过确认（仅纯指令 skill）")
+    skill_inst.add_argument("--allow-code", action="store_true",
+                            help="允许捆绑 tools.py 的 skill（安装前必须人工审读代码）")
+    skill_action.add_parser("list", help="列出内置与已装 skill")
+    skill_uni = skill_action.add_parser("uninstall", help="卸载 manifest 登记的 skill")
+    skill_uni.add_argument("name")
     args = parser.parse_args(argv)
 
     if args.version:
@@ -330,6 +352,22 @@ def main(argv: list[str] | None = None) -> None:
         except PackageNotFoundError:
             print("unknown（开发环境：见 pyproject.toml）")
         return
+
+    # skill 子命令分发：不启服务、不建 LLM、不进 REPL——skill 管理不需要任何服务。
+    if args.command == "skill":
+        from paperflow.core.skill_install import (
+            install_skill, list_skills_command, uninstall_skill)
+        config = PaperFlowConfig.from_env()
+        workspace = Path(config.workspace)
+        builtin_skills_dir = Path(__file__).resolve().parents[1] / "skills"
+        if args.skill_action == "install":
+            return install_skill(args.source, workspace,
+                                 assume_yes=args.yes, allow_code=args.allow_code)
+        if args.skill_action == "list":
+            return list_skills_command(
+                str(builtin_skills_dir) if builtin_skills_dir.is_dir() else None, workspace)
+        if args.skill_action == "uninstall":
+            return uninstall_skill(args.name, workspace)
 
     config = PaperFlowConfig.from_env()
     is_tty = sys.stdin.isatty()
@@ -353,6 +391,30 @@ def main(argv: list[str] | None = None) -> None:
     agents_dir = (config.agents_dir if Path(config.agents_dir).is_dir()
                   else str(Path(__file__).resolve().parents[1] / "agents"))
     registry = AgentRegistry(agents_dir)
+
+    # Skill 体系装配：两级扫描（包内 skills/ + <workspace>/skills/），skill 工具
+    # 并入各 agent 工具表、load_skill 注入全部 agent（AgentConfig 为共享
+    # 对象，此处就地修改即对后续所有 Agent 构造生效）。supervisor 的 skill 工具
+    # 并入被 SkillRegistry.get_tools_for 代码级拒绝（权限最小化红线）。
+    builtin_skills_dir = Path(__file__).resolve().parents[1] / "skills"
+    skill_registry = SkillRegistry(
+        builtin_dir=str(builtin_skills_dir) if builtin_skills_dir.is_dir() else None,
+        workspace_dir=str(Path(config.workspace) / "skills"),
+    )
+    for _agent_type in registry.list_agents():
+        _cfg = registry.get_config(_agent_type)
+        # LoadSkillTool 声明 needs_parent=True：Agent.__init__ 构造期即
+        # attach_agent(self) 回写 _parent。共享单个实例会被最后构造的 Agent 覆盖
+        # _parent——spawn 出子 agent 后 supervisor 门控读到的 agent_type 变成子
+        # agent，可见性双向失效（该拒的放行、该放的拒）。因此每个 agent type 一个
+        # 独立实例；同 type 的并发子 agent 共享同一实例是良性的——可见性门控只依赖
+        # agent_type，不依赖每实例状态（_parent 在构造后不再变更）。
+        _load_skill_tool = LoadSkillTool(skill_registry)
+        _cfg.tools = merge_tools(
+            ("agent", _cfg.tools),
+            ("skill", skill_registry.get_tools_for(_agent_type)),
+            ("framework", [_load_skill_tool]),
+        )
 
     # 终端装配：TTY → prompt_toolkit 输入 + rich Live 渲染；非 TTY（管道/CI/测试）→
     # FallbackIO + PlainBlock 降级。renderer 须在 supervisor 前构造——confirm_callback
@@ -455,6 +517,7 @@ def main(argv: list[str] | None = None) -> None:
 
     supervisor = Agent(
         llm=llm, agent_registry=registry, agent_type="supervisor",
+        skill_registry=skill_registry,
         memory=agent_state.memory,
         agent_manager=agent_manager, block_manager=block_manager,
         message_manager=message_manager, passage_manager=passage_manager,

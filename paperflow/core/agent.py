@@ -54,6 +54,7 @@ from paperflow.core.llm import (
     LLMClient, Message, _message_to_openai, tool_to_openai_schema,
 )
 from paperflow.core.agent_registry import AgentRegistry
+from paperflow.core.skill_registry import SkillRegistry
 from paperflow.core.security import (
     ToolContext, ConfirmRequired, SecurityError, SecurityMiddleware,
 )
@@ -219,6 +220,7 @@ class Agent:
         structured=None,            # StructuredOutput | None
         max_turns: int = 20,
         stream_callback: Callable[[StreamEvent], None] | None = None,
+        skill_registry: SkillRegistry | None = None,   # Skill 注册表；None = 无 skill 体系
     ):
         """
         :param llm: LLM 客户端实例
@@ -254,6 +256,9 @@ class Agent:
         :param max_turns: ReAct 循环最大轮数,防止死循环
         :param stream_callback: 流式事件回调(CLI 渲染器消费);None = 非流式路径
             ——run() 保持调 chat(),mock/无 UI 调用方零影响
+        :param skill_registry: Skill 注册表(可选)。提供时按 agent_type 计算 L1
+            <available_skills> 清单块注入 head(静态,每轮重建 head 时原样携带);
+            None 时整块省略零开销
         """
         # Pull 模式:从唯一注册表按类型加载完整配置
         config = agent_registry.get_config(agent_type)
@@ -269,6 +274,12 @@ class Agent:
 
         #: 注入 LLM 的系统提示词，定义本 Agent 的行为规范
         self.system_prompt = config.system_prompt
+
+        #: Skill 注册表（spawn 构造子 agent 时透传用）
+        self.skill_registry = skill_registry
+
+        #: L1 <available_skills> 清单块（静态；空串 = 无可见 skill，head 整块省略）
+        self.skills_block = skill_registry.skills_block(agent_type) if skill_registry else ""
 
         #: Agent 类型标识符
         self.agent_type = agent_type
@@ -424,11 +435,12 @@ class Agent:
         """构建本轮 ReAct 循环的头部消息列表（system 层 + 用户任务）。
 
         此方法在每个 ReAct 轮次开始时被调用，用于组装 LLM 输入的前置部分（system 消息）。
-        它按顺序拼接四块内容：
-            1. system: SKILL 系统提示（来自 agent 配置，定义角色与行为规范）
-            2. system: 记忆块（Memory.compile() 输出的 persona/human + 文件树索引，若有）
-            3. system: 意图识别块（若启用意图管线且管线成功，格式化为 system 消息的 INTENT 块）
-            4. 末尾追加 user task。
+        它按顺序拼接五块内容：
+            1. system: AGENT.md 系统提示（来自 agent 配置，定义角色与行为规范）
+            2. system: SKILLS 清单块（L1 渐进披露清单，若装配了 SkillRegistry 且有可见 skill）
+            3. system: 记忆块（Memory.compile() 输出的 persona/human + 文件树索引，若有）
+            4. system: 意图识别块（若启用意图管线且管线成功，格式化为 system 消息的 INTENT 块）
+            5. 末尾追加 user task。
 
         特殊路径：若意图管线返回了 clarification（澄清问题）且 force_dispatch=False，
         则直接返回 [user: clarification]（单元素列表），以此通知 run() 跳过 ReAct 循环，
@@ -440,19 +452,24 @@ class Agent:
                 继续执行 ReAct（用于跨轮澄清超过 2 轮后的强制终止路径）。
 
         Returns:
-            list[Message]: 头部消息列表。正常返回 [system_prompt, memory(可选), intent(可选), user_task]；
+            list[Message]: 头部消息列表。正常返回 [system_prompt, skills(可选), memory(可选), intent(可选), user_task]；
                 澄清早退时返回 [user(clarification)]，长度仅为 1 且 role 为 user。
         """
-        # ====== 第1层：SKILL 系统提示 ======
+        # ====== 第1层：AGENT.md 系统提示 ======
         head: list[Message] = [Message(role="system", content=self.system_prompt)]
 
-        # ====== 第2层：记忆块（核心记忆 + 文件系统索引） ======
+        # ====== 第2层：SKILLS 清单（L1 渐进披露，静态） ======
+        # skill 指令的约束力声明写在块内；无可见 skill 时 skills_block 为空串，整块省略
+        if self.skills_block:
+            head.append(Message(role="system", content=self.skills_block))
+
+        # ====== 第3层：记忆块（核心记忆 + 文件系统索引） ======
         if self.memory is not None:
             m = self._memory_message()
             if m is not None:
                 head.append(m)
 
-        # ====== 第3层：意图识别块 ======
+        # ====== 第4层：意图识别块 ======
         # 若管线返回 clarification，则表明当前输入意图不明确，需要向用户追问。
         if self.intent_enabled and self.intent_pipeline is not None and self.conversation is not None:
             try:
@@ -486,7 +503,7 @@ class Agent:
                 # 让 LLM 在执行任务时获得路由先验。
                 head.append(Message(role="system", content=_intent_block(intent)))
 
-        # ====== 第4层：用户任务 ======
+        # ====== 第5层：用户任务 ======
         # 最后将当前用户输入作为 user 消息追加。
         head.append(Message(role="user", content=task))
         return head
@@ -649,8 +666,9 @@ class Agent:
         ReAct 循环步骤::
 
             1. 生成本次 run 的 trace_id（trace_<12位hex）并清洗 task 的未配对 surrogate
-            2. 构建 head：① system_prompt → ② Memory.compile()（system/ 记忆块，
-               若有）→ ②b INTENT 块（intent_enabled 且管线成功时）→ user_task。
+            2. 构建 head：① AGENT（AGENT.md 系统提示）→ ② SKILLS 清单块（若装配
+               SkillRegistry 且有可见 skill）→ ③ Memory.compile()（system/ 记忆块，
+               若有）→ ④ INTENT 块（intent_enabled 且管线成功时）→ user_task。
                澄清早退直接返回澄清文本（不落盘、不进入 ReAct）
             3. 从 MessageManager 加载该会话的 in-context 消息（跨轮回放），当前
                user task 落盘；消息归属 self._messages（in-context 窗口）
@@ -671,7 +689,7 @@ class Agent:
         # conversation.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 
-        # head:① SKILL ② Memory.compile()(system/ 记忆块) ③ INTENT 块,每轮重建
+        # head:① AGENT ② SKILLS ③ Memory ④ INTENT 块,每轮重建
         # 不进累积;末尾 user task。澄清早退时 head=[user 澄清文本] → 直接返回,
         # 不落盘不加载(澄清是"非任务轮",只走 CLI 层)。
         head = await self._build_head(task, force_dispatch=force_dispatch)
@@ -695,7 +713,7 @@ class Agent:
             # (head 是本地列表,_refresh_head_memory 就地替换记忆消息)。
             self._refresh_head_memory(head)
 
-            #: LLM 输入 = head 前段(system/memory/INTENT) + in-context 回放历史 +
+            #: LLM 输入 = head 前段(AGENT/SKILLS/memory/INTENT) + in-context 回放历史 +
             #: 末尾当前 user task(恒末位——否则 LLM 会把回放历史里的旧任务误当当前任务)。
             messages = list(head[:-1]) + self._messages + [head[-1]]
 
@@ -715,7 +733,7 @@ class Agent:
                 # 更新内存中的窗口的 _messages 列表
                 self._messages = new_window
 
-                # head[:-1]：System Prompt（SKILL 系统提示词）+ Memory Blocks（核心记忆块，如 persona/human）+ INTENT Block（意图识别结果，若启用）
+                # head[:-1]：① AGENT（AGENT.md 系统提示）② SKILLS 清单块（若有可见 skill）③ Memory Blocks（核心记忆块，如 persona/human）④ INTENT Block（意图识别结果，若启用）
                 # self._messages：从 MessageManager（SQL 持久化层）加载的该会话历史消息，加上本轮已产生的 assistant/tool 交互消息
                 # head[-1]：当前的 user task 消息
                 messages = list(head[:-1]) + self._messages + [head[-1]]

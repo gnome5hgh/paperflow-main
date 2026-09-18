@@ -5,24 +5,22 @@ Agent 注册表 —— 扫描 agents/ 目录,统一加载配置和工具。
 这是 paperFlow 插件体系的唯一入口。系统启动时扫描 ``agents/`` 下的每个子目录,
 同时加载两份文件:
 
-- ``SKILL.md``(YAML frontmatter + Markdown body)→ 配置元数据 + system prompt
+- ``AGENT.md``(YAML frontmatter + Markdown body)→ 配置元数据 + system prompt
 - ``tools.py``(模块级 ``TOOLS`` 列表)→ Tool 实例
 
 设计要点:
 
 - **单一注册表**:一个类同时解析配置和导入工具,避免两套注册表数据不同步
-- **权限最小化**:``allowed_agents`` 限制哪些 agent 类型可以加载特权 Skill
+- **权限最小化**:``allowed_agents`` 限制哪些 agent 类型可以加载特权 Agent 定义捆绑的 Tool
 - **Spawn 控制**:``allowed_spawns`` 声明本 agent 能 spawn 哪些子 agent
 """
 
 import importlib.util
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
-
-from paperflow.core.tool import RISK_LEVELS, SIDE_EFFECTS, Tool
+from paperflow.core.frontmatter import parse_frontmatter
+from paperflow.core.tool import Tool, validate_tool
 
 
 @dataclass
@@ -32,12 +30,12 @@ class AgentConfig:
 
     字段来源::
 
-        name            ← SKILL.md frontmatter "name" 或目录名
-        description     ← SKILL.md frontmatter "description"
-        system_prompt   ← SKILL.md 正文（frontmatter 后的 Markdown）
-        allowed_agents  ← SKILL.md frontmatter "allowed_agents"
-                          空列表 = 公开，任何 agent 可加载此 Skill 的 Tool
-        allowed_spawns  ← SKILL.md frontmatter "allowed_spawns"
+        name            ← AGENT.md frontmatter "name" 或目录名
+        description     ← AGENT.md frontmatter "description"
+        system_prompt   ← AGENT.md 正文（frontmatter 后的 Markdown）
+        allowed_agents  ← AGENT.md frontmatter "allowed_agents"
+                          空列表 = 公开，任何 agent 可加载其 Tool
+        allowed_spawns  ← AGENT.md frontmatter "allowed_spawns"
                           空列表 = 不能 spawn 任何 SubAgent
         tools           ← tools.py 模块级 TOOLS 列表
     """
@@ -69,12 +67,12 @@ class AgentRegistry:
 
         registry = AgentRegistry("agents")
         config = registry.get_config("searcher")
-        print(config.system_prompt)   # 从 SKILL.md 正文加载
+        print(config.system_prompt)   # 从 AGENT.md 正文加载
         print(config.tools)           # 从 tools.py TOOLS 列表加载
 
     扫描逻辑：
         遍历 ``agents_dir`` 下所有子目录
-        → 跳过无 SKILL.md 的目录
+        → 跳过无 AGENT.md 的目录
         → 解析 YAML frontmatter + Markdown body
         → importlib 动态加载 tools.py，读取 TOOLS 列表
         → 组装 AgentConfig 存入内部字典
@@ -99,7 +97,7 @@ class AgentRegistry:
         """
         遍历 agents_dir 下所有子目录，发现并加载 Agent。
 
-        每个子目录需包含 SKILL.md（配置 + prompt），
+        每个子目录需包含 AGENT.md（配置 + prompt），
         可选包含 tools.py（Tool 实例）。
         目录按名称排序以确保加载顺序可预测。
 
@@ -115,13 +113,13 @@ class AgentRegistry:
             if not agent_path.is_dir():
                 continue
 
-            # SKILL.md 是 Agent 的必需文件，缺少则跳过该目录
-            skill_md = agent_path / "SKILL.md"
-            if not skill_md.exists():
+            # AGENT.md 是 Agent 的必需文件，缺少则跳过该目录
+            agent_md = agent_path / "AGENT.md"
+            if not agent_md.exists():
                 continue
 
             # 解析 YAML frontmatter（元数据）+ Markdown body（system_prompt）
-            meta, body = self._parse_skill_md(skill_md)
+            meta, body = self._parse_agent_md(agent_md)
 
             # 目录名作为 agent_type；如 frontmatter 指定 name 则覆盖
             name = meta.get("name", agent_path.name)
@@ -140,11 +138,11 @@ class AgentRegistry:
                 tools=tools,
             )
 
-    def _parse_skill_md(self, path: Path) -> tuple[dict, str]:
+    def _parse_agent_md(self, path: Path) -> tuple[dict, str]:
         """
-        解析 SKILL.md 文件，分离 YAML frontmatter 和 Markdown body。
+        解析 AGENT.md 文件，分离 YAML frontmatter 和 Markdown body（解析实现在 core/frontmatter.py 共享）。
 
-        SKILL.md 格式::
+        AGENT.md 格式::
 
             ---
             name: searcher
@@ -157,21 +155,11 @@ class AgentRegistry:
 
             这里是 Markdown 正文，作为 system prompt 注入 LLM。
 
-        :param path: SKILL.md 文件路径
+        :param path: AGENT.md 文件路径
         :returns: (frontmatter 字典, body 文本)
         :注意: 若文件开头没有 `---` 标记，则 frontmatter 为空字典，整个文件作为 body。
         """
-        text = path.read_text(encoding="utf-8")
-
-        # 匹配 ``---\n...\n---\n...`` 的正则（DOTALL 让 . 匹配换行符）
-        frontmatter = {}
-        body = text
-        m = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", text, re.DOTALL)
-        if m:
-            # 安全加载 YAML（safe_load 只解析基本类型，不执行任意代码）
-            frontmatter = yaml.safe_load(m.group(1)) or {}
-            body = m.group(2).strip()
-        return frontmatter, body
+        return parse_frontmatter(path.read_text(encoding="utf-8"))
 
     def _import_tools(self, tools_path: Path) -> list[Tool]:
         """
@@ -212,34 +200,8 @@ class AgentRegistry:
 
     @staticmethod
     def _validate_tool(tool) -> None:
-        """
-        加载时校验 Tool 的安全元数据字段，非法值立即抛 ValueError。
-
-        校验点(安全中间件的前置防线):
-        - ``risk_level`` ∈ RISK_LEVELS
-        - ``side_effects`` 每个值 ∈ SIDE_EFFECTS
-        - ``output_scan`` ∈ (None, "mark")
-
-        :param tool: 待校验的 Tool 实例
-        :raises ValueError: 任一字段值非法时抛出，携带工具名和合法值列表。
-                            此校验在 AgentRegistry 构造时执行，确保不安全配置不会被载入系统。
-        """
-        if tool.risk_level not in RISK_LEVELS:
-            raise ValueError(
-                f"Tool '{tool.name}': 非法 risk_level '{tool.risk_level}'，"
-                f"合法值: {sorted(RISK_LEVELS)}"
-            )
-        invalid_effects = [s for s in tool.side_effects if s not in SIDE_EFFECTS]
-        if invalid_effects:
-            raise ValueError(
-                f"Tool '{tool.name}': 非法 side_effects: {invalid_effects}，"
-                f"合法值: {sorted(SIDE_EFFECTS)}"
-            )
-        if tool.output_scan not in (None, "mark"):
-            raise ValueError(
-                f"Tool '{tool.name}': 非法 output_scan '{tool.output_scan}'，"
-                f"合法值: None / 'mark'"
-            )
+        """委托模块级 validate_tool（与 SkillRegistry 共用同一份校验）。"""
+        validate_tool(tool)
 
     def get_config(self, agent_type: str) -> AgentConfig:
         """

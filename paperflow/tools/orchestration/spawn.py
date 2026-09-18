@@ -130,7 +130,7 @@ def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
 
 
 #: spawn 去重注册表:session_id -> {任务指纹: {"state": "running"|"done", "result", "started_at"}}
-#: 同会话同任务防重复派发的机械安全网(主防线是 SKILL 里"同一意图不重复 spawn")。
+#: 同会话同任务防重复派发的机械安全网(主防线是 AGENT.md 里"同一意图不重复 spawn")。
 #: 键为 session_id,去重只在同一会话内生效,跨会话互不影响。指纹是纯文本的
 #: (sha256 规范化文本,零 I/O);done 结果能否复用由 _task_has_path 门控:
 #: 无路径任务(纯文本,世界不变)→ done 在窗口内可复用;有路径任务(引用真实文件,
@@ -395,7 +395,7 @@ class SpawnSubAgentTool(Tool):
                                     summary=f"未知 mode: {mode}，合法值: {sorted(SUB_AGENT_MODES)}")
             return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
         # 意图派发门禁：dispatch_allowed=False 的意图拒绝 spawn（代码级确定性兜底，
-        # 不依赖 LLM 遵循 SKILL）。非派发意图=陈述方向/切换/系统类——直接回复或记忆
+        # 不依赖 LLM 遵循 AGENT.md）。非派发意图=陈述方向/切换/系统类——直接回复或记忆
         # 操作，绝不派发领域 agent。refine_query 放行（它是重派入口）。last_intent
         # 为 None（管线降级）时放行，不改变现状。
         # steps 例外：LLM 兜底产出 GENERAL + 复合意图拆分（steps 非空）时放行——
@@ -458,6 +458,7 @@ class SpawnSubAgentTool(Tool):
             parent = self._parent
             child = Agent(
                 llm=parent.llm, agent_registry=parent.agent_registry,
+                skill_registry=getattr(parent, "skill_registry", None),
                 agent_type=agent_type, security_middleware=parent.security_middleware,
                 session_id=parent.session_id, confirm_callback=parent.confirm_callback,
                 ask_user_callback=parent.ask_user_callback,
