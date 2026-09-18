@@ -458,6 +458,7 @@ class SpawnSubAgentTool(Tool):
             parent = self._parent
             child = Agent(
                 llm=parent.llm, agent_registry=parent.agent_registry,
+                skill_registry=getattr(parent, "skill_registry", None),
                 agent_type=agent_type, security_middleware=parent.security_middleware,
                 session_id=parent.session_id, confirm_callback=parent.confirm_callback,
                 ask_user_callback=parent.ask_user_callback,
