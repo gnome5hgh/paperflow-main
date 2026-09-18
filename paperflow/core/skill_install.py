@@ -7,7 +7,7 @@
 ClawHub 供应链教训的对应防线：
 - 含 tools.py 的 skill 强制过目：-y / 非交互下一律拒绝，除非显式 --allow-code（fail-closed）
 - zip/tar 设大小与文件数上限（防 22MB 填充炸弹撑爆扫描管道）
-- manifest 记录来源/版本/内容 hash，为二期 update 与完整性校验留钩子
+- manifest 记录来源/版本/内容 hash/安装时间，为二期 update 与完整性校验留钩子
 """
 
 import hashlib
@@ -18,6 +18,7 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from paperflow.core.frontmatter import parse_frontmatter
@@ -56,6 +57,11 @@ def _save_manifest(workspace: Path, manifest: dict) -> None:
     tmp = p.with_name(p.name + ".tmp")
     tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, p)
+
+
+def _now_iso() -> str:
+    """安装时间戳（ISO，秒级）——manifest 审计要素，二期 update 的基线。"""
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def _hash_dir(path: Path) -> str:
@@ -145,8 +151,12 @@ def describe_skill(path: Path) -> dict:
     if not str(meta.get("description", "")).strip():
         raise ValueError(f"skill '{name}' 缺少必填字段 'description'")
     has_code = (path / "tools.py").exists()
+    # 资源清单：SKILL.md 之外的相对文件路径（references/、assets/ 等），准入展示用
+    resources = sorted(str(f.relative_to(path))
+                       for f in path.rglob("*") if f.is_file() and f.name != "SKILL.md")
     return {"name": name, "description": meta["description"],
-            "metadata": meta.get("metadata") or {}, "has_code": has_code, "path": path}
+            "metadata": meta.get("metadata") or {}, "has_code": has_code, "path": path,
+            "license": meta.get("license"), "resources": resources}
 
 
 def _default_confirm(prompt: str) -> bool:
@@ -178,6 +188,11 @@ def install_skill(source: str, workspace: Path, *, assume_yes: bool = False,
                 print_fn(f"- {s['name']}  version={s['metadata'].get('version', '—')}")
                 print_fn(f"  描述: {s['description'][:120]}")
                 print_fn(f"  代码: {'⚠️ 捆绑 tools.py（可执行 Python）' if s['has_code'] else '无（纯指令包）'}")
+                if s["has_code"]:
+                    # 工具名/risk 汇总需 import 未审计代码，本期明确不做（spec 专项设计）
+                    print_fn("  工具清单：安装前不执行未审计代码，暂不枚举（见 spec）")
+                print_fn(f"  license: {s['license'] or '—'}")
+                print_fn(f"  资源清单: {', '.join(s['resources']) or '无'}")
             # ---- 准入裁决 ----
             if any(s["has_code"] for s in described) and not allow_code:
                 # fail-closed：含代码强制过目，-y/非交互不豁免（与确认看门狗同哲学）
@@ -200,22 +215,27 @@ def install_skill(source: str, workspace: Path, *, assume_yes: bool = False,
             try:
                 for s in described:
                     dest = _skills_root(workspace) / s["name"]
+                    # 先登记再拷贝：copytree 建目录后中途失败不清理自建目录——若成功
+                    # 后才登记，半成品目录会漏出回滚名单并永久阻塞同名重装（预检
+                    # 「目标已存在」命中）
+                    installed.append(dest)
                     shutil.copytree(s["path"], dest)
                     manifest[s["name"]] = {
                         "source": source,
                         "version": s["metadata"].get("version"),
                         "has_code": s["has_code"],
                         "hash": _hash_dir(dest),
+                        "installed_at": _now_iso(),
                     }
-                    installed.append(dest)
                     print_fn(f"已安装: {s['name']} → {dest}")
+                # manifest 写入同受回滚保护：写失败也回滚已拷目录，不留「已拷贝但无 manifest」
+                _save_manifest(workspace, manifest)
             except BaseException:
-                # 半程回滚：拷贝中途失败（磁盘/权限等）不留「已落盘但未登记」目录，
-                # 安装对 manifest 与 skills/ 同时保持全有或全无。
+                # 半程回滚：拷贝/manifest 写入中途失败（磁盘/权限等）不留
+                # 「已落盘但未登记」目录，安装对 manifest 与 skills/ 同时保持全有或全无。
                 for d in installed:
                     shutil.rmtree(d, ignore_errors=True)
                 raise
-            _save_manifest(workspace, manifest)
             return 0
     except (ValueError, OSError, subprocess.CalledProcessError) as e:
         print_fn(f"安装失败: {e}")
