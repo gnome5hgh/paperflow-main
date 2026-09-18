@@ -293,6 +293,9 @@ def main(argv: list[str] | None = None) -> None:
         --help / --version：用法与版本。
         --resume [SESSION_ID]：恢复历史会话；不带 id 时列出历史会话供选择。
         --skip-bootstrap：跳过依赖服务启动预检（等价 PAPERFLOW_SKIP_BOOTSTRAP=1）。
+        skill install/list/uninstall：skill 安装管理子命令（准入通道见
+        paperflow/core/skill_install.py）；分发后短路返回，返回值即退出码，
+        不进入下方 REPL 装配。
     无参数行为与历史版本完全一致：装配后进入新会话 REPL。
 
     装配顺序（依赖关系）：
@@ -324,6 +327,19 @@ def main(argv: list[str] | None = None) -> None:
                         help="恢复历史会话；不带 id 则列出历史会话供选择")
     parser.add_argument("--skip-bootstrap", action="store_true",
                         help="跳过依赖服务（Milvus/GROBID）启动预检")
+    # skill 管理子命令（Task 9）：install/list/uninstall——纯文件操作 + 本地扫描，
+    # 不依赖任何服务；分发在 --version 之后、装配之前短路返回（返回值即退出码）。
+    sub = parser.add_subparsers(dest="command")
+    skill_parser = sub.add_parser("skill", help="skill 安装管理（install/list/uninstall）")
+    skill_action = skill_parser.add_subparsers(dest="skill_action", required=True)
+    skill_inst = skill_action.add_parser("install", help="准入安装：本地目录 | git URL | zip/tar")
+    skill_inst.add_argument("source")
+    skill_inst.add_argument("-y", "--yes", action="store_true", help="跳过确认（仅纯指令 skill）")
+    skill_inst.add_argument("--allow-code", action="store_true",
+                            help="允许捆绑 tools.py 的 skill（安装前必须人工审读代码）")
+    skill_action.add_parser("list", help="列出内置与已装 skill")
+    skill_uni = skill_action.add_parser("uninstall", help="卸载 manifest 登记的 skill")
+    skill_uni.add_argument("name")
     args = parser.parse_args(argv)
 
     if args.version:
@@ -333,6 +349,22 @@ def main(argv: list[str] | None = None) -> None:
         except PackageNotFoundError:
             print("unknown（开发环境：见 pyproject.toml）")
         return
+
+    # skill 子命令分发：不启服务、不建 LLM、不进 REPL——skill 管理不需要任何服务。
+    if args.command == "skill":
+        from paperflow.core.skill_install import (
+            install_skill, list_skills_command, uninstall_skill)
+        config = PaperFlowConfig.from_env()
+        workspace = Path(config.workspace)
+        builtin_skills_dir = Path(__file__).resolve().parents[1] / "skills"
+        if args.skill_action == "install":
+            return install_skill(args.source, workspace,
+                                 assume_yes=args.yes, allow_code=args.allow_code)
+        if args.skill_action == "list":
+            return list_skills_command(
+                str(builtin_skills_dir) if builtin_skills_dir.is_dir() else None, workspace)
+        if args.skill_action == "uninstall":
+            return uninstall_skill(args.name, workspace)
 
     config = PaperFlowConfig.from_env()
     is_tty = sys.stdin.isatty()
