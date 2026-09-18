@@ -11,7 +11,7 @@ Agent 注册表 —— 扫描 agents/ 目录,统一加载配置和工具。
 设计要点:
 
 - **单一注册表**:一个类同时解析配置和导入工具,避免两套注册表数据不同步
-- **权限最小化**:``allowed_agents`` 限制哪些 agent 类型可以加载特权 Skill
+- **权限最小化**:``allowed_agents`` 限制哪些 agent 类型可以加载特权 Agent 定义捆绑的 Tool
 - **Spawn 控制**:``allowed_spawns`` 声明本 agent 能 spawn 哪些子 agent
 """
 
@@ -34,7 +34,7 @@ class AgentConfig:
         description     ← AGENT.md frontmatter "description"
         system_prompt   ← AGENT.md 正文（frontmatter 后的 Markdown）
         allowed_agents  ← AGENT.md frontmatter "allowed_agents"
-                          空列表 = 公开，任何 agent 可加载此 Skill 的 Tool
+                          空列表 = 公开，任何 agent 可加载其 Tool
         allowed_spawns  ← AGENT.md frontmatter "allowed_spawns"
                           空列表 = 不能 spawn 任何 SubAgent
         tools           ← tools.py 模块级 TOOLS 列表

@@ -39,7 +39,13 @@ Always use `conda run -n paperflow` for 非交互命令（测试/脚本/安装�
 - **新增/修改任何代码后，都要先思考是否需要同步更新 ADR / spec / plan**：接口签名、行为语义、结构或已记录决策发生变化都算。需要同步时，在**测试代码通过后**再更新对应文档——先让代码行为被测试锁住，再让文档描述现状
 - 如果在实现过程中发现 Layer N 的 spec/plan 文档与最终代码不一致，修改代码后需同步更新对应的 spec（`docs/superpowers/specs/`）和 plan（`docs/superpowers/plans/`）
 - 如果当前 Layer 的修改影响了上层 Layer 的 spec/plan（如 Layer 1 实现时发现 Layer 0 的接口需要调整），同样需要回修受影响的上层文档
-- ADR（`docs/adr/`）是架构决策记录，一般不应被实现代码反向修改。但如果代码实现揭示出 ADR 设计缺陷（如接口不可行、组件拆分不合理），需在 ADR 中追加修正说明
+- ADR（`docs/adr/`）维护规则：
+  - **按模块划分，一份 ADR = 一个模块**：0001 RAG、0002 安全、0003 ReAct 多 Agent 架构（引擎）、0004 记忆、0005 SubAgent×Tool 映射、0006 结构化输出、0007 意图识别、0008 引用管理、0009 图片提取与多模态、0010 终端与 CLI 入口。新模块决策扩展对应模块的 ADR；确属新模块时新建，编号顺延
+  - **正文恒为最新设计**：设计变更直接改写 ADR 正文对应小节，使读者任何时候读到的都是模块现状——不在正文写「修正说明 / 修正（日期）」等历史痕迹，也不在正文叙事里写「原方案被废弃」
+  - **修正史统一进 `docs/adr/修正记录.md`**：每次改写正文，在该文件按时间追加一条（日期 / 模块 ADR / 变更摘要 / 来源 spec 或决策出处），保留「为什么变成现在这样」的追溯通道
+  - **跨模块变更按归属拆分**写入各模块 ADR，不设跨模块 ADR；每个 ADR 与相邻模块的分工边界在文中显式声明（如确认中心：终端侧架构在 0010、安全语义在 0002）
+  - **编号不回收、空缺须补齐**：删除或合并 ADR 后重编号（顺延补齐空位），并同步更新所有活文档引用（CLAUDE.md 设计文档索引、CONTEXT.md、docs/learning、修复清单）；历史 spec/plan 中的旧编号是历史记录，不回改
+  - 文中互相引用只写「见 ADR XXXX」，不写「见 ADR XXXX 修正说明」——修正史在修正记录文件里，不在 ADR 正文
 
 ## Code style
 
@@ -74,18 +80,21 @@ paperflow/
   vision/        视觉分析(pdffigures2 提取管线: parsers/ 解析 + detectors/ 图检测 + 编排 + 视觉模型看图)
   tools/         原子工具:file/ search/ review/ rank/ orchestration/ citations/ rag/ vision/ memory/ common
   terminal/      终端交互:InputIO(输入) + StreamRenderer(渲染) + diff
-agents/<name>/   Agent 插件:SKILL.md(frontmatter+system_prompt) + tools.py(TOOLS 列表)
+agents/<name>/   Agent 插件:AGENT.md(frontmatter+system_prompt) + tools.py(TOOLS 列表)
+skills/          Skill 插件:SKILL.md(agentskills.io 格式) + 可选 tools.py/references/
 ```
 
-设计文档索引：ADR 0003(ReAct 架构)、0004(记忆系统)、0007(意图识别)、0008(reviewer/search 流程)、0009(引用管理/溯源落地)、0010(图片提取+多模态)。
+设计文档索引（ADR 按模块划分，正文恒为最新设计，修正史见 docs/adr/修正记录.md）：0001(RAG 管线)、0002(安全设计)、0003(ReAct 多 Agent 架构)、0004(记忆系统)、0005(SubAgent×Tool 映射)、0006(结构化输出)、0007(意图识别)、0008(引用管理)、0009(图片提取与多模态)、0010(终端与 CLI 入口)。
 
 ### Agent plugin system
 
 Every agent lives in `agents/<name>/` with two files:
-- `SKILL.md` — YAML frontmatter (`name`, `description`, `allowed_agents`, `allowed_spawns`) + Markdown body (used as `system_prompt`)
+- `AGENT.md` — YAML frontmatter (`name`, `description`, `allowed_agents`, `allowed_spawns`) + Markdown body (used as `system_prompt`)
 - `tools.py` — module-level `TOOLS: list[Tool]` list. Each Tool is a subclass of `Tool` ABC with `name`, `description`, `parameters` (JSON Schema for OpenAI function calling), and `execute(**kwargs) -> ToolResult`
 
 `AgentRegistry(agents_dir)` scans this directory at init time, parses frontmatter, dynamically imports `TOOLS` from each `tools.py`, and exposes `get_config(agent_type) -> AgentConfig` plus `list_agents()`. It is the single entry point for agent discovery — no separate tool/skill registries.
+
+**Skill 体系**（`paperflow/core/skill_registry.py`）：Skill 是给**现有** agent 注入领域知识/流程指令/轻量工具的可安装能力包（agentskills.io 格式），无独立推理循环——与上面 agent 插件机制是平行而非同一概念。`SkillRegistry(builtin_dir, workspace_dir)` 两级扫描 `skills/`（内置）与 `<workspace>/skills/`（用户安装，`paperflow skill install` 准入通道或手动拷贝），三级渐进披露：L1 `<available_skills>` name+description 清单注入 head（无 skill 零开销）→ L2 `load_skill` 工具按需加载正文 → L3 `load_skill(resource=...)` 读资源（路径围栏限 skill 目录内）。skill 捆绑的 `tools.py` 经 `merge_tools` 并入子 agent 工具表——supervisor 代码级恒不并入（权限最小化红线）；含代码的安装强制人工过目（`-y` 拒绝，须显式 `--allow-code`）。
 
 现有 6 个 agent（`agents/` 下）:
 
@@ -114,7 +123,7 @@ Every agent lives in `agents/<name>/` with two files:
 
 `Agent.run(task) -> str` 是 async ReAct 循环:
 
-1. 构造 head：① SKILL(system_prompt) ② `Memory.compile()`（仅渲染 `system/` 块 persona/human + 文件树索引，渐进暴露）③ INTENT 块（intent_enabled 且管线成功时）；末尾 user task。**澄清早退**：管线产出 clarification 且非 force_dispatch → 直接返回澄清文本（不落盘、不进 ReAct，澄清只在 CLI 层跨轮处理）
+1. 构造 head：① AGENT.md(system_prompt) ② SKILLS 清单（若有）③ `Memory.compile()`（仅渲染 `system/` 块 persona/human + 文件树索引，渐进暴露）④ INTENT 块（intent_enabled 且管线成功时）；末尾 user task。**澄清早退**：管线产出 clarification 且非 force_dispatch → 直接返回澄清文本（不落盘、不进 ReAct，澄清只在 CLI 层跨轮处理）
 2. 从 MessageManager 加载该会话 in-context 消息（跨轮回放，Letta 语义）；当前 user task 落盘
 3. 调 LLM 前检查压缩（`should_compress` → `run_compaction`，只改 in-context 窗口不删 SQL）；随后 `chat()` 或 `chat_stream()`（挂 stream_callback 才走流式）
 4. 无 tool_calls → 顺序执行各中间件 `on_finish` 钩子（可改写最终回答）→ 落盘 → 返回。**截断续写**：`finish_reason=="length"` 时暂存半截、把「半截 + 续写提示」放回 in-context 继续循环，绝不把残缺内容当最终回答交付
