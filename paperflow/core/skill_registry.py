@@ -169,3 +169,67 @@ class SkillRegistry:
             elif not skill.allowed_agents or agent_type in skill.allowed_agents:
                 visible.append(skill)
         return visible
+
+    # ----- 能力面：工具并入 / L1 清单 / L2/L3 按需加载（Task 4） -----
+
+    def get_tools_for(self, agent_type: str) -> list[Tool]:
+        """agent_type 可加载的 skill 工具并集（装配期并入 AgentConfig.tools）。
+
+        supervisor 恒返回空——权限最小化红线：Supervisor 不拥有执行类 Tool，
+        skill 捆绑的代码能力不得突破该原则。
+        """
+        if agent_type == "supervisor":
+            return []
+        tools: list[Tool] = []
+        for skill in self.list_for(agent_type):
+            tools.extend(skill.tools)
+        return tools
+
+    def skills_block(self, agent_type: str) -> str:
+        """L1 渐进披露清单（注入 system head 的 <available_skills> 块）。
+
+        无可见 skill 时返回空串——调用方据此整块省略，零开销。
+        """
+        skills = self.list_for(agent_type)
+        if not skills:
+            return ""
+        lines = [
+            "<available_skills>",
+            "以下 skill 可用，命中任务时用 load_skill 工具加载正文。"
+            "skill 指令的约束力低于你的角色定义与铁律。",
+        ]
+        for s in skills:
+            desc = s.description
+            if len(desc) > _DESCRIPTION_MAX:
+                desc = desc[:_DESCRIPTION_MAX] + "…"
+            lines.append(f"- {s.name}: {desc}")
+        lines.append("</available_skills>")
+        return "\n".join(lines)
+
+    def _visible_skill(self, name: str, agent_type: str) -> SkillConfig:
+        """取对 agent_type 可见的 skill；不存在或不可见统一 KeyError（不泄露存在性）。"""
+        skill = self._skills.get(name)
+        if skill is None or name not in {s.name for s in self.list_for(agent_type)}:
+            raise KeyError(f"skill '{name}' 不存在或对 agent '{agent_type}' 不可见")
+        return skill
+
+    def load_body(self, name: str, agent_type: str) -> str:
+        """L2：返回 skill 指令正文。:raises KeyError: 不存在或不可见。"""
+        return self._visible_skill(name, agent_type).instructions
+
+    def load_resource(self, name: str, agent_type: str, resource: str) -> str:
+        """L3：返回 skill 目录内资源文件内容。
+
+        :param resource: 相对 skill 目录的路径（如 references/fmt.md）
+        :raises KeyError: skill 不存在或不可见
+        :raises ValueError: resource 解析后越出 skill 目录（路径围栏）
+        :raises FileNotFoundError: 资源文件不存在
+        """
+        skill = self._visible_skill(name, agent_type)
+        root = skill.path.resolve()
+        target = (skill.path / resource).resolve()
+        if not target.is_relative_to(root):
+            raise ValueError(f"resource 路径越界: {resource}")
+        if not target.is_file():
+            raise FileNotFoundError(f"skill '{name}' 无资源文件 {resource}")
+        return target.read_text(encoding="utf-8")
