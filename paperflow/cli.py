@@ -21,6 +21,9 @@ from rich.console import Console
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent
 from paperflow.core.agent_registry import AgentRegistry
+from paperflow.core.assembly import merge_tools
+from paperflow.core.skill_registry import SkillRegistry
+from paperflow.tools.skills.load_skill import LoadSkillTool
 from paperflow.core.llm import LLMClient
 from paperflow.core.intent.conversation_state import ConversationState
 from paperflow.core.security import (
@@ -354,6 +357,24 @@ def main(argv: list[str] | None = None) -> None:
                   else str(Path(__file__).resolve().parents[1] / "agents"))
     registry = AgentRegistry(agents_dir)
 
+    # Skill 体系装配：两级扫描（包内 skills/ + <workspace>/skills/），skill 工具
+    # 并入各 agent 工具表、load_skill 共享实例注入全部 agent（AgentConfig 为共享
+    # 对象，此处就地修改即对后续所有 Agent 构造生效）。supervisor 的 skill 工具
+    # 并入被 SkillRegistry.get_tools_for 代码级拒绝（权限最小化红线）。
+    builtin_skills_dir = Path(__file__).resolve().parents[1] / "skills"
+    skill_registry = SkillRegistry(
+        builtin_dir=str(builtin_skills_dir) if builtin_skills_dir.is_dir() else None,
+        workspace_dir=str(Path(config.workspace) / "skills"),
+    )
+    load_skill_tool = LoadSkillTool(skill_registry)
+    for _agent_type in registry.list_agents():
+        _cfg = registry.get_config(_agent_type)
+        _cfg.tools = merge_tools(
+            ("agent", _cfg.tools),
+            ("skill", skill_registry.get_tools_for(_agent_type)),
+            ("framework", [load_skill_tool]),
+        )
+
     # 终端装配：TTY → prompt_toolkit 输入 + rich Live 渲染；非 TTY（管道/CI/测试）→
     # FallbackIO + PlainBlock 降级。renderer 须在 supervisor 前构造——confirm_callback
     # （写/编辑确认 diff 预览）是 supervisor 构造参数。
@@ -455,6 +476,7 @@ def main(argv: list[str] | None = None) -> None:
 
     supervisor = Agent(
         llm=llm, agent_registry=registry, agent_type="supervisor",
+        skill_registry=skill_registry,
         memory=agent_state.memory,
         agent_manager=agent_manager, block_manager=block_manager,
         message_manager=message_manager, passage_manager=passage_manager,
