@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from paperflow.core.frontmatter import parse_frontmatter
-from paperflow.core.tool import RISK_LEVELS, SIDE_EFFECTS, Tool
+from paperflow.core.tool import Tool, validate_tool
 
 
 @dataclass
@@ -200,34 +200,8 @@ class AgentRegistry:
 
     @staticmethod
     def _validate_tool(tool) -> None:
-        """
-        加载时校验 Tool 的安全元数据字段，非法值立即抛 ValueError。
-
-        校验点(安全中间件的前置防线):
-        - ``risk_level`` ∈ RISK_LEVELS
-        - ``side_effects`` 每个值 ∈ SIDE_EFFECTS
-        - ``output_scan`` ∈ (None, "mark")
-
-        :param tool: 待校验的 Tool 实例
-        :raises ValueError: 任一字段值非法时抛出，携带工具名和合法值列表。
-                            此校验在 AgentRegistry 构造时执行，确保不安全配置不会被载入系统。
-        """
-        if tool.risk_level not in RISK_LEVELS:
-            raise ValueError(
-                f"Tool '{tool.name}': 非法 risk_level '{tool.risk_level}'，"
-                f"合法值: {sorted(RISK_LEVELS)}"
-            )
-        invalid_effects = [s for s in tool.side_effects if s not in SIDE_EFFECTS]
-        if invalid_effects:
-            raise ValueError(
-                f"Tool '{tool.name}': 非法 side_effects: {invalid_effects}，"
-                f"合法值: {sorted(SIDE_EFFECTS)}"
-            )
-        if tool.output_scan not in (None, "mark"):
-            raise ValueError(
-                f"Tool '{tool.name}': 非法 output_scan '{tool.output_scan}'，"
-                f"合法值: None / 'mark'"
-            )
+        """委托模块级 validate_tool（与 SkillRegistry 共用同一份校验）。"""
+        validate_tool(tool)
 
     def get_config(self, agent_type: str) -> AgentConfig:
         """
