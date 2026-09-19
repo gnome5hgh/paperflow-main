@@ -1,4 +1,4 @@
-# paperflow/core/llm.py
+# paperflow/core/llm/client.py
 """
 LLM 客户端 —— OpenAI-compatible API 的异步封装。
 

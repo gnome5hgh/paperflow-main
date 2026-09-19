@@ -1,4 +1,4 @@
-# paperflow/core/skill_registry.py
+# paperflow/core/skills/registry.py
 """
 Skill 注册表 —— 扫描两级 skills/ 目录，加载可安装能力包。
 

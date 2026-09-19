@@ -15,7 +15,7 @@ L1（name+description 清单）由 SkillRegistry.skills_block 在装配期注入
   不抛异常打断 ReAct 循环。
 """
 
-from paperflow.core.skill_registry import SkillRegistry
+from paperflow.core.skills import SkillRegistry
 from paperflow.core.tool import Tool, ToolResult
 
 

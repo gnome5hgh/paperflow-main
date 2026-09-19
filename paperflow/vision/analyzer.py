@@ -2,7 +2,7 @@
 
 import base64
 
-from paperflow.core.structured import StructuredOutput, StructuredOutputConfig
+from paperflow.core.llm import StructuredOutput, StructuredOutputConfig
 from paperflow.vision.schemas import Figure, FigureAnalysis
 
 

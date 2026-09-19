@@ -1,4 +1,4 @@
-# paperflow/core/assembly.py
+# paperflow/core/skills/assembly.py
 """装配期 skill 接线 —— 工具并入与命名空间唯一性校验。
 
 skill 工具在此并入 AgentConfig.tools 后，对框架就是普通 Tool：

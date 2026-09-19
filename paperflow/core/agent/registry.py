@@ -1,4 +1,4 @@
-# paperflow/core/agent_registry.py
+# paperflow/core/agent/registry.py
 """
 Agent 注册表 —— 扫描 agents/ 目录,统一加载配置和工具。
 

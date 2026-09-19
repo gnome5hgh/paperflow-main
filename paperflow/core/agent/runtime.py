@@ -1,4 +1,4 @@
-# paperflow/core/agent.py
+# paperflow/core/agent/runtime.py
 """
 Agent 基类 —— ReAct（Reasoning + Acting）循环的核心实现。
 
@@ -51,11 +51,12 @@ from datetime import datetime
 from typing import Callable
 
 from paperflow.core.llm import (
-    LLMClient, Message, _message_to_openai, tool_to_openai_schema,
+    LLMClient, Message, tool_to_openai_schema,
 )
-from paperflow.core.agent_registry import AgentRegistry
-from paperflow.core.skill_registry import SkillRegistry
-from paperflow.core.base_prompt import BASE_PROMPT
+from paperflow.core.llm.client import _message_to_openai
+from paperflow.core.agent.registry import AgentRegistry
+from paperflow.core.skills import SkillRegistry
+from paperflow.core.agent.base_prompt import BASE_PROMPT
 from paperflow.core.security import (
     ToolContext, ConfirmRequired, SecurityError, SecurityMiddleware,
 )

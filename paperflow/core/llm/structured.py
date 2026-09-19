@@ -1,4 +1,4 @@
-# paperflow/core/structured.py
+# paperflow/core/llm/structured.py
 """
 StructuredOutput —— 通用结构化输出组件。
 
@@ -23,7 +23,7 @@ from typing import Callable, get_origin, get_args, Union
 
 from pydantic import BaseModel, ValidationError
 
-from paperflow.core.llm import Message
+from paperflow.core.llm.client import Message
 
 
 @dataclass

@@ -20,9 +20,9 @@ from rich.console import Console
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent
-from paperflow.core.agent_registry import AgentRegistry
-from paperflow.core.assembly import merge_tools
-from paperflow.core.skill_registry import SkillRegistry
+from paperflow.core.agent import AgentRegistry
+from paperflow.core.skills import merge_tools
+from paperflow.core.skills import SkillRegistry
 from paperflow.tools.skills.load_skill import LoadSkillTool
 from paperflow.core.llm import LLMClient
 from paperflow.core.intent.conversation_state import ConversationState
@@ -30,7 +30,7 @@ from paperflow.core.security import (
     AuditMiddleware, WorkspacePolicyMiddleware,
     SecurityScanMiddleware, PolicyEngineMiddleware,
 )
-from paperflow.core.structured import StructuredOutput
+from paperflow.core.llm import StructuredOutput
 from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
 from paperflow.core.memory.services.message_manager import MessageManager
@@ -297,7 +297,7 @@ def main(argv: list[str] | None = None) -> int | None:
         --resume [SESSION_ID]：恢复历史会话；不带 id 时列出历史会话供选择。
         --skip-bootstrap：跳过依赖服务启动预检（等价 PAPERFLOW_SKIP_BOOTSTRAP=1）。
         skill install/list/uninstall：skill 安装管理子命令（准入通道见
-        paperflow/core/skill_install.py）；分发后短路返回，返回值即退出码，
+        paperflow/core/skills/install.py）；分发后短路返回，返回值即退出码，
         不进入下方 REPL 装配。
     无参数行为与历史版本完全一致：装配后进入新会话 REPL。
 
@@ -355,7 +355,7 @@ def main(argv: list[str] | None = None) -> int | None:
 
     # skill 子命令分发：不启服务、不建 LLM、不进 REPL——skill 管理不需要任何服务。
     if args.command == "skill":
-        from paperflow.core.skill_install import (
+        from paperflow.core.skills import (
             install_skill, list_skills_command, uninstall_skill)
         config = PaperFlowConfig.from_env()
         workspace = Path(config.workspace)

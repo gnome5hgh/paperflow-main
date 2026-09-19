@@ -1,4 +1,4 @@
-# paperflow/core/skill_install.py
+# paperflow/core/skills/install.py
 """skill 安装管理 —— CLI 准入通道（取源 → 校验 → 展示确认 → 落盘 → manifest）。
 
 信任模型（spec §6.3）：CLI 安装 = 外部来源，必须过准入；手动拷目录 = 本地操作者，
@@ -292,7 +292,7 @@ def uninstall_skill(name: str, workspace: Path, *, print_fn=print) -> int:
 
 def list_skills_command(builtin_dir: str | None, workspace: Path, *, print_fn=print) -> int:
     """列出内置 + workspace skill，标注来源（内置/已装/未登记）、版本、是否含代码。"""
-    from paperflow.core.skill_registry import SkillRegistry
+    from paperflow.core.skills.registry import SkillRegistry
 
     reg = SkillRegistry(builtin_dir=builtin_dir,
                         workspace_dir=str(_skills_root(workspace)))
