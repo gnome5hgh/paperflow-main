@@ -155,6 +155,21 @@ _FAILURE_ESCALATION_NOTE = (
     "改用 ask_user_question 向用户说明失败情况并请示（放弃 / 换思路 / 坚持重试）。"
 )
 
+#: 审稿预算门:同一父 run 内同类审稿 spawn 的次数上限。值承接旧 prompt 硬编码的
+#: 「审稿循环最多 3 轮」——预算从 AGENT.md 下沉到代码强制后,LLM 不再负责数轮次,
+#: 超限派发直接拒绝并给出路(基于已有裁决定稿、如实报告未解决项)。计数键
+#: (session_id, 父 run trace_id, mode):trace_id 每次 run() 重新生成 → 预算按父任务
+#: 天然重置;不同 mode 独立计数(笔记审稿/下载门禁/计划审稿互不挤占)。仅对真实
+#: 派发计数——去重命中(running 提示/done 复用)早退在计数之前,不消耗预算。
+_REVIEW_SPAWN_MODES = frozenset(m.value for m in (
+    SubAgentMode.NOTE_REVIEW, SubAgentMode.DOWNLOAD_REVIEW, SubAgentMode.PLAN_REVIEW))
+_REVIEW_SPAWN_BUDGET = 3
+_REVIEW_SPAWN_COUNTS: dict[tuple[str, str, str], int] = {}
+_REVIEW_BUDGET_DENIED_NOTE = (
+    "同类审稿派发已达预算上限({budget} 次)。请基于已有审查裁决定稿,"
+    "并在最终回复中如实报告未解决的 blocking 项,不要再次派发。"
+)
+
 #: 任务文本中绝对路径的启发式正则(_task_has_path 的布尔判据):抓 "/" 开头、不含空白/
 #: 中文标点/半角逗号分号冒号/引号的最长串。只做「是否含路径」的布尔判断,不读文件。
 #: 排除集不含半角括号(如 file(v2).md 能完整识别);中文全角括号仍是分隔符。
@@ -381,11 +396,11 @@ class SpawnSubAgentTool(Tool):
 
     def _admit(self, agent_type: str, task: str,
                mode: str | None) -> "ToolResult | tuple[str, bool]":
-        """派发前的四道闸（mode/意图/白名单/去重）。
+        """派发前的五道闸（mode/意图/白名单/去重/审稿预算）。
 
         通过时返回 (任务指纹, 是否含路径)——调用方负责在执行完的 finally 里
         按 has_path 决定 done 缓存或清条目；拒绝时直接返回 denied/去重命中的
-        ToolResult。
+        ToolResult。审稿类 mode 的预算计数与注册同锁原子,拒绝路径不触碰注册表。
         """
         parent = self._parent
         # mode 参数校验：非法值直接拒绝（schema enum 约束 LLM 生成层，
@@ -431,6 +446,20 @@ class SpawnSubAgentTool(Tool):
             if hit and hit["state"] == "done" and not has_path \
                     and now - hit["started_at"] < _SPAWN_REUSE_WINDOW_S:
                 return hit["result"]
+            # ③ 审稿预算门:审稿类 mode 在注册 running 前计数检查——超限拒绝(不注册,
+            #    不污染去重注册表);去重命中早退不计数。置于注册前是 _admit 的既有
+            #    不变式:所有 ToolResult 返回都发生在注册 running 之前,否则异常路径
+            #    会留下永久 running 条目堵塞同指纹后续派发。
+            if mode in _REVIEW_SPAWN_MODES:
+                bkey = (parent.session_id, parent._trace_id, mode)
+                used = _REVIEW_SPAWN_COUNTS.get(bkey, 0)
+                if used >= _REVIEW_SPAWN_BUDGET:
+                    denied_result = SubAgentResult(
+                        status="denied",
+                        summary=_REVIEW_BUDGET_DENIED_NOTE.format(budget=_REVIEW_SPAWN_BUDGET))
+                    return ToolResult(text=denied_result.model_dump_json(),
+                                      summary=denied_result.model_dump())
+                _REVIEW_SPAWN_COUNTS[bkey] = used + 1
             reg[fp] = {"state": "running", "result": None, "started_at": now}
         return fp, has_path
 
