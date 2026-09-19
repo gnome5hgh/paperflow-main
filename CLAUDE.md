@@ -89,10 +89,12 @@ skills/          Skill 插件:SKILL.md(agentskills.io 格式) + 可选 tools.py/
 ### Agent plugin system
 
 Every agent lives in `agents/<name>/` with two files:
-- `AGENT.md` — YAML frontmatter (`name`, `description`, `allowed_agents`, `allowed_spawns`) + Markdown body (used as `system_prompt`)
+- `AGENT.md` — YAML frontmatter (`name`, `description`, `allowed_agents`, `allowed_spawns`) + Markdown body(契约式结构:派发类 worker 为五段式——身份/边界/能力/交付契约/方法启发式;reviewer/qa-agent 按角色裁剪。编排决策由 LLM 运行时自主,不写跨 agent 编排序列)
 - `tools.py` — module-level `TOOLS: list[Tool]` list. Each Tool is a subclass of `Tool` ABC with `name`, `description`, `parameters` (JSON Schema for OpenAI function calling), and `execute(**kwargs) -> ToolResult`
 
 `AgentRegistry(agents_dir)` scans this directory at init time, parses frontmatter, dynamically imports `TOOLS` from each `tools.py`, and exposes `get_config(agent_type) -> AgentConfig` plus `list_agents()`. It is the single entry point for agent plugin discovery — the Skill system keeps a parallel registry (`SkillRegistry`, see below), which registers installed skills rather than agents.
+
+装配时 `Agent.__init__` 在角色定义后拼接全 agent 共有的行为基座 `BASE_PROMPT`(`core/base_prompt.py`:诚实性协议/交付契约语义/协作语义)——通用铁律不重复写在各 AGENT.md。
 
 **Skill 体系**（`paperflow/core/skill_registry.py`）：Skill 是给**现有** agent 注入领域知识/流程指令/轻量工具的可安装能力包（agentskills.io 格式），无独立推理循环——与上面 agent 插件机制是平行而非同一概念。`SkillRegistry(builtin_dir, workspace_dir)` 两级扫描 `skills/`（内置）与 `<workspace>/skills/`（用户安装，`paperflow skill install` 准入通道或手动拷贝），三级渐进披露：L1 `<available_skills>` name+description 清单注入 head（无 skill 零开销）→ L2 `load_skill` 工具按需加载正文 → L3 `load_skill(resource=...)` 读资源（路径围栏限 skill 目录内）。skill 捆绑的 `tools.py` 经 `merge_tools` 并入子 agent 工具表——supervisor 代码级恒不并入（权限最小化红线）；含代码的安装强制人工过目（`-y` 拒绝，须显式 `--allow-code`）。
 
@@ -254,9 +256,10 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 2. **意图派发门禁**：父 agent 的意图 `dispatch_allowed=False`（chitchat/out_of_scope/help/switch_topic 等）→ 永不 spawn
 3. **spawn 权限**：`_check_spawn_allowed` — supervisor 硬编码放行；其余 agent 查自己的 `AgentConfig.allowed_spawns` 白名单
 4. **去重注册表**（`_SPAWN_REGISTRY`，按 session_id + 任务指纹）：**无路径任务** 运行中去重 + 完成结果 300s 内可复用；**含路径任务** 只做运行中去重（文件可能中途变化，完成不缓存）
-5. **子 agent 构造**：继承父的 security_middleware / session_id / confirm_callback / ask_user_callback（子 agent 能中途问用户）；**不传**意图管线/会话（子任务是结构化任务非用户意图）；`mode` 经「当前模式：{mode}」注入 system prompt
-6. **预算执行**：超时 = 基座超时（`config.agent_timeouts`，audit 数据校准:noter 900s/searcher 420s/reviewer 300s/researcher 1800s/qa-agent 180s,2026-09-05）+ 累计用户等待（`_UserWaitClock` 同时排除 confirm 确认与 ask_user 提问的人工等待）；`asyncio.TimeoutError`→timeout、`PermissionError`→denied、其他异常→failed
-7. **摘要提取**：末尾 2000 字符经 `StructuredOutput` 抽结构化 `digest`（按 agent_type 选 `SearcherDigest`/`ReviewerDigest`/`NoterDigest`/`ResearcherDigest`/`GenericDigest`），失败回退全文摘要
+5. **审稿预算**：同一父 run 内 note_review/download_review/plan_review spawn ≤3 次,超限 denied(轮数预算下沉代码,LLM 不数轮次)
+6. **子 agent 构造**：继承父的 security_middleware / session_id / confirm_callback / ask_user_callback（子 agent 能中途问用户）；**不传**意图管线/会话（子任务是结构化任务非用户意图）；`mode` 经「当前模式：{mode}」注入 system prompt
+7. **预算执行**：超时 = 基座超时（`config.agent_timeouts`，audit 数据校准:noter 900s/searcher 420s/reviewer 300s/researcher 1800s/qa-agent 180s,2026-09-05）+ 累计用户等待（`_UserWaitClock` 同时排除 confirm 确认与 ask_user 提问的人工等待）；`asyncio.TimeoutError`→timeout、`PermissionError`→denied、其他异常→failed
+8. **摘要提取**：末尾 2000 字符经 `StructuredOutput` 抽结构化 `digest`（按 agent_type 选 `SearcherDigest`/`ReviewerDigest`/`NoterDigest`/`ResearcherDigest`/`GenericDigest`），失败回退全文摘要
 
 返回 `ToolResult(text=SubAgentResult.model_dump_json(), summary=model_dump())`。`SubAgentResult.status` ∈ {success, failed, timeout, denied}，`needs_attention=True` 表示「被拒且需用户介入」。只有 supervisor（和需要 reviewer/searcher 的 searcher/noter/researcher）装配此工具——权限最小化：叶子 agent 不递归。
 
@@ -303,3 +306,4 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - **`Agent.run()` 返回 str**；子 agent 结果经 `SubAgentResult`（status/summary/digest/needs_attention）结构化回传 supervisor
 - **流式零开销**：`stream_callback`/`telemetry_callback` 为 None 时全链路保持原非流式行为（mock/无 UI 调用方不受影响）
 - **意图只进根 agent**：spawn 的子 agent 门控关闭；澄清只在 CLI 层跨轮处理，不暴露给 supervisor（避免 ask_user 双问）
+- **契约式 prompt,两层装配**:编排决策 LLM 运行时自主(AGENT.md 只写契约+启发式);硬不变式下沉代码——诚实性协议在 BASE_PROMPT、审稿轮数预算在 spawn 五道闸

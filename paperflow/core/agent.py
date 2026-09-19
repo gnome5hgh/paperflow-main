@@ -55,6 +55,7 @@ from paperflow.core.llm import (
 )
 from paperflow.core.agent_registry import AgentRegistry
 from paperflow.core.skill_registry import SkillRegistry
+from paperflow.core.base_prompt import BASE_PROMPT
 from paperflow.core.security import (
     ToolContext, ConfirmRequired, SecurityError, SecurityMiddleware,
 )
@@ -272,8 +273,10 @@ class Agent:
         #: Tool 字典，key = tool.name，供 _exec_tool 快速查找
         self.tools = {t.name: t for t in config.tools}
 
-        #: 注入 LLM 的系统提示词，定义本 Agent 的行为规范
-        self.system_prompt = config.system_prompt
+        #: 注入 LLM 的系统提示词 = 角色定义(AGENT.md 正文) + 行为基座(BASE_PROMPT,
+        #: 全 agent 共有)。拼接在同一消息内——head 结构、记忆刷新插入位不动;
+        #: 基座落在末尾贴近对话,利于规则遵循
+        self.system_prompt = config.system_prompt + BASE_PROMPT
 
         #: Skill 注册表（spawn 构造子 agent 时透传用）
         self.skill_registry = skill_registry
