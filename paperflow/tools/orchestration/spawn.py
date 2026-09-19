@@ -164,7 +164,7 @@ _FAILURE_ESCALATION_NOTE = (
 _REVIEW_SPAWN_MODES = frozenset(m.value for m in (
     SubAgentMode.NOTE_REVIEW, SubAgentMode.DOWNLOAD_REVIEW, SubAgentMode.PLAN_REVIEW))
 _REVIEW_SPAWN_BUDGET = 3
-_REVIEW_SPAWN_COUNTS: dict[tuple[str, str, str], int] = {}
+_REVIEW_SPAWN_COUNTS: dict[tuple[str, str | None, str], int] = {}
 _REVIEW_BUDGET_DENIED_NOTE = (
     "同类审稿派发已达预算上限({budget} 次)。请基于已有审查裁决定稿,"
     "并在最终回复中如实报告未解决的 blocking 项,不要再次派发。"
@@ -566,7 +566,7 @@ class SpawnSubAgentTool(Tool):
                                     error_detail=f"SubAgent 在 {timeout}s 内未完成")
         except PermissionError as e:
             # 防御性分支:当前架构子 agent 的执行器把策略拒绝/安全拦截降级为普通文本,
-            # 不向上抛,几乎不会触发。保留此分支对齐失败传播规则,不据此推导真实路径。
+            # 不向上抛,几乎不会触发。保留此分支对齐失败处理,不据此推导真实路径。
             result = SubAgentResult(status="denied", summary="子任务被策略引擎拒绝",
                                     error_detail=str(e), needs_attention=True)
         except Exception as e:

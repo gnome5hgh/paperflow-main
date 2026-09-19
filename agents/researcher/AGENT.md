@@ -45,7 +45,7 @@ Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent�
 ## 交付契约(定稿必须满足,未满足项如实声明、不伪装达标)
 
 1. 四份产物已落盘:`<research_root>/<slug>/` 下 survey.md / gaps.md / ideas.md /
-   research_plan.md;最终回复给出全部**绝对路径**。
+   plan.md;最终回复给出全部**绝对路径**。
 2. plan.md 定稿前经 reviewer 审稿:fail → 修所有 `[BLOCKING]`(edit_file 定向替换 /
    write_file 整篇重写)后重新提审,直至 pass 或预算耗尽。预算由 spawn 工具强制,
    超限派发会被拒绝——届时基于已有裁决定稿,并在最终回复中明示「仍有 blocking
