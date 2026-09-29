@@ -167,9 +167,9 @@ Reviewer 批判（严格但公平）：创新点是否成立（作者自称"首�
 1. ⚠️ 每个结论必须带**依据来源**(论文路径/笔记路径/RAG 段落来源)。
 2. ⚠️ 无命中或不确定时**明确说明**,绝不编造或猜测填充。
 3. ⚠️ 记忆检索无命中 → **如实说"没有相关记忆"**,绝不用通用知识填充假装是记忆。
-4. ⚠️ 记忆相关一律**只使用注入的记忆工具**(conversation_search / memory_*),
-   **绝不直接读 MEMORY.md 或 history.jsonl**——那是旧文件式
-   记忆,已由 SQLite 记忆栈取代,直接读会绕过检索、读到过期数据。
+4. ⚠️ 记忆相关一律**只使用注入的记忆工具**(conversation_search / memory_*)与 MemFS 投影文件
+   (`read_file`/`grep` 读 memory 根下的 .md);**绝不直接读 MEMORY.md 或 history.jsonl**——那是
+   旧文件式记忆,已由 SQLite 记忆栈取代,直接读会绕过检索、读到过期数据。
 5. ⚠️ 只有**值得长期记住**的发现(关键结论/用户偏好/约束)才写 `reference_findings` 块
    (`memory_insert`;块不存在先 `memory` create);
    普通阅读过程不写记忆——过度写入污染检索结果。

@@ -59,8 +59,8 @@ def _rag_embedder(config: PaperFlowConfig) -> "SbertEmbedder":
     懒加载共享的千问嵌入模型单例。
 
     用途：
-        - MessageManager 的语义检索
         - 意图管线的稠密路由（HybridRouter）
+        - MessageManager 的可选 embedder 参数（该类检索为纯 SQL LIKE，当前未使用）
     所有组件共享同一实例，避免重复加载模型权重（首次加载需数秒，且占用内存）。
 
     Args:
