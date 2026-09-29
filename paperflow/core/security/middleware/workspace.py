@@ -18,6 +18,27 @@ from pathlib import Path
 from paperflow.core.security.base import SecurityMiddleware, ToolContext, SecurityBlocked
 
 
+def _is_relative_to_ci(resolved: Path, prefix: Path) -> bool:
+    """大小写不敏感的前缀归属判断：双侧路径部件小写后按部件边界比较。
+
+    macOS 默认大小写不敏感文件系统（APFS）上 ``resolve()`` 不改写路径大小写
+    （已实测：/USR/local/x -> /USR/local/x）——/USR 与 /usr、~/.SSH 与 ~/.ssh
+    是同一目录，若前缀比较区分大小写即可绕过黑名单。与第二段「parts 小写」
+    同一防绕过思路。按部件比较保证前缀语义精确：/usr 匹配 /usr/local，
+    但不匹配 /usrlocal（裸字符串 startswith 会误伤/漏判）。
+
+    Args:
+        resolved: 已解析为绝对路径的 Path 对象（须已 resolve()）
+        prefix: 前缀目录（Path 对象）
+
+    Returns:
+        bool: resolved 落在 prefix 之下（或相等）返回 True，否则 False
+    """
+    left = [p.lower() for p in resolved.parts]
+    right = [p.lower() for p in prefix.parts]
+    return len(left) >= len(right) and left[:len(right)] == right
+
+
 def is_denied_path(resolved: Path, workspace: str) -> bool:
     """敏感路径黑名单：硬拦截——命中即拒绝。
 
@@ -36,6 +57,9 @@ def is_denied_path(resolved: Path, workspace: str) -> bool:
     ⑥ 系统目录前缀：/etc、/usr、/bin、/sbin、/System、/Library、/private/etc、
        /boot、/proc、/sys、/dev。
 
+    前缀类比较（①④⑥）一律大小写不敏感（_is_relative_to_ci）：macOS APFS
+    默认大小写不敏感，resolve() 不改写大小写，/USR、~/.SSH 不得绕过。
+
     Args:
         resolved: 已解析为绝对路径的 Path 对象（须已 resolve()）
         workspace: 工作区根目录的字符串路径
@@ -48,12 +72,13 @@ def is_denied_path(resolved: Path, workspace: str) -> bool:
     resolved = Path(resolved).resolve() # 用户请求的文件路径
     ws = Path(workspace).resolve()      # 允许访问的工作空间根目录
 
-    # ----- 第一段：工作区内的系统运行时数据目录（精确匹配） -----
-    # 使用 is_relative_to 判断 resolved 是否在 ws/audit 或 ws/milvus 之下，
+    # ----- 第一段：工作区内的系统运行时数据目录（精确匹配，大小写不敏感） -----
+    # 使用前缀归属判断 resolved 是否在 ws/audit 或 ws/milvus 之下，
     # 注意：这要求 audit 目录直接位于工作区根下，不会误伤工作区内名为 audit 的普通笔记文件夹。
-    if resolved.is_relative_to(ws / "audit"):
+    # 大小写不敏感：APFS 上 workspace/AUDIT 与 workspace/audit 是同一目录（防绕过）。
+    if _is_relative_to_ci(resolved, ws / "audit"):
         return True
-    if resolved.is_relative_to(ws / "milvus"):
+    if _is_relative_to_ci(resolved, ws / "milvus"):
         return True
 
     # ----- 第二段：版本控制/配置目录（任何路径位置） -----
@@ -70,8 +95,9 @@ def is_denied_path(resolved: Path, workspace: str) -> bool:
         return True
 
     # ----- 第四段：凭证与秘密（home 目录前缀 + 任何位置文件名/后缀） -----
+    # home 前缀比较大小写不敏感（~/.SSH 与 ~/.ssh 在 APFS 上同目录）。
     home = Path.home()
-    if any(resolved.is_relative_to(home / d)
+    if any(_is_relative_to_ci(resolved, home / d)
            for d in (".ssh", ".aws", ".gnupg", ".kube")):
         return True
     if resolved.name.lower() in {"id_rsa", "id_ed25519", "id_ecdsa", ".netrc"}:
@@ -87,7 +113,8 @@ def is_denied_path(resolved: Path, workspace: str) -> bool:
     # ----- 第六段：系统目录前缀（resolve 已跟随符号链接，/etc→/private/etc 被覆盖） -----
     # 注意：用 /private/etc 而非裸 /private——macOS 上临时目录（/var/folders、/tmp）
     # resolve 后都落在 /private/ 之下，裸前缀会把所有临时路径判为敏感路径。
-    if any(resolved.is_relative_to(p) for p in (
+    # 前缀比较大小写不敏感：resolve() 不改写大小写，/USR、/library 不得绕过。
+    if any(_is_relative_to_ci(resolved, Path(p)) for p in (
             "/etc", "/usr", "/bin", "/sbin", "/System", "/Library",
             "/private/etc", "/boot", "/proc", "/sys", "/dev")):
         return True
