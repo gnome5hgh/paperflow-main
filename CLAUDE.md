@@ -244,7 +244,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `orchestration/` — `spawn_sub_agent` / `ask_user_question` / `SubAgentMode`（见下）
 - `common/` — `make_tools(config, tool_items)` 装配工厂：解析 `allowed_roots` 语义根名 → 绝对路径注入 `allowed_paths`（新列表，不污染类属性）、注入 `_config`、给 `description` 追加 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）；`_http.py` 共享 HTTP 基础设施
 
-根映射（`_root_map`）：note→`vault_note_dir`、pdf→`vault_pdf_dir`、research→`vault_research_dir` 或 `workspace/research`、memory→`workspace/memory`、templates→`workspace/templates`、scratch→`workspace/tmp`。
+根映射（`_root_map`）：note→`note_dir`、pdf→`pdf_dir`、research→`research_dir` 或 `workspace/research`、memory→`workspace/memory`、templates→`workspace/templates`、scratch→`workspace/tmp`。
 
 ### Orchestration
 
@@ -285,13 +285,13 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | `max_risk` | 策略引擎风险阈值，默认 "medium" |
 | `compaction` | `CompactionSettings`（惰性工厂避免 config→compaction→llm→config 循环导入） |
 | `sleeptime_enable` / `sleeptime_agent_frequency` | 后台整合开关 / 每 N 条新消息检查一次（默认 50） |
-| `vault_note_dir` / `vault_pdf_dir` / `vault_research_dir` | Obsidian vault 数据源根（个人绝对路径，**无默认值**，须经 .env/config.yaml） |
+| `note_dir` / `pdf_dir` / `research_dir` | 语料库数据源根（note/pdf/research，个人绝对路径，**无默认值**，须经 .env/config.yaml） |
 | `grobid_endpoint` | GROBID 服务地址，默认 `http://localhost:8070` |
 | `milvus_uri` / `milvus_collection` / `embed_model` / `rerank_model` | Milvus 地址（默认 `http://localhost:19530`）/ 集合名（默认 `paperflow`）/ 千问嵌入 / 重排模型 |
 | `citations_bib_path` | references.bib 路径（引用库真相源）。默认 `workspace/citations/references.bib`，可指向任意论文项目目录；空则回退默认 |
 | `agent_timeouts` | 子 agent 超时覆盖表（noter 900 / searcher 420 / reviewer 300 / researcher 1800 / qa-agent 180;audit 数据校准,见 spec 2026-09-05-agent-timeout-recalibration） |
 
-环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_VAULT_NOTE_DIR` / `PAPERFLOW_VAULT_PDF_DIR` / `PAPERFLOW_VAULT_RESEARCH_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY` / `PAPERFLOW_CITATIONS_BIB_PATH` / `PAPERFLOW_S2_API_KEY`（Semantic Scholar 检索的可选 key，由 search 客户端直读环境变量，配置后走高配额端点）。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
+环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_NOTE_DIR` / `PAPERFLOW_PDF_DIR` / `PAPERFLOW_RESEARCH_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY` / `PAPERFLOW_CITATIONS_BIB_PATH` / `PAPERFLOW_S2_API_KEY`（Semantic Scholar 检索的可选 key，由 search 客户端直读环境变量，配置后走高配额端点）。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
 
 ### Key design decisions
 

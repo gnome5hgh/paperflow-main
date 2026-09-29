@@ -36,7 +36,7 @@ class GlobTool(Tool):
         # 通过 _config 取默认根(make_tools 注入);root 显式传入则覆盖默认。
         # config 读取用防御式 getattr——测试与裸构造时可能没有 _config。
         cfg = getattr(self, "_config", None)
-        base = Path(root) if root else Path(cfg.vault_note_dir if cfg else ".")
+        base = Path(root) if root else Path(cfg.note_dir if cfg else ".")
         try:
             # 越界防护:glob 不把 pattern 约束到 base,`../../**/*` 能命中 base 外路径
             # (只读泄露,违反 allowed_roots 边界)。逐个过滤命中,resolve 后不在 base 内

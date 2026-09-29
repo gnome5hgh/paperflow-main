@@ -68,12 +68,12 @@ class CorpusIndex:
 
     # —— 索引生命周期 ——
     def refresh(self) -> None:
-        """增量重建：扫描 vault 目录，只对新增/变更文件重提标题，删除的移除。"""
+        """增量重建：扫描语料库目录，只对新增/变更文件重提标题，删除的移除。"""
         with self._lock:
             # 1. 分别遍历笔记目录（*.md）与 PDF 目录（*.pdf），收集当前所有文件的绝对路径与 mtime。
             current: dict[str, int] = {}
-            for root, pattern, kind in ((self.config.vault_note_dir, "*.md", "note"),
-                                        (self.config.vault_pdf_dir, "*.pdf", "pdf")):
+            for root, pattern, kind in ((self.config.note_dir, "*.md", "note"),
+                                        (self.config.pdf_dir, "*.pdf", "pdf")):
                 if not root:
                     continue
 

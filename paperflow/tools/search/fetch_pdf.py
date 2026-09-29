@@ -27,7 +27,7 @@ class FetchPdfTool(Tool):
             "url": {"type": "string", "format": "url",
                     "description": "PDF 下载地址（来自搜索结果的 pdf 字段）"},
             "download_to": {"type": "string", "format": "path",
-                            "description": "PDF 保存绝对路径（vault pdf 根内）"},
+                            "description": "PDF 保存绝对路径（缺省语料库 pdf 根）"},
         },
         "required": ["url", "download_to"],
     }

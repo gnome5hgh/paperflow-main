@@ -46,7 +46,7 @@ class RagIndexer:
         None，由调用方跳过处理。
 
         重要边界条件：
-        - 路径必须位于 `vault_note_dir` 或 `vault_pdf_dir` 之下，否则返回 None。
+        - 路径必须位于 `note_dir` 或 `pdf_dir` 之下，否则返回 None。
         - 返回 None 时，调用方应跳过该文件，不进行索引（如记忆目录下的文件）。
         - 不能使用文件名代替相对路径，因为不同目录下的同名文件会导致块 ID 冲突。
 
@@ -58,8 +58,8 @@ class RagIndexer:
         """
         abs_path = Path(path).resolve()
         # 依次尝试在笔记目录和 PDF 目录下计算相对路径
-        for root in (Path(self.service.config.vault_note_dir).resolve(),
-                     Path(self.service.config.vault_pdf_dir).resolve()):
+        for root in (Path(self.service.config.note_dir).resolve(),
+                     Path(self.service.config.pdf_dir).resolve()):
             try:
                 return str(abs_path.relative_to(root))
             except ValueError:
@@ -82,13 +82,13 @@ class RagIndexer:
         Returns:
             str: 解析后的绝对路径字符串。
         """
-        for root in (Path(self.service.config.vault_note_dir),
-                     Path(self.service.config.vault_pdf_dir)):
+        for root in (Path(self.service.config.note_dir),
+                     Path(self.service.config.pdf_dir)):
             cand = Path(root) / rel
             if cand.exists():
                 return str(cand.resolve())
         # 文件已不存在，回退到笔记目录（仅用于状态重建，实际删除操作会后续清理）
-        return str(Path(self.service.config.vault_note_dir) / rel)
+        return str(Path(self.service.config.note_dir) / rel)
 
     def _load_state(self) -> dict:
         """读取索引状态文件；不存在时返回空字典。
@@ -277,8 +277,8 @@ class RagIndexer:
             [(d[0], d[1]) for d in store.all_documents()])
 
         # 收集待索引文档：扫描两个知识库根目录，按修改时间比对找出变更项。
-        roots = [Path(self.service.config.vault_note_dir),
-                 Path(self.service.config.vault_pdf_dir)]
+        roots = [Path(self.service.config.note_dir),
+                 Path(self.service.config.pdf_dir)]
         new_state: dict = {}
         changed: list[Path] = []
         seen: set[Path] = set()
