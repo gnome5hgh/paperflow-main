@@ -40,4 +40,4 @@ TOOLS = make_tools(PaperFlowConfig.from_env(), [
     LookupCitationTool(_cm), AddCitationTool(_cm),
     FormatCitationsTool(_cm), ListCitationsTool(_cm),
     AnalyzeFiguresTool(),
-])
+], default_write_root="note")

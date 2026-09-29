@@ -27,4 +27,4 @@ TOOLS = make_tools(PaperFlowConfig.from_env(), [
     SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agent_timeouts),
     LookupCitationTool(_cm), AddCitationTool(_cm),
     FormatCitationsTool(_cm), ListCitationsTool(_cm),
-])
+], default_write_root="research")
