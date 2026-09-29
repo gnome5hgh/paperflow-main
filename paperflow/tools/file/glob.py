@@ -13,13 +13,13 @@ from paperflow.core.tool import Tool, ToolResult
 class GlobTool(Tool):
     name = "glob"
     description = ("按 glob 模式列出文件路径（如 **/*.pdf、**/*Disentangled*.pdf）。"
-                   "用于定位文件、检查文件是否已存在。root 指定搜索根（note/pdf/memory）。")
+                   "用于定位文件、检查文件是否已存在。root 指定搜索根（缺省=语料库笔记根，可传任意绝对路径）。")
     parameters = {
         "type": "object",
         "properties": {
             "pattern": {"type": "string", "description": "glob 模式（** 递归）"},
             "root": {"type": "string", "format": "path",
-                     "description": "搜索根目录（默认笔记目录；可传 pdf/memory 根）"},
+                     "description": "搜索根目录绝对路径（默认笔记目录）"},
         },
         "required": ["pattern"],
     }
@@ -30,7 +30,7 @@ class GlobTool(Tool):
         """按 glob 模式列出匹配的文件路径(最多 50 条);根目录可显式指定。
 
         :param pattern: glob 模式(** 递归匹配子目录)
-        :param root: 搜索根目录;缺省用配置的笔记目录,可传 pdf/memory 根
+        :param root: 搜索根目录绝对路径;缺省用配置的笔记目录,可传任意绝对路径
         :returns: 命中路径每行一条;无匹配返回"无匹配"
         """
         # 通过 _config 取默认根(make_tools 注入);root 显式传入则覆盖默认。
@@ -38,18 +38,11 @@ class GlobTool(Tool):
         cfg = getattr(self, "_config", None)
         base = Path(root) if root else Path(cfg.note_dir if cfg else ".")
         try:
-            # 越界防护:glob 不把 pattern 约束到 base,`../../**/*` 能命中 base 外路径
-            # (只读泄露,把 base 外路径抖给 LLM)。逐个过滤命中,resolve 后不在 base 内
-            # 的跳过。必须用 resolve() 比较——relative_to 是纯词法比较,把 `..` 当普通
-            # 路径段,`base/../../outside/f` 不会触发 ValueError,根本拦不住逃逸。
-            base_resolved = base.resolve()
+            # 白名单退役：读路径放开后无根约束，pattern 逃逸出 base 不再视为越界
+            # （`../../**/*` 等命中照常返回），仅黑名单过滤防通配符枚举敏感路径。
             hits: list[str] = []
             for p in base.glob(pattern):
-                try:
-                    p.resolve().relative_to(base_resolved)  # 逃逸(base 外)→ 跳过
-                except ValueError:
-                    continue
-                # 敏感路径黑名单：base 内含 workspace/audit 等 → 跳过（防通配符枚举）
+                # 敏感路径黑名单：命中 workspace/audit、.git 等直接跳过（防通配符枚举）
                 if cfg is not None and is_denied_path(p.resolve(), cfg.workspace):
                     continue
                 hits.append(str(p))

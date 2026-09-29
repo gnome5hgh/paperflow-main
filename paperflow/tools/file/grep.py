@@ -22,27 +22,34 @@ class GrepTool(Tool):
         "properties": {
             "pattern": {"type": "string", "description": "正则表达式（如 'Disentangled Progressive'）"},
             "path": {"type": "string", "format": "path",
-                     "description": "文件或目录（目录递归，限 note/pdf/memory 根）"},
+                     "description": "文件或目录绝对路径（目录递归；缺省=语料库笔记根）"},
         },
-        "required": ["pattern", "path"],
+        "required": ["pattern"],
     }
     risk_level = "low"
     root_hints = ["note", "pdf", "memory"]
 
-    def execute(self, pattern: str, path: str) -> ToolResult:
+    def execute(self, pattern: str, path: str | None = None) -> ToolResult:
         """在文件或目录内按正则搜索文本,返回 file:line 匹配行(最多 30 条)。
 
         :param pattern: 正则表达式
-        :param path: 文件路径或目录(目录递归,只搜文本文件,跳过二进制/PDF)
+        :param path: 文件路径或目录(目录递归,只搜文本文件,跳过二进制/PDF);缺省=语料库笔记根
         :returns: 匹配行每行一条(file:line: 原文);无匹配返回"无匹配"
         """
         try:
             regex = re.compile(pattern)
         except re.error as e:
             return ToolResult(text=f"正则无效: {e}")
-        p = Path(path)
-        # 敏感路径黑名单:目录递归时跳过审计/密钥等目录,防通配符枚举。cfg 防御式读取。
+        # cfg 防御式读取(测试与裸构造时可能没有 _config)。敏感路径黑名单:
+        # 目录递归时跳过审计/密钥等目录,防通配符枚举。
         cfg = getattr(self, "_config", None)
+        if path:
+            p = Path(path)
+        else:
+            default_root = getattr(cfg, "note_dir", "") if cfg is not None else ""
+            if not default_root:
+                return ToolResult(text="未传 path 且语料库笔记根未配置——请显式传 path 绝对路径")
+            p = Path(default_root)
         files = [p] if p.is_file() else [
             f for f in p.rglob("*")
             if f.suffix.lower() in _TEXT_SUFFIXES
