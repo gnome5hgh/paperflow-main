@@ -75,6 +75,8 @@ _path_locks: dict[str, asyncio.Lock] = {}
 
 def _path_lock(path: str) -> asyncio.Lock:
     """取目标路径的串行锁（无则建；setdefault 原子，多循环场景安全）。"""
+    # 键 = 目标文件路径
+    # setdefault 原子地“无则建、有则取”，保证同一文件的所有并发调用拿到的是同一把锁。
     return _path_locks.setdefault(path, asyncio.Lock())
 
 
@@ -217,7 +219,6 @@ class Agent:
         agent_manager=None,         # AgentManager | None
         block_manager=None,         # BlockManager | None
         message_manager=None,       # MessageManager | None
-        passage_manager=None,       # PassageManager | None
         compaction=None,            # CompactionSettings | None
         structured=None,            # StructuredOutput | None
         max_turns: int = 20,
@@ -249,8 +250,6 @@ class Agent:
             (记忆工具经它读写核心记忆)
         :param message_manager: MessageManager 实例(可选),对话落盘(Recall) +
             in-context 跨轮回放;None 时记忆相关路径零开销跳过
-        :param passage_manager: PassageManager 实例(可选),长期记忆(archival)
-            检索服务句柄
         :param compaction: CompactionSettings 实例(可选),触发时只压缩 in-context
             窗口(驱逐旧对话 + 插摘要),不删 SQL 原始消息
         :param structured: StructuredOutput 实例(可选),compaction 摘要生成路径
@@ -320,7 +319,6 @@ class Agent:
         self.agent_manager = agent_manager
         self.block_manager = block_manager
         self.message_manager = message_manager
-        self.passage_manager = passage_manager
         #: 压缩设置（CompactionSettings | None）：触发时只改 in-context 窗口
         self.compaction = compaction
         #: 结构化输出（StructuredOutput | None）：compaction 摘要生成路径消费
@@ -396,6 +394,7 @@ class Agent:
         文件可读」。无 MemFS 装配（block_manager 无 memfs）时返回 None。
         """
         bm = self.block_manager
+        # GitEnabledBlockManager（子类，block_manager.py:249）：构造时才挂上 self.memfs = MemFS(...)
         memfs = getattr(bm, "memfs", None)
         if memfs is None:
             return None
@@ -547,6 +546,8 @@ class Agent:
         #   - 有 message_ids → 按 id 精确查询，返回压缩后的窗口（摘要+保留尾部）
         #   - 无 message_ids → 降级全量查询该 agent 所有消息（首轮/未压缩兼容）
         # 返回 schemas.Message 列表，后续经 _schema_to_wire 转为 wire 格式追加进 self._messages。
+        # session_id 就是 MessageManager 中的 agent_id
+        # 各个 id 的层级关系：session（session_id，跨 run 不变）  >  run（trace_id，每次 run 新生成）  >  turn（ReAct 循环轮次）
         loaded = self.message_manager.get_in_context_messages(self.session_id)
         for m in loaded:
             self._messages.append(_schema_to_wire(m))
@@ -605,8 +606,13 @@ class Agent:
         if self.message_manager is None:
             return
         added: list[str] = []
+
+        # 先把对话消息落盘到 messages 表中，获得这些消息在 messages 表中的主键值
         for m in msgs:
             added.append(self.message_manager.add_message(self.session_id, m).id)
+
+        # 将这些主键值更新到 agent_state 表中
+        # 下轮 run 时 _load_in_context 会根据 session_id 加载更新后的 message_ids，进而去 messages 表获得更新后的消息
         if self.agent_manager is not None:
             for mid in added:
                 if mid not in self._message_ids:
@@ -746,6 +752,15 @@ class Agent:
             # mock LLM 只有 chat 方法，无条件换 chat_stream 会让 MagicMock 不可
             # await 抛 TypeError——门控同时是零开销路径（无 UI 调用方不受影响）。
             tools = self._tool_schemas if self._tool_schemas else None
+
+            # response 结构：
+            #| 字段 | 类型 | 说明 |
+            # | --- | --- | --- |
+            # | role | str | 此处恒为 "assistant" |
+            # | content | str \| list[dict] | 回答文本；纯工具调用时 SDK 返回 None，这里规整为 ""；只有视觉调用才是 content parts 列表 |
+            # | tool_calls | list[dict] \| None | 模型请求的工具调用，已从 SDK 对象规整为 {"id", "type": "function", "function": {"name", "arguments"}}；arguments 是 JSON 字符串，由 Agent._exec_tool 负责 json.loads（client.py:222） |
+            # | tool_call_id | str \| None | assistant 消息恒为 None，只有 tool 角色消息才带 |
+            # | truncated | bool | finish_reason == "length" 时为 True——输出被 max_tokens 截断，runtime 据此走续写逻辑而不是把半截内容当最终回答 |
             if self.stream_callback is not None:
                 response = await self.llm.chat_stream(
                     messages, tools=tools,
@@ -789,6 +804,7 @@ class Agent:
                 if self.intent_enabled and self.last_intent is not None:
                     self.conversation.prev_intent = self.last_intent.intent_type
                     self.conversation.prev_user_input = task
+
                 # 最终回答(经 on_finish 改写——回放给下轮的是"用户看到的事实",
                 # SAFE_PROMPT 等安全声明跨轮保留)落盘 + 进 in-context,供下轮回放
                 final = Message(role="assistant", content=content)
@@ -796,8 +812,7 @@ class Agent:
                 self._persist_conversation([final])
                 return content
 
-            # LLM 请求调用工具：将 assistant 消息（含 tool_calls）加入 in-context
-            # 并持久化到数据库，以便后续轮次（或跨 run）能回放该条消息。
+            # LLM 请求调用工具：将 assistant 消息（含 tool_calls）加入 in-context 并持久化到数据库，以便后续轮次（或跨 run）能回放该条消息。
             self._append_to_messages(response)
             self._persist_conversation([response])
 
@@ -998,8 +1013,17 @@ class Agent:
         # 这种异常情况也会被记录在 ctx.args 中供审计。
         ctx.args = raw_args if isinstance(raw_args, dict) else {}
 
-        # 同路径写/编辑串行化（见 _path_locks 说明）：仅对需确认的写类工具生效，
-        # 锁覆盖「确认决策 + 执行」全程；其余工具零开销直通。
+        # 当在一轮工具调用里并行发两个 edit_file 改同一个文件时会出现两个问题：
+        # 1、丢写竞态：两个协程对同一文件并发读-改-写，后写者会把先写者的修改覆盖掉
+        # 2、确认竞态：两个工具各自走到确认中间件，都在对方决策前弹确认框——用户输入的「a」（全部授权）只覆盖了先弹框的那个，后到者会再弹一次；而且两个协程并发读 CLI 标准输入本身就是竞态。
+        # 只有声明了需要用户确认的写类工具（write_file / edit_file 这类）才走加锁分支
+        #
+        # 锁为什么包住 _exec_tool_guarded 整体？
+        # 这是设计关键：锁的粒度不是“执行工具”，而是「确认决策 + 执行」全程（_exec_tool_guarded 的第 5-8 步，runtime.py:1024-1050，含 before 钩子里的 ConfirmRequired → confirm_callback → 工具执行）。所以 async with 必须放在 _exec_tool 这一层包住调用，而不是放进 guarded 函数内部。
+        # 这样第二个并发调用会在锁上等待，直到第一个完整走完「用户确认 + 写文件」。等它拿到锁时，授权键已经被第一个调用写进了已授权集合，于是不再弹框直接放行——既消除了重复弹框，也把同路径的写操作串行化，丢写竞态随之消失。
+        #
+        # _confirm_lock（run 层传入，runtime.py:826）：每次 run 一把，串行化所有并发工具调用的 confirm_callback 本身——解决的是“多人同时抢 CLI 标准输入”的问题，与文件路径无关。
+        # _path_lock（模块级注册表）：按文件路径串行化「确认+执行」——解决的是“同一文件被并发改写”的问题。
         if getattr(tool, "requires_confirm", False) and isinstance(ctx.args.get("path"), str):
             async with _path_lock(ctx.args["path"]):
                 return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
@@ -1032,15 +1056,29 @@ class Agent:
         # 特殊处理：若工具声明了 wants_run_state=True（搜索类工具），则注入一个按 trace_id 键控的去重池（_run_state），用于跨调用共享已访问的 URL 或文件，避免重复抓取。
         # 该注入通过额外参数 _run_state 传递，不写入 ctx.args，因为 ctx.args 会被序列化用于审计，而去重池不可序列化。
         try:
+            # spawn 等异步原生工具：await tool.aexecute(...)，父事件循环上直接 await
+            # asyncio.to_thread 把同步 execute 丢进线程池跑。这对普通工具没问题，但对 spawn 是致命的：asyncio 取消不了线程。
+            # 用户按 Ctrl+C 时，事件循环收到 CancelledError，to_thread 的 future 被取消，
+            # 但已经在线程里跑起来的子 agent 会继续跑完——留下一个孤儿线程，继续烧 LLM token、继续写文件，用户以为已经停了。
+            #
+            # aexecute（spawn.py:466-527）构造子 Agent 后，通过 _run_child 在父的事件循环上 await child.run(task)。
+            # asyncio 的取消是协作式的，沿 await 链传播：父 run() 被取消 →
+            # CancelledError 传入 spawn 调用点的这个 await →
+            # 进入 _run_child（其 docstring，spawn.py:532-534，明确写了“取消传播给子任务，再原样上抛”）→
+            # 子 agent 的 run() 也被取消。整棵 agent 树一起退出，不需要任何额外的清理逻辑。
             if getattr(tool, "async_execute", False):
                 # 异步工具（如 spawn）：在当前事件循环上直接 await——子 agent 与父
                 # 同循环，父被取消（Ctrl+C）时 CancelledError 沿 await 链级联传播，
                 # 整棵 agent 树一起终止（P0-2 根治），不再经 to_thread 留孤儿线程。
                 raw = await tool.aexecute(**ctx.args)
+
+            # 搜索类工具：asyncio.to_thread(execute, ...) + 注入去重池
             elif getattr(tool, "wants_run_state", False):
                 from paperflow.tools.search._common import get_run_state
                 raw = await asyncio.to_thread(
                     tool.execute, **ctx.args, _run_state=get_run_state(self._trace_id))
+
+            # 普通同步工具：asyncio.to_thread(execute, ...)
             else:
                 raw = await asyncio.to_thread(tool.execute, **ctx.args)
             ctx.result = raw if isinstance(raw, ToolResult) else ToolResult(text=str(raw))
