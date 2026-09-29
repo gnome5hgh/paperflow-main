@@ -1027,8 +1027,12 @@ class Agent:
         #
         # _confirm_lock（run 层传入，runtime.py:826）：每次 run 一把，串行化所有并发工具调用的 confirm_callback 本身——解决的是“多人同时抢 CLI 标准输入”的问题，与文件路径无关。
         # _path_lock（模块级注册表）：按文件路径串行化「确认+执行」——解决的是“同一文件被并发改写”的问题。
-        if getattr(tool, "requires_confirm", False) and isinstance(ctx.args.get("path"), str):
-            async with _path_lock(ctx.args["path"]):
+        # 键经 tool.effective_target_path 导出而非直接读 args["path"]：write_file 的
+        # filename 便捷入口没有 path 参数，组合出落盘路径后再上锁——否则 pathless
+        # 调用绕过锁，丢写/重复确认竞态经此入口复发。
+        target = tool.effective_target_path(ctx.args) if tool is not None else None
+        if getattr(tool, "requires_confirm", False) and isinstance(target, str):
+            async with _path_lock(target):
                 return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
         return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
 

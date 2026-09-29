@@ -49,7 +49,7 @@ class WebSearchTool(Tool):
     }
     #: 纯搜索是只读操作（仅出站抓取元数据）——只读会话(low)即可放行;写盘已拆至 fetch_pdf
     risk_level = "low"
-    allowed_roots = []
+    root_hints = []
     #: 返回外部内容（标题/摘要/URL），需打"未经安全校验"横幅
     output_scan = "mark"
     side_effects = ["network"]

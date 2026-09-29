@@ -25,7 +25,7 @@ class ReadPdfTool(Tool):
         "required": ["path"],
     }
     risk_level = "low"
-    allowed_roots = ["pdf"]                    # Paper 只读
+    root_hints = ["pdf"]                    # 提示语料库 PDF 根（只读语义在中间件）
     output_scan = "mark"
     side_effects = ["read_file"]
 
@@ -58,7 +58,7 @@ class ReadPdfTool(Tool):
         0 候选 → 明确"未找到";多候选 → 明确"不唯一"交 LLM 澄清。只对 pdf 根递归
         搜索,不外扩。命中后仍走解析缓存。"""
         cfg = get_rag_service().config
-        root = Path(cfg.vault_pdf_dir)
+        root = Path(cfg.pdf_dir)
         # 归一化目标取 basename 而非全路径:LLM 空格折叠只影响文件名本身,子目录层级
         # 不应参与匹配——否则同 basename 异目录的文件会被全路径比较误判为唯一命中,
         # 该不唯一的场景本应报"不唯一"交 LLM 澄清(安全语义,不猜)。

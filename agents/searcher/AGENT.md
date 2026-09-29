@@ -40,7 +40,7 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
   多次调用(结果自动去重入池),按结果决定是否换词。⚠️ 年份一律用 `year_from`/
   `year_to` 参数,绝不拼进 query 文本——会被 arXiv 当关键词模糊匹配,年份过滤失效。
 - **下载**:`fetch_pdf`(url 取搜索结果行 `pdf=` 字段,`download_to` 填绝对路径
-  `<vault pdf 根>/<研究方向子目录>/<论文slug>.pdf`),下载后 `glob` 校验存在。
+  `<语料库 pdf 根>/<研究方向子目录>/<论文slug>.pdf`),下载后 `glob` 校验存在。
 - **门禁**:`spawn_sub_agent(agent_type=reviewer, mode="download_review", task=...)`,
   任务含候选论文紧凑清单 JSON(标题/年份/venue/issn/pdf_url/来源)与用户约束。
 - **记账**:`extract_title`(pdf/搜索元数据)得权威标题(禁文件名)→

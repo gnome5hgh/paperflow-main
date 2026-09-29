@@ -45,7 +45,10 @@ class PolicyEngineMiddleware(SecurityMiddleware):
         self.max_risk = max_risk
 
         # 已确认集合，键为 (工具名, 目标路径)：同一工具的不同路径仍需单独确认。
-        # write_file/edit_file 都有 path 参数；没有 path 的确认工具键为 (工具名, None)，
+        # 目标路径经 tool.effective_target_path(args) 导出：有 path 参数的工具取
+        # args["path"]；有 pathless 便捷入口的工具（如 write_file 的 filename 模式）
+        # 覆写为组合落盘路径——否则键会塌缩为 (工具名, None)，一次授权即放行
+        # 全会话 pathless 写。返回 None 的确认工具键为 (工具名, None)，
         # 退化为旧的按工具名确认的行为（防御式）。
         self._confirmed: set[tuple[str, str | None]] = set()
 
@@ -105,8 +108,10 @@ class PolicyEngineMiddleware(SecurityMiddleware):
         # ===== 第3级检查：确认放行 =====
         if tool.requires_confirm:
             # 若工具声明 requires_confirm=True，则用户必须显式确认才能执行。
-            # 确认键为 (工具名, 目标路径)：同一工具的不同路径需分别确认。
-            confirm_key = (tool.name, ctx.args.get("path"))
+            # 确认键为 (工具名, 有效目标路径)：同一工具的不同路径需分别确认。
+            # 路径经 effective_target_path 导出——pathless 入口（filename 模式）
+            # 组合出落盘路径后与 path 模式同键控，不会塌缩为按工具名放行。
+            confirm_key = (tool.name, tool.effective_target_path(ctx.args))
             if confirm_key not in self._confirmed:
                 # 该确认键未被确认过，抛 ConfirmRequired
                 ctx.policy_fired = "requires_confirm"

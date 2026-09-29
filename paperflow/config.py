@@ -152,17 +152,17 @@ class PaperFlowConfig:
     #: 回放条数上限（取窗口末尾 N 条）。0 = 回放整个 in-context 窗口。
     resume_replay_limit: int = 0
 
-    #: Obsidian vault 笔记目录(数据源 note/)——**个人绝对路径,不硬编码默认值**,
-    #: 经 .env(PAPERFLOW_VAULT_NOTE_DIR)或 config.yaml 提供;留空则文件类工具无可用根。
-    vault_note_dir: str = ""
+    #: 语料库笔记目录（RAG 索引源,note/）——**个人绝对路径,不硬编码默认值**,
+    #: 经 .env(PAPERFLOW_NOTE_DIR)或 config.yaml 提供;留空则文件类工具无可用根。
+    note_dir: str = ""
 
-    #: Obsidian vault PDF 目录(数据源 pdf/)——同 vault_note_dir,经 .env(PAPERFLOW_VAULT_PDF_DIR)
+    #: 语料库 PDF 目录（RAG 索引源,pdf/）——同 note_dir,经 .env(PAPERFLOW_PDF_DIR)
     #: 或 config.yaml 提供。
-    vault_pdf_dir: str = ""
+    pdf_dir: str = ""
 
-    #: Obsidian vault 研究目录(数据源 research/)——同 vault_note_dir,经 .env
-    #: (PAPERFLOW_VAULT_RESEARCH_DIR)或 config.yaml 提供;空则由 factory 回退 workspace/research。
-    vault_research_dir: str = ""
+    #: 研究产物目录（产物区,research/）——同 note_dir,经 .env
+    #: (PAPERFLOW_RESEARCH_DIR)或 config.yaml 提供;空则由 factory 回退 workspace/research。
+    research_dir: str = ""
 
     #: references.bib 路径（引用库真相源）。空则回退 workspace/citations/references.bib
     citations_bib_path: str = ""
@@ -239,9 +239,9 @@ class PaperFlowConfig:
                     if hasattr(getattr(self, sub), key):
                         setattr(getattr(self, sub), key, val)
 
-        # 顶层配置字段(含 vault / RAG 键,均可通过 config.yaml 顶层覆盖默认值)
+        # 顶层配置字段(含语料库 / RAG 键,均可通过 config.yaml 顶层覆盖默认值)
         for key in ("workspace", "agents_dir", "max_risk",
-                    "vault_note_dir", "vault_pdf_dir", "vault_research_dir",
+                    "note_dir", "pdf_dir", "research_dir",
                     "citations_bib_path",
                     "grobid_endpoint", "milvus_uri", "milvus_collection",
                     "embed_model", "rerank_model",
@@ -264,9 +264,9 @@ class PaperFlowConfig:
             PAPERFLOW_WORKSPACE     → workspace
             PAPERFLOW_AGENTS_DIR    → agents_dir
             PAPERFLOW_MAX_RISK      → max_risk
-            PAPERFLOW_VAULT_NOTE_DIR → vault_note_dir
-            PAPERFLOW_VAULT_PDF_DIR  → vault_pdf_dir
-            PAPERFLOW_VAULT_RESEARCH_DIR → vault_research_dir
+            PAPERFLOW_NOTE_DIR → note_dir
+            PAPERFLOW_PDF_DIR  → pdf_dir
+            PAPERFLOW_RESEARCH_DIR → research_dir
             PAPERFLOW_CITATIONS_BIB_PATH → citations_bib_path
             PAPERFLOW_GROBID_ENDPOINT → grobid_endpoint
             PAPERFLOW_EMBED_MODEL    → embed_model
@@ -294,9 +294,9 @@ class PaperFlowConfig:
             "PAPERFLOW_WORKSPACE": (None, "workspace"),
             "PAPERFLOW_AGENTS_DIR": (None, "agents_dir"),
             "PAPERFLOW_MAX_RISK": (None, "max_risk"),
-            "PAPERFLOW_VAULT_NOTE_DIR": (None, "vault_note_dir"),
-            "PAPERFLOW_VAULT_PDF_DIR": (None, "vault_pdf_dir"),
-            "PAPERFLOW_VAULT_RESEARCH_DIR": (None, "vault_research_dir"),
+            "PAPERFLOW_NOTE_DIR": (None, "note_dir"),
+            "PAPERFLOW_PDF_DIR": (None, "pdf_dir"),
+            "PAPERFLOW_RESEARCH_DIR": (None, "research_dir"),
             "PAPERFLOW_CITATIONS_BIB_PATH": (None, "citations_bib_path"),
             "PAPERFLOW_GROBID_ENDPOINT": (None, "grobid_endpoint"),
             "PAPERFLOW_MILVUS_URI": (None, "milvus_uri"),

@@ -1,7 +1,7 @@
 """ReadFileTool：读取资料库内各类根目录下的文本文件。
 
-安全边界由中间件强制:path 参数经工作区白名单校验,读取外部内容会打"未经安全校验"
-横幅。工具自身不重复校验——声明元数据即可。
+安全边界由中间件强制:path 须为绝对路径且不在敏感路径黑名单(workspace/audit、
+.git 等),读取外部内容会打"未经安全校验"横幅。工具自身不重复校验——声明元数据即可。
 """
 from pathlib import Path
 
@@ -20,7 +20,7 @@ class ReadFileTool(Tool):
     }
     risk_level = "low"
     # 读面含 templates（LLM 读模板）+ scratch（子 agent 读落盘桥草稿）
-    allowed_roots = ["note", "pdf", "memory", "templates", "scratch", "research"]
+    root_hints = ["note", "pdf", "memory", "templates", "scratch", "research"]
     output_scan = "mark"                       # 外部文件内容 → SecurityScan 打未校验横幅
     side_effects = ["read_file"]
 

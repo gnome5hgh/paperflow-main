@@ -105,8 +105,8 @@ Every agent lives in `agents/<name>/` with two files:
 | `supervisor` | 调度主管:拆解任务、spawn、汇总 | 硬编码放行所有（绕过白名单） | 仅 2 个调度工具 + 7 个记忆工具（blocks/ 核心块编辑 + `conversation_search`） |
 | `searcher` | 多源搜索 → reviewer 门禁 → 可选下载 | `[reviewer]` | web_search + fetch_pdf + ask_user + spawn |
 | `noter` | 纯笔记生成：基于指定 PDF 起草结构化笔记,内部 reviewer 审稿 ≤3 轮 | `[reviewer]` | 原子文件工具 + ask_user + spawn + glob/grep + 4 引用工具(lookup/add/format/list) + analyze_figures |
-| `researcher` | 选题发现:基于本地语料盘点→survey/gaps→idea 卡→外部新颖性验证(源优先 semantic scholar,失败如实标「未经外部验证」)→研究计划,产物自己落盘 research 根,内部 spawn searcher(补料/新颖性)+ reviewer(plan_review) | `[searcher, reviewer]` | read/write/edit + rag_retrieve + spawn + 4 引用工具(自产自写) |
-| `reviewer` | 叶子审稿:笔记审稿 / 下载门禁 / 研究计划审稿(plan_review)三种模式 | `[]` | 只读 + submit_review / submit_download_review + 溯源核验(list_citations/lookup_citation) |
+| `researcher` | 选题发现:基于本地语料盘点→survey/gaps→idea 卡→外部新颖性验证(源优先 semantic scholar,失败如实标「未经外部验证」)→研究计划,产物自己落盘 research 根,内部 spawn searcher(补料/新颖性)+ reviewer(plan_review 选题产物审查) | `[searcher, reviewer]` | read/write/edit + rag_retrieve + spawn + 4 引用工具(自产自写) |
+| `reviewer` | 叶子审稿:笔记审稿 / 下载门禁 / 研究选题产物审查(plan_review)三种模式 | `[]` | 只读 + submit_review / submit_download_review + 溯源核验(list_citations/lookup_citation) |
 | `qa-agent` | 回答论文/笔记/阅读记忆问题 | `[]` | rag_retrieve + 只读文件工具 + ask_user + analyze_figures + 记忆 7 项（对话检索、`reference_findings` 沉淀、清单/历史） |
 
 `allowed_agents` / `allowed_spawns` 已由 spawn 工具在运行时强制（见 Orchestration）。记忆工具经 `get_memory_tools()` 装配后**按角色分发**（谁干活谁记录）：supervisor 7 个（blocks/ 核心块编辑 + `conversation_search`），searcher/noter 各 2 个（清单/历史写入），qa-agent 7 个（查询 + `reference_findings` 沉淀 + 清单/历史），researcher/reviewer 不装——记忆写入在干活者处记录，supervisor 不直接执行清单操作。
@@ -158,11 +158,11 @@ Every agent lives in `agents/<name>/` with two files:
 CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 1. **AuditMiddleware** — 每次工具调用 + LLM 调用落 SQLite 审计（含 approval requested/decided 两条独立事件、`record_llm_call` 元数据）。after 钩子失败不中断结果返回
-2. **WorkspacePolicyMiddleware** — 路径边界：校验 `format="path"` 参数为绝对路径、落在工具 `allowed_paths` 白名单内（相对路径直接拒绝；`Path.relative_to` 天然阻断目录穿越）；敏感路径黑名单（workspace/audit、workspace/milvus、`.git`、`.claude`、`config.yaml`/`.env`）硬拦截
+2. **WorkspacePolicyMiddleware** — 路径边界：校验 `format="path"` 参数为绝对路径（相对路径直接拒绝），敏感路径黑名单硬拦截（workspace/audit、workspace/milvus、`.git`/`.claude`/`.zcode`、`config.yaml`/`.env`、凭证与 shell 配置文件、`/etc` 等系统目录前缀）。白名单机制已退役：path 工具统一「任意绝对路径+黑名单」，默认写根由 make_tools 按 agent 装配注入。
 3. **SecurityScanMiddleware** — 工具输出扫描（`output_scan="mark"` 的工具标注关键内容）
 4. **PolicyEngineMiddleware** — 三级检查：`blocked_by_default` 直接拒；`risk_level` 超过会话阈值 `max_risk`（默认 "medium"）拒；`requires_confirm` 抛 `ConfirmRequired` → 用户确认后同一（工具名, 目标路径）不再重复询问
 
-`Tool` 安全元数据（`paperflow/core/tool.py`）：`risk_level`（low/medium/high/critical）、`side_effects`、`blocked_by_default`、`requires_confirm`、`output_scan`（"mark"/None）、`allowed_roots`（语义根名 → `make_tools` 解析为绝对路径注入 `allowed_paths`）。注册表加载时校验这些字段的合法值。
+`Tool` 安全元数据（`paperflow/core/tool.py`）：`risk_level`（low/medium/high/critical）、`side_effects`、`blocked_by_default`、`requires_confirm`、`output_scan`（"mark"/None）、`root_hints`（语义根名提示 → `make_tools` 生成 `[目录]` 提示，不参与强制；强制=绝对路径+黑名单）。注册表加载时校验这些字段的合法值。
 
 ### Memory system
 
@@ -242,9 +242,9 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `vision/` — `analyze_figures`（`needs_parent=True`：视觉 LLM 调用归属父 agent 轮次进审计）。图提取走 pdffigures2 管线（proposal 候选 + 打分选优 + no-overlap 互斥），随后视觉模型结构化看图分析 + 嵌入落盘；key 缺失/无图/失败全降级
 - `memory/` — 11 个记忆工具（`get_memory_tools()` 惰性单例 + `set_memory_context`/`get_memory_context` 运行时上下文；blocks/recall/paper_lists 三组；装配 supervisor，子 agent 各装子集）
 - `orchestration/` — `spawn_sub_agent` / `ask_user_question` / `SubAgentMode`（见下）
-- `common/` — `make_tools(config, tool_items)` 装配工厂：解析 `allowed_roots` 语义根名 → 绝对路径注入 `allowed_paths`（新列表，不污染类属性）、注入 `_config`、给 `description` 追加 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）；`_http.py` 共享 HTTP 基础设施
+- `common/` — `make_tools(config, tool_items, default_write_root=None)` 装配工厂：按 `root_hints` 生成 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）、`default_write_root` 盖章到 write_file（noter→note、researcher→research）、注入 `_config`；`_http.py` 共享 HTTP 基础设施
 
-根映射（`_root_map`）：note→`vault_note_dir`、pdf→`vault_pdf_dir`、research→`vault_research_dir` 或 `workspace/research`、memory→`workspace/memory`、templates→`workspace/templates`、scratch→`workspace/tmp`。
+根映射（`_root_map`）：note→`note_dir`、pdf→`pdf_dir`、research→`research_dir` 或 `workspace/research`、memory→`workspace/memory`、templates→`workspace/templates`、scratch→`workspace/tmp`。
 
 ### Orchestration
 
@@ -285,13 +285,13 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | `max_risk` | 策略引擎风险阈值，默认 "medium" |
 | `compaction` | `CompactionSettings`（惰性工厂避免 config→compaction→llm→config 循环导入） |
 | `sleeptime_enable` / `sleeptime_agent_frequency` | 后台整合开关 / 每 N 条新消息检查一次（默认 50） |
-| `vault_note_dir` / `vault_pdf_dir` / `vault_research_dir` | Obsidian vault 数据源根（个人绝对路径，**无默认值**，须经 .env/config.yaml） |
+| `note_dir` / `pdf_dir` / `research_dir` | 语料库数据源根（note/pdf/research，个人绝对路径，**无默认值**，须经 .env/config.yaml） |
 | `grobid_endpoint` | GROBID 服务地址，默认 `http://localhost:8070` |
 | `milvus_uri` / `milvus_collection` / `embed_model` / `rerank_model` | Milvus 地址（默认 `http://localhost:19530`）/ 集合名（默认 `paperflow`）/ 千问嵌入 / 重排模型 |
 | `citations_bib_path` | references.bib 路径（引用库真相源）。默认 `workspace/citations/references.bib`，可指向任意论文项目目录；空则回退默认 |
 | `agent_timeouts` | 子 agent 超时覆盖表（noter 900 / searcher 420 / reviewer 300 / researcher 1800 / qa-agent 180;audit 数据校准,见 spec 2026-09-05-agent-timeout-recalibration） |
 
-环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_VAULT_NOTE_DIR` / `PAPERFLOW_VAULT_PDF_DIR` / `PAPERFLOW_VAULT_RESEARCH_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY` / `PAPERFLOW_CITATIONS_BIB_PATH` / `PAPERFLOW_S2_API_KEY`（Semantic Scholar 检索的可选 key，由 search 客户端直读环境变量，配置后走高配额端点）。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
+环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_NOTE_DIR` / `PAPERFLOW_PDF_DIR` / `PAPERFLOW_RESEARCH_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY` / `PAPERFLOW_CITATIONS_BIB_PATH` / `PAPERFLOW_S2_API_KEY`（Semantic Scholar 检索的可选 key，由 search 客户端直读环境变量，配置后走高配额端点）。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
 
 ### Key design decisions
 

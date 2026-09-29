@@ -3,7 +3,7 @@
 选题发现 agent 自产自写：read_file/read_pdf 读本地笔记与 PDF 语料，rag_retrieve 按课题
 发现相关段落，write_file/edit_file 落盘产物（survey/gaps/idea 卡/研究计划），引用工具
 (lookup/add/format/list)做溯源标注与参考文献渲染。spawn 工具派发 searcher（补料下载、
-外部新颖性检索）与 reviewer（plan_review 研究计划审稿）。
+外部新颖性检索）与 reviewer（plan_review 选题产物审查）。
 """
 from paperflow.citations import CitationManager
 from paperflow.config import PaperFlowConfig
@@ -27,4 +27,4 @@ TOOLS = make_tools(PaperFlowConfig.from_env(), [
     SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agent_timeouts),
     LookupCitationTool(_cm), AddCitationTool(_cm),
     FormatCitationsTool(_cm), ListCitationsTool(_cm),
-])
+], default_write_root="research")

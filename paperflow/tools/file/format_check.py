@@ -1,6 +1,6 @@
 """FormatCheckTool：笔记 Markdown 标题树与模板对比(reviewer 用,确定性代码)。
 
-模板是工具内部常量路径(非 LLM 可指定的 path 参数),不进 allowed_roots 映射;
+模板是工具内部常量路径(非 LLM 可指定的 path 参数),不进 root_hints 提示;
 模板缺失时自动落盘最小骨架再对比,不抛错中断流程。
 """
 from pathlib import Path
@@ -23,7 +23,7 @@ class FormatCheckTool(Tool):
     }
     risk_level = "low"
     # 也读草稿文件(execute 从磁盘读结构)→ 需要 scratch;templates 由内部派生不在此
-    allowed_roots = ["note", "scratch"]
+    root_hints = ["note", "scratch"]
 
     #: 模板缺失时落盘的最小骨架(缺失建骨架而非报错)
     _SKELETON = ("# <论文标题>\n"

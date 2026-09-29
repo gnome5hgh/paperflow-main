@@ -107,12 +107,9 @@ class Tool(ABC):
     #: 默认拦截(如危险工具未配置时 fail-safe),策略引擎据此拒绝
     blocked_by_default: bool = False
 
-    #: 允许访问的文件/目录路径前缀,空 = fail-safe 禁止文件访问
-    allowed_paths: list[str] = []
-
-    #: 语义根名(如 ["note", "memory"]),由 tools/common/factory.py 启动时解析为绝对路径
-    #: 注入 allowed_paths。allowed_paths 保持"绝对路径列表"语义,工作区校验层零改动。
-    allowed_roots: list[str] = []
+    #: 语义根名提示（如 ["note", "memory"]）——仅用于 make_tools 生成 [目录] 提示，
+    #: 不参与任何强制。强制边界 = 绝对路径 + 敏感路径黑名单（WorkspacePolicyMiddleware）。
+    root_hints: list[str] = []
 
     #: 输出扫描模式,安全扫描中间件据此决定扫描方式;"mark" | None
     output_scan: str | None = None
@@ -139,6 +136,21 @@ class Tool(ABC):
         :raises Exception: 执行失败时由 Agent._exec_tool 捕获并转为错误 ToolResult
         """
         ...
+
+    def effective_target_path(self, args: dict) -> str | None:
+        """导出本次调用的有效目标路径（无法解析时 None）。
+
+        会话确认键（PolicyEngineMiddleware）与同路径写锁（runtime._path_lock）
+        统一经此取目标，而不直接读 ``args["path"]``——工具若有 pathless 便捷
+        入口（如 write_file 的 filename+dir 模式），子类覆写为组合后的落盘
+        路径，保证：同一文件无论从哪个入口写，键一致（同锁同确认）；不同
+        文件键不同（各自确认、互不串锁）。返回 None（目标不存在/调用必报错
+        不落盘）时确认键退化为 (工具名, None)、写锁不加持——与无 path 参数
+        的确认类工具的既有防御行为一致。
+
+        默认实现：返回 ``args["path"]``（绝大多数工具的单一入口）。
+        """
+        return args.get("path")
 
     def attach_agent(self, agent) -> None:
         """注入父 Agent 引用（opt-in，权限最小化）。

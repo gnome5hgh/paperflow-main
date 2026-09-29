@@ -34,6 +34,6 @@ def _make_supervisor_tools() -> list:
     ] + [cls() for cls in _MEMORY_TOOLS]
 
 
-# 注：supervisor 工具无 allowed_roots（无文件访问），无需 make_tools 装配——
+# 注：supervisor 工具无 root_hints（无文件访问），无需 make_tools 装配——
 # 直接实例化列表即可（AgentRegistry 约定 TOOLS 是 Tool 实例列表）。
 TOOLS = _make_supervisor_tools()
