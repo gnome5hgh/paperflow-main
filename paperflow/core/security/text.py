@@ -54,7 +54,7 @@ def sanitize_surrogates(text: str) -> str:
         - 该函数假设输入是 str 类型；调用方应确保传入字符串而非 bytes。
         - 对于完全正常的文本，正则搜索是 O(n) 但 Python 会快速跳过，开销极低。
         - surrogateescape 回环仅对“残留”场景有效（即非法代理由 Python 的
-          surrogateescape 解码器产生），对于人工构造的孤立代理（如单个 \uD800），
+          surrogateescape 解码器产生），对于人工构造的孤立代理（如单个 \\uD800），
           encode 阶段会因无法映射到字节而抛出 UnicodeEncodeError，触发降级替换。
         - 降级替换使用 U+FFFD（�），这是 Unicode 官方推荐的替换字符，下游可安全处理。
     """

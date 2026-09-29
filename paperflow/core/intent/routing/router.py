@@ -1,6 +1,21 @@
 # paperflow/core/intent/routing/router.py
 """混合路由器：稀疏（BM25）+ 稠密双路召回、按路由阈值裁决。
 
+角色（裁判）：混合路由三层分工为 编码器（翻译：文本 → 向量）→
+HybridLocalIndex（记分员：裸相似度）→ 本类（判定：分数 → 意图结论）。
+
+本类持有全部三者——__init__ 注入稠密编码器、默认新建 BM25Encoder 与 HybridLocalIndex。
+
+一次查询五步（__call__）：
+  ① 编码   text → 稠密向量（encoder）+ 稀疏向量（BM25Encoder）
+  ② 加权   _convex_scaling：dense × alpha（稠密权重），sparse × (1-alpha)
+  ③ 检索   index.query 拿 top_k 裸分数（index 只算数学，不懂判定）
+  ④ 聚合   _score_routes：top_k 候选按路由名分组取均值
+  ⑤ 裁决   _pass_routes：过阈值（路由专属优先，否则全局）→ RouteChoice；全不过 → None，交由管线走 LLM 兜底
+
+alpha 语义：稀疏抓关键词精确匹配（说什么词命中什么意图）、稠密兜同义改写（换措辞也能命中）——类默认 0.3 偏重稀疏，CLI 生产装配传 0.5（两路均权）。
+fit()/scores() 是裁判的附属工具：前者随机搜索训练每路由阈值，后者给 LLM兜底提供近失候选。
+
 只做静态意图路由：本地内存索引、同步调用，一次查询返回单个 RouteChoice
 （命中返回路由名与融合分数；未命中返回 None，交由管线走 LLM 兜底）。
 """
@@ -75,7 +90,11 @@ class HybridRouter:
             sparse_embeddings=sparse_scaled,
         )
 
-    def _convex_scaling(self, dense, sparse):
+    def _convex_scaling(
+            self,
+            dense: np.ndarray,  # (n, dim) 稠密向量批次，每行一条
+            sparse: list[dict[int, float]],  # 稀疏向量批次，每项 {token_id: 权重}
+    ) -> tuple[np.ndarray, list[dict[int, float]]]:
         """按 alpha 凸组合缩放：dense × alpha，sparse × (1-alpha)。"""
         scaled_dense = np.array(dense) * self.alpha
         scaled_sparse = [{k: v * (1 - self.alpha) for k, v in d.items()}
@@ -113,13 +132,26 @@ class HybridRouter:
             sparse_vector = sparse_s[0] if sparse_s else None
 
         # 从索引中检索 top_k 条候选语料，返回融合分数和对应的路由名
+        # scores：np.ndarray (top_k,)，如：array([1.42, 1.18, 0.97, 0.85, 0.61])
+        # route_names：list[str]，如：['search_paper', 'search_paper', 'search_paper', 'generate_note', 'ask_question']
         scores, route_names = self.index.query(vector=vector,
                                                top_k=self.top_k,
                                                sparse_vector=sparse_vector)
 
         # 构造查询结果列表
+        # query_results：list[dict]，如：
+        # [{"route": "search_paper", "score": 1.42},
+        #  {"route": "search_paper", "score": 1.18},
+        #  {"route": "search_paper", "score": 0.97},
+        #  {"route": "generate_note", "score": 0.85},
+        #  {"route": "ask_question",  "score": 0.61}]
         query_results = [{"route": d, "score": s}
                          for d, s in zip(route_names, scores)]
+
+        # scored_routes：list[tuple[str, float, list[float]]]，如：
+        # [("search_paper", 1.19, [1.42, 1.18, 0.97]),  # (1.42+1.18+0.97)/3
+        #  ("generate_note", 0.85, [0.85]),  # 只命中 1 句 → 均值=它自己
+        #  ("ask_question", 0.61, [0.61])]
         scored_routes = self._score_routes(query_results)
         return self._pass_routes(scored_routes, simulate_static)
 
@@ -136,15 +168,33 @@ class HybridRouter:
         Returns:
             列表，每个元素为 (路由名, 融合分数)，按分数降序排列。
         """
+        # 在线编码并缩放
         dense_s, sparse_s = self._convex_scaling(
             np.array(self.encoder([query])),
             self.sparse_encoder([query]),
         )
+
+        # 从索引中检索 top_k 条候选语料，返回融合分数和对应的路由名
+        # scores：np.ndarray (top_k,)，如：array([1.42, 1.18, 0.97, 0.85, 0.61])
+        # route_names：list[str]，如：['search_paper', 'search_paper', 'search_paper', 'generate_note', 'ask_question']
         scores, route_names = self.index.query(vector=dense_s[0],
                                                top_k=self.top_k,
                                                sparse_vector=(sparse_s[0] if sparse_s else None))
+
+        # 构造查询结果列表
+        # query_results：list[dict]，如：
+        # [{"route": "search_paper", "score": 1.42},
+        #  {"route": "search_paper", "score": 1.18},
+        #  {"route": "search_paper", "score": 0.97},
+        #  {"route": "generate_note", "score": 0.85},
+        #  {"route": "ask_question",  "score": 0.61}]
         query_results = [{"route": d, "score": s}
                          for d, s in zip(route_names, scores)]
+
+        # scored：list[tuple[str, float, list[float]]]，如：
+        # [("search_paper", 1.19, [1.42, 1.18, 0.97]),  # (1.42+1.18+0.97)/3
+        #  ("generate_note", 0.85, [0.85]),  # 只命中 1 句 → 均值=它自己
+        #  ("ask_question", 0.61, [0.61])]
         scored = self._score_routes(query_results)
         return [(name, float(score)) for name, score, _ in scored[:k]]
 

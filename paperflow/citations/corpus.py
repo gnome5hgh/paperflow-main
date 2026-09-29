@@ -27,8 +27,8 @@ class CorpusIndex:
     def __init__(self, config, rag_service=None, title_extractor=None):
         """注入 config；rag_service/title_extractor 可注入桩（测试），缺省惰性获取。
 
-        rag_service 提供 parse_pdf_cached（复用 GROBID 解析）；title_extractor
-        是 TitleExtractor（PDF 解析无标题时的 5 级链兜底）。
+        rag_service 提供 parse_pdf_cached（复用 GROBID 解析）；
+        title_extractor 是 TitleExtractor（PDF 解析无标题时的 5 级链兜底）。
         """
         self.config = config
         self._rag_service = rag_service

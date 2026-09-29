@@ -4,6 +4,41 @@ references.bib 是引用库的真相源——用户手工维护的分节注释�
 须原样保留，故只追加、绝不重写。条目扫描用正则提取 key 与字段，不做完整
 语法解析（够查找/去重用）。写操作持进程内锁串行：子 agent 同进程 asyncio
 并发，进程内锁足够；多进程写属罕见场景，不为它上文件锁。
+
+--------------------------------------------------------------------
+BibTeX 格式速览（本模块注释术语对照）
+
+references.bib 由一摞「条目」（entry，一张图书卡片）组成，一条条目长这样：
+
+    @article{vaswani2017attention,          <- 条目头：类型 + key
+      author  = {Vaswani, Ashish},          +\
+      title   = {Attention Is All You Need, | 条目体（body）：
+      journal = {NeurIPS},                  | 一摞字段（field）
+      year    = {2017},                     +/
+    }                                       <- 配对右括号
+
+- 条目类型（entry_type）：@article 期刊论文 / @inproceedings 会议论文 / @book 书……@ 是 BibTeX 的条目起始标记。
+- key（引用键）：卡片的唯一编号（如 "vaswani2017attention" =
+  一作姓氏 + 年份 + 短标题，见 manager.gen_key）。LaTeX 的 cite 命令、
+  笔记的 [来源:key§节] 标注都用它指名道姓。
+- 条目体（body）：除去 `@type{key,` 头之后、直到配对右括号之间的全部内容。
+- 字段（field）：一行属性 `name = {value}`（author/title/year/journal…）。
+- raw（条目原文）：从 @ 到配对 } 的完整原文，一个字符不加工；bibtex 渲染样式时原样吐回。
+
+花括号配对（_entry_body / _fields_of 的深度计数）：BibTeX 的值内可嵌套花括号（如 {Attention Is {All} You Need}，内层 {} 保护大写），
+不能"见 } 就停"——从 { 出发，遇 { depth+1、遇 } depth-1，depth 回到 0 才是真结束。
+两个函数是同一算法的两个层级：_entry_body 对整张卡片截体，_fields_of 对卡片里每行属性抠值。
+
+函数地图：
+    ensure_file     文件不存在则建空文件（写入头部注释）
+    parse_entries   全文件扫描：正则找条目头 -> _entry_body 截体 ->
+                    _fields_of 抠字段 -> 组装 BibEntry 列表
+    find_by_title   按标题查找/去重；先 _normalize（小写+去标点+折叠空白），
+                    大小写与标点差异不影响"同标题"判定
+    append_entry    锁内往文件末尾追加一条条目（append-only，不重写）
+
+边界：条目头必须严格是 `@type{key,`（key 后紧跟逗号）才能被识别；不解析 @string 宏等完整语法——对查找/去重/原文渲染三个用途足够。
+--------------------------------------------------------------------
 """
 from __future__ import annotations
 

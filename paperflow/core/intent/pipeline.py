@@ -135,10 +135,13 @@ class IntentPipeline:
     def _build_llm_prompt(self, query: str, near_miss: list[tuple[str, float]]) -> str:
         """构建 LLM 兜底提示词。
 
-        注入三部分信息：
+        注入四部分信息：
             1. 意图枚举列表（IntentType 所有取值）。
-            2. 路由层的近失候选（路由名 + 分数），供 LLM 参考确认或改判。
-            3. 原始用户输入 query。
+            2. 输出字段约定，含 clarification 的填写条件——模型没被交代条件就不会
+               产出澄清，跨轮澄清链路（CLI 挂起 → 合并重跑 → 超轮强制调度）随之
+               成为永不触发的死路径。
+            3. 路由层的近失候选（路由名 + 分数），供 LLM 参考确认或改判。
+            4. 原始用户输入 query。
 
         Args:
             query: 用户原始输入文本。
@@ -150,7 +153,13 @@ class IntentPipeline:
         parts = [
             "你是意图分类器。从以下意图中选择一个：",
             ", ".join(t.value for t in IntentType),
-            "输出 JSON：{intent_type, confidence, query_rewrite}。",
+            "输出 JSON：{intent_type, confidence, query_rewrite, clarification}。",
+            "clarification 可选，留空串表示不需要：只在输入缺决定性信息、无法在意图间取舍时才填，"
+            "例如指代不明（「帮我处理一下那篇」没说哪篇）或动作不明（没说读、写笔记还是分析）。"
+            "能推断出合理意图就不要澄清——直接给 intent_type，用 confidence 表达"
+            "不确定程度；闲聊、求助、超出范围这类意图永远不需要澄清。",
+            "澄清文本会原样展示给用户，须自足、简短、只问一个问题；即使填了澄清，"
+            "也要照常给出最可能的 intent_type 与 confidence。",
         ]
         if near_miss:
             parts.append("路由层近失候选（供参考，可确认或改判）：")

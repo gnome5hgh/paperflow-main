@@ -144,6 +144,14 @@ class PaperFlowConfig:
     #: Sleeptime 触发频率（每 N 条新消息检查一次）
     sleeptime_agent_frequency: int = 50
 
+    #: 会话恢复时把历史对话回放进终端滚动区。--resume 恢复的是模型上下文，
+    #: 屏幕上否则不留任何痕迹（用户会以为恢复失败）；见 terminal/resume.py。
+    #: 置 False 则只恢复上下文、不显示历史。
+    resume_replay: bool = True
+
+    #: 回放条数上限（取窗口末尾 N 条）。0 = 回放整个 in-context 窗口。
+    resume_replay_limit: int = 0
+
     #: Obsidian vault 笔记目录(数据源 note/)——**个人绝对路径,不硬编码默认值**,
     #: 经 .env(PAPERFLOW_VAULT_NOTE_DIR)或 config.yaml 提供;留空则文件类工具无可用根。
     vault_note_dir: str = ""
@@ -268,6 +276,8 @@ class PaperFlowConfig:
             PAPERFLOW_VISION_MODEL    → vision.model
             PAPERFLOW_SLEEPTIME_ENABLE    → sleeptime_enable（"true"/"false"）
             PAPERFLOW_SLEEPTIME_FREQUENCY → sleeptime_agent_frequency
+            PAPERFLOW_RESUME_REPLAY       → resume_replay（"true"/"false"）
+            PAPERFLOW_RESUME_REPLAY_LIMIT → resume_replay_limit（0 = 整窗）
         """
         # 映射表：环境变量名 → (父对象名, 属性名)
         # parent 为 "llm"/"vision" 表示写入 self.<parent>.<attr>，None 表示写入 self.<attr>
@@ -295,6 +305,8 @@ class PaperFlowConfig:
             "PAPERFLOW_RERANK_MODEL": (None, "rerank_model"),
             "PAPERFLOW_SLEEPTIME_ENABLE": (None, "sleeptime_enable"),
             "PAPERFLOW_SLEEPTIME_FREQUENCY": (None, "sleeptime_agent_frequency"),
+            "PAPERFLOW_RESUME_REPLAY": (None, "resume_replay"),
+            "PAPERFLOW_RESUME_REPLAY_LIMIT": (None, "resume_replay_limit"),
         }
 
         for env_var, (parent, attr) in env_map.items():

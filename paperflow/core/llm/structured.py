@@ -167,14 +167,20 @@ def _schema_to_prompt(schema: type[BaseModel], depth: int = 0,
     递归展开嵌套模型（经 _field_desc → _nested_body），用 ``max_depth`` 限制深度
     防自引用模型无限递归——这在 recursive 记忆 schema 上不是理论风险。
     每个字段标注必填/可选，缩进按深度递增，最终拼成一段类 JSON 文本。
+    字段声明了 ``description`` 时附在其后：那是模型判断「这个字段何时该填」的唯一
+    依据（代码里的注释进不了提示词），未声明 description 的字段输出与旧版一致。
     """
     pad = "  " * depth
     inner_pad = "  " * (depth + 1)
     parts = []
     for name, field in schema.model_fields.items():
         required = field.is_required()
-        parts.append(inner_pad + _field_desc(name, field, depth, max_depth)
-                     + (" (必填)" if required else " (可选)"))
+        line = (_field_desc(name, field, depth, max_depth)
+                + (" (必填)" if required else " (可选)"))
+        if field.description:
+            # 说明压成单行：模板按行组织，多行说明会破坏缩进结构
+            line += " — " + " ".join(field.description.split())
+        parts.append(inner_pad + line)
     return "{\n" + "\n".join(parts) + f"\n{pad}}}"
 
 

@@ -1,4 +1,13 @@
-"""稠密 + 稀疏双路融合索引（内存版），服务混合路由的向量查询。"""
+"""稠密 + 稀疏双路融合索引（内存版），服务混合路由的向量查询。
+
+角色（记分员）：混合路由三层分工为 编码器 → 本索引 → HybridRouter（裁判），
+本类只回答一个问题——"查询向量与书架上每句示例句有多像？"为此同时持有两路数据（index 稠密矩阵 + sparse_index 稀疏字典列表），
+query() 两路各算一个相似度再相加，argpartition 取 top_k。
+
+边界：输出是裸分数（分数数组 + 路由名标签）——不知道什么是阈值、意图、编码过程；
+routes 数组对它只是一列挂在向量旁的字符串，原样返回不做解读。
+依赖方向单向：本类被 HybridRouter 持有使用（构造时注入），参数与返回值只有向量和分数，不出现 Route / 阈值 / IntentType。
+"""
 import numpy as np
 from numpy.linalg import norm
 
@@ -13,7 +22,9 @@ class HybridLocalIndex:
 
     def __init__(self):
         """初始化空索引，各属性为 None 表示未填充。"""
+        # 所有示例句的稠密向量矩阵
         self.index: np.ndarray | None = None        # 稠密向量矩阵，形状 (n, dim)，每行是一个已缩放（乘以 alpha，在 router.py 中实现）的稠密向量。
+        # 所有示例句的稀疏字典列表
         self.sparse_index: list[dict] | None = None  # 稀疏向量列表 [{token_id: weight}]，权重已缩放（乘以 1-alpha，在 router.py 中实现）
         self.routes: np.ndarray | None = None       # 路由标签数组，形状 (n_samples,)，存储每个样本对应的意图路由名（str）
         self.utterances: np.ndarray | None = None   # 原始示例句数组，形状 (n_samples,)，仅用于调试或追溯，不参与查询。
@@ -53,7 +64,7 @@ class HybridLocalIndex:
               ) -> tuple[np.ndarray, list[str]]:
         """融合查询：sim_d（余弦）+ sim_s（稀疏点积）→ argpartition 取 top_k。
 
-        sim_d：余弦相似度，除以各行范数 * query 范数（防止 query 未归一化）。
+        sim_d：稠密余弦相似度，除以各行范数 * query 范数（防止 query 未归一化）。
         sim_s：稀疏点积（BM25 类稀疏向量间交集求和），与 sim_d 同量纲相加。
         空索引直接返回 (空数组, [])——调用方据此短路。
 

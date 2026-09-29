@@ -20,6 +20,7 @@ import time
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.spinner import Spinner
 from rich.syntax import Syntax
 from rich.text import Text
@@ -330,6 +331,41 @@ class StreamRenderer:
                 self._console.print(Syntax(capped, "diff", line_numbers=False), overflow="fold")
             else:
                 self._print(capped, end="\n", flush=True)
+
+    def print_markdown(self, text: str, *, style=None) -> None:
+        """终态渲染一段 Markdown（会话历史回放用），观感与流式回答落屏后一致。
+
+        为什么不能直接用 print：print 把文本原样交给 console.print，rich 会把其中
+        的 ``[x]`` 当标记解析——命中不配对的闭合标签（如正文里的 ``[/note]``）直接抛
+        MarkupError，崩掉整轮。Markdown 渲染器不做这层解析，任意历史文本都安全；
+        顺带与流式路径渲染回答时的样式完全一致。
+
+        Args:
+            text: Markdown 原文；空串直接返回（纯工具调用轮的历史消息 content 为空）。
+            style: 保留参数位（非 TTY 路径忽略），供调用方对齐其它终态输出的样式。
+        """
+        if not text:
+            return
+        with self._lock:
+            self._end_block()
+            if self._console is not None:
+                self._console.print(Markdown(text), style=style, overflow="fold")
+            else:
+                self._print(text, end="\n", flush=True)
+
+    def print_raw(self, text: str, *, style=None) -> None:
+        """终态行输出，但不解释 rich 标记（会话历史回放的用户文本）。
+
+        用户历史消息是任意文本，含 ``[/x]`` 之类片段时 console.print 会抛
+        MarkupError，故 TTY 下先 escape 再打印。非 TTY 路径没有标记语义，必须原样
+        输出——escape 会在这里多打出反斜杠。
+        """
+        with self._lock:
+            self._end_block()
+            if self._console is not None:
+                self._console.print(escape(text), style=style, overflow="fold")
+            else:
+                self._print(text, end="\n", flush=True)
 
     def should_print(self, result: str) -> str:
         """

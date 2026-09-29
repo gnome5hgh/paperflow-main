@@ -47,6 +47,7 @@ from paperflow.terminal.io import make_input_io
 from paperflow.terminal.render import make_renderer
 from paperflow.terminal.repl import (
     _repl, _make_print_fn, _make_confirm_callback, _make_ask_callback)
+from paperflow.terminal.resume import build_resume_replay
 
 #: 模块级 embedder 单例：千问嵌入模型首次调用才加载（sentence-transformers 导入数秒），
 #: 进程内只加载一次。RAG/意图管线/记忆服务共享同一实例——各自 new 一个会让同一
@@ -294,9 +295,8 @@ def main(argv: list[str] | None = None) -> int | None:
         --help / --version：用法与版本。
         --resume [SESSION_ID]：恢复历史会话；不带 id 时列出历史会话供选择。
         --skip-bootstrap：跳过依赖服务启动预检（等价 PAPERFLOW_SKIP_BOOTSTRAP=1）。
-        skill install/list/uninstall：skill 安装管理子命令（准入通道见
-        paperflow/core/skills/install.py）；分发后短路返回，返回值即退出码，
-        不进入下方 REPL 装配。
+        skill install/list/uninstall：skill 安装管理子命令（准入通道见paperflow/core/skills/install.py）；
+        分发后短路返回，返回值即退出码，不进入下方 REPL 装配。
     无参数行为与历史版本完全一致：装配后进入新会话 REPL。
 
     装配顺序（依赖关系）：
@@ -466,6 +466,18 @@ def main(argv: list[str] | None = None) -> int | None:
     else:
         agent_state = agent_manager.create_agent(session_id)
 
+    # 会话恢复的历史回放（P2-3 观感补齐）：--resume 恢复的是模型上下文，屏幕上
+    # 否则不留任何痕迹，用户会以为恢复失败。这里把**同一个** in-context 窗口投影成
+    # 回放载荷（数据源与模型一致），由 _repl 在横幅之后渲染进滚动区。
+    # 必须在此处（message_manager.agent_manager 回填之后）构建：否则
+    # get_in_context_messages 读不到窗口，会降级成全量查询、与模型所见不一致。
+    resume_replay = None
+    if args.resume is not None and config.resume_replay:
+        resume_replay = build_resume_replay(
+            message_manager, session_id, limit=config.resume_replay_limit,
+            created_at=(str(agent_state.created_at)[:16]
+                        if agent_state.created_at else None))
+
     structured = StructuredOutput(llm)
 
     # extract_title 工具的标题提取器注入记忆工具运行时上下文（LLM 层走
@@ -533,4 +545,4 @@ def main(argv: list[str] | None = None) -> int | None:
     asyncio.run(_repl(supervisor, conversation,
                       io=io, renderer=renderer, sleeptime=sleeptime,
                       config=config, resume_hint=resume_hint,
-                      confirm_center=center))
+                      confirm_center=center, resume_replay=resume_replay))

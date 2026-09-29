@@ -71,6 +71,7 @@ class AgentManager:
             context_window_limit=row["context_window_limit"],
             message_ids=json.loads(row["message_ids"]) if row["message_ids"] else [],
             memory=Memory(blocks=self.block_manager.list_blocks()),
+            created_at=row["created_at"],
         )
 
     def create_agent(self, agent_id: str, name: str | None = None) -> AgentState:

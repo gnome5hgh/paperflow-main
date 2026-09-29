@@ -36,9 +36,8 @@ class LookupCitationTool(Tool):
         elif r.status == "in_corpus":
             # bib 真相校验（ADR：溯源链闭环）——key 现场生成、未落地 references.bib，
             # 此前模型会无视降级提示直接声称「经 lookup_citation 确认」（P1-5 根因）
-            text += ("（⚠️ 该 key 尚未存在于 references.bib。引用标注前必须先 add_citation "
-                     "成功入库；无法入库则该引用降级标注为 [⚠未入库]，不得写「经 "
-                     "lookup_citation 确认」或 [来源:key§节]）")
+            text += ("（⚠️ 该 key 尚未存在于 references.bib。引用标注前必须先 add_citation 成功入库；"
+                     "无法入库则该引用降级标注为 [⚠未入库]，不得写「经 ""lookup_citation 确认」或 [来源:key§节]）")
         else:
             text += "（missing → [⚠无支撑]，不编造）"
         return ToolResult(text=text,

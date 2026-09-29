@@ -62,6 +62,11 @@ def resolve_model_dir(workspace: str, model_name: str) -> str:
 class SbertEmbedder:
     """真实的千问嵌入模型（基于 sentence-transformers），首次使用时才加载，CPU 推理。
 
+    什么是稠密编码：神经网络把整句话的语义压成一个固定维度的小向量（如 1024 维），每一维都是小数、几乎没有 0，故称"稠密"——
+    与稀疏编码（core/intent/encoders/bm25.py 的 BM25Encoder，"说了哪些词"的打勾表）相对，
+    它匹配的是"说了什么意思"：语义相近的句子映射到空间中相近的点，换措辞、中英混说也能命中；判断相似用余弦相似度（方向一致性，1=同向）。
+    代价：黑盒、可解释性差，会把泛泛相似的句子也判高分——混合路由因此以稀疏为主、本编码器为辅（稠密权重 alpha，见 routing/router.py）。
+
     向量维度不写死，而是加载后从模型读取：不同型号维度不同
     （如 Qwen3-Embedding-0.6B 是 1024），硬编码容易出错。
 

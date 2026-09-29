@@ -155,4 +155,13 @@ class IntentionResult(BaseModel):
     steps: list["IntentType"] = []
 
     #: 歧义澄清问题（非空时管线提前返回，由调用方跨轮挂起待澄清意图）
-    clarification: str | None = None
+    #: 这个 description 与上面的 #: 注释重复是有意的：#: 只给读代码的人看，
+    #: description 会经 StructuredOutput 的 schema 展开进提示词，是模型判断
+    #: 「什么时候该填这个字段」的依据——缺了它澄清几乎不会被产出。
+    clarification: str | None = Field(
+        default=None,
+        description=(
+            "输入意图不明确、无法在意图间取舍时，写给用户的一句简短澄清问题；"
+            "能推断出合理意图时留空，用 intent_type 与 confidence 表达不确定程度。"
+        ),
+    )

@@ -452,7 +452,8 @@ class Agent:
         Args:
             task: 本轮用户输入文本（原始任务）。
             force_dispatch: 强制调度标志。若为 True，即使意图管线要求澄清，也跳过早退，
-                继续执行 ReAct（用于跨轮澄清超过 2 轮后的强制终止路径）。
+                继续执行 ReAct（用于跨轮澄清达到 `PendingClarification.MAX_ROUNDS`
+                上限后的强制终止路径；阈值定义在 core/intent/conversation_state.py）。
 
         Returns:
             list[Message]: 头部消息列表。正常返回 [system_prompt, skills(可选), memory(可选), intent(可选), user_task]；
@@ -490,12 +491,11 @@ class Agent:
 
             if intent is not None:
                 # ---------- 跨轮澄清早退路径 ----------
-                # 如果意图管线返回了 clarification 字段（即需要向用户提问）
-                # 且 force_dispatch 未置 True，则不走 ReAct，而是直接返回澄清问题
-                # 作为用户消息。run() 检测到 head 长度为 1 且 role 为 user 时，
-                # 会直接返回该文本，不落盘、不进入工具循环。
-                # 这样，本轮对话实际上是一个“非任务轮”，CLI 层将问题展示给用户，
-                # 等待用户回答后重新调用 run()，实现跨轮澄清（最多 2 轮）。
+                # 如果意图管线返回了 clarification 字段（即需要向用户提问）且 force_dispatch 未置 True，
+                # 则不走 ReAct，而是直接返回澄清问题作为用户消息。
+                # run() 检测到 head 长度为 1 且 role 为 user 时，会直接返回该文本，不落盘、不进入工具循环。
+                # 这样，本轮对话实际上是一个“非任务轮”，CLI 层将问题展示给用户，等待用户回答后重新调用 run()，实现跨轮澄清
+                # （最多 PendingClarification.MAX_ROUNDS 轮，见 core/intent/conversation_state.py）。
                 self.last_intent = intent
                 if intent.clarification and not force_dispatch:
                     # 跨轮澄清:早退在落盘前 → 不持久化(非任务轮)。澄清只走 CLI 层;
@@ -668,8 +668,8 @@ class Agent:
 
         :param task: 用户任务文本（对于 Supervisor 是原始用户输入；
                      对于 SubAgent 是 Supervisor 拆分后的子任务）
-        :param force_dispatch: 强制调度开关（跨轮澄清 ≤2 轮终止路径）——
-            置 True 时即使管线产出 clarification 也跳过早退，直接跑 ReAct
+        :param force_dispatch: 强制调度开关（跨轮澄清达到 `PendingClarification.MAX_ROUNDS`
+            上限的终止路径）——置 True 时即使管线产出 clarification 也跳过早退，直接跑 ReAct
         :returns: LLM 的最终文本回答（经过所有中间件的 on_finish 钩子改写）
         :raises MaxTurnsExceeded: 超过 max_turns 轮仍未停止
 
@@ -703,6 +703,9 @@ class Agent:
         # 不进累积;末尾 user task。澄清早退时 head=[user 澄清文本] → 直接返回,
         # 不落盘不加载(澄清是"非任务轮",只走 CLI 层)。
         head = await self._build_head(task, force_dispatch=force_dispatch)
+
+        # run() 在看到 head 只有一个 user 消息，直接返回那句话就结束了——
+        # 没有加载跨轮历史、没有落盘、没有进 ReAct、一个工具都没调。所以这一轮在数据库里不留任何痕迹。
         if len(head) == 1 and head[0].role == "user":
             return head[0].content
 

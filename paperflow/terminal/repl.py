@@ -8,6 +8,16 @@ cli.main 装配后注入；不进包级 __init__ 导出（避免包级导入拖�
 
 每轮:读 stdin → 合并挂起的澄清(若有)→ supervisor.run(query, force_dispatch) →
 若产生澄清问题且未超轮 → 挂起打印问题;否则打印结果。
+
+嵌套关系：
+进程
+└── _repl 主循环                      ← 每轮：sleeptime tick → 读输入 → 起 run_task → 渲染
+     └── supervisor.run("用户输入")     ← 任务级：ReAct 循环（turn 0..max_turns）
+          └── turn: LLM → 工具们
+               └── spawn 工具 → child.run("子任务")   ← 嵌套的 run（子 agent）
+REPL 只有一个，run 可以嵌套很多层。
+子 agent 从不经过 REPL——spawn 直接 await child.run(...)，任务完成即返回，
+所以子 agent 没有“输入循环”，也不需要终端。这也印证了 REPL 是唯一的会话入口。
 """
 import asyncio
 import logging
@@ -22,6 +32,7 @@ from paperflow.terminal.diff import compute_diff, truncate_diff
 from paperflow.terminal.errors import translate_error
 from paperflow.terminal.io import InputIO
 from paperflow.terminal.render import StreamRenderer
+from paperflow.terminal.resume import ResumeReplay, render_resume_replay
 
 logger = logging.getLogger(__name__)
 
@@ -160,10 +171,14 @@ def _merge_pending(conversation: ConversationState, raw: str) -> tuple[str, bool
     """
     合并跨轮澄清输入，返回 (query, force_dispatch)。
 
-    当上一轮产生了澄清问题且未超轮（round < 2），本轮输入视为对澄清的回答，
-    将其与原始查询拼接作为新查询，并设置 force_dispatch=False 以便重新运行 intent 管线。
-    若澄清轮数已达上限（round >= 2），则强制调度（force_dispatch=True），
-    使用原始查询（不含用户澄清）直接进入 ReAct 循环，避免无限澄清循环。
+    当上一轮产生了澄清问题且未达上限（`PendingClarification.is_exhausted` 为 False），
+    本轮输入视为对澄清的回答，将其与原始查询拼接作为新查询，并设置
+    force_dispatch=False 以便重新运行 intent 管线。
+    若已达上限，则强制调度（force_dispatch=True），使用累积的 original_input
+    （不含本轮澄清）直接进入 ReAct 循环，避免无限澄清循环。
+
+    轮数上限由 `PendingClarification.MAX_ROUNDS` 定义，此处只做判定、不写常量——
+    计数器与阈值必须同源，否则改设定时两边静默失配。
 
     Args:
         conversation: 会话状态（包含 pending_intent）。
@@ -177,11 +192,11 @@ def _merge_pending(conversation: ConversationState, raw: str) -> tuple[str, bool
     p = conversation.pending_intent
     if p is None:
         return raw, False
-    if p.round >= 2:
-        # 超轮：强制调度，清除 pending 状态
+    if p.is_exhausted:
+        # 已达上限：强制调度，清除 pending 状态
         conversation.pending_intent = None
         return p.original_input, True
-    # 未超轮：合并澄清内容，清除 pending
+    # 未达上限：合并澄清内容，清除 pending
     conversation.pending_intent = None
     return f"{p.original_input}（用户澄清：{raw}）", False
 
@@ -219,7 +234,8 @@ def _render_banner(model: str, workspace: str) -> str:
 async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 io: InputIO, renderer: StreamRenderer, sleeptime=None,
                 config: PaperFlowConfig | None = None,
-                resume_hint: str | None = None, confirm_center=None) -> None:
+                resume_hint: str | None = None, confirm_center=None,
+                resume_replay: ResumeReplay | None = None) -> None:
     """
     REPL 主循环。
 
@@ -247,18 +263,37 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
         renderer: 渲染器。
         sleeptime: 后台记忆整合调度器（可选）。
         config: 配置（仅用于横幅，若为 None 则从环境加载）。
+        resume_hint: 无参启动检测到历史会话时的 dim 提示（可选）。
+        confirm_center: 确认/提问的唯一消费者（可选，未注入则自建）。
+        resume_replay: --resume 的历史回放载荷（可选）。由 cli 层从同一 in-context
+            窗口构建，此处只在横幅之后、首次读输入之前渲染进滚动区——顺序错了
+            历史会跑到横幅上方。回放是只读的（见 terminal/resume.py）。
     """
+    # 开场输出一律先于读输入：横幅、Tip、以及在 Tip 之下择一出现的 hint / 回放。
+    # 三者必须按此序打——回放若在横幅之前渲染，历史会印到横幅上方，用户上翻看到的
+    # 顺序即颠倒（故回放数据由 cli 传入、在此处渲染，而不是在装配层直接打印）。
     cfg = config or PaperFlowConfig.from_env()
     renderer.print(_render_banner(cfg.llm.model, _shorten_path(cfg.workspace)))
     renderer.print("\n  Tip: Type a research task to begin, or /exit to quit")
     if resume_hint:
         renderer.print(f"  {resume_hint}", style="dim")
+    if resume_replay is not None:
+        render_resume_replay(renderer, resume_replay)
+    # 挂上回调之后 run() 才走 chat_stream（流式）；不挂则回落 chat() 一次性返回。
+    # 这是两条渲染路径的总开关，必须在第一次 supervisor.run 之前完成。
     supervisor.stream_callback = renderer.on_event
+    # SIGINT 可编程接管是平台能力，不是必然，且这一层探测并不足以判定：
+    # asyncio.BaseEventLoop 恒定义了 add_signal_handler（未实现时抛 NotImplementedError），
+    # 所以 hasattr 在 Windows 上同样为 True。这里的 hasattr 只筛掉不继承该方法的
+    # 非常规事件循环；真正兜住“不支持”的是下方注册处的 try/except NotImplementedError。
+    # 两者都不成立时才把 can_sigint 置 False，降级为默认 Ctrl+C（Ctrl+C 三态仍有效）。
     loop = asyncio.get_running_loop()
     can_sigint = (hasattr(loop, "add_signal_handler")
                   and hasattr(loop, "remove_signal_handler"))
+    # run_task 提前绑定为 None：_cancel_run 闭包在任务创建前就可能被 SIGINT 调到，
+    # 届时必须有已定义的名字可读（None → no-op，而非 NameError 崩掉）。
     run_task = None
-    read_failures = 0
+    read_failures = 0            # 连续输入失败计数（满 3 次放弃，见读输入处）
 
     # 确认中心：主循环上的唯一消费者。cli.main 把同一实例注入 confirm/ask 回调，
     # 这里负责启动与收尾；未注入（测试/裸跑）时自建。
@@ -267,23 +302,29 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
     center.start()
 
     def _cancel_run():
+        # SIGINT handler：只取消当前 run_task，REPL 本身活着（回到输入框，不是退出）。
+        # 只 cancel 主循环任务——子 agent 树的级联取消由 spawn 异步化保证（ADR 0003）。
+        # run_task 是 create_task 建立的句柄，.cancel() 会在其下一个 await 点抛
+        # CancelledError，被下方主循环接住。
         if run_task is not None and not run_task.done():
             run_task.cancel()
 
     try:
+        # 无限循环，出口只有三处 break：/exit、EOF 或空框 Ctrl+C、输入连续失败 3 次。
+        # 其余一切异常都在循环内消化并 continue——单轮失败不该带走整个会话。
         while True:
-            # 每轮循环顶部触发后台记忆整合——放在读 stdin 之前，让用户思考期间累积的
-            # 对话被整合，整合不阻塞本轮输入。
+            # 每轮循环顶部触发后台记忆整合——放在读 stdin 之前，让用户思考期间累积的对话被整合，整合不阻塞本轮输入。
             if sleeptime is not None:
                 try:
                     await sleeptime.run_once_if_due()
                 except Exception:  # Sleeptime 失败不打断 REPL
                     logger.warning("sleeptime tick failed", exc_info=True)
             try:
-                # io.read 必须经 to_thread 在 worker 线程执行：PromptToolkitIO.read 内部
-                # session.prompt() 会自建事件循环（asyncio.run），而 _repl 跑在主事件循环
-                # 线程——直接同步调用会抛 "asyncio.run() cannot be called from a running
-                # event loop"。confirm/ask 回调已是 to_thread，read 对齐之。
+                # io.read 必须经 to_thread 在 worker 线程执行：
+                # PromptToolkitIO.read 内部session.prompt() 会自建事件循环（asyncio.run），
+                # 而 _repl 跑在主事件循环线程——
+                # 直接同步调用会抛 "asyncio.run() cannot be called from a running event loop"。
+                # confirm/ask 回调已是 to_thread，read 对齐之。
                 raw = await asyncio.to_thread(io.read, "> ")
             except (EOFError, KeyboardInterrupt):
                 break                # Ctrl-D / 空框 Ctrl+C：与 /exit 同效，优雅退出
@@ -297,6 +338,8 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                     break
                 continue
             read_failures = 0
+            # /exit 是唯一的显式退出命令：等价比较，不做前缀或包含匹配——
+            # "exit"、"/quit"、" /exit now" 都命中不了，一律当普通任务走。
             if raw.strip() == "/exit":
                 break
             if not raw.strip():
@@ -305,12 +348,17 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 # 避免用户以为卡死。
                 renderer.print("（空输入已忽略）", style="dim")
                 continue
+            # 必须在 _merge_pending 之前取快照：该调用会消费掉这条挂起（清空conversation.pending_intent），
+            # 而下方重新挂起澄清时要用旧记录的 round 做链式累计。
+            # p 持有旧对象引用，conversation 上的引用被清掉后依然可读。
             p = conversation.pending_intent
             query, force = _merge_pending(conversation, raw)
-            renderer.reset()                    # 每轮清残留：异常/澄清路径不消费 should_print
-            # 先注册 SIGINT handler 再 create_task：注册与建任务之间的同步间隙若落一个
-            # SIGINT，默认 handler 会在主线程抛 KeyboardInterrupt 崩 REPL。handler 已就位
-            # 则 _cancel_run 吞掉它（run_task 尚未赋值 → no-op，不崩）。
+            # 每轮清残留：异常与澄清路径都不消费 should_print，
+            # 不重置则上一轮的流式缓冲会带进本轮的三段比对，导致最终答案漏打或重打。
+            renderer.reset()
+            # 先注册 SIGINT handler 再 create_task：注册与建任务之间的同步间隙若落一个 SIGINT，
+            # 默认 handler 会在主线程抛 KeyboardInterrupt 崩 REPL。
+            # handler 已就位则 _cancel_run 吞掉它（run_task 尚未赋值 → no-op，不崩）。
             run_task = None
             if can_sigint:
                 try:
@@ -318,12 +366,16 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 except (NotImplementedError, RuntimeError):
                     # 信号注册失败（如非主线程/平台不支持）→ 降级为默认 Ctrl+C，不崩 REPL
                     can_sigint = False
+            # 用 create_task 而非直接 await：需要一个可取消句柄交给 SIGINT handler（await 表达式本身无法被外部 cancel）。
+            # 本行只把协程入队、不阻塞，真正的等待在下一行的 await。
             run_task = asyncio.create_task(supervisor.run(query, force_dispatch=force))
+            # 本轮 run 的三种失败都在紧跟的 except 里就地消化，都 continue、不 re-raise：
+            # 一次 API 抖动 / 超轮 / 用户中断只终结本轮，不该把整个会话带走。
             try:
                 result = await run_task
             except asyncio.CancelledError:
-                # Ctrl+C 优雅中断：渲染器过滤孤儿事件（to_thread 无法真正取消）、打印
-                # 提示、回到输入框。安全阀语义与 MaxTurnsExceeded 一致——不杀 REPL。
+                # Ctrl+C 优雅中断：渲染器过滤孤儿事件（to_thread 无法真正取消）、打印提示、回到输入框。
+                # 安全阀语义与 MaxTurnsExceeded 一致——不杀 REPL。
                 renderer.interrupt()
                 renderer.print("Cancelled")
                 continue
@@ -335,20 +387,35 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 renderer.print(translate_error(e), style="red")
                 continue
             finally:
+                # 注销 SIGINT handler：handler 只在 run 期间有意义，
+                # 常驻会让输入阶段的 Ctrl+C 被 _cancel_run 吞成 no-op，
+                # Ctrl+C 三态里的“空框退出”随之失效。
                 if can_sigint:
                     try:
                         loop.remove_signal_handler(signal.SIGINT)
                     except (NotImplementedError, RuntimeError):
                         pass
+            # last_intent 由 _build_head 写入（构造时初值 None）：意图管线失败降级时被
+            # 显式置 None，无意图装配的 agent（子 agent）也恒为 None —— 两种情况都靠
+            # 这里的非空判定跳过澄清分支。澄清早退路径反而会写入 intent，故判定成立
+            # 时 intent.clarification 必非空。
+            # force=True 表示本轮已是上限后的强制调度——此时即使管线再次产出澄清
+            # 也不能再挂起，否则 MAX_ROUNDS 上限失效、追问可以无限循环。
             intent = supervisor.last_intent
             if intent is not None and intent.clarification and not force:
-                # 未超轮：挂起澄清，round 链式累计（REPL 重建时用 p.round，不重置为 0）
+                # 挂起本轮澄清。original_input 取 query 而非 raw：query 已把历轮澄清
+                # 拼进上下文，达上限强制调度时以它为最佳猜测，比裸输入更准。
                 prev_round = p.round if p is not None else 0
                 conversation.pending_intent = PendingClarification(
                     question=intent.clarification, original_input=query,
                     round=prev_round + 1)
+                # 澄清问题直接打屏，不走 finalize / should_print：本轮没有正常答案，
+                # 问题本身就是交付物。是否落盘由 run() 决定——澄清早退不落盘（非任务轮）。
                 renderer.print(intent.clarification)
                 continue
+            # 正常收尾：finalize 终态渲染最后一个 live 块（停 spinner）；
+            # should_print 比对流式缓冲与最终答案——一致则只补换行，被中间件
+            # on_finish 改写过则补打最终版，既不重复也不漏打。
             renderer.finalize()
             renderer.print(renderer.should_print(result))
 
