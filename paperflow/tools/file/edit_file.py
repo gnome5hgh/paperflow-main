@@ -1,9 +1,10 @@
 # paperflow/tools/file/edit_file.py
 """EditFileTool：定向修改既有笔记(search-replace,小范围改动)。
 
-LLM 只需输出变更部分(省 token),且不误伤无关内容。风险为 medium(与 write_file
-对齐):限笔记根目录 + 需用户确认,安全性由路径限制与确认保证。写后调用索引热更新
-钩子,与 WriteFileTool 保持索引一致。
+LLM 只需输出变更部分(省 token),且不误伤无关内容。安全边界由中间件强制:path 可为
+任意绝对路径,敏感路径黑名单(workspace/audit、.git 等)由 WorkspacePolicyMiddleware
+拦截。风险为 medium(与 write_file 对齐),需用户确认。写后调用索引热更新钩子,与
+WriteFileTool 保持索引一致。
 """
 from pathlib import Path
 
@@ -25,7 +26,7 @@ class EditFileTool(Tool):
         },
         "required": ["path", "old_text", "new_text"],
     }
-    risk_level = "medium"                      # 与 write_file 对齐:定向替换 + 限笔记根 + 确认
+    risk_level = "medium"                      # 与 write_file 对齐:定向替换 + medium 风险确认
     requires_confirm = True
     root_hints = NOTE_HINTS
     side_effects = ["write_file"]
