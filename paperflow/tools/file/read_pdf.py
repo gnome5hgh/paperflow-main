@@ -25,7 +25,7 @@ class ReadPdfTool(Tool):
         "required": ["path"],
     }
     risk_level = "low"
-    allowed_roots = ["pdf"]                    # Paper 只读
+    root_hints = ["pdf"]                    # 提示语料库 PDF 根（只读语义在中间件）
     output_scan = "mark"
     side_effects = ["read_file"]
 

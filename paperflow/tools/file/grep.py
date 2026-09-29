@@ -27,7 +27,7 @@ class GrepTool(Tool):
         "required": ["pattern", "path"],
     }
     risk_level = "low"
-    allowed_roots = ["note", "pdf", "memory"]
+    root_hints = ["note", "pdf", "memory"]
 
     def execute(self, pattern: str, path: str) -> ToolResult:
         """在文件或目录内按正则搜索文本,返回 file:line 匹配行(最多 30 条)。

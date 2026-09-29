@@ -9,7 +9,7 @@ from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.rag.services.rag_service import get_rag_service
-from paperflow.tools.file._constants import NOTE_ROOTS
+from paperflow.tools.file._constants import NOTE_HINTS
 from paperflow.tools.file.atomic import atomic_write
 
 
@@ -27,7 +27,7 @@ class EditFileTool(Tool):
     }
     risk_level = "medium"                      # 与 write_file 对齐:定向替换 + 限笔记根 + 确认
     requires_confirm = True
-    allowed_roots = NOTE_ROOTS
+    root_hints = NOTE_HINTS
     side_effects = ["write_file"]
 
     def execute(self, path: str, old_text: str, new_text: str) -> ToolResult:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.rag.services.rag_service import get_rag_service
-from paperflow.tools.file._constants import NOTE_ROOTS
+from paperflow.tools.file._constants import NOTE_HINTS
 from paperflow.tools.file.atomic import atomic_write
 
 
@@ -24,7 +24,7 @@ class WriteFileTool(Tool):
     }
     risk_level = "medium"                      # 写操作；全文覆盖可确认重来 → medium
     requires_confirm = True
-    allowed_roots = NOTE_ROOTS
+    root_hints = NOTE_HINTS
     side_effects = ["write_file"]
 
     def execute(self, path: str, content: str) -> ToolResult:

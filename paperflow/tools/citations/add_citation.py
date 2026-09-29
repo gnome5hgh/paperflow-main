@@ -20,7 +20,7 @@ class AddCitationTool(Tool):
     }
     risk_level = "medium"              # 写文件
     side_effects = ["write_file"]
-    allowed_roots = ["pdf"]            # pdf_path 是语料库内 PDF（语料库 pdf 根）
+    root_hints = ["pdf"]            # pdf_path 是语料库内 PDF（语料库 pdf 根）
 
     def __init__(self, manager):
         self.manager = manager

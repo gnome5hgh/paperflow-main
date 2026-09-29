@@ -107,12 +107,9 @@ class Tool(ABC):
     #: 默认拦截(如危险工具未配置时 fail-safe),策略引擎据此拒绝
     blocked_by_default: bool = False
 
-    #: 允许访问的文件/目录路径前缀,空 = fail-safe 禁止文件访问
-    allowed_paths: list[str] = []
-
-    #: 语义根名(如 ["note", "memory"]),由 tools/common/factory.py 启动时解析为绝对路径
-    #: 注入 allowed_paths。allowed_paths 保持"绝对路径列表"语义,工作区校验层零改动。
-    allowed_roots: list[str] = []
+    #: 语义根名提示（如 ["note", "memory"]）——仅用于 make_tools 生成 [目录] 提示，
+    #: 不参与任何强制。强制边界 = 绝对路径 + 敏感路径黑名单（WorkspacePolicyMiddleware）。
+    root_hints: list[str] = []
 
     #: 输出扫描模式,安全扫描中间件据此决定扫描方式;"mark" | None
     output_scan: str | None = None

@@ -42,8 +42,8 @@ class SubmitReviewTool(Tool):
     # 结束 ReAct 循环——重复提交是成本事故（实测一次门禁重复提交 6 次）。
     terminal = True
     # 审稿流目标是 scratch/note 草稿路径；execute 不读文件内容（只格式化提交字段），
-    # 放开 scratch 根零安全影响（与 SuggestEditTool 同款，防真实 WorkspacePolicy 拦截）。
-    allowed_roots = ["note", "scratch", "research"]
+    # 声明 scratch 仅生成 [目录] 提示、零安全影响（强制在 WorkspacePolicy，与本声明无关）。
+    root_hints = ["note", "scratch", "research"]
 
     def execute(self, path: str, verdict: str, issues: list) -> ToolResult:
         """校验并格式化审查裁决;非法输入返回可行动报错文本。

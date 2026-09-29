@@ -24,7 +24,7 @@ class GlobTool(Tool):
         "required": ["pattern"],
     }
     risk_level = "low"
-    allowed_roots = ["note", "pdf", "memory"]
+    root_hints = ["note", "pdf", "memory"]
 
     def execute(self, pattern: str, root: str | None = None) -> ToolResult:
         """按 glob 模式列出匹配的文件路径(最多 50 条);根目录可显式指定。
@@ -39,7 +39,7 @@ class GlobTool(Tool):
         base = Path(root) if root else Path(cfg.note_dir if cfg else ".")
         try:
             # 越界防护:glob 不把 pattern 约束到 base,`../../**/*` 能命中 base 外路径
-            # (只读泄露,违反 allowed_roots 边界)。逐个过滤命中,resolve 后不在 base 内
+            # (只读泄露,把 base 外路径抖给 LLM)。逐个过滤命中,resolve 后不在 base 内
             # 的跳过。必须用 resolve() 比较——relative_to 是纯词法比较,把 `..` 当普通
             # 路径段,`base/../../outside/f` 不会触发 ValueError,根本拦不住逃逸。
             base_resolved = base.resolve()

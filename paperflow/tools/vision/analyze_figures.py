@@ -36,7 +36,7 @@ class AnalyzeFiguresTool(Tool):
         "required": ["path"],
     }
     risk_level = "low"
-    allowed_roots = ["note", "pdf"]              # 读 PDF + 写 note 目录
+    root_hints = ["note", "pdf"]              # 提示:读 PDF + 产图落 note（embed_dir）
     output_scan = "mark"
     side_effects = ["read_file", "write_file"]
     #: 需要父 Agent 引用：视觉调用归属父 agent 的轮次进审计（见 _telemetry）

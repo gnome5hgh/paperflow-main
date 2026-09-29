@@ -33,7 +33,7 @@ class FetchPdfTool(Tool):
     }
     #: 下载是写操作——只读会话(风险上限 low)不应触碰本地资料库
     risk_level = "medium"
-    allowed_roots = ["pdf"]
+    root_hints = ["pdf"]
     side_effects = ["network", "write_file"]
     #: 返回本地路径与状态，无外部内容——不需打 mark 横幅
     output_scan = None
