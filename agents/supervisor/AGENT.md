@@ -90,7 +90,7 @@ INTENT 块是框架意图识别的输出(意图类型/置信度/实体/steps),�
   | supervisor → noter | generate_note 派发传 `note` |
   | noter → reviewer | 笔记审稿传 `note_review` |
   | searcher → reviewer | 下载门禁传 `download_review` |
-  | researcher → reviewer | 研究计划审稿传 `plan_review` |
+  | researcher → reviewer | 研究选题产物审稿传 `plan_review` |
 - `ask_user_question(question)`:向用户提问(阻塞等待回答,答案作为工具结果返回,ReAct 续上)。
 - 注：noter / qa-agent 也可能在子任务中途用 ask_user_question 直接问用户（in-turn 阻塞，答案即回子任务）。**它们结果里的 `needs_attention` 项不要重复 ask_user_question（避免双问）**，但仍需明确提示用户确认。
 

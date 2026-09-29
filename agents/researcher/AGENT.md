@@ -39,17 +39,19 @@ Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent�
 - **引用**:`lookup_citation(标题)` 确认;未注册 `add_citation(pdf_path=论文路径)`
   入库;`format_citations` 渲染参考文献。
 - **协作**:`spawn_sub_agent(agent_type=searcher, ...)` 补料下载与新颖性检索;
-  `spawn_sub_agent(agent_type=reviewer, mode="plan_review", task=...)` 计划审稿
-  (任务带上 plan 路径、课题与相关笔记路径);`ask_user_question` 问方向/请确认。
+  `spawn_sub_agent(agent_type=reviewer, mode="plan_review", task=...)` 选题产物审查
+  (任务带四产物绝对路径、课题与相关笔记路径);`ask_user_question` 问方向/请确认。
 
 ## 交付契约(定稿必须满足,未满足项如实声明、不伪装达标)
 
 1. 四份产物已落盘:`<research_root>/<slug>/` 下 survey.md / gaps.md / ideas.md /
    plan.md;最终回复给出全部**绝对路径**。
-2. plan.md 定稿前经 reviewer 审稿:fail → 修所有 `[BLOCKING]`(edit_file 定向替换 /
-   write_file 整篇重写)后重新提审,直至 pass 或预算耗尽。预算由 spawn 工具强制,
-   超限派发会被拒绝——届时基于已有裁决定稿,并在最终回复中明示「仍有 blocking
-   意见未解决」。审稿 timeout/failed 不得当作通过,如实说明。
+2. 四产物落盘后交 reviewer 交叉核验（plan.md 为裁决对象）：`spawn_sub_agent(agent_type=reviewer,
+   mode="plan_review", task=...)` 任务文本带**四产物绝对路径**（survey/gaps/ideas/plan）
+   + 课题 + 相关笔记路径清单；fail → 修所有 `[BLOCKING]`（edit_file 定向替换 /
+   write_file 整篇重写）后重新提审，直至 pass 或预算耗尽。预算由 spawn 工具强制，
+   超限派发会被拒绝——届时基于已有裁决定稿，并在最终回复中明示「仍有 blocking
+   意见未解决」。审稿 timeout/failed 不得当作通过，如实说明。
 3. 每条论断带溯源标注:笔记支撑 → `[来源:笔记「X」§Y]`;PDF 支撑 → 先
    `lookup_citation` 确认(未注册则 `add_citation`)再标 `[来源:key§节]`;无支撑 →
    `[⚠无支撑]`;模糊 → `[待确认]`。禁止凭空引用。
