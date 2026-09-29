@@ -67,7 +67,7 @@ class Sleeptime:
     从正确位置自愈：不重复整合已处理的消息、也不遗漏新增的消息。
     """
 
-    def __init__(self, agent_state, block_manager, passage_manager, message_manager,
+    def __init__(self, agent_state, block_manager, message_manager,
                  structured, enable: bool = False, frequency: int = 50,
                  min_interval_s: float = 60.0, max_entries: int = 20):
         """装配整合器依赖与触发参数。
@@ -76,8 +76,6 @@ class Sleeptime:
             提供 agent_id 供按会话查询消息、推导游标
         :param block_manager: BlockManager，编辑指令最终映射到它执行
             （block CRUD + MemFS markdown 投影与 git commit）
-        :param passage_manager: PassageManager，预留的长期记忆句柄，
-            当前整合器不直接消费（保持装配接口兼容）
         :param message_manager: MessageManager，读对话消息、推导游标
             （size = 该会话消息总数）；None 时游标恒 0、整合跳过
         :param structured: StructuredOutput，LLM 抽取编辑指令的通道；
@@ -91,7 +89,6 @@ class Sleeptime:
         """
         self.agent_state = agent_state
         self.block_manager = block_manager
-        self.passage_manager = passage_manager
         self.message_manager = message_manager
         self.structured = structured
         self.enable = enable
@@ -102,6 +99,7 @@ class Sleeptime:
         self._last_run = time.monotonic()
         self._failures = 0
         #: 已处理到的消息数量游标（基于 messages 表行数，从 DB 推导）
+        #: 语义是“下次从游标处开始整合”
         self._cursor = self.message_manager.size(agent_state.agent_id) if message_manager else 0
 
     async def run_once_if_due(self) -> None:

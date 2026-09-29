@@ -34,8 +34,6 @@ from paperflow.core.llm import StructuredOutput
 from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
 from paperflow.core.memory.services.message_manager import MessageManager
-from paperflow.core.memory.services.passage_manager import PassageManager
-from paperflow.core.memory.services.archive_manager import ArchiveManager
 from paperflow.tools.memory import set_memory_context, MemoryToolsContext
 from paperflow.core.memory.services.title_extractor import TitleExtractor
 from paperflow.core.memory.services.agent_manager import AgentManager
@@ -61,8 +59,8 @@ def _rag_embedder(config: PaperFlowConfig) -> "SbertEmbedder":
     懒加载共享的千问嵌入模型单例。
 
     用途：
-        - MessageManager / PassageManager 的语义检索
         - 意图管线的稠密路由（HybridRouter）
+        - MessageManager 的可选 embedder 参数（该类检索为纯 SQL LIKE，当前未使用）
     所有组件共享同一实例，避免重复加载模型权重（首次加载需数秒，且占用内存）。
 
     Args:
@@ -304,8 +302,8 @@ def main(argv: list[str] | None = None) -> int | None:
     装配顺序（依赖关系）：
         1. 终端 IO 和渲染器（输入/输出适配）。
         2. 会话 ID（用于记忆服务键控；--resume 时复用已落盘会话）。
-        3. 记忆服务层：DB → BlockManager → MessageManager → PassageManager → ArchiveManager → AgentManager。
-        4. 嵌入模型（单例）注入 MessageManager/PassageManager。
+        3. 记忆服务层：DB → BlockManager → MessageManager → AgentManager。
+        4. 嵌入模型（单例）注入 MessageManager。
         5. AgentManager 回填到 MessageManager（用于读取 AgentState）。
         6. 创建 AgentState 和结构化输出。
         7. 设置记忆工具上下文（包括标题提取器）。
@@ -436,8 +434,6 @@ def main(argv: list[str] | None = None) -> int | None:
     block_manager.ensure_default_blocks()   # 首启播种默认 persona/human 核心记忆块
     embedder = _rag_embedder(config)
     message_manager = MessageManager(db, embedder=embedder)
-    passage_manager = PassageManager(db, embedder=embedder)
-    archive_manager = ArchiveManager(db, passage_manager)
     agent_manager = AgentManager(db, block_manager, message_manager)
 
     resume_hint: str | None = None
@@ -479,7 +475,6 @@ def main(argv: list[str] | None = None) -> int | None:
     set_memory_context(MemoryToolsContext(
         agent_id=session_id,
         block_manager=block_manager,
-        passage_manager=passage_manager,
         message_manager=message_manager,
         title_extractor=TitleExtractor(grobid=GrobidClient(config.grobid_endpoint),
                                        llm=structured),
@@ -520,7 +515,7 @@ def main(argv: list[str] | None = None) -> int | None:
         skill_registry=skill_registry,
         memory=agent_state.memory,
         agent_manager=agent_manager, block_manager=block_manager,
-        message_manager=message_manager, passage_manager=passage_manager,
+        message_manager=message_manager,
         compaction=config.compaction,
         structured=structured,
         security_middleware=middlewares,
@@ -531,7 +526,7 @@ def main(argv: list[str] | None = None) -> int | None:
         session_id=session_id,
     )
     sleeptime = Sleeptime(
-        agent_state, block_manager, passage_manager, message_manager,
+        agent_state, block_manager, message_manager,
         structured, enable=config.sleeptime_enable,
         frequency=config.sleeptime_agent_frequency)
 

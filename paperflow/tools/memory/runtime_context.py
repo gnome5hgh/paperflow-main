@@ -18,7 +18,6 @@ class MemoryToolsContext:
 
     agent_id: str = ""
     block_manager: object = None
-    passage_manager: object = None
     message_manager: object = None
     title_extractor: object = None
 

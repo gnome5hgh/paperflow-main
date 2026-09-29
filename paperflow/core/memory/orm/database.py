@@ -59,18 +59,6 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 -- 复合索引：加速按 agent + 时间查询
 CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id, created_at);
-
--- archival_passages 表：长期记忆（archival memory）
-CREATE TABLE IF NOT EXISTS archival_passages (
-    id TEXT PRIMARY KEY,                 -- passage 唯一标识
-    agent_id TEXT,                       -- 所属 agent
-    text TEXT NOT NULL,                  -- 文本内容
-    embedding TEXT,                      -- 语义向量（JSON 数组，可选）
-    tags TEXT,                           -- 标签列表（JSON 数组）
-    metadata_ TEXT,                      -- 扩展元数据（JSON）
-    is_deleted INTEGER NOT NULL DEFAULT 0, -- 软删除标志（0=有效，1=已删）
-    created_at TEXT NOT NULL             -- 创建时间
-);
 """
 
 
