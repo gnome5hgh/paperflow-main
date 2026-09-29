@@ -8,7 +8,7 @@
 import httpx
 from httpx import HTTPStatusError as _HttpxStatusError
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from paperflow.core.security.network import validate_url_target
 from paperflow.core.tool import Tool, ToolResult
@@ -27,9 +27,9 @@ class FetchPdfTool(Tool):
             "url": {"type": "string", "format": "url",
                     "description": "PDF 下载地址（来自搜索结果的 pdf 字段）"},
             "download_to": {"type": "string", "format": "path",
-                            "description": "PDF 保存绝对路径（缺省语料库 pdf 根）"},
+                            "description": "PDF 保存绝对路径（缺省落语料库 pdf 根，文件名按 URL 尾段推导）"},
         },
-        "required": ["url", "download_to"],
+        "required": ["url"],
     }
     #: 下载是写操作——只读会话(风险上限 low)不应触碰本地资料库
     risk_level = "medium"
@@ -50,6 +50,15 @@ class FetchPdfTool(Tool):
     def _make_client(cls, transport=None, ssrf_check=None):
         """构造下载客户端；测试经 transport/ssrf_check 注入 MockTransport 与 SSRF 桩。"""
         return httpx.Client(transport=transport, timeout=30.0), (ssrf_check or validate_url_target)
+
+    @staticmethod
+    def _default_download_name(url: str) -> str:
+        """从 URL 尾段推导保存文件名：取 path 末段（去 query/fragment），
+        非 .pdf 结尾（大小写不敏感）补 .pdf；空尾段或 '..' 抛 ValueError。"""
+        tail = urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
+        if not tail or tail == "..":
+            raise ValueError(f"无法从 URL 推导文件名: {url}——请显式传 download_to")
+        return tail if tail.lower().endswith(".pdf") else f"{tail}.pdf"
 
     def _fetch(self, client, ssrf_check, url: str, dest: Path) -> None:
         """真实 GET 上逐跳跟随重定向，每跳做 SSRF 校验，绝不把 3xx 或非 PDF 响应体写盘。
@@ -79,20 +88,31 @@ class FetchPdfTool(Tool):
             raise ValueError(f"响应不是 PDF（缺 %PDF magic bytes）: {url}")
         dest.write_bytes(r.content)
 
-    def execute(self, url: str, download_to: str,
+    def execute(self, url: str, download_to: str | None = None,
                 _run_state=None) -> ToolResult:
         """下载 PDF 到本地并触发索引热更新；失败返回可行动报错文本。
 
         负缓存（真实会话复验发现）：同 URL 在本任务内失败过即拒绝重复调用——
         404 等永久性失败重试只会白烧轮次（实测单任务内重复 19 次）。
+        download_to 缺省时落语料库 pdf 根（config.pdf_dir），文件名按 URL 尾段推导。
         """
         if _run_state is not None and url in getattr(_run_state, "failed_urls", {}):
             return ToolResult(
                 text=f"该 URL 本任务内已失败过（{_run_state.failed_urls[url]}），"
                      "这是重复调用——不得重试，请如实报告下载失败并给出替代方案。",
                 is_error=True)
+        if download_to:
+            dest = Path(download_to)
+        else:
+            cfg = getattr(self, "_config", None)
+            pdf_root = getattr(cfg, "pdf_dir", "") if cfg is not None else ""
+            if not pdf_root:
+                return ToolResult(text="下载失败: 未配置语料库 pdf 根且未显式传 download_to——请显式传 download_to 绝对路径", is_error=True)
+            try:
+                dest = Path(pdf_root) / self._default_download_name(url)
+            except ValueError as e:
+                return ToolResult(text=f"下载失败: {e}", is_error=True)
         client, ssrf_check = self._client or self._make_client()
-        dest = Path(download_to)
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             self._fetch(client, ssrf_check, url, dest)
