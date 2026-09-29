@@ -40,27 +40,50 @@ class WriteFileTool(Tool):
     root_hints = NOTE_HINTS
     side_effects = ["write_file"]
 
+    def _resolve_target(self, path, filename, dir) -> Path:
+        """双入口 → 落盘路径的组合规则唯一真相源。
+
+        execute() 与 effective_target_path() 共用，组合规则只写这一份：
+        path 模式 → Path(path)；filename 模式 → (dir 或默认写根)/filename。
+        入口冲突/缺失、filename 含路径分隔符或 ".."、无默认写根——一律抛
+        ValueError（消息即 LLM 面报错文本）。execute 把它转成 ToolResult，
+        effective_target_path 把它折叠为 None（该调用必然报错、不落盘，
+        确认键/写锁无需作用域）。
+        """
+        # 双入口互斥校验：path 与 filename 恰好给一个
+        if path and filename:
+            raise ValueError("path 与 filename 只能二选一，请勿同时提供")
+        if not path and not filename:
+            raise ValueError("必须提供 path（绝对路径）或 filename（落默认根/指定 dir）")
+        if path:
+            return Path(path)
+        # filename 不是 path 参数、不经中间件校验——穿越与敏感名在此工具内防
+        if not filename or "/" in filename or "\\" in filename or ".." in filename:
+            raise ValueError(f"非法 filename: {filename!r}——只允许纯文件名，目录请用 dir 参数")
+        root = dir or getattr(self, "_default_write_root", None)
+        if not root:
+            raise ValueError("未指定 dir 且本 agent 未配置默认写根——请显式传 dir（绝对目录）或改用 path（绝对路径）")
+        return Path(root) / filename
+
+    def effective_target_path(self, args: dict) -> str | None:
+        """导出有效目标路径供会话确认键与写锁键控。
+
+        filename 便捷入口在此导出组合落盘路径：同一文件无论经 path 还是
+        filename 入口写，确认键与写锁键一致；不同文件各自确认、互不串锁。
+        """
+        try:
+            return str(self._resolve_target(args.get("path"), args.get("filename"),
+                                            args.get("dir")))
+        except (ValueError, TypeError):
+            return None
+
     def execute(self, content: str, path: str | None = None,
                 filename: str | None = None, dir: str | None = None) -> ToolResult:
         """解析双入口 → 黑名单兜底 → 写盘 → 索引热更新。"""
-        # 双入口互斥校验：path 与 filename 恰好给一个
-        if path and filename:
-            return ToolResult(text="path 与 filename 只能二选一，请勿同时提供")
-        if not path and not filename:
-            return ToolResult(text="必须提供 path（绝对路径）或 filename（落默认根/指定 dir）")
-        if path:
-            p = Path(path)
-        else:
-            # filename 不是 path 参数、不经中间件校验——穿越与敏感名在此工具内防
-            if not filename or "/" in filename or "\\" in filename or ".." in filename:
-                return ToolResult(text=f"非法 filename: {filename!r}——只允许纯文件名，目录请用 dir 参数")
-            if dir:
-                p = Path(dir) / filename
-            else:
-                default_root = getattr(self, "_default_write_root", None)
-                if not default_root:
-                    return ToolResult(text="未指定 dir 且本 agent 未配置默认写根——请显式传 dir（绝对目录）或改用 path（绝对路径）")
-                p = Path(default_root) / filename
+        try:
+            p = self._resolve_target(path, filename, dir)
+        except ValueError as e:
+            return ToolResult(text=str(e))
         # filename+dir 模式组合出的路径不经中间件，黑名单在此兜底（防 .env 等敏感名落盘）
         cfg = getattr(self, "_config", None)
         if cfg is not None and is_denied_path(p, cfg.workspace):
