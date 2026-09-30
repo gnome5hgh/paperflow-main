@@ -131,8 +131,9 @@ class ItemResult:
     """单题评测结果：聚合的输入单元，也是 judge 人工校准的原料。
 
     status 取值：ok（全流程成功）/ judge_failed（判卷失败，指标留空但
-    生成与引用校验仍有效）/ no_context（检索无命中）/ generation_failed
-    （生成抛错）。低质量指标靠 per_item 明细人工复核，故各中间产物原样保留。
+    生成与引用校验仍有效）/ no_context（检索无命中）/ retrieve_failed
+    （检索抛错，如 Milvus 抖动）/ generation_failed（生成抛错）。低质量
+    指标靠 per_item 明细人工复核，故各中间产物原样保留。
     """
     query: str
     status: str
@@ -169,7 +170,12 @@ async def evaluate_item(query: str, *, retrieve, llm, judge: StructuredOutput,
     Returns:
         ItemResult：status 反映该题走到哪一步，指标字段按可达阶段填充。
     """
-    chunks = await asyncio.to_thread(retrieve, query, top_k)
+    # 检索（同步函数，to_thread 跑）：Milvus 抖动等基础设施错误与生成/判卷
+    # 失败同类——单题失败不拖垮整批，记 retrieve_failed 提前返回
+    try:
+        chunks = await asyncio.to_thread(retrieve, query, top_k)
+    except Exception:
+        return ItemResult(query=query, status="retrieve_failed")
     if not chunks:
         return ItemResult(query=query, status="no_context")
 
@@ -243,10 +249,10 @@ def _mean(values: list[float]) -> float:
 def aggregate(results: list[ItemResult]) -> dict:
     """把逐题结果聚合成指标与状态计数。
 
-    口径：judge_failed / no_context / generation_failed 不进指标分母、在
-    counts 里单独暴露；citation_accuracy 的分母是引用**条数**（微观平均，
-    从 citations_detail 重算而非读 citation_accuracy 字段，引用多的题权重大），
-    citation_coverage 的分母是成功生成的题数。
+    口径：judge_failed / no_context / retrieve_failed / generation_failed
+    不进指标分母、在 counts 里单独暴露；citation_accuracy 的分母是引用
+    **条数**（微观平均，从 citations_detail 重算而非读 citation_accuracy
+    字段，引用多的题权重大），citation_coverage 的分母是成功生成的题数。
     """
     ok = [r for r in results if r.status == "ok"]
     faithful = [r.faithfulness for r in ok if r.faithfulness is not None]
@@ -267,6 +273,8 @@ def aggregate(results: list[ItemResult]) -> dict:
             "ok": len(ok),
             "judge_failed": sum(1 for r in results if r.status == "judge_failed"),
             "no_context": sum(1 for r in results if r.status == "no_context"),
+            "retrieve_failed": sum(1 for r in results
+                                   if r.status == "retrieve_failed"),
             "generation_failed": sum(1 for r in results
                                      if r.status == "generation_failed"),
         },
