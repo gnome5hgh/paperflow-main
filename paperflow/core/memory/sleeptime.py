@@ -216,11 +216,12 @@ class Sleeptime:
             "- system/profile.md — 学到用户身份/研究方向/偏好/背景 → "
             "append（新增条目）或 replace（整理重写）",
             "- system/assistant.md — 助手角色/工作方式认知变化 → replace（整块重写）",
-            "- feedback_<主题>.md（如 feedback_note_style）— 用户对做法的反馈与纠正 → "
+            "- feedback_<主题>.md（主题名仅限字母数字下划线，如 feedback_note_style）— 用户对做法的反馈与纠正 → "
             "append（每条一行）",
             "- project_<主题>.md — 研究项目/论文进展的关键事实 → append",
             "- reference_<主题>.md — 文献/资料可长期复用的要点 → append",
-            "规则：值得长期记住才写；同主题合并重复；旧结论被推翻时 replace 而非追加矛盾条目。",
+            "规则：值得长期记住才写；同主题合并重复；旧结论被推翻时 replace 而非追加矛盾条目；"
+            "单批最多 20 条；每条内容一行、自带主语。",
             "", "新对话：",
         ]
         # 将每条消息的 role 和 content 以文本形式拼入
