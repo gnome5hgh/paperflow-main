@@ -188,7 +188,8 @@ class PaperFlowConfig:
 
     #: 重排候选池大小：RRF 融合后取 max(2×top_k, 此值) 个候选交给重排模型。
     #: 业界惯例宽召回窄输出（BAAI 官方教程召回 100 → 精排 3）；本地 CPU
-    #: cross-encoder 下不宜过大，默认 24，经 PAPERFLOW_RAG_RERANK_CANDIDATES 覆盖。
+    #: cross-encoder 下不宜过大，默认 24。可经 config.yaml 顶层
+    #: rag_rerank_candidates 或 PAPERFLOW_RAG_RERANK_CANDIDATES 覆盖。
     rag_rerank_candidates: int = 24
 
     #: 子 agent 超时覆盖表(按 agent 类型→秒数)。默认 120s 对完整流程太短,各值由
@@ -249,7 +250,7 @@ class PaperFlowConfig:
                     "note_dir", "pdf_dir", "research_dir",
                     "citations_bib_path",
                     "grobid_endpoint", "milvus_uri", "milvus_collection",
-                    "embed_model", "rerank_model",
+                    "embed_model", "rerank_model", "rag_rerank_candidates",
                     "agent_timeouts", "sleeptime_enable", "sleeptime_agent_frequency"):
             if key in data:
                 setattr(self, key, data[key])
