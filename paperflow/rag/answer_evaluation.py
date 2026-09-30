@@ -110,6 +110,15 @@ _VERDICT_PROMPT = (
     f"{_JUDGE_NEUTRALITY}\n\n上下文：\n{{context}}\n\n陈述列表（JSON）：\n"
     f"{{statements_json}}")
 
+#: 答题相关性的判卷 prompt 模板：让 judge 从答案反向生成候选问题。相关性不走
+#: judge 直接打分——LLM 对「这答案好不好」打 0–1 分主观且易受自我偏好影响，
+#: 而「这段答案能回答什么问题」是生成任务，产出的候选问题与原题的向量余弦
+#: 是客观可复算的量，人工校准只需抽查反向问题的质量本身。
+_REVERSE_PROMPT = (
+    "下面是一段答案。写出这段答案最可能回答的 3 个问题。要求："
+    "问题彼此独立、覆盖答案的不同侧面；用与答案相同的语言。\n\n"
+    "答案：\n{answer}")
+
 
 def _build_context(chunks: list[tuple[str, str]]) -> str:
     """把检索块拼成判卷/生成用的上下文文本（保留首行前缀，编号便于引用）。"""
@@ -141,7 +150,7 @@ class ItemResult:
 
 async def evaluate_item(query: str, *, retrieve, llm, judge: StructuredOutput,
                         embedder, top_k: int = 5) -> ItemResult:
-    """评一道题：检索 → 生成 → 忠实度判卷 → 引用校验 →（后续）相关性判卷。
+    """评一道题：检索 → 生成 → 忠实度判卷 → 引用校验 → 相关性判卷。
 
     retrieve 是同步函数（RAGService.retrieve 持锁跑推理与查询），经 to_thread
     调用避免阻塞事件循环；判卷的 StructuredOutput 校验失败走 fallback（置
@@ -151,8 +160,10 @@ async def evaluate_item(query: str, *, retrieve, llm, judge: StructuredOutput,
         query: 被评测的问题。
         retrieve: 同步检索函数，签名 (query, top_k) -> list[(text, path)]。
         llm: 生成侧 LLM 客户端（自由文本，不走结构化）。
-        judge: 结构化判卷载体，负责拆句与批量判定两次调用。
-        embedder: 相关性判卷用的嵌入器，当前判卷流程暂未使用，预留接口。
+        judge: 结构化判卷载体，负责拆句、批量判定与反向生成三次调用。
+        embedder: 相关性判卷用的嵌入器（__call__ 接收文本列表，返回 L2 归一化
+            矩阵，即 get_rag_service()._ensure_embedder() 的产出）；传 None
+            时跳过相关性计算——嵌入是额外的 CPU 推理开销，按需启用。
         top_k: 检索命中数上限。
 
     Returns:
@@ -202,5 +213,23 @@ async def evaluate_item(query: str, *, retrieve, llm, judge: StructuredOutput,
                                if result.n_statements else None)
     except Exception:
         result.status = "judge_failed"
+
+    # 4) 答题相关性：反向生成候选问题 → 与原题算余弦平均（客观量，不靠 judge 打分）。
+    # 放在忠实度之后、return 之前：相关性是独立指标，判卷挂掉（judge_failed）
+    # 不阻断它继续算；自身失败只把指标降级为 None，不改 status——指标缺失与
+    # 流程失败是两回事，混在一起会误导聚合端的剔除逻辑。
+    if embedder is not None:
+        try:
+            reverse = await judge.extract(
+                _REVERSE_PROMPT.format(answer=result.answer), ReverseQuestions)
+            # 嵌入是 CPU 推理，to_thread 避免阻塞事件循环；向量已 L2 归一化，
+            # 余弦 = 点积
+            vecs = await asyncio.to_thread(
+                embedder, [query, *reverse.questions])
+            qvec, rvecs = vecs[0], vecs[1:]
+            sims = [float(qvec @ r) for r in rvecs]
+            result.answer_relevancy = round(sum(sims) / len(sims), 4)
+        except Exception:
+            result.answer_relevancy = None      # 相关性失败不拖垮整题
 
     return result
