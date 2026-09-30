@@ -187,6 +187,9 @@ def mask_critical(text: str) -> str:
     曾提供的敏感路径（如安全边界解释中提到 id_rsa）也会全军覆没，用户什么都
     看不到。改为逐规则 finditer 拿 span、只打码命中片段；重叠 span 合并。
     """
+    # 1) 收集所有 critical 级别规则的命中区间 (start, end, rule_id)
+    #    只扫 severity=="critical" 的规则，其他级别不参与打码；
+    #    用 finditer 而不是 search，是为了拿到文中每一处命中的位置。
     spans: list[tuple[int, int, str]] = []
     for rule in SCAN_RULES:
         if rule["severity"] != "critical":
@@ -195,6 +198,11 @@ def mask_critical(text: str) -> str:
             spans.append((m.start(), m.end(), rule["id"]))
     if not spans:
         return text
+
+    # 2) 按起点排序并合并重叠区间：
+    #    若当前区间起点落在上一个合并区间内（st < merged[-1][1]），
+    #    则把它们并成一个更宽的区间，rule_id 保留最先命中的那条，
+    #    避免同一段被多条规则重复打码、产生交错的占位标记。
     spans.sort()
     merged = []
     for st, en, rid in spans:
@@ -202,6 +210,10 @@ def mask_critical(text: str) -> str:
             merged[-1] = (merged[-1][0], max(en, merged[-1][1]), merged[-1][2])
         else:
             merged.append((st, en, rid))
+
+    # 3) 按合并后的区间切片重组文本：
+    #    非命中区原样保留（last..st），命中区替换为占位标记，
+    #    最后补上末尾的剩余正文，避免整段回答被吞掉。
     out, last = [], 0
     for st, en, rid in merged:
         out.append(text[last:st])
@@ -278,8 +290,7 @@ class SecurityScanMiddleware(SecurityMiddleware):
             return
 
         # 错误结果（熔断/SSRF/异常）不套「外部内容」横幅（P3-3）：
-        # 该横幅是「来自外部文件的成功内容」语义，套在错误文本上会误导 LLM 把
-        # 错误当外部内容引用。
+        # 该横幅是「来自外部文件的成功内容」语义，套在错误文本上会误导 LLM 把错误当外部内容引用。
         if getattr(ctx.result, "is_error", False):
             return
 

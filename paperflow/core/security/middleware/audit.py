@@ -285,9 +285,10 @@ class AuditMiddleware(SecurityMiddleware):
         只观察不拦截，是管道里最先执行的一层——后续任何中间件拦截，调用已留痕。
         """
         # 1. 获取当前 contextvar 中存储的父 span（若有）
+        # span 类似于 {"span_id": "span_xxx", "depth": 1}
         span = _span_ctx.get()
 
-        # 2. 生成新的 span_id，更新 ctx 中的树字段
+        # 2. 生成新的 span_id，更新当前工具调用的 ctx 中的树字段
         span_id = f"span_{uuid.uuid4().hex[:12]}"
         ctx.span_id = span_id
         ctx.parent_id = span["span_id"] if span else None
