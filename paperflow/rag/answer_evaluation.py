@@ -233,3 +233,41 @@ async def evaluate_item(query: str, *, retrieve, llm, judge: StructuredOutput,
             result.answer_relevancy = None      # 相关性失败不拖垮整题
 
     return result
+
+
+def _mean(values: list[float]) -> float:
+    # 空列表返回 0.0 而非抛除零——整批全失败时报告应可读而非崩溃
+    return round(sum(values) / len(values), 4) if values else 0.0
+
+
+def aggregate(results: list[ItemResult]) -> dict:
+    """把逐题结果聚合成指标与状态计数。
+
+    口径：judge_failed / no_context / generation_failed 不进指标分母、在
+    counts 里单独暴露；citation_accuracy 的分母是引用**条数**（微观平均，
+    从 citations_detail 重算而非读 citation_accuracy 字段，引用多的题权重大），
+    citation_coverage 的分母是成功生成的题数。
+    """
+    ok = [r for r in results if r.status == "ok"]
+    faithful = [r.faithfulness for r in ok if r.faithfulness is not None]
+    relev = [r.answer_relevancy for r in ok if r.answer_relevancy is not None]
+    n_citations = sum(len(r.citations_detail) for r in ok if r.citation_coverage)
+    n_supported = sum(d["supported"] for r in ok if r.citation_coverage
+                      for d in r.citations_detail)
+    cited = sum(1 for r in ok if r.citation_coverage)
+    return {
+        "metrics": {
+            "faithfulness": _mean(faithful),
+            "answer_relevancy": _mean(relev),
+            "citation_accuracy": round(n_supported / n_citations, 4) if n_citations else 0.0,
+            "citation_coverage": round(cited / len(ok), 4) if ok else 0.0,
+        },
+        "counts": {
+            "total": len(results),
+            "ok": len(ok),
+            "judge_failed": sum(1 for r in results if r.status == "judge_failed"),
+            "no_context": sum(1 for r in results if r.status == "no_context"),
+            "generation_failed": sum(1 for r in results
+                                     if r.status == "generation_failed"),
+        },
+    }
