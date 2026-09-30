@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from paperflow.core.memory.constants import DEFAULT_PERSONA, DEFAULT_HUMAN
+from paperflow.core.memory.constants import DEFAULT_ASSISTANT, DEFAULT_PROFILE
 from paperflow.core.memory.orm import block as block_orm
 from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.schemas.block import Block
@@ -78,7 +78,7 @@ class BlockManager:
         """新建块并落盘（初始版本号 1）。
 
         Args:
-            label: 块的标签（唯一标识符，如 "persona", "human"）。
+            label: 块的标签（唯一标识符，如 "assistant", "profile"）。
             value: 块的内容文本。
             limit: 字符上限（默认 2000），更新时若超过将拒绝。
             description: 块的描述（可选，用于展示）。
@@ -145,19 +145,19 @@ class BlockManager:
         return migrated
 
     def ensure_default_blocks(self) -> list[str]:
-        """播种默认核心记忆块：persona/human 各自缺失才创建，绝不覆盖已有块。
+        """播种默认核心记忆块：assistant/profile 各自缺失才创建，绝不覆盖已有块。
 
         Returns:
             实际创建的 label 列表（无创建时为空）。
 
         设计意图：
-            - persona 是助手身份、human 是用户画像引导占位——两者是 Memory.compile()
-              每轮渲染的 system/ 块，缺失时记忆系统呈空壳。
+            - assistant 是助手自我认知/工作方式记忆、profile 是用户画像引导占位
+              ——两者是 Memory.compile() 每轮渲染的 system/ 块，缺失时记忆系统呈空壳。
             - 幂等性：已存在的块（含用户经 self-editing 改过的）不动，避免意外覆盖。
         """
         created: list[str] = []
-        for label, value in (("persona", DEFAULT_PERSONA),
-                             ("human", DEFAULT_HUMAN)):
+        for label, value in (("assistant", DEFAULT_ASSISTANT),
+                             ("profile", DEFAULT_PROFILE)):
             if self.get_block_by_label(label) is None:
                 self.create_block(label, value)
                 created.append(label)

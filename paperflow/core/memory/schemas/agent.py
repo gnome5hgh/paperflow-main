@@ -38,7 +38,7 @@ class AgentState(BaseModel):
     model: str | None = None                        # 指定模型名称（可选）
 
     # ---------- 记忆与上下文 ----------
-    # 核心记忆容器（persona/human 等块）。不持久化到 agent_state 表，由 AgentManager 动态构建。
+    # 核心记忆容器（assistant/profile 等块）。不持久化到 agent_state 表，由 AgentManager 动态构建。
     # 使用 default_factory 确保每个 AgentState 实例拥有独立的 Memory 容器，
     # 避免多个实例共享同一可变对象的默认值陷阱。
     memory: Memory = Field(default_factory=lambda: Memory(blocks=[]))

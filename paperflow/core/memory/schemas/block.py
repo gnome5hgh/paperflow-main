@@ -1,6 +1,6 @@
 """核心记忆块数据模型：BaseBlock（块内容与元数据）+ Block（含持久化字段）。
 
-一个 Block 就是一段「可被 LLM 编辑的命名记忆」——label 是名字（persona、human、unread_list、history_list等），value 是内容（文件内容），
+一个 Block 就是一段「可被 LLM 编辑的命名记忆」——label 是名字（assistant、profile、unread_list、history_list等），value 是内容（文件内容），
 limit 是长度上限，read_only 表示保护块（不可改/删）。
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ class BaseBlock(BaseModel):
     Attributes:
         value: 块的核心文本内容（记忆主体）。
         limit: 字符长度上限（默认 2000），更新时超限将抛出 ValueError。
-        label: 块的名称标签（如 "persona", "human", "unread_list"），
+        label: 块的名称标签（如 "assistant", "profile", "unread_list"），
                通常作为唯一业务标识，但并非严格主键（主键为 id）。
         description: 可读描述（用于展示或索引，不参与逻辑）。
         metadata_: 可选的扩展元数据（dict），API 层暴露为 "metadata"。
@@ -78,36 +78,37 @@ class Block(BaseBlock):
     updated_at: datetime | None = None                  # 最后更新时间（由 DB 或 ORM 填充）
 
     @classmethod
-    def human(cls, value: str) -> "Block":
-        """构造 label=human 的块（用户画像块，Sleeptime 定向写入目标）。
+    def profile(cls, value: str) -> "Block":
+        """构造 label=profile 的块（用户画像块，Sleeptime 定向写入目标）。
 
         Args:
             value: 用户画像文本内容。
 
         Returns:
-            一个 label 固定为 "human" 的 Block 实例。
+            一个 label 固定为 "profile" 的 Block 实例。
 
         用途：
-            - Sleeptime 过程将用户交互摘要持续写入此块。
-            - 与 persona 块共同构成 Memory.compile() 的常驻 system 内容。
+            - Sleeptime 过程将用户身份/偏好/背景持续写入此块。
+            - 与 assistant 块共同构成 Memory.compile() 的常驻 system 内容。
         """
-        return cls(label="human", value=value)
+        return cls(label="profile", value=value)
 
     @classmethod
-    def persona(cls, value: str) -> "Block":
-        """构造 label=persona 的块（助手身份块，可自我演进）。
+    def assistant(cls, value: str) -> "Block":
+        """构造 label=assistant 的块（助手自我认知块，可演进）。
 
         Args:
-            value: 助手身份/系统提示文本。
+            value: 助手工作方式/自我认知文本。
 
         Returns:
-            一个 label 固定为 "persona" 的 Block 实例。
+            一个 label 固定为 "assistant" 的 Block 实例。
 
         用途：
-            - 定义 AI 助手的角色、行为准则和风格。
-            - LLM 可通过 self-editing 工具主动更新此块以调整自身行为。
+            - 记录与用户协作中学到的角色调整与工作方式偏好（区别于
+              各子 agent 静态的 AGENT.md 系统提示）。
+            - Sleeptime 以 replace 整块重写的方式维护。
         """
-        return cls(label="persona", value=value)
+        return cls(label="assistant", value=value)
 
     @classmethod
     def new(cls, label: str, value: str) -> "Block":
@@ -120,6 +121,6 @@ class Block(BaseBlock):
         Returns:
             一个 Block 实例，其余字段（limit、description 等）使用默认值。
 
-        便捷工厂方法，用于快速创建普通块（非 human/persona 专用）。
+        便捷工厂方法，用于快速创建普通块（非 assistant/profile 专用）。
         """
         return cls(label=label, value=value)

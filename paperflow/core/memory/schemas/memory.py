@@ -1,6 +1,6 @@
 """Memory：核心记忆块容器，负责把块编译成 LLM 可读的 system 文本。
 
-compile() 按「渐进暴露」原则：只把 persona/human 两块内容常驻渲染进
+compile() 按「渐进暴露」原则：只把 assistant/profile 两块内容常驻渲染进
 <memory_blocks>，其余块不进 compile——它们以可选的 index_text（文件树索引）
 形式出现，内容按需读取。这样 in-context 窗口只装常驻核心，全量记忆走
 MemFS 的文件树隐喻触达。
@@ -40,7 +40,7 @@ class Memory:
     def compile(self, index_text: str | None = None) -> str:
         """渲染核心记忆为 system 文本：system/ 块 + 可选的文件系统索引。
 
-        渐进暴露按「persona/human 两块内容常驻；非 system 块只以索引形式
+        渐进暴露按「assistant/profile 两块内容常驻；非 system 块只以索引形式
         出现」的原则。index_text 由调用方（Agent._memory_message）读取并传入，
         保持本类无文件 IO。
 
@@ -51,19 +51,19 @@ class Memory:
         Returns:
             完整的 system prompt 文本，结构如下：
             <memory_blocks>
-            <block name="persona">...内容...</block>
-            <block name="human">...内容...</block>
+            <block name="assistant">...内容...</block>
+            <block name="profile">...内容...</block>
             </memory_blocks>
             [可选] <memory_filesystem>...索引内容...</memory_filesystem>
 
         设计意图：
-            - 常驻核心块（persona/human）每轮都完整注入，保障基本身份和用户画像。
+            - 常驻核心块（assistant/profile）每轮都完整注入，保障基本身份和用户画像。
             - 其他块（如 unread_list, history_list 等）不直接包含内容，只通过
               文件树索引暴露存在性，LLM 可按需读取具体文件内容。
             - 这样在上下文窗口中节省大量 token，同时保持全量记忆可访问。
         """
-        # 筛选出 system 核心块（persona 和 human）
-        system_blocks = [b for b in self.blocks if b.label in ("persona", "human")]
+        # 筛选出 system 核心块（assistant 和 profile）
+        system_blocks = [b for b in self.blocks if b.label in ("assistant", "profile")]
         parts = ["<memory_blocks>"]
         for b in system_blocks:
             parts.append(f'<block name="{b.label}">{b.value}</block>')
@@ -79,7 +79,7 @@ class Memory:
         """按 label 取块；不存在返回 None。
 
         Args:
-            label: 块的标签名称（如 "persona"）。
+            label: 块的标签名称（如 "assistant"）。
 
         Returns:
             匹配的第一个 Block 对象，若 label 不匹配任何块则返回 None。

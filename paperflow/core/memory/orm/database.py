@@ -20,7 +20,7 @@ _SCHEMA = """
 -- blocks 表：核心记忆块存储（业务主表）
 CREATE TABLE IF NOT EXISTS blocks (
     id TEXT PRIMARY KEY,                -- 块唯一标识
-    label TEXT NOT NULL,                -- 业务标签（如 "persona", "human"）
+    label TEXT NOT NULL,                -- 业务标签（如 "assistant", "profile"）
     value TEXT NOT NULL,                -- 块内容（文本）
     "limit" INTEGER NOT NULL DEFAULT 2000, -- 字符长度上限
     description TEXT,                   -- 可读描述
