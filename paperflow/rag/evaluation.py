@@ -13,8 +13,8 @@
 用同目录的 `run_eval.py`。
 
 直接当 CLI 用（需 Milvus 与真实索引在跑）：
-    python -m paperflow.rag.evaluation --golden scripts/rag/rag_golden.jsonl \
-        --out scripts/rag/after.json --compare scripts/rag/baseline.json
+    python -m paperflow.rag.evaluation --golden scripts/rag/retrieval_eval/rag_golden.jsonl \
+        --out scripts/rag/retrieval_eval/after.json --compare scripts/rag/retrieval_eval/baseline.json
 """
 import argparse
 import json
