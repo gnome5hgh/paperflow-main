@@ -12,8 +12,8 @@ from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.schemas.block import Block
 
 __all__ = ["insert_block", "select_block", "select_block_by_label", "select_blocks",
-           "update_block", "delete_block", "checkpoint_block", "select_block_history",
-           "restore_block_history"]
+           "update_block", "update_block_label", "delete_block", "checkpoint_block",
+           "select_block_history", "restore_block_history"]
 
 
 def _now() -> str:
@@ -110,6 +110,20 @@ def update_block(db: MemoryDB, block_id: str, value: str, version: int) -> None:
     """
     db.execute("UPDATE blocks SET value=?, version=?, updated_at=? WHERE id=?",
                (value, version, _now(), block_id))
+
+
+def update_block_label(db: MemoryDB, block_id: str, label: str) -> None:
+    """原地改写块 label（label 迁移专用）。
+
+    只动 label，不触 value/version/updated_at——迁移是身份改写而非内容编辑，
+    不进历史快照、不推进版本号。
+
+    Args:
+        db: 数据库连接。
+        block_id: 要改名的块 ID。
+        label: 新 label。
+    """
+    db.execute("UPDATE blocks SET label=? WHERE id=?", (label, block_id))
 
 
 def delete_block(db: MemoryDB, block_id: str) -> None:

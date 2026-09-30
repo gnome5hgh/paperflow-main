@@ -421,10 +421,10 @@ class Agent:
             # 把「缓存的记忆对象」扔掉，从数据库重新读出所有块，拼一个新的 Memory 实例
             self.memory = Memory(blocks=self.block_manager.list_blocks())
 
-        # compile() 只渲染 persona/human 两块 + 文件树索引（渐进暴露，其余块按需读）。compiled 的实际内容长这样：
+        # compile() 只渲染 assistant/profile 两块 + 文件树索引（渐进暴露，其余块按需读）。compiled 的实际内容长这样：
         #   <memory_blocks>
-        #   <block name="persona">…助手身份设定…</block>     ← 只有 persona/human 两块的内容
-        #   <block name="human">…用户画像…</block>
+        #   <block name="assistant">…助手工作方式记忆…</block>     ← 只有 assistant/profile 两块的内容
+        #   <block name="profile">…用户画像…</block>
         #   </memory_blocks>
         #   <memory_filesystem>
         #   …memory_filesystem.md 的内容…                    ← 文件树索引（文件名/结构，不是正文）
@@ -441,7 +441,7 @@ class Agent:
         它按顺序拼接五块内容：
             1. system: AGENT.md 系统提示（来自 agent 配置，定义角色与行为规范）
             2. system: SKILLS 清单块（L1 渐进披露清单，若装配了 SkillRegistry 且有可见 skill）
-            3. system: 记忆块（Memory.compile() 输出的 persona/human + 文件树索引，若有）
+            3. system: 记忆块（Memory.compile() 输出的 assistant/profile + 文件树索引，若有）
             4. system: 意图识别块（若启用意图管线且管线成功，格式化为 system 消息的 INTENT 块）
             5. 末尾追加 user task。
 
@@ -746,7 +746,7 @@ class Agent:
                 # 更新内存中的窗口的 _messages 列表
                 self._messages = new_window
 
-                # head[:-1]：① AGENT（AGENT.md 系统提示）② SKILLS 清单块（若有可见 skill）③ Memory Blocks（核心记忆块，如 persona/human）④ INTENT Block（意图识别结果，若启用）
+                # head[:-1]：① AGENT（AGENT.md 系统提示）② SKILLS 清单块（若有可见 skill）③ Memory Blocks（核心记忆块，如 assistant/profile）④ INTENT Block（意图识别结果，若启用）
                 # self._messages：从 MessageManager（SQL 持久化层）加载的该会话历史消息，加上本轮已产生的 assistant/tool 交互消息
                 # head[-1]：当前的 user task 消息
                 messages = list(head[:-1]) + self._messages + [head[-1]]

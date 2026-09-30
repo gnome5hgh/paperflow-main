@@ -431,7 +431,8 @@ def main(argv: list[str] | None = None) -> int | None:
     memory_dir = Path(config.workspace) / "memory"
     db = MemoryDB(memory_dir / "memory.db")
     block_manager = GitEnabledBlockManager(db, memfs_dir=memory_dir)
-    block_manager.ensure_default_blocks()   # 首启播种默认 persona/human 核心记忆块
+    block_manager.migrate_legacy_labels()   # 旧 human/persona label 一次性迁移为 profile/assistant（幂等）
+    block_manager.ensure_default_blocks()   # 首启播种默认 profile/assistant 核心记忆块
     embedder = _rag_embedder(config)
     message_manager = MessageManager(db, embedder=embedder)
     agent_manager = AgentManager(db, block_manager, message_manager)

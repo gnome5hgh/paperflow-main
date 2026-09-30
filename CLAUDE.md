@@ -125,7 +125,7 @@ Every agent lives in `agents/<name>/` with two files:
 
 `Agent.run(task) -> str` 是 async ReAct 循环:
 
-1. 构造 head：① AGENT.md(system_prompt) ② SKILLS 清单（若有）③ `Memory.compile()`（仅渲染 `system/` 块 persona/human + 文件树索引，渐进暴露）④ INTENT 块（intent_enabled 且管线成功时）；末尾 user task。**澄清早退**：管线产出 clarification 且非 force_dispatch → 直接返回澄清文本（不落盘、不进 ReAct，澄清只在 CLI 层跨轮处理）
+1. 构造 head：① AGENT.md(system_prompt) ② SKILLS 清单（若有）③ `Memory.compile()`（仅渲染 `system/` 块 assistant/profile + 文件树索引，渐进暴露）④ INTENT 块（intent_enabled 且管线成功时）；末尾 user task。**澄清早退**：管线产出 clarification 且非 force_dispatch → 直接返回澄清文本（不落盘、不进 ReAct，澄清只在 CLI 层跨轮处理）
 2. 从 MessageManager 加载该会话 in-context 消息（跨轮回放，Letta 语义）；当前 user task 落盘
 3. 调 LLM 前检查压缩（`should_compress` → `run_compaction`，只改 in-context 窗口不删 SQL）；随后 `chat()` 或 `chat_stream()`（挂 stream_callback 才走流式）
 4. 无 tool_calls → 顺序执行各中间件 `on_finish` 钩子（可改写最终回答）→ 落盘 → 返回。**截断续写**：`finish_reason=="length"` 时暂存半截、把「半截 + 续写提示」放回 in-context 继续循环，绝不把残缺内容当最终回答交付
@@ -178,10 +178,10 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 | 服务 | 角色 |
 |---|---|
-| `BlockManager` / `GitEnabledBlockManager` | 核心记忆块 CRUD。乐观锁（`version` 递增）+ 写前 `block_history` 快照（undo/redo）；`read_only` 块拒绝读写、块长上限 2000；`ensure_default_blocks()` 播种 persona/human（幂等，不覆盖用户已编辑块）。Git 变体每次变更同步 MemFS markdown 投影并 git commit |
+| `BlockManager` / `GitEnabledBlockManager` | 核心记忆块 CRUD。乐观锁（`version` 递增）+ 写前 `block_history` 快照（undo/redo）；`read_only` 块拒绝读写、块长上限 2000；`ensure_default_blocks()` 播种 assistant/profile（幂等，不覆盖用户已编辑块）。Git 变体每次变更同步 MemFS markdown 投影并 git commit |
 | `MessageManager` | 对话全量落盘（Recall）。`get_in_context_messages()` 按 `AgentState.message_ids` 回放窗口；`make_ask_recorder()` 把子 agent 的 ask 问答也落盘 |
 | `AgentManager` | Agent 生命周期：`AgentState` JSON 行（keyed by agent_id；message_ids = in-context 窗口） |
-| `MemFS` | Git 托管的 markdown 投影层：`system/persona.md` + `system/human.md` + 其他块；自动生成 `memory_filesystem.md` 索引；`detect_file_changes()` 检测手工编辑回写块（双向同步） |
+| `MemFS` | Git 托管的 markdown 投影层：`system/assistant.md` + `system/profile.md` + 其他块；自动生成 `memory_filesystem.md` 索引；`detect_file_changes()` 检测手工编辑回写块（双向同步） |
 | `TitleExtractor` | 论文标题权威提取：5 级回退链（搜索元数据 > GROBID > LLM > pdftitle > PyMuPDF 启发式），**绝不回退到 PDF 文件名** |
 
 **关键不变式**：
@@ -189,7 +189,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - 记忆工具在 **`paperflow/tools/memory/`**，经 **`get_memory_tools()`**（`tools/memory/__init__.py`）惰性构建 11 个工具（模块级单例，双重检查加锁，每次返回新列表副本）；执行时经 **`set_memory_context(MemoryToolsContext(...))`** 绑定一次（cli.py）+ `get_memory_context()` 取运行时上下文；未装配时工具降级为错误文本而非崩溃
 - 11 个记忆工具分 3 组：**blocks**（`memory`/`memory_replace`/`memory_insert`/`memory_rethink`/`memory_apply_patch`/`memory_finish_edits`）、**recall**（`conversation_search`，默认过滤 tool 消息防递归噪音）、**paper_lists**（`unread_list_add`/`unread_list_remove`/`history_append`/`extract_title`——列表块工具，`unread_list_add` 要求真实标题绝不用文件名）
 - **Compaction**（`compaction.py`）：只压缩 in-context 窗口（驱逐旧对话 + 插 SummarySchema 摘要 + 保留尾部），**永不删 SQL 行**；`should_compress`（tiktoken 估算，超 `trigger_ratio × context_size` 触发）+ `run_compaction`（滑动窗口，保留 tool 消息与其结果的配对，尾部孤儿清理）
-- **Sleeptime**（`sleeptime.py`）：后台记忆整合，REPL 每轮循环顶部 `run_once_if_due()`（读 stdin 前）；LLM 产出 `MemoryEditBatch` 经 BlockManager 应用 + git commit；两阶段校验（白名单文件、禁止删 `system/` 块），连续 3 次失败强制推进游标防死循环
+- **Sleeptime**（`sleeptime.py`）：后台记忆整合，REPL 每轮循环顶部 `run_once_if_due()`（读 stdin 前）；LLM 产出 `MemoryEditBatch` 经 BlockManager 应用 + git commit；两阶段校验（类型枚举白名单：system/ 精确枚举 profile/assistant、顶层仅 feedback_/project_/reference_ 三前缀；动作仅 append/replace，delete 全量收禁），连续 3 次失败强制推进游标防死循环
 - 装配不变式：CLI `session_id` == `AgentManager.create_agent` id == `Agent.session_id`，三者错位会各自读到空数据
 
 ### Intent recognition

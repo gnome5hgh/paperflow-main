@@ -7,17 +7,23 @@ GitEnabledBlockManager 是其 git 变体：块变更同步写 markdown 投影 + 
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from paperflow.core.memory.constants import DEFAULT_PERSONA, DEFAULT_HUMAN
+from paperflow.core.memory.constants import DEFAULT_ASSISTANT, DEFAULT_PROFILE
 from paperflow.core.memory.orm import block as block_orm
 from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.schemas.block import Block
 
 __all__ = ["BlockManager", "GitEnabledBlockManager"]
 
+logger = logging.getLogger(__name__)
+
 _READ_ONLY = "block is read-only"
 _LIMIT = "Exceeds {limit} character limit"
+
+#: 旧核心块 label → 新 label（一次性迁移映射，见 spec 2026-09-30-memory-rename-sleeptime-taxonomy）
+_LEGACY_LABELS = {"human": "profile", "persona": "assistant"}
 
 
 class BlockManager:
@@ -72,7 +78,7 @@ class BlockManager:
         """新建块并落盘（初始版本号 1）。
 
         Args:
-            label: 块的标签（唯一标识符，如 "persona", "human"）。
+            label: 块的标签（唯一标识符，如 "assistant", "profile"）。
             value: 块的内容文本。
             limit: 字符上限（默认 2000），更新时若超过将拒绝。
             description: 块的描述（可选，用于展示）。
@@ -117,20 +123,41 @@ class BlockManager:
         row = block_orm.select_block_by_label(self.db, label)
         return self._to_schema(row) if row else None
 
+    def migrate_legacy_labels(self) -> list[str]:
+        """把旧核心块 label（human/persona）迁移为 profile/assistant（幂等）。
+
+        在 ensure_default_blocks 之前调用：先迁移再播种，保证旧库不会因
+        「新 label 缺失」而被播种出第二套并存块。value/id/创建时间原样保留。
+
+        Returns:
+            实际迁移到的新 label 列表（无迁移时为空）。
+        """
+        migrated: list[str] = []
+        for old, new in _LEGACY_LABELS.items():
+            old_block = self.get_block_by_label(old)
+            if old_block is None:
+                continue
+            if self.get_block_by_label(new) is not None:
+                logger.warning("label 迁移跳过：%s 与 %s 并存，请人工处理", old, new)
+                continue
+            block_orm.update_block_label(self.db, old_block.id, new)
+            migrated.append(new)
+        return migrated
+
     def ensure_default_blocks(self) -> list[str]:
-        """播种默认核心记忆块：persona/human 各自缺失才创建，绝不覆盖已有块。
+        """播种默认核心记忆块：assistant/profile 各自缺失才创建，绝不覆盖已有块。
 
         Returns:
             实际创建的 label 列表（无创建时为空）。
 
         设计意图：
-            - persona 是助手身份、human 是用户画像引导占位——两者是 Memory.compile()
-              每轮渲染的 system/ 块，缺失时记忆系统呈空壳。
+            - assistant 是助手自我认知/工作方式记忆、profile 是用户画像引导占位
+              ——两者是 Memory.compile() 每轮渲染的 system/ 块，缺失时记忆系统呈空壳。
             - 幂等性：已存在的块（含用户经 self-editing 改过的）不动，避免意外覆盖。
         """
         created: list[str] = []
-        for label, value in (("persona", DEFAULT_PERSONA),
-                             ("human", DEFAULT_HUMAN)):
+        for label, value in (("assistant", DEFAULT_ASSISTANT),
+                             ("profile", DEFAULT_PROFILE)):
             if self.get_block_by_label(label) is None:
                 self.create_block(label, value)
                 created.append(label)

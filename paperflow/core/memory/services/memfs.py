@@ -16,7 +16,7 @@ from paperflow.core.memory.schemas.block import Block
 __all__ = ["MemFS"]
 
 # 系统核心块标签：这类块会被存放在 system/ 子目录中
-_SYSTEM_LABELS = {"persona", "human"}
+_SYSTEM_LABELS = {"assistant", "profile"}
 # 索引文件名（自动生成，不应被人工编辑）
 _INDEX_NAME = "memory_filesystem.md"
 
@@ -38,12 +38,12 @@ class MemFS:
             db: 可选的 MemoryDB 实例，仅在 detect_file_changes() 需要读取 blocks 表时使用。
         """
         self.memory_dir = Path(memory_dir)
-        # system 子目录存放 persona/human 等系统核心块
+        # system 子目录存放 assistant/profile 等系统核心块
         self.system_dir = self.memory_dir / "system"
         self.db = db                       # MemoryDB | None（detect_file_changes 读 blocks 用）
 
     def _file_for(self, block: Block) -> Path:
-        """返回块对应的投影文件路径：persona/human 进 system/ 子目录，其余放根目录。
+        """返回块对应的投影文件路径：assistant/profile 进 system/ 子目录，其余放根目录。
 
         Args:
             block: 记忆块对象。
@@ -52,7 +52,7 @@ class MemFS:
             该块对应的 .md 文件路径（不保证父目录存在）。
 
         设计原则：
-            - 系统核心块（persona/human）单独放在 system/ 子目录，便于区分和管理。
+            - 系统核心块（assistant/profile）单独放在 system/ 子目录，便于区分和管理。
             - 其他块（如 unread_list, history_list 等）直接放在 memory_dir 根目录，
               文件名为 {label}.md。
         """
@@ -148,7 +148,7 @@ class MemFS:
         生成内容格式：
             # Memory Filesystem（自动生成，请勿编辑）
 
-            - `system/persona.md` — 助手身份描述
+            - `system/assistant.md` — 助手工作方式记忆
             - `unread_list.md` — 待读文献列表
             ...
 
