@@ -7,6 +7,7 @@ GitEnabledBlockManager 是其 git 变体：块变更同步写 markdown 投影 + 
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from paperflow.core.memory.constants import DEFAULT_PERSONA, DEFAULT_HUMAN
@@ -16,8 +17,13 @@ from paperflow.core.memory.schemas.block import Block
 
 __all__ = ["BlockManager", "GitEnabledBlockManager"]
 
+logger = logging.getLogger(__name__)
+
 _READ_ONLY = "block is read-only"
 _LIMIT = "Exceeds {limit} character limit"
+
+#: 旧核心块 label → 新 label（一次性迁移映射，见 spec 2026-09-30-memory-rename-sleeptime-taxonomy）
+_LEGACY_LABELS = {"human": "profile", "persona": "assistant"}
 
 
 class BlockManager:
@@ -116,6 +122,27 @@ class BlockManager:
         """
         row = block_orm.select_block_by_label(self.db, label)
         return self._to_schema(row) if row else None
+
+    def migrate_legacy_labels(self) -> list[str]:
+        """把旧核心块 label（human/persona）迁移为 profile/assistant（幂等）。
+
+        在 ensure_default_blocks 之前调用：先迁移再播种，保证旧库不会因
+        「新 label 缺失」而被播种出第二套并存块。value/id/创建时间原样保留。
+
+        Returns:
+            实际迁移到的新 label 列表（无迁移时为空）。
+        """
+        migrated: list[str] = []
+        for old, new in _LEGACY_LABELS.items():
+            old_block = self.get_block_by_label(old)
+            if old_block is None:
+                continue
+            if self.get_block_by_label(new) is not None:
+                logger.warning("label 迁移跳过：%s 与 %s 并存，请人工处理", old, new)
+                continue
+            block_orm.update_block_label(self.db, old_block.id, new)
+            migrated.append(new)
+        return migrated
 
     def ensure_default_blocks(self) -> list[str]:
         """播种默认核心记忆块：persona/human 各自缺失才创建，绝不覆盖已有块。
