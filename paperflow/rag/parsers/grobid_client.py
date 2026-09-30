@@ -138,7 +138,9 @@ class GrobidClient:
         - 对每个 div，提取 `<tei:head>` 作为标题；若无 head，则用 div 的 `type` 属性
           （如 "abstract"）作为标题，确保每个章节都有可读的标题。
         - 提取所有 `<tei:p>` 段落，拼接成正文。
-        - 同时提取 div 内的所有 `<tei:table>` 表格内容和 `<tei:figure>` 的图片说明。
+        - 表格与图注做全文档遍历收集：GROBID 把它们放在 body 直属的 `<tei:figure>`
+          下（`<tei:table>` 又嵌套在 figure 里），并不在 `<tei:div>` 之下，
+          按 div 直接子节点找会全部漏掉。
 
         Args:
             xml: GROBID 返回的完整 TEI XML 字符串。
@@ -168,14 +170,14 @@ class GrobidClient:
             if paras:
                 sections.append((heading, "\n".join(paras)))
 
-            # 提取表格内容（拼接所有文本节点）
-            for t in div.findall("tei:table", _TEI_NS):
-                tables.append("".join(t.itertext()))
-
-            # 提取图片说明（<figDesc> 标签内的文本）
-            for f in div.findall("tei:figure", _TEI_NS):
-                cap = f.find(".//tei:figDesc", _TEI_NS)
-                figures.append(cap.text if cap is not None and cap.text else "")
+        # 表格与图注：GROBID 把二者放在 body 直属的 <figure> 下（<table> 又嵌套在
+        # <figure> 里），不是 <div> 的直接子节点——必须全文档遍历，才拿得到内容。
+        for tbl in root.iter(f"{{{_TEI_NS['tei']}}}table"):
+            tables.append("".join(tbl.itertext()))
+        for fig in root.iter(f"{{{_TEI_NS['tei']}}}figure"):
+            cap = fig.find(".//tei:figDesc", _TEI_NS)
+            # figDesc 可能含子标记（此时 .text 为 None），故用 itertext 汇总全部文本
+            figures.append("".join(cap.itertext()).strip() if cap is not None else "")
 
         return ParsedDoc(sections=sections, tables=tables, figures=figures,
                          title=title, biblio=biblio)

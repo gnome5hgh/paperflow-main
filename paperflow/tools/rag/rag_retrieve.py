@@ -22,12 +22,15 @@ class RagRetrieveTool(Tool):
 
     name = "rag_retrieve"
     description = ("从本地知识库（笔记 + PDF 全文）检索相关段落。"
-                   "参数 query 为检索问题，top_k 为返回块数。")
+                   "参数 query 为检索问题；top_k 为返回块数；source 可选限定来源——"
+                   "问笔记观点用 \"note\"，问论文原文用 \"pdf\"，缺省两处都搜。")
     parameters = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "检索问题"},
             "top_k": {"type": "integer", "description": "返回块数", "default": 5},
+            "source": {"type": "string", "enum": ["note", "pdf"],
+                       "description": "限定来源：note=读书笔记，pdf=论文原文；缺省不限"},
         },
         "required": ["query"],
     }
@@ -38,12 +41,15 @@ class RagRetrieveTool(Tool):
         super().__init__()
         self._service = None # 可被测试注入，否则在 execute 中取全局单例
 
-    def execute(self, query: str, top_k: int = 5) -> ToolResult:
-        """执行检索并返回格式化结果：每条命中列出来源、路径与文本前 200 字；无命中时给出提示。
+    def execute(self, query: str, top_k: int = 5, source: str | None = None) -> ToolResult:
+        """执行检索并返回格式化结果：每条命中列出来源、路径与正文摘录（前 400 字）。
+
+        带标题前缀的块其摘录首行即「论文标题 > 章节标题」，供上层直接引用节号。
 
         Args:
             query: 检索查询。
             top_k: 返回块数。
+            source: 限定来源——"note" 只搜笔记，"pdf" 只搜论文；None 不过滤。
 
         Returns:
             ToolResult: 包含格式化文本的 ToolResult 对象。
@@ -57,7 +63,8 @@ class RagRetrieveTool(Tool):
         # 「检索结果可能不完整/不可用」而非怀疑工具本身。
         try:
             with svc.lock:
-                chunks = svc.get_retriever().retrieve(query, top_k)
+                # source 原样透传给检索器（非法值由 Retriever 侧按不过滤防御处理）。
+                chunks = svc.get_retriever().retrieve(query, top_k, source)
         except Exception as e:
             return ToolResult(
                 text="⚠️ 向量检索不可用（Milvus 异常），本次检索失败，结果可能不完整。"
@@ -69,6 +76,8 @@ class RagRetrieveTool(Tool):
         if not chunks:
             return ToolResult(text="检索无命中（索引可能为空，可先写几篇笔记）")
 
-        # 4. 否则，每条命中格式化为 `- [来源:路径] 文本前200字` 的列表。
-        lines = [f"- [{c.source}:{c.path}] {c.text[:200]}" for c in chunks]
+        # 4. 否则，每条命中格式化为 `- [来源:路径] 正文摘录前400字` 的列表。
+        # 摘录上限 400 字符：带前缀的块首行即「论文标题 > 章节标题」，需要足够
+        # 窗口才能让上层同时拿到节号与可用的正文上下文。
+        lines = [f"- [{c.source}:{c.path}] {c.text[:400]}" for c in chunks]
         return ToolResult(text="检索到以下相关段落：\n" + "\n".join(lines))

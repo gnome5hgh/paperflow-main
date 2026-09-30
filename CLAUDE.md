@@ -210,7 +210,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 `paperflow/rag/` — 检索增强栈，`RAGService` 是唯一门面（indexer 与 retriever 是同一实例的两个视图，共享一把锁，增量写入对查询立即可见）。**懒加载单例**：`get_rag_service(config=None)`（双重检查加锁），所有重量组件（embedder/reranker/grobid/vector_store/bm25）首次访问才构造——`rag/__init__.py` 因此在包导入期不拉重型依赖。
 
-端到端链路：**解析**（`GrobidClient` HTTP 解析 TEI XML → `ParsedDoc`；GROBID 不可达时回退 `PyMuPDFParser` 字体启发式分节；按 (path, mtime, size) 缓存）→ **分块**（`AcademicChunker` 两段式：按节 → 长节按 token 512/overlap 64 重切，跳过参考文献；Chunk id = sha1(path:index) 幂等）→ **索引**（`RagIndexer` 增量扫描，state 文件 `index_state.json`；文档级「删旧建新」，Milvus upsert + BM25 同步；含一致性恢复）→ **检索**（`Retriever` 混合：BM25 top-30 + 向量 top-30 → RRF 融合 → `SbertReranker` 重排 → 有序 Chunks）。
+端到端链路：**解析**（`GrobidClient` HTTP 解析 TEI XML → `ParsedDoc`；GROBID 不可达时回退 `PyMuPDFParser` 字体启发式分节；按 (path, mtime, size) 缓存）→ **分块**（`AcademicChunker`：按节切 → 句界装窗 512/overlap 64——不切句、重叠取上一窗尾完整句、单句超长回退 token 滑窗；块首行 `context_prefix` 逐窗拼「标题 > 章节」前缀（PDF=GROBID 主标题，笔记=首个 `# ` 行），跳过参考文献；Chunk id = sha1(path:index) 幂等）→ **索引**（`RagIndexer` 增量扫描，state 文件 `index_state.json` 带版本号（`_STATE_VERSION=3`，版本不符放弃旧状态全量重扫重嵌）；表格/图注转独立块（heading 标 `[表格]`/`[图注]`，表格截断 8000 字符）；文档级「删旧建新」（`doc_chunk_ids` 定点取旧块 id），Milvus upsert + BM25 同步；含一致性恢复）→ **检索**（`Retriever` 混合：query 侧加指令前缀（`_QUERY_INSTRUCTION`，Qwen3 官方 Instruct 格式）编码；BM25 top-30 + 向量 top-30（可按 source=note/pdf 过滤）→ RRF 融合 → 取 max(2×top_k, `rag_rerank_candidates` 默认 24) 个候选 → `SbertReranker` 重排 → 有序 Chunks；零全表扫描：向量路元数据随结果带回、BM25 路定点 `fetch_by_ids` 补齐）。评测：`python -m paperflow.rag.evaluation --golden data/rag/eval/rag_golden.jsonl`（黄金集 gitignored；hit_rate@3/5/10 / MRR / strict_hit_rate@10，纯脚本无 LLM judge）。
 
 存储与模型：
 - `VectorStore` — Milvus（`pymilvus.MilvusClient`，单 collection `config.milvus_collection`="paperflow"）；`config.milvus_uri` 默认 `http://localhost:19530` 连 Standalone（`docker compose up -d` 起 etcd+minio+milvus，gRPC 19530 / 健康检查 9091，数据落 `data/milvus/`）；传本地文件路径则走 Milvus Lite 内嵌（单测用，无需常驻服务）
@@ -218,7 +218,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `SbertEmbedder` — `Qwen/Qwen3-Embedding-0.6B`（1024 维，CPU，L2 归一化，维度从模型读取）；`SbertReranker` — `Qwen/Qwen3-Reranker-0.6B` CrossEncoder（sentence-transformers≥5.4 原生包装，sigmoid 打分）
 - 加载路径 `resolve_model_dir(workspace, model_name)`：本地优先（`<workspace>/models/<name>/` 存在用本地），否则回退 HF 名自动下载
 
-消费方：`RagRetrieveTool`（`tools/rag/`，`rag_retrieve`）装配进 qa-agent 与 researcher（researcher 用它按课题盘点语料）；`ReadPdfTool` 用 `parse_pdf_cached`；`write_file`/`edit_file`/`fetch_pdf` 写盘后自动触发 `index_document`。embedder 单例与意图管线共享（`cli.py` `_rag_embedder`；记忆检索为纯 SQL LIKE，不用向量）。
+消费方：`RagRetrieveTool`（`tools/rag/`，`rag_retrieve`：参数 query / top_k / source（enum 限定 note=笔记 / pdf=论文，缺省两处都搜），每条命中展示来源、路径与正文摘录前 400 字）装配进 qa-agent 与 researcher（researcher 用它按课题盘点语料）；`ReadPdfTool` 用 `parse_pdf_cached`；`write_file`/`edit_file`/`fetch_pdf` 写盘后自动触发 `index_document`。embedder 单例与意图管线共享（`cli.py` `_rag_embedder`；记忆检索为纯 SQL LIKE，不用向量）。
 
 ### Citations
 
@@ -288,10 +288,11 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | `note_dir` / `pdf_dir` / `research_dir` | 语料库数据源根（note/pdf/research，个人绝对路径，**无默认值**，须经 .env/config.yaml） |
 | `grobid_endpoint` | GROBID 服务地址，默认 `http://localhost:8070` |
 | `milvus_uri` / `milvus_collection` / `embed_model` / `rerank_model` | Milvus 地址（默认 `http://localhost:19530`）/ 集合名（默认 `paperflow`）/ 千问嵌入 / 重排模型 |
+| `rag_rerank_candidates` | RAG 重排候选池下限：RRF 融合后取 max(2×top_k, 此值) 个候选进精排，默认 24（池子越大 CPU 精排越慢，真命中截损越少） |
 | `citations_bib_path` | references.bib 路径（引用库真相源）。默认 `workspace/citations/references.bib`，可指向任意论文项目目录；空则回退默认 |
 | `agent_timeouts` | 子 agent 超时覆盖表（noter 900 / searcher 420 / reviewer 300 / researcher 1800 / qa-agent 180;audit 数据校准,见 spec 2026-09-05-agent-timeout-recalibration） |
 
-环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_NOTE_DIR` / `PAPERFLOW_PDF_DIR` / `PAPERFLOW_RESEARCH_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY` / `PAPERFLOW_CITATIONS_BIB_PATH` / `PAPERFLOW_S2_API_KEY`（Semantic Scholar 检索的可选 key，由 search 客户端直读环境变量，配置后走高配额端点）。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
+环境变量：`PAPERFLOW_API_KEY` / `PAPERFLOW_BASE_URL` / `PAPERFLOW_MODEL` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_WORKSPACE` / `PAPERFLOW_AGENTS_DIR` / `PAPERFLOW_MAX_RISK` / `PAPERFLOW_NOTE_DIR` / `PAPERFLOW_PDF_DIR` / `PAPERFLOW_RESEARCH_DIR` / `PAPERFLOW_GROBID_ENDPOINT` / `PAPERFLOW_MILVUS_URI` / `PAPERFLOW_MILVUS_COLLECTION` / `PAPERFLOW_EMBED_MODEL` / `PAPERFLOW_RERANK_MODEL` / `PAPERFLOW_RAG_RERANK_CANDIDATES` / `PAPERFLOW_SLEEPTIME_ENABLE` / `PAPERFLOW_SLEEPTIME_FREQUENCY` / `PAPERFLOW_CITATIONS_BIB_PATH` / `PAPERFLOW_S2_API_KEY`（Semantic Scholar 检索的可选 key，由 search 客户端直读环境变量，配置后走高配额端点）。env 恒为字符串，按目标字段当前类型做 bool/int 转换。
 
 ### Key design decisions
 

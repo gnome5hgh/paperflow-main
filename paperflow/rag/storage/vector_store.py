@@ -108,31 +108,84 @@ class VectorStore:
         self._client.upsert(collection_name=self._collection, data=data)
         self._client.flush(self._collection)
 
-    def query(self, embedding, top_k: int) -> list[tuple[str, str, float]]:
-        """按向量做相似度检索，返回前 top_k 条，每条为 (块 id, 原文, 距离)。
+    @staticmethod
+    def _escape_filter_value(value: str) -> str:
+        """转义 Milvus 过滤表达式里的字符串值：反斜杠与双引号。
 
+        例如 "C:\\Users\\a.md" → "C:\\\\Users\\a.md"，否则破坏 filter 语法。
+        从 delete_doc 抽出，供按值过滤的查询共用。
+        """
+        return value.replace("\\", "\\\\").replace('"', '\\"')
 
-        返回的 distance 在 COSINE 度量下，值越接近 1 表示越相似。
+    def query(self, embedding, top_k: int, expr: str = "") -> list[tuple[str, str, str, str, float]]:
+        """按向量相似度检索，返回前 top_k 条 (块 id, 原文, 相对路径, 来源, 距离)。
+
+        expr 为 Milvus 过滤表达式（如 'source == "note"'），空串不过滤。
+        路径与来源直接随搜索结果带回（output_fields），检索路径不再需要
+        全表扫描补元数据；COSINE 度量下 distance 越接近 1 越相似。
 
         Args:
             embedding: 查询向量，一维数组（numpy.ndarray 或 list）。
             top_k: 返回结果数量上限。
+            expr: Milvus 标量过滤表达式，空串表示不过滤。
 
         Returns:
-            list[tuple[str, str, float]]: 每条为 (块 id, 原文, 距离分数)。
+            list[tuple[str, str, str, str, float]]: 每条为
+            (块 id, 原文, 相对路径, 来源, 距离分数)。
         """
         res = self._client.search(
             collection_name=self._collection,
             data=[embedding.tolist()], # 二维：[[v1, v2, ...]]
             limit=top_k,
-            output_fields=["text"], # 只返回 text，其他元数据不需要
+            filter=expr, # 空串 = 不过滤
+            output_fields=["text", "path", "source"], # 元数据随搜索结果带回，避免全表扫描补齐
         )
 
         # Milvus 的 ``search`` 返回格式是嵌套结构：
         # - 外层列表：每个 query 向量对应一个元素（这里只有 1 个）。
         # - 内层列表：命中结果列表，每项包含 id、distance、entity 等字段。
         # res[0] 是第一个（也是唯一一个）query 的命中列表；每项含 id / distance / entity
-        return [(h["id"], h["entity"]["text"], h["distance"]) for h in res[0]]
+        return [(h["id"], h["entity"]["text"], h["entity"]["path"],
+                 h["entity"]["source"], h["distance"]) for h in res[0]]
+
+    def fetch_by_ids(self, ids: list[str]) -> list[tuple[str, str, str, str]]:
+        """按块 id 批量定点取回 (id, 原文, 路径, 来源)，供 BM25 命中补齐文本。
+
+        替代「全表扫描后按 id 过滤」：BM25 命中数 ≤ 30，定点 query 开销可忽略。
+        不存在的 id 静默跳过；空列表直接返回空（不发请求）。
+
+        Args:
+            ids: 块 id 列表。
+
+        Returns:
+            list[tuple[str, str, str, str]]: 每条为 (id, text, path, source)，
+            仅包含实际存在的 id，顺序由 Milvus 返回顺序决定。
+        """
+        if not ids:
+            return []
+        quoted = ", ".join(f'"{self._escape_filter_value(i)}"' for i in ids)
+        res = self._client.query(
+            collection_name=self._collection,
+            filter=f"id in [{quoted}]",
+            output_fields=["text", "path", "source"],
+        )
+        return [(r["id"], r["text"], r["path"], r["source"]) for r in res]
+
+    def doc_chunk_ids(self, path: str) -> list[str]:
+        """按文档相对路径取回其全部块 id（索引器「先删后建」与删除清理用）。
+
+        Args:
+            path: 文档的相对路径（存储时使用的路径值）。
+
+        Returns:
+            list[str]: 该路径下全部块 id；路径不存在时返回空列表。
+        """
+        res = self._client.query(
+            collection_name=self._collection,
+            filter=f'path == "{self._escape_filter_value(path)}"',
+            output_fields=["id"],
+        )
+        return [r["id"] for r in res]
 
     def delete_doc(self, path: str) -> None:
         """删除指定路径文档的全部块（按 path 字段过滤）。
@@ -140,9 +193,9 @@ class VectorStore:
         Args:
             path: 文档的相对路径（存储时使用的路径值）。
         """
-        # 过滤表达式是字符串拼接形式，path 值中的反斜杠（Windows 路径）和双引号必须转义，否则会破坏 filter 语法。
-        # 例如 "C:\Users\note.md" → "C:\\\\Users\\note.md"。
-        escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+        # 过滤表达式是字符串拼接形式，path 值中的反斜杠（Windows 路径）和双引号必须转义，
+        # 否则会破坏 filter 语法——转义逻辑统一收口在 _escape_filter_value。
+        escaped = self._escape_filter_value(path)
         self._client.delete(
             collection_name=self._collection, filter=f'path == "{escaped}"',
         )
