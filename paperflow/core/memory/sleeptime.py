@@ -1,9 +1,10 @@
 """Sleeptime 记忆整合后台：把对话增量沉淀进核心记忆块。
 
 CLI REPL 每轮循环顶部调 run_once_if_due()：读取未消费历史 → LLM 用记忆编辑
-工具语义输出编辑指令（append/replace/delete）→ 全量预验证 → 经 BlockManager
-应用进核心块。写入前必须过白名单并禁止删除 system/ 块，因为 LLM 输出不可信；
-应用期连败 3 次强制推进游标，防止同一批坏编辑被无限重放。
+工具语义输出编辑指令（append/replace）→ 全量预验证 → 经 BlockManager
+应用进核心块。写入前必须过类型枚举白名单（system/ 精确枚举 profile/assistant，
+顶层仅 feedback_/project_/reference_ 三前缀），动作只允许 append/replace，
+因为 LLM 输出不可信；应用期连败 3 次强制推进游标，防止同一批坏编辑被无限重放。
 """
 from __future__ import annotations
 
@@ -20,16 +21,17 @@ __all__ = ["Sleeptime", "MemoryEditBatch", "MemoryEdit",
            "MemoryEditValidationError"]
 
 # ============================================================================
-# 常量：可写记忆文件白名单（正则表达式）
+# 常量：可写记忆文件白名单（类型枚举，正则表达式）
 # ============================================================================
 # LLM 输出不可信，写入前必须校验目标文件是否在允许列表中。
-# 允许的模式：
-#   - system/<name>.md，其中 name 仅含字母数字下划线（即 system/persona.md, system/human.md）
-#   - <name>.md（顶层块，如 feedback_*, project_*, reference_*, 或通用块）
+# 允许的模式（与 _build_prompt 定向表一一对应）：
+#   - system/profile.md、system/assistant.md（system/ 下精确枚举，不得新增）
+#   - feedback_<topic>.md / project_<topic>.md / reference_<topic>.md
+#     （类型前缀封闭，topic 由 LLM 起名但仅限字母数字下划线）
 # 使用正则确保路径安全，防止目录遍历或非法后缀。
 _EDIT_FILE_PATTERN = re.compile(
-    r"^(system/[A-Za-z0-9_]+|[A-Za-z0-9_]+|feedback_[A-Za-z0-9_]+|"
-    r"project_[A-Za-z0-9_]+|reference_[A-Za-z0-9_]+)\.md\Z")
+    r"^(system/(profile|assistant)|"
+    r"feedback_[A-Za-z0-9_]+|project_[A-Za-z0-9_]+|reference_[A-Za-z0-9_]+)\.md\Z")
 
 
 class MemoryEdit(BaseModel):
@@ -39,7 +41,7 @@ class MemoryEdit(BaseModel):
     """
 
     file: str
-    action: Literal["append", "replace", "delete"]
+    action: Literal["append", "replace"]
     content: str = Field(default="", max_length=8000)
     hook: str = Field(default="", max_length=500)
 
@@ -51,7 +53,7 @@ class MemoryEditBatch(BaseModel):
 
 
 class MemoryEditValidationError(ValueError):
-    """编辑指令未通过阶段 1 校验（目标不在白名单 / 删除受保护 system/ 块）。
+    """编辑指令未通过阶段 1 校验（目标不在类型枚举白名单内）。
 
     与阶段 2 的应用期错误（如 update_block_value 因块超限/read_only 抛的
     ValueError）区分：只有校验错误被上抛（原子性——一条不写）；应用期错误
@@ -135,7 +137,7 @@ class Sleeptime:
         """读取新消息 → LLM 编辑指令 → 全量预验证 → 逐条应用 → commit → 推进。
 
         整个流程分为两个阶段：
-            1. 全量预验证（_validate_edit）：校验文件白名单和删除保护。
+            1. 全量预验证（_validate_edit）：校验文件白名单。
                若任一编辑非法，则整体抛出 MemoryEditValidationError，一条都不写。
             2. 若全部合法，则逐条应用编辑（_apply_edit）。
                应用期间若有任何异常（如块超限/read_only），计入连败计数；
@@ -196,10 +198,11 @@ class Sleeptime:
                 self._cursor = self.message_manager.size(self.agent_state.agent_id)
 
     def _build_prompt(self, new_msgs: list) -> str:
-        """构造整合指令生成提示：声明可编辑文件、规则与定向建议。
+        """构造整合指令生成提示：声明可写文件、规则与定向建议。
 
-        定向建议是让 LLM 把「用户身份/偏好」写到 system/human.md、把「助手
-        角色认知变化」写到 system/persona.md——与两个默认块的定位一致。
+        定向表把知识类型映射到目标文件——用户画像→system/profile.md、
+        助手自我→system/assistant.md、反馈/项目/文献→三类前缀块——
+        与白名单 _EDIT_FILE_PATTERN 一一对应。
 
         Args:
             new_msgs: 尚未整合的消息列表（已按时间升序）。
@@ -209,10 +212,15 @@ class Sleeptime:
         """
         parts = [
             "你是 paperFlow 的记忆整合器（sleeptime）。分析以下新对话，输出记忆编辑指令。",
-            "可编辑：feedback_*.md / project_*.md / reference_*.md / system/*.md",
-            "规则：值得长期记住才写；合并重复；旧条目被推翻时 replace 为新结论。",
-            "定向：从对话学到用户身份/偏好/背景 → append/replace system/human.md；",
-            "助手角色或工作方式认知变化 → replace system/persona.md",
+            "可写文件与定向规则（只能写下列文件，不得发明新文件）：",
+            "- system/profile.md — 学到用户身份/研究方向/偏好/背景 → "
+            "append（新增条目）或 replace（整理重写）",
+            "- system/assistant.md — 助手角色/工作方式认知变化 → replace（整块重写）",
+            "- feedback_<主题>.md（如 feedback_note_style）— 用户对做法的反馈与纠正 → "
+            "append（每条一行）",
+            "- project_<主题>.md — 研究项目/论文进展的关键事实 → append",
+            "- reference_<主题>.md — 文献/资料可长期复用的要点 → append",
+            "规则：值得长期记住才写；同主题合并重复；旧结论被推翻时 replace 而非追加矛盾条目。",
             "", "新对话：",
         ]
         # 将每条消息的 role 和 content 以文本形式拼入
@@ -221,41 +229,32 @@ class Sleeptime:
         return "\n".join(parts)
 
     def _validate_edit(self, edit: MemoryEdit) -> None:
-        """阶段 1 校验：目标必须命中白名单，且禁止删除 system/ 块。
+        """阶段 1 校验：目标必须命中类型枚举白名单。
 
         白名单之外的写入路径一律拒绝——LLM 输出不可信，防止它把编辑指令
-        指向任意记忆文件。system/ 块（persona/human）是身份与画像，删了
-        记忆系统呈空壳，任何情况下都不可删除。
+        指向任意记忆文件或发明新文件；system/ 两块与顶层三类前缀是全部
+        可写面。
 
         Args:
             edit: MemoryEdit，待校验的编辑指令。
 
         Raises:
-            MemoryEditValidationError: 若文件不在白名单内或试图删除 system/ 块。
+            MemoryEditValidationError: 若文件不在白名单内。
         """
         if not _EDIT_FILE_PATTERN.match(edit.file):
             raise MemoryEditValidationError(f"非法编辑目标: {edit.file}")
-        if edit.action == "delete" and edit.file.startswith("system/"):
-            raise MemoryEditValidationError("不允许删除 system/ 块")
 
     def _apply_edit(self, edit: MemoryEdit) -> None:
         """把编辑指令映射到 BlockManager（file → block label）。
 
         追加/替换的目标块不存在时创建（append/replace 都允许「写新块」的
-        意图自动建块）；删除只作用于已存在块，缺失时静默跳过。
+        意图自动建块）。
 
         Args:
             edit: MemoryEdit，已通过校验的编辑指令。
         """
         # label 由 file 移除 .md 后缀并去除 "system/" 前缀得到（system/ 下的块 label 即文件名）。
         label = edit.file.removesuffix(".md").replace("system/", "")
-
-        # 处理 delete 动作
-        if edit.action == "delete":
-            b = self.block_manager.get_block_by_label(label)
-            if b is not None:
-                self.block_manager.delete_block(b.id)
-            return
 
         # 处理 append / replace 动作
         b = self.block_manager.get_block_by_label(label)
