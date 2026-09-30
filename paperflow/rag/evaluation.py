@@ -9,8 +9,8 @@
   strict 指标自然偏低，仅作改造前后对照。
 
 用法（需 Milvus 与真实索引在跑）：
-    python -m paperflow.rag.evaluation --golden data/eval/rag_golden.jsonl \
-        --out data/eval/after.json --compare data/eval/baseline.json
+    python -m paperflow.rag.evaluation --golden data/rag/eval/rag_golden.jsonl \
+        --out data/rag/eval/after.json --compare data/rag/eval/baseline.json
 """
 import argparse
 import json
