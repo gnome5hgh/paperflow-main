@@ -96,14 +96,19 @@ _SPLIT_PROMPT = (
     "保留原文表述，不要改写或推断；省略寒暄、过渡与重复。\n\n"
     "答案：\n{answer}")
 
-#: 忠实度第二步的判卷 prompt 模板：对每条陈述做二值支持判定
+#: 忠实度第二步的判卷 prompt 模板：对每条陈述做二值支持判定。
+#: 模板整段统一用 f-string 定义：`{_JUDGE_NEUTRALITY}` 在模块加载时插值，
+#: `{{context}}`/`{{statements_json}}` 的双花括号经 f-string 折叠为单花括号，
+#: 供运行时 `.format()` 替换。占位符必须全部写在 f-string 段——若某段漏了
+#: f 前缀，其双花括号会原样存活到 `.format()` 时刻，被当转义序列输出为
+#: 字面量 `{statements_json}`，判卷模型将看不到待判陈述列表。
 _VERDICT_PROMPT = (
     "逐条判断每条陈述是否被上下文直接支持。判据：\n"
     "1. 陈述中的事实能在上下文中找到原文依据 → supported=true；\n"
     "2. 上下文只部分覆盖、或需要推理/常识补全才能成立 → supported=false；\n"
     "3. 上下文与陈述矛盾 → supported=false。\n"
     f"{_JUDGE_NEUTRALITY}\n\n上下文：\n{{context}}\n\n陈述列表（JSON）：\n"
-    "{{statements_json}}")
+    f"{{statements_json}}")
 
 
 def _build_context(chunks: list[tuple[str, str]]) -> str:
