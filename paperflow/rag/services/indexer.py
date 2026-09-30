@@ -14,7 +14,7 @@
 
 状态版本门控：切块逻辑（前缀规则/句界/媒体块）变化时递增 _STATE_VERSION。
 状态文件版本不符时放弃旧状态、全量重扫重嵌——否则旧配方切出的块会因
-文件 mtime 未变而永远残留（对应 P6）。
+文件 mtime 未变而永远残留。
 """
 import hashlib
 import json
@@ -146,15 +146,6 @@ class RagIndexer:
         # 旧格式（裸 {abs_path: mtime}）按版本 0 处理
         return 0, dict(raw) if isinstance(raw, dict) else {}
 
-    def _load_state(self) -> dict:
-        """读状态 docs；文件缺失或版本不符时返回空 dict（触发全量重扫）。
-
-        Returns:
-            dict: {绝对路径: mtime}；版本门控不通过时为空 dict。
-        """
-        raw = self._read_state()
-        return raw[1] if raw and raw[0] == _STATE_VERSION else {}
-
     def _save_state(self, state: dict) -> None:
         """把状态按当前版本格式写入（自动创建父目录）。
 
@@ -180,7 +171,7 @@ class RagIndexer:
             path: 文档路径。
 
         Returns:
-            _FileContent: source/title/sections/tables/figures 五元组。
+            _FileContent: 解析产物（source/title/sections/tables/figures）。
         """
         if path.suffix.lower() == ".pdf":
             parsed = self.service.pdf_parser().parse_pdf(str(path))
@@ -210,8 +201,8 @@ class RagIndexer:
 
     def _media_chunks(self, rel: str, parsed: _FileContent,
                       start_index: int) -> list[Chunk]:
-        """把表格与图注转成独立检索块，接在章节块之后（ADR 0001「Table/Figure
-        独立块」的实现——此前解析结果从未进索引）。
+        """把表格与图注转成独立检索块，接在章节块之后。实验数字与图表结论
+        常在表格里，而表格并不出现在章节正文中，不独立成块就检索不到。
 
         GROBID 的表格文本是单元格拼接，先折叠连续空白压掉换行噪声；空白项
         不产生块；超长表格截断到 _TABLE_TEXT_LIMIT。前缀规则与章节块一致
@@ -356,7 +347,7 @@ class RagIndexer:
 
         这是 `index_document` 的批量版本，适用于启动时或定时任务。
 
-        状态版本门控（P6）：
+        状态版本门控：
         - 状态文件缺失、JSON 损坏或版本号与 _STATE_VERSION 不符（切块逻辑
           升级后的首次运行）→ 放弃旧状态，全量重扫重嵌。
         - 不从向量库元数据恢复旧版本状态：库内块无法确认由当前版本的切块

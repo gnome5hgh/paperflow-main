@@ -76,8 +76,8 @@ class RagRetrieveTool(Tool):
         if not chunks:
             return ToolResult(text="检索无命中（索引可能为空，可先写几篇笔记）")
 
-        # 4. 否则，每条命中格式化为 `- [来源:路径] 正文摘录前400字` 的列表；
-        # 摘录从 200 字扩到 400 字：带「论文标题 > 章节标题」前缀行的块需要更长
+        # 4. 否则，每条命中格式化为 `- [来源:路径] 正文摘录前400字` 的列表。
+        # 摘录上限 400 字符：带前缀的块首行即「论文标题 > 章节标题」，需要足够
         # 窗口才能让上层同时拿到节号与可用的正文上下文。
         lines = [f"- [{c.source}:{c.path}] {c.text[:400]}" for c in chunks]
         return ToolResult(text="检索到以下相关段落：\n" + "\n".join(lines))
