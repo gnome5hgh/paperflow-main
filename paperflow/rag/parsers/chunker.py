@@ -5,6 +5,7 @@
 id，保证索引写入的幂等覆盖（对应 indexer 里的「先删后建」）。
 """
 import hashlib
+import re
 from dataclasses import dataclass
 
 import tiktoken
@@ -12,6 +13,21 @@ import tiktoken
 #: 需丢弃的引用段标题前缀（中英文）。匹配这些标题的章节内容不进入检索块，
 #: 因为参考文献列表对语义检索价值较低，且包含大量外部文献信息可能干扰检索。
 _REFERENCE_HEADS = ("references", "参考文献", "bibliography")
+
+#: 句子边界：中英句末标点（。！？!?）之后，或英文句点后跟空白处。
+#: 小数（3.5）与缩写（et al.）会误断，可接受——只影响窗口边界位置，不影响内容完整性。
+_SENT_SPLIT_RE = re.compile(r"(?<=[。！？!?])\s*|(?<=\.)\s+")
+
+
+def context_prefix(title: str, heading: str, body: str) -> str:
+    """把「论文标题 > 章节标题」前缀行拼到块正文前。
+
+    前缀随块文本同时进入 embedding、BM25 与检索展示（Anthropic contextual
+    retrieval 的标题路径版：任一块被单独检回时都自带所属论文与章节）。
+    标题与章节都缺省时返回原正文（PyMuPDF 回退与无标题笔记兼容）。
+    """
+    label = " > ".join(x for x in (title.strip(), heading.strip()) if x)
+    return f"{label}\n{body}" if label else body
 
 
 @dataclass
@@ -61,51 +77,77 @@ class AcademicChunker:
         # 匹配的章节将被完全跳过，不进入检索块。
         return heading.strip().lower().startswith(_REFERENCE_HEADS)
 
-    def _split_long(self, text: str) -> list[str]:
-        """超长文本按 token 切分，步长 = max_tokens - overlap_tokens（保证重叠）。
+    def _split_sentences(self, text: str) -> list[str]:
+        """按句末标点把文本切成句子列表（过滤纯空白片段）。"""
+        return [p for p in _SENT_SPLIT_RE.split(text) if p and p.strip()]
 
-        边界条件：
-        - stride 至少为 1（当 overlap_tokens >= max_tokens 时，取 max(1, ...)）。
-        - 重叠量实际可能略小于设定的 overlap_tokens（当剩余长度不足时）。
-        - 解码后的片段可能因 token 边界导致首尾词汇被截断，但对检索影响较小。
+    def _token_window(self, tokens: list[int]) -> list[str]:
+        """对 token 序列做硬滑窗（步长 = max_tokens - overlap_tokens）。
 
-        Args:
-            text: 输入文本（通常是一个章节的完整内容）。
-
-        Returns:
-            list[str]: 分割后的文本片段列表。
+        只用于两个回退场景：全文不足两句但超预算、单句超长。
         """
-        # 1. 将文本编码为 token 序列。
-        tokens = self._enc.encode(text)
-
-        # 2. 若 token 数 <= max_tokens，直接返回原文本。
-        if len(tokens) <= self.max_tokens:
-            return [text]
-
-        # 3. 否则，以步长 `stride = max_tokens - overlap_tokens` 滑动窗口，每次取 `max_tokens` 长度的 token 片段，解码回文本。
         stride = max(1, self.max_tokens - self.overlap_tokens)
+        return [self._enc.decode(tokens[start:start + self.max_tokens])
+                for start in range(0, len(tokens), stride)]
 
-        parts = []
-        for start in range(0, len(tokens), stride):
-            # 4. 最后一个片段可能不足 max_tokens，，正常截断，encode 可处理
-            parts.append(self._enc.decode(tokens[start:start + self.max_tokens]))
-        return parts
+    def _pack_sentences(self, sentences: list[str]) -> list[str]:
+        """按句装窗：逐句累加，超过 max_tokens 封窗。
 
-    def split_doc(self, rel_path: str, sections: list[tuple[str, str]], source: str) -> list[Chunk]:
+        新窗以「上一窗尾部约 overlap_tokens 的完整句子」开头；凑不出完整句、
+        或重叠句加上当前句会超预算时放弃重叠（宁少重叠，不超预算、不切句）。
+        """
+        windows: list[str] = []
+        cur: list[str] = []
+        cur_len = 0
+        for sent in sentences:
+            t = len(self._enc.encode(sent))
+            if cur and cur_len + t > self.max_tokens:
+                windows.append("".join(cur))
+                overlap: list[str] = []
+                overlap_len = 0
+                for prev in reversed(cur):
+                    pt = len(self._enc.encode(prev))
+                    if overlap and overlap_len + pt > self.overlap_tokens:
+                        break
+                    overlap.insert(0, prev)
+                    overlap_len += pt
+                if overlap_len + t > self.max_tokens:
+                    overlap, overlap_len = [], 0
+                cur, cur_len = overlap, overlap_len
+            if t > self.max_tokens:
+                # 单句超长：唯一允许切句的场景，回退 token 硬滑窗
+                if cur:
+                    windows.append("".join(cur))
+                    cur, cur_len = [], 0
+                windows.extend(self._token_window(self._enc.encode(sent)))
+                continue
+            cur.append(sent)
+            cur_len += t
+        if cur:
+            windows.append("".join(cur))
+        return windows
+
+    def _split_long(self, text: str) -> list[str]:
+        """超长文本切分：先按句切再按 token 预算装窗（不切句）。
+
+        回退：全文不足两句但超预算、或单句超长时用 token 硬滑窗。
+        """
+        if len(self._enc.encode(text)) <= self.max_tokens:
+            return [text]
+        sentences = self._split_sentences(text)
+        if len(sentences) <= 1:
+            return self._token_window(self._enc.encode(text))
+        return self._pack_sentences(sentences)
+
+    def split_doc(self, rel_path: str, sections: list[tuple[str, str]], source: str,
+                  title: str = "") -> list[Chunk]:
         """把带章节结构的一篇文档切成 Chunk 列表，跳过参考文献章节。
 
-        幂等性保证：
-        - 同一文档的同一位置，由于切分逻辑和序号不变，生成的 ID 相同。
-        - 当文档内容变化导致某些章节被删除或新增时，后续块的序号可能改变，
-          但索引器采用“先删后建”策略，旧块会被显式删除，因此不会残留。
-
         Args:
-            rel_path: 文档相对于知识库根目录的路径，用作块 ID 生成的一部分。
-            sections: 章节列表，每个元素为 (标题, 正文) 的二元组。
-            source: 来源类型，'note' 或 'pdf'。
+            title: 文档标题（PDF=GROBID 主标题，笔记=H1）；与 heading 一起拼成
+                   每个窗口的首行前缀，随文本进入 embedding/BM25/展示。
 
-        Returns:
-            list[Chunk]: 生成的 Chunk 对象列表，按文档顺序排列。
+        其余语义（幂等 id、先删后建配合）与原实现一致，见类注释。
         """
         chunks: list[Chunk] = []
         idx = 0  # 文档内全局块序号 id
@@ -116,13 +158,15 @@ class AcademicChunker:
             if self._is_reference(heading):
                 continue
             # 3. 否则，对章节正文调用 `_split_long` 分割（可能返回一个或多个片段）。
+            # 4. 前缀逐窗拼接（而非拼进原文再切）：长章节切多窗时每个窗口都自带
+            #    「标题 > 章节」上下文，任一窗口被单独检回都不丢所属信息。
             for part in self._split_long(text):
-                # 4. 为每个片段生成一个 Chunk 对象，其中 id 由 `sha1(rel_path + 全局序号)[:16]` 生成。
+                # 5. 为每个片段生成一个 Chunk 对象，其中 id 由 `sha1(rel_path + 全局序号)[:16]` 生成。
                 chunk_id = hashlib.sha1(f"{rel_path}:{idx}".encode()).hexdigest()[:16]
                 chunks.append(Chunk(
-                    id=chunk_id, text=part, path=rel_path,
-                    source=source, heading=heading, chunk_index=idx,
+                    id=chunk_id, text=context_prefix(title, heading, part),
+                    path=rel_path, source=source, heading=heading, chunk_index=idx,
                 ))
-                # 5. 全局序号 `idx` 从 0 开始递增，保证同一文档内不同位置的块 ID 唯一且稳定。
+                # 6. 全局序号 `idx` 从 0 开始递增，保证同一文档内不同位置的块 ID 唯一且稳定。
                 idx += 1
         return chunks
