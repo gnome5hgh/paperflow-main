@@ -235,7 +235,8 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 io: InputIO, renderer: StreamRenderer, sleeptime=None,
                 config: PaperFlowConfig | None = None,
                 resume_hint: str | None = None, confirm_center=None,
-                resume_replay: ResumeReplay | None = None) -> None:
+                resume_replay: ResumeReplay | None = None,
+                mcp_manager=None) -> None:
     """
     REPL 主循环。
 
@@ -342,6 +343,12 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
             # "exit"、"/quit"、" /exit now" 都命中不了，一律当普通任务走。
             if raw.strip() == "/exit":
                 break
+            # /mcp：MCP server 状态一览（连接状态/工具数/被隐藏工具及原因），
+            # 为"环境通没通"排查服务（spec §6）。只读渲染，不进意图管线。
+            if raw.strip() == "/mcp":
+                renderer.print(mcp_manager.status_report()
+                               if mcp_manager else "未接入 MCP（config.yaml 顶层 mcp_servers 为空）。")
+                continue
             if not raw.strip():
                 # 纯空白输入（真实使用测试 P3-2）：直接忽略，不进意图管线——
                 # 否则一次完整 LLM 调用后才被兜底拒绝，白烧 token。轻提示一次，
