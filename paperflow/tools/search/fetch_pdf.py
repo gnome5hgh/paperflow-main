@@ -12,7 +12,9 @@ from urllib.parse import urljoin, urlparse
 
 from paperflow.core.security.network import validate_url_target
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.citations import get_citation_manager
 from paperflow.rag.services.rag_service import get_rag_service
+from paperflow.tools.search._common import _norm_title
 
 
 class FetchPdfTool(Tool):
@@ -28,6 +30,8 @@ class FetchPdfTool(Tool):
                     "description": "PDF 下载地址（来自搜索结果的 pdf 字段）"},
             "download_to": {"type": "string", "format": "path",
                             "description": "PDF 保存绝对路径（缺省落语料库 pdf 根，文件名按 URL 尾段推导）"},
+            "title": {"type": "string",
+                      "description": "论文标题（来自检索结果），用于语料库查重；缺省仅做文件级查重"},
         },
         "required": ["url"],
     }
@@ -89,11 +93,15 @@ class FetchPdfTool(Tool):
         dest.write_bytes(r.content)
 
     def execute(self, url: str, download_to: str | None = None,
+                title: str | None = None,
                 _run_state=None) -> ToolResult:
         """下载 PDF 到本地并触发索引热更新；失败返回可行动报错文本。
 
-        负缓存（真实会话复验发现）：同 URL 在本任务内失败过即拒绝重复调用——
-        404 等永久性失败重试只会白烧轮次（实测单任务内重复 19 次）。
+        查重三道闸（spec §7.1，均在写盘之前）：
+        1. 本任务内已下载过（URL 或规范化标题命中 downloaded）→ 成功性短路；
+        2. 语料库已有该论文（title 传入时查语料标题索引）→ 提示无需下载；
+        3. 目标文件已存在 → 跳过下载。
+        负缓存（现状语义不变）：同 URL 本任务内 4xx 永久失败即拒绝重试。
         download_to 缺省时落语料库 pdf 根（config.pdf_dir），文件名按 URL 尾段推导。
         """
         if _run_state is not None and url in getattr(_run_state, "failed_urls", {}):
@@ -101,6 +109,22 @@ class FetchPdfTool(Tool):
                 text=f"该 URL 本任务内已失败过（{_run_state.failed_urls[url]}），"
                      "这是重复调用——不得重试，请如实报告下载失败并给出替代方案。",
                 is_error=True)
+        if _run_state is not None:
+            title_key = f"title:{_norm_title(title)}" if title else None
+            hit = getattr(_run_state, "downloaded", {}).get(url) or (
+                title_key and getattr(_run_state, "downloaded", {}).get(title_key))
+            if hit:
+                return ToolResult(
+                    text=f"本任务内已下载过该论文: {hit}，无需重复下载。")
+        if title:
+            try:
+                resolved = get_citation_manager(self._config).resolve(title)
+                if resolved.status == "in_corpus":
+                    loc = resolved.pdf_path or resolved.note_path or resolved.key or "语料库"
+                    return ToolResult(text=f"语料库已有该论文（{loc}），无需下载。")
+            except Exception:
+                pass    # 查重失败不挡下载（索引未就绪等），保守放行
+        # ↓ 以下 dest 计算、fetch、索引热更新逻辑原样保留 ↓
         if download_to:
             dest = Path(download_to)
         else:
@@ -113,6 +137,8 @@ class FetchPdfTool(Tool):
             except ValueError as e:
                 return ToolResult(text=f"下载失败: {e}", is_error=True)
         client, ssrf_check = self._client or self._make_client()
+        if dest.exists():
+            return ToolResult(text=f"已存在，跳过下载: {dest}")
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             self._fetch(client, ssrf_check, url, dest)
@@ -131,6 +157,10 @@ class FetchPdfTool(Tool):
             # 不记负缓存：这些可能是瞬时故障（网络抖动/服务暂不可用），允许重试；
             # 只有 4xx 这类确定性失败才进负缓存。
             return ToolResult(text=f"下载失败: {e}", is_error=True)
+        if _run_state is not None:
+            _run_state.downloaded[url] = str(dest)
+            if title:
+                _run_state.downloaded[f"title:{_norm_title(title)}"] = str(dest)
         note = ""
         try:
             get_rag_service().index_document(str(dest))   # 写盘后做索引热更新

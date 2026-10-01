@@ -30,11 +30,15 @@ class SearchRunState:
     failed_urls: 本任务内下载失败的 URL → 失败原因（负缓存）。真实会话复验
     （2026-09-06）发现：对 404 这类永久性失败，模型会在单次任务内反复重试同一
     URL（实测 19 次直到撞轮数上限）——fetch_pdf 据此拒绝重复尝试。
+
+    downloaded: 本任务内已成功下载的 URL/规范化标题 → 落盘路径，fetch_pdf
+    成功性短路的依据（同 URL 或同规范化标题重复调用直接返回既有路径）。
     """
 
     def __init__(self) -> None:
         self.pool: dict[str, dict] = {}
         self.failed_urls: dict[str, str] = {}
+        self.downloaded: dict[str, str] = {}
 
     @staticmethod
     def dedup_key(p: dict) -> str:
