@@ -153,7 +153,11 @@ class IntentPipeline:
         parts = [
             "你是意图分类器。从以下意图中选择一个：",
             ", ".join(t.value for t in IntentType),
-            "输出 JSON：{intent_type, confidence, query_rewrite, clarification}。",
+            "输出 JSON：{intent_type, confidence, query_rewrite, steps, clarification}。",
+            "steps 仅当输入包含 ≥2 个相互独立、分属不同意图的业务动作时才填：每个 "
+            "step 是一个业务意图名（可派发类），按执行顺序排列，最多 3 步，且 "
+            "steps[0] 必须等于 intent_type；单一动作或拿不准时必须留空（宁可不拆）。"
+            "拆分时 intent_type 取第一步。",
             "clarification 可选，留空串表示不需要：只在输入缺决定性信息、无法在意图间取舍时才填，"
             "例如指代不明（「帮我处理一下那篇」没说哪篇）或动作不明（没说读、写笔记还是分析）。"
             "能推断出合理意图就不要澄清——直接给 intent_type，用 confidence 表达"
