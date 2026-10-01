@@ -202,7 +202,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 4. **混合路由**（`HybridRouter`）— 稠密（千问嵌入）+ 稀疏（jieba BM25）融合（`dense × alpha + sparse × (1-alpha)`，生产 `alpha=0.5`（2026-09-05 标定实验选定：seed 固定后 0.3-0.6 实测 0.793/0.824/0.831/0.716））；`load_routes()` 读 `data/intents/routes.yaml`（唯一知识库源，含各意图示例句 + 标定阈值）；命中阈值则产出
 5. **LLM 兜底** — 无路由命中时注入 top-3 近邻候选，经 `StructuredOutput` 分类，最终兜底 `IntentionResult(GENERAL, 0.0)`；提示词交代 `clarification` 的填写条件（指代/动作不明才填，能推断则留空用 confidence 表达不确定），该字段的 pydantic `description` 随 schema 展开进 system 消息——两处都给模型交代过条件，它才会产出澄清
 
-产出 `IntentOutput`（intent_type/confidence/entities/rewritten_query/source/steps/clarification）注入 ReAct head 的 `INTENT:` 块。`INTENT_META` 是意图元数据的**单一真相源**：15 个 `IntentType` 值分 3 类（business 业务派发 / dialogue 会话状态 / system 直接回答），`dispatch_allowed` 决定 spawn 门禁（chitchat/out_of_scope 等永远不能 spawn）。业务意图与子 agent 的对应：search_paper→searcher、generate_note→noter、ask_question/analyze_paper/manage_memory→qa-agent、research_discovery→researcher（选题发现）；`menu_selection`（选项答复，对话管理可派发）由 supervisor 对照上轮菜单转换成对应动作/派发，无法对应先 ask_user 确认。
+产出 `IntentOutput`（intent_type/confidence/entities/rewritten_query/source/steps/clarification）注入 ReAct head 的 `INTENT:` 块。`INTENT_META` 是意图元数据的**单一真相源**：13 个 `IntentType` 值分 3 类（2026-10-01 收敛：switch_topic 并入 set_research_topic、refine_query 并入 search_paper）（business 业务派发 / dialogue 会话状态 / system 直接回答），`dispatch_allowed` 决定 spawn 门禁（chitchat/out_of_scope 等永远不能 spawn）。业务意图与子 agent 的对应：search_paper→searcher、generate_note→noter、ask_question/analyze_paper/manage_memory→qa-agent、research_discovery→researcher（选题发现）；`menu_selection`（选项答复，对话管理可派发）由 supervisor 对照上轮菜单转换成对应动作/派发，无法对应先 ask_user 确认。
 
 跨轮澄清：`IntentPipeline` 产出 `clarification` → Agent 早退返回问题（不落盘）→ CLI `ConversationState.pending_intent` 挂起、下一轮合并重跑；`round >= 2` 超轮终止（force_dispatch 强制调度，绝不重跑后再次挂起）。`prev_intent`/`prev_user_input` 供追问判别。触发侧是**提示词层契约**（是否该问由 LLM 依提示词判断），轮数上限是**代码层硬约束**（`_merge_pending` 的 `round >= 2` 逃逸 + runtime 的 `force_dispatch` 旁路）。
 
@@ -251,7 +251,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 `paperflow/tools/orchestration/spawn.py` — **SpawnSubAgentTool**（`spawn_sub_agent`，`needs_parent=True`）。`execute(agent_type, task, mode=None)`：
 
 1. **模式校验**：未知 `mode` → denied
-2. **意图派发门禁**：父 agent 的意图 `dispatch_allowed=False`（chitchat/out_of_scope/help/switch_topic 等）→ 永不 spawn
+2. **意图派发门禁**：父 agent 的意图 `dispatch_allowed=False`（chitchat/out_of_scope/help/set_research_topic 等）→ 永不 spawn
 3. **spawn 权限**：`_check_spawn_allowed` — supervisor 硬编码放行；其余 agent 查自己的 `AgentConfig.allowed_spawns` 白名单
 4. **去重注册表**（`_SPAWN_REGISTRY`，按 session_id + 任务指纹）：**无路径任务** 运行中去重 + 完成结果 300s 内可复用；**含路径任务** 只做运行中去重（文件可能中途变化，完成不缓存）
 5. **审稿预算**：同一父 run 内 note_review/download_review/plan_review spawn ≤3 次,超限 denied(轮数预算下沉代码,LLM 不数轮次)

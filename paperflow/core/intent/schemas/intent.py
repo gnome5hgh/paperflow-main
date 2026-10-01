@@ -5,7 +5,7 @@
 输入/输出）职责不同。识别管线分五级：实体提取 / 选项答复检测 / 追问检测 / 混合路由 /
 LLM 兜底，本模块定义的几个类型是它们共同使用的产出契约：
 
-- ``IntentType``: 15 类意图枚举（枚举值即路由名，对应 routes.yaml 的 route 名集合）。
+- ``IntentType``: 13 类意图枚举（枚举值即路由名，对应 routes.yaml 的 route 名集合）。
 - ``IntentCategory``: 意图类别（business/dialogue/system）——消费分组，非路由层级。
 - ``INTENT_META``: intent → (category, dispatch_allowed) 单一真相源映射。
 - ``IntentStep``: 产出阶段枚举——审计/监控据此区分"这条意图是路由层定的
@@ -26,24 +26,26 @@ class IntentType(str, Enum):
     """意图类型枚举，value 与路由名一致（routes.yaml 中的 name）。
 
     枚举 = 契约 = 当前实现集——不允许"枚举允许但系统无处理路径"的悬空值。
-    15 值按三类组织（category 见 INTENT_META），类别是消费分组不是路由层级。
+    13 值按三类组织（category 见 INTENT_META），类别是消费分组不是路由层级。
+    2026-10-01 收敛：switch_topic 并入 set_research_topic、refine_query 并入
+    search_paper（spec 2026-10-01-intent-taxonomy-and-steps-design §3）——
+    两者与近邻意图的边界是对话史信号，路由器原理上不可学（实测 0.29/0.391），
+    且派发行为与保留值完全一致。
     """
 
-    SET_RESEARCH_TOPIC = "set_research_topic"  # 设定研究方向（业务；记录+引导，不派发）
+    SET_RESEARCH_TOPIC = "set_research_topic"  # 研究 topic 管理：设定/切换（业务；记录+归档，不派发）
     MENU_SELECTION = "menu_selection"          # 菜单选项答复（对话管理；选择动作不重分类，派发权在 supervisor 对照菜单）
-    SEARCH_PAPER = "search_paper"              # 搜索/查找论文（业务；槽位 query/source/year/download）
-    ASK_QUESTION = "ask_question"              # 具体问答（业务）
+    SEARCH_PAPER = "search_paper"              # 搜索/查找论文（业务；含对上轮检索的修正重搜；槽位 query/source/year/download）
+    ASK_QUESTION = "ask_question"              # 具体问答：即问即答的单点问题（业务）
     GENERATE_NOTE = "generate_note"            # 撰写笔记（业务）
-    RESEARCH_DISCOVERY = "research_discovery"  # 选题发现：基于本地语料产出候选方向与研究计划（业务）
-    ANALYZE_PAPER = "analyze_paper"            # 精读/分析论文（业务）
+    RESEARCH_DISCOVERY = "research_discovery"  # 选题发现：交付方向/课题建议（业务；搜文献只是其手段）
+    ANALYZE_PAPER = "analyze_paper"            # 精读分析：交付分析报告的长任务（业务）
     MANAGE_MEMORY = "manage_memory"            # 记忆查询 + 待读清单操作（业务）
-    REFINE_QUERY = "refine_query"              # 修正上轮查询（对话管理；重派入口）
-    SWITCH_TOPIC = "switch_topic"              # 切换研究方向（对话管理；记忆归档，不派发）
-    CHITCHAT = "chitchat"                      # 闲聊（系统；直接回复）
-    OUT_OF_SCOPE = "out_of_scope"              # 超出能力范围（系统；明确拒绝）
-    HELP = "help"                              # 帮助/功能引导（系统）
+    CHITCHAT = "chitchat"                      # 闲聊与应答语（系统；直接回复）
+    OUT_OF_SCOPE = "out_of_scope"              # 超出能力范围：含与论文工作无关的请求（系统；明确拒绝）
+    HELP = "help"                              # 本系统的使用方法/功能引导（系统）；系统无关请求归 out_of_scope
     FEEDBACK = "feedback"                      # 结果反馈（系统；记忆日志）
-    GENERAL = "general"                        # 兜底：路由未命中 / LLM 解析失败（系统）
+    GENERAL = "general"                        # 兜底：路由未命中 / LLM 解析失败（系统）。仅 LLM 兜底产出，不在路由知识库
 
 
 class IntentCategory(str, Enum):
@@ -65,8 +67,6 @@ INTENT_META: dict[IntentType, tuple[IntentCategory, bool]] = {
     IntentType.RESEARCH_DISCOVERY: (IntentCategory.BUSINESS, True),
     IntentType.ANALYZE_PAPER:      (IntentCategory.BUSINESS, True),
     IntentType.MANAGE_MEMORY:      (IntentCategory.BUSINESS, True),
-    IntentType.REFINE_QUERY:       (IntentCategory.DIALOGUE, True), # refine_query 是对话管理但派发——重派入口
-    IntentType.SWITCH_TOPIC:       (IntentCategory.DIALOGUE, False),
     IntentType.CHITCHAT:           (IntentCategory.SYSTEM, False),
     IntentType.OUT_OF_SCOPE:       (IntentCategory.SYSTEM, False),
     IntentType.HELP:               (IntentCategory.SYSTEM, False),
@@ -151,8 +151,29 @@ class IntentionResult(BaseModel):
     #: LLM 改写后的查询（缺省为空串，管线使用原文）
     query_rewrite: str = ""
 
-    #: 复合意图的有序拆分（供后续扩展；若结构化输出契约缺该字段，LLM 兜底无法产出拆分结果）
+    #: 复合意图的有序拆分。description 会经 StructuredOutput 展开进提示词，是模型
+    #: 判断「何时拆」的唯一依据（同 clarification 的教训——缺了它 steps 永远为空，
+    #: 见 2026-09-30 澄清修复）。填写条件：仅当输入包含 ≥2 个相互独立、分属不同
+    #: 意图的业务动作；每个 step 必须是单业务意图（dispatch_allowed=True），按执行
+    #: 顺序排列，最多 3 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时
+    #: 必须留空（宁缺勿滥——steps 非空会放行 spawn 门禁，误拆即高权限口子）。
     steps: list["IntentType"] = []
+
+    @model_validator(mode="after")
+    def _steps_guard(self) -> "IntentionResult":
+        """steps 三重护栏（spec 2026-10-01 §4.2，代码级防御）。
+
+        GENERAL+steps 会放行 spawn 门禁（spawn.py:417-419 的例外分支），LLM 误拆
+        等于给非派发意图开派发口子。违规整体置空，不抛错——解析失败的兜底路径
+        （fallback=GENERAL）不应因护栏再炸一次。
+        """
+        if self.steps:
+            business = {t for t, (_, allowed) in INTENT_META.items() if allowed}
+            if (len(self.steps) > 3
+                    or any(s not in business for s in self.steps)
+                    or self.steps[0] != self.intent_type):
+                object.__setattr__(self, "steps", [])
+        return self
 
     #: 歧义澄清问题（非空时管线提前返回，由调用方跨轮挂起待澄清意图）
     #: 这个 description 与上面的 #: 注释重复是有意的：#: 只给读代码的人看，
