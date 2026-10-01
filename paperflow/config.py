@@ -14,7 +14,8 @@
 """
 
 import os
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 import yaml
@@ -111,6 +112,56 @@ class VisionLLMConfig:
     context_window: int = 32768
 
 
+_SERVER_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+@dataclass
+class McpServerConfig:
+    """单个 MCP server 的接入配置（config.yaml 顶层 mcp_servers 段；仅 YAML，无环境变量形态）。
+
+    语义见 spec 2026-10-01-mcp-client-design.md §4：过滤顺序 allowed → disabled →
+    风险分级；写类工具默认禁用，write_tools 显式开启；uvx 冷启动可能下载包，
+    connect_timeout 默认高于业界 5s。
+    """
+
+    transport: str = "stdio"            # "stdio" | "http"
+    command: str = ""                   # stdio 必填：可执行文件（如 uvx）
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    url: str = ""                       # http 必填
+    headers: dict[str, str] = field(default_factory=dict)
+    enabled: bool = True
+    agents: list[str] = field(default_factory=lambda: ["searcher"])
+    connect_timeout: float = 30.0
+    call_timeout: float = 120.0
+    disabled_tools: list[str] = field(default_factory=list)
+    allowed_tools: list[str] | None = None
+    write_tools: list[str] = field(default_factory=list)
+
+    def validate(self, name: str) -> None:
+        if not _SERVER_NAME_RE.fullmatch(name):
+            raise ValueError(f"MCP server 名非法: '{name}'（须匹配 [a-zA-Z0-9_-]+）")
+        if self.transport not in ("stdio", "http"):
+            raise ValueError(f"MCP server '{name}': 非法 transport '{self.transport}'（stdio|http）")
+        if self.transport == "stdio" and not self.command:
+            raise ValueError(f"MCP server '{name}': transport=stdio 必须提供 command")
+        if self.transport == "http" and not self.url.startswith(("http://", "https://")):
+            raise ValueError(f"MCP server '{name}': transport=http 必须提供 http(s) url")
+
+
+def parse_mcp_servers(raw: dict) -> dict[str, McpServerConfig]:
+    """yaml 原始 dict → 校验后的 McpServerConfig 表；未知键忽略（同仓库 hasattr 守卫精神）。"""
+    known = {f.name for f in fields(McpServerConfig)}
+    servers: dict[str, McpServerConfig] = {}
+    for name, item in (raw or {}).items():
+        if not isinstance(item, dict):
+            raise ValueError(f"MCP server '{name}': 配置段必须是映射")
+        cfg = McpServerConfig(**{k: v for k, v in item.items() if k in known})
+        cfg.validate(name)
+        servers[name] = cfg
+    return servers
+
+
 @dataclass
 class PaperFlowConfig:
     """
@@ -204,6 +255,9 @@ class PaperFlowConfig:
     #: YAML 顶层 agent_timeouts 可覆盖;dict 无环境变量形态。
     agent_timeouts: dict[str, int] = field(default_factory=lambda: {"noter": 900, "searcher": 420, "reviewer": 300, "researcher": 1800, "qa-agent": 180})
 
+    #: MCP server 接入配置（config.yaml 顶层 mcp_servers；仅 YAML，无环境变量形态）
+    mcp_servers: dict[str, "McpServerConfig"] = field(default_factory=dict)
+
     @classmethod
     def from_env(cls, config_path: str | None = None) -> "PaperFlowConfig":
         """
@@ -254,6 +308,10 @@ class PaperFlowConfig:
                     "agent_timeouts", "sleeptime_enable", "sleeptime_agent_frequency"):
             if key in data:
                 setattr(self, key, data[key])
+
+        # MCP servers：嵌套结构需校验+转换，单独分支（不在上方白名单循环里）
+        if "mcp_servers" in data:
+            self.mcp_servers = parse_mcp_servers(data["mcp_servers"])
 
     def _load_env(self) -> None:
         """
