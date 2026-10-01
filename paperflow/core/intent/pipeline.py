@@ -5,7 +5,7 @@
 - 实体提取：正则提取 PDF 路径/arXiv ID/DOI/Figure 等实体
 - 选项答复检测：纯编号菜单选择直接产出 MENU_SELECTION（确定性正则，不重分类）
 - 追问检测：判断是否承接上一轮意图（依赖会话中的上一轮意图）
-- 混合路由：命中非 general 直接产出；confidence 为融合分数 clip 到 [0,1]
+- 混合路由：命中非 unclassified 直接产出；confidence 为融合分数 clip 到 [0,1]
   （cosine 可为负、稀疏点积可 >1，非概率）
 - LLM 兜底：用结构化输出解析意图，注入路由近失候选供参考，改写缺省原文
 """
@@ -44,7 +44,7 @@ class IntentPipeline:
             2. 选项答复检测（正则）——纯编号菜单选择直接产出 MENU_SELECTION，
                不经路由/LLM 重分类（选择动作的语义由发菜单的一方承载）。
             3. 追问检测（词表规则）——若为追问，继承上一轮意图，实体合并（本轮覆盖上轮）。
-            4. 混合路由（BM25+稠密）——若命中非 general，直接产出。
+            4. 混合路由（BM25+稠密）——若命中非 unclassified，直接产出。
             5. LLM 兜底（结构化输出）——注入近失候选，让 LLM 确认或改判。
 
         Args:
@@ -92,9 +92,9 @@ class IntentPipeline:
             )
 
         # ====== 第4级：混合路由 ======
-        # 调用混合路由器进行判定，若命中且结果不是 "general"，则直接产出
+        # 调用混合路由器进行判定，若命中且结果不是 "unclassified"，则直接产出
         choice = self.router(query)
-        if choice is not None and choice.name != "general":
+        if choice is not None and choice.name != "unclassified":
             # 将融合分数截断到 [0,1] 区间（余弦相似度可为负，稀疏点积可 >1，需归一化）
             return IntentOutput(
                 intent_type=IntentType(choice.name),
@@ -110,7 +110,7 @@ class IntentPipeline:
         result = await self.structured.extract(
             prompt=self._build_llm_prompt(query, near_miss),
             schema=self.llm_fallback_schema,
-            fallback=lambda: IntentionResult(intent_type=IntentType.GENERAL,
+            fallback=lambda: IntentionResult(intent_type=IntentType.UNCLASSIFIED,
                                              confidence=0.0),
         )
         # steps/clarification 透传：复合意图拆分或澄清问题，由上层据此处理

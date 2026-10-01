@@ -45,7 +45,7 @@ class IntentType(str, Enum):
     OUT_OF_SCOPE = "out_of_scope"              # 超出能力范围：含与论文工作无关的请求（系统；明确拒绝）
     HELP = "help"                              # 本系统的使用方法/功能引导（系统）；系统无关请求归 out_of_scope
     FEEDBACK = "feedback"                      # 结果反馈（系统；记忆日志）
-    GENERAL = "general"                        # 兜底：路由未命中 / LLM 解析失败（系统）。仅 LLM 兜底产出，不在路由知识库
+    UNCLASSIFIED = "unclassified"              # 未分类兜底：路由未命中 / LLM 解析失败（系统）。仅 LLM 兜底产出，不在路由知识库
 
 
 class IntentCategory(str, Enum):
@@ -71,7 +71,7 @@ INTENT_META: dict[IntentType, tuple[IntentCategory, bool]] = {
     IntentType.OUT_OF_SCOPE:       (IntentCategory.SYSTEM, False),
     IntentType.HELP:               (IntentCategory.SYSTEM, False),
     IntentType.FEEDBACK:           (IntentCategory.SYSTEM, False),
-    IntentType.GENERAL:            (IntentCategory.SYSTEM, False),
+    IntentType.UNCLASSIFIED:       (IntentCategory.SYSTEM, False),
 }
 
 
@@ -173,9 +173,9 @@ class IntentionResult(BaseModel):
     def _steps_guard(self) -> "IntentionResult":
         """steps 三重护栏（spec 2026-10-01 §4.2，代码级防御）。
 
-        GENERAL+steps 会放行 spawn 门禁（spawn.py:417-419 的例外分支），LLM 误拆
+        UNCLASSIFIED+steps 会放行 spawn 门禁（spawn.py:417-419 的例外分支），LLM 误拆
         等于给非派发意图开派发口子。违规整体置空，不抛错——解析失败的兜底路径
-        （fallback=GENERAL）不应因护栏再炸一次。
+        （fallback=UNCLASSIFIED）不应因护栏再炸一次。
         注意：spec §4.2-2 原文为「超出截断」，本实现按 brief 取「整体置空」——
         更严格，且防 fallback 路径携带半截非法 steps，差异是有意的。
         """

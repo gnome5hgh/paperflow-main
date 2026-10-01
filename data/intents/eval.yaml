@@ -335,19 +335,19 @@ eval:
 - query: 好嘞
   intent: chitchat
 - query: 嗯好
-  intent: general
+  intent: unclassified
 - query: 哦哦明白了
-  intent: general
+  intent: unclassified
 - query: 好的收到
-  intent: general
+  intent: unclassified
 - query: 哈哈好的
-  intent: general
+  intent: unclassified
   hard: true
 - query: 然后呢
-  intent: general
+  intent: unclassified
   hard: true
 - query: 那第三篇呢
-  intent: general
+  intent: unclassified
   hard: true
 - query: 我的课题是做一个circRNA关联预测框架
   intent: set_research_topic
@@ -1050,10 +1050,10 @@ eval:
   intent: help
   hard: true
 - query: 帮我看看这段话有没有语法错误。
-  intent: general
+  intent: unclassified
   hard: true
 - query: 请帮我生成一份简单的周报模板。
-  intent: general
+  intent: unclassified
   hard: true
 - query: 作者栏填上Geoffrey Hinton，年份限定近五年。
   intent: search_paper
@@ -1647,13 +1647,13 @@ eval:
   intent: out_of_scope
   hard: false
 - query: 帮忙推荐几本适合通勤路上读的书。
-  intent: general
+  intent: unclassified
   hard: true
 - query: 请问‘帮助’这个词用日语怎么说？
-  intent: general
+  intent: unclassified
   hard: true
 - query: 帮我写一首关于夏天的短诗。
-  intent: general
+  intent: unclassified
   hard: true
 - query: 下一个研究主题选第七项。
   intent: menu_selection
@@ -2481,7 +2481,7 @@ eval:
   intent: feedback
   hard: false
 - query: 嗨，吃午饭了吗？我不是来闲聊的，只是想了解你能否处理没有明确意图的话。
-  intent: general
+  intent: unclassified
   hard: true
 - query: 要第八个研究题目
   intent: menu_selection
@@ -2670,13 +2670,13 @@ eval:
   intent: feedback
   hard: false
 - query: 求帮忙推荐几本适合通勤时读的小说。
-  intent: general
+  intent: unclassified
   hard: true
 - query: 可以帮我把这句中文翻译成日语吗？
-  intent: general
+  intent: unclassified
   hard: true
 - query: 请帮我列一下去海边旅行要带的物品清单。
-  intent: general
+  intent: unclassified
   hard: true
 - query: 跳到下一个选项。
   intent: menu_selection
@@ -3141,7 +3141,7 @@ eval:
   intent: feedback
   hard: false
 - query: 可不可以推荐几本适合睡前读的书？
-  intent: general
+  intent: unclassified
   hard: true
 - query: 我选第三个
   intent: menu_selection
@@ -3363,13 +3363,13 @@ eval:
   intent: feedback
   hard: false
 - query: 功能列表越详细，用户越容易看懂吗？
-  intent: general
+  intent: unclassified
   hard: true
 - query: 点开“更多设置”之前，人一般会期待看到什么？
-  intent: general
+  intent: unclassified
   hard: true
 - query: 为什么很多人遇到问题先问朋友，而不是先查使用手册？
-  intent: general
+  intent: unclassified
   hard: true
 - query: 我觉得第二个 option 不错，就选它吧
   intent: menu_selection
@@ -3786,7 +3786,7 @@ eval:
   intent: help
   hard: false
 - query: 你能帮我写一段生日祝福语吗？
-  intent: general
+  intent: unclassified
   hard: true
 - query: 请问怎么才能让自己早起不赖床？
   intent: out_of_scope
@@ -3894,7 +3894,7 @@ eval:
   intent: help
   hard: false
 - query: 帮我看看这句话有没有语病。
-  intent: general
+  intent: unclassified
   hard: true
 - query: 我要第三个
   intent: menu_selection
@@ -4230,7 +4230,7 @@ eval:
   intent: analyze_paper
   hard: false
 - query: 我可以怎么帮助提升团队效率？
-  intent: general
+  intent: unclassified
   hard: true
 - query: 我选3号
   intent: menu_selection
