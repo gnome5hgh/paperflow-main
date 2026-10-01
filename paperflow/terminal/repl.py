@@ -235,7 +235,8 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 io: InputIO, renderer: StreamRenderer, sleeptime=None,
                 config: PaperFlowConfig | None = None,
                 resume_hint: str | None = None, confirm_center=None,
-                resume_replay: ResumeReplay | None = None) -> None:
+                resume_replay: ResumeReplay | None = None,
+                mcp_manager=None) -> None:
     """
     REPL 主循环。
 

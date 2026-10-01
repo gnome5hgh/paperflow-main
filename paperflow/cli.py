@@ -23,6 +23,7 @@ from paperflow.core.agent import Agent
 from paperflow.core.agent import AgentRegistry
 from paperflow.core.skills import merge_tools
 from paperflow.core.skills import SkillRegistry
+from paperflow.core.mcp.bridge import collect_mcp_agent_tools
 from paperflow.tools.skills.load_skill import LoadSkillTool
 from paperflow.core.llm import LLMClient
 from paperflow.core.intent.conversation_state import ConversationState
@@ -368,6 +369,13 @@ def main(argv: list[str] | None = None) -> int | None:
             return uninstall_skill(args.name, workspace)
 
     config = PaperFlowConfig.from_env()
+    # MCP 客户端平台：config.mcp_servers 非空才启动（后台循环 + 非阻塞预取）。
+    # 工具注入发生在下方装配循环（与 skill merge 同缝）；管理器引用同时传给
+    # _repl 供 /mcp 命令，退出时 shutdown。
+    from paperflow.core.mcp.client import McpClientManager
+    mcp_manager = McpClientManager(config.mcp_servers)
+    if config.mcp_servers:
+        mcp_manager.start()
     is_tty = sys.stdin.isatty()
     io = make_input_io(config)
     console = Console() if is_tty else None
@@ -412,6 +420,7 @@ def main(argv: list[str] | None = None) -> int | None:
             ("agent", _cfg.tools),
             ("skill", skill_registry.get_tools_for(_agent_type)),
             ("framework", [_load_skill_tool]),
+            ("mcp", collect_mcp_agent_tools(_agent_type, config.mcp_servers, mcp_manager)),
         )
 
     # 终端装配：TTY → prompt_toolkit 输入 + rich Live 渲染；非 TTY（管道/CI/测试）→
@@ -543,7 +552,11 @@ def main(argv: list[str] | None = None) -> int | None:
         structured, enable=config.sleeptime_enable,
         frequency=config.sleeptime_agent_frequency)
 
-    asyncio.run(_repl(supervisor, conversation,
-                      io=io, renderer=renderer, sleeptime=sleeptime,
-                      config=config, resume_hint=resume_hint,
-                      confirm_center=center, resume_replay=resume_replay))
+    try:
+        asyncio.run(_repl(supervisor, conversation,
+                          io=io, renderer=renderer, sleeptime=sleeptime,
+                          config=config, resume_hint=resume_hint,
+                          confirm_center=center, resume_replay=resume_replay,
+                          mcp_manager=mcp_manager))
+    finally:
+        mcp_manager.shutdown()

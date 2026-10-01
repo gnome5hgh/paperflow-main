@@ -130,3 +130,20 @@ def build_mcp_tools(server_name: str, cfg: McpServerConfig, manager) -> list[Too
     writes = [s for s in visible if is_write_tool(s.annotations)]
     return ([McpToolAdapter(manager, server_name, s, write_enabled=False) for s in reads]
             + [McpToolAdapter(manager, server_name, s, write_enabled=True) for s in writes])
+
+
+def collect_mcp_agent_tools(agent_type: str, servers: dict[str, McpServerConfig],
+                            manager) -> list[Tool]:
+    """某 agent 可用的全部 MCP 工具（spec §3 注入点数据面）。
+
+    逐 server：enabled 且 agents 包含该类型 → ensure_ready（受 connect_timeout 约束，
+    失败跳过已告警）→ build_mcp_tools。未启动管理器/空配置自然返回 []。
+    """
+    tools: list[Tool] = []
+    for name, cfg in servers.items():
+        if not cfg.enabled or agent_type not in cfg.agents:
+            continue
+        if not manager.ensure_ready(name):
+            continue
+        tools.extend(build_mcp_tools(name, cfg, manager))
+    return tools
