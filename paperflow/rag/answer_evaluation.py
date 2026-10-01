@@ -8,7 +8,7 @@
 
 judge 载体是 core/llm 的 StructuredOutput（temperature=0 + JSON 校验重试）。
 judge 与被测生成共用同一 LLM——存在「自我偏好」风险，缓解手段是二值判定 +
-抽小样本人丁校准。
+抽小样本人工校准。
 """
 import asyncio
 import re
@@ -188,7 +188,9 @@ async def evaluate_item(query: str, *, retrieve, llm, judge: StructuredOutput,
             [Message(role="system", content=_GENERATE_SYSTEM),
              Message(role="user", content=f"检索段落：\n{context}\n\n问题：{query}")],
             temperature=0.0)
-        result.answer = message.content
+        # content 可能为 None（上游 API 异常）——置空串兜底，防 None 穿到
+        # check_citations 抛 TypeError 穿透 gather 拖垮整批（16 分钟跑批全丢）
+        result.answer = str(message.content or "")
     except Exception:
         result.status = "generation_failed"
         return result
@@ -220,7 +222,7 @@ async def evaluate_item(query: str, *, retrieve, llm, judge: StructuredOutput,
     except Exception:
         result.status = "judge_failed"
 
-    # 4) 答题相关性：反向生成候选问题 → 与原题算余弦平均（客观量，不靠 judge 打分）。
+    # 答题相关性：反向生成候选问题 → 与原题算余弦平均（客观量，不靠 judge 打分）。
     # 放在忠实度之后、return 之前：相关性是独立指标，判卷挂掉（judge_failed）
     # 不阻断它继续算；自身失败只把指标降级为 None，不改 status——指标缺失与
     # 流程失败是两回事，混在一起会误导聚合端的剔除逻辑。
