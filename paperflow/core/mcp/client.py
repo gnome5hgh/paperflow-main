@@ -1,0 +1,297 @@
+"""MCP 客户端管理器：自持后台事件循环线程 + 每 server 一条持久会话。
+
+设计依据 spec 2026-10-01-mcp-client-design.md §3/§6：
+- 全部 MCP 会话活在后台循环的常驻 _serve 任务里——anyio cancel scope 要求传输
+  上下文的进入与使用同任务，ClientSession 不可跨任务复用；
+- 同步 call_tool_sync（runtime 经 asyncio.to_thread 在工作线程调用）用
+  concurrent.futures.Future 投递等待——不桥回 REPL 主循环（跨循环会死锁）；
+- 会话不可用时重连一次再试（OpenHands v2 同款），仍失败抛 McpToolError，
+  调用方（桥接适配器）转为错误 ToolResult 回传模型，绝不抛进 ReAct 循环。
+"""
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import json
+import shutil
+import threading
+from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass, field
+
+from paperflow.config import McpServerConfig
+from paperflow.core.mcp.bridge import McpToolSpec
+
+
+class McpToolError(Exception):
+    """MCP 工具调用失败（未连接/超时/协议错误）；适配器转为错误 ToolResult。"""
+
+
+@dataclass
+class ServerStatus:
+    """单 server 观测状态，供 /mcp 命令与装配路径读取。"""
+
+    name: str
+    transport: str
+    status: str = "pending"        # pending | connected | failed
+    error: str = ""
+    tools: list[McpToolSpec] = field(default_factory=list)
+    hidden: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class _Request:
+    tool: str
+    arguments: dict
+    future: asyncio.Future         # 后台循环上的 future
+
+
+def _convert_tool(t) -> McpToolSpec:
+    """mcp.types.Tool → McpToolSpec（annotations 转纯 dict，桥接层不碰 SDK 类型）。"""
+    ann = getattr(t, "annotations", None)
+    if ann is not None and hasattr(ann, "model_dump"):
+        ann = ann.model_dump(exclude_none=True)
+    return McpToolSpec(name=t.name, description=t.description or "",
+                       input_schema=getattr(t, "inputSchema", None), annotations=ann)
+
+
+def result_to_text(result) -> tuple[str, bool]:
+    """CallToolResult → (LLM 可读文本, isError)；非文本内容 JSON 化兜底。"""
+    parts: list[str] = []
+    for item in getattr(result, "content", None) or []:
+        if getattr(item, "type", "") == "text":
+            parts.append(item.text)
+        else:
+            parts.append(json.dumps(item.model_dump(), ensure_ascii=False, default=str))
+    return ("\n".join(parts) or "（空结果）", bool(getattr(result, "isError", False)))
+
+
+@asynccontextmanager
+async def _default_session_factory(cfg: McpServerConfig):
+    """默认会话工厂：stdio 子进程 / streamable HTTP；yield 已初始化 ClientSession。"""
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    from mcp.client.streamable_http import streamablehttp_client
+
+    async with AsyncExitStack() as stack:
+        if cfg.transport == "stdio":
+            params = StdioServerParameters(command=cfg.command, args=cfg.args,
+                                           env=cfg.env or None)
+            read, write = await stack.enter_async_context(stdio_client(params))
+        else:
+            read, write, _sid = await stack.enter_async_context(
+                streamablehttp_client(cfg.url, headers=cfg.headers or None))
+        session = await stack.enter_async_context(ClientSession(read, write))
+        yield session
+
+
+class McpClientManager:
+    """每 enabled server 一条持久会话；未配置/未启动时全部方法安全退化。"""
+
+    def __init__(self, servers: dict[str, McpServerConfig],
+                 session_factory=None, on_warn=None):
+        self._servers = dict(servers)
+        self._session_factory = session_factory or _default_session_factory
+        # 显式传入的 on_warn 一律生效（哪怕对象为假值，如空的自定义收集器），
+        # 仅 None 退化为静默——用 `or` 会把假值收集器静默吞掉。
+        self._warn = on_warn if on_warn is not None else (lambda msg: None)
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._queues: dict[str, asyncio.Queue] = {}
+        self._serve_tasks: dict[str, asyncio.Task] = {}
+        self._ready: dict[str, concurrent.futures.Future] = {}
+        self._status: dict[str, ServerStatus] = {
+            name: ServerStatus(name=name, transport=cfg.transport)
+            for name, cfg in self._servers.items() if cfg.enabled}
+        self._closed = False
+
+    # —— 生命周期 ——
+
+    def start(self) -> None:
+        """拉起后台循环并为每个 enabled server 调度连接+列表（非阻塞预取）。"""
+        if self._thread is not None or not self._status:
+            return
+        self._loop_ready = threading.Event()
+        self._thread = threading.Thread(target=self._run_loop, name="mcp-loop", daemon=True)
+        self._thread.start()
+        self._loop_ready.wait(timeout=5.0)
+        for name in list(self._status):
+            self._ready[name] = concurrent.futures.Future()
+            src = self._servers[name]
+            # spec §7：stdio 命令存在性预检（OpenHands 同款）——不在 PATH 直接失败不
+            # spawn，错误信息直接指导用户装 uvx/npx
+            if src.transport == "stdio" and shutil.which(src.command) is None:
+                self._status[name].status = "failed"
+                self._status[name].error = f"命令不在 PATH: {src.command}"
+                self._ready[name].set_result(False)
+                self._warn(f"MCP server '{name}' {self._status[name].error}")
+                continue
+            self._loop.call_soon_threadsafe(self._spawn_serve, name)
+
+    def _run_loop(self) -> None:
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+        asyncio.set_event_loop(loop)
+        self._loop_ready.set()
+        loop.run_forever()
+
+    def _spawn_serve(self, name: str) -> None:
+        self._queues[name] = asyncio.Queue()
+        self._serve_tasks[name] = self._loop.create_task(self._serve(name))
+
+    async def _serve(self, name: str) -> None:
+        """常驻任务：连接 → 初始化 → 列表 → 循环消费调用请求，直到 shutdown。"""
+        cfg = self._servers[name]
+        st = self._status[name]
+        try:
+            async with self._session_factory(cfg) as session:
+                await asyncio.wait_for(session.initialize(), timeout=cfg.connect_timeout)
+                listed = await asyncio.wait_for(session.list_tools(),
+                                                timeout=cfg.connect_timeout)
+                st.tools = [_convert_tool(t) for t in listed.tools]
+                st.status = "connected"
+                st.error = ""
+                self._ready[name].set_result(True)
+                while True:
+                    req = await self._queues[name].get()
+                    if req is None:
+                        return
+                    try:                      # 单次调用失败不掀会话
+                        res = await asyncio.wait_for(
+                            session.call_tool(req.tool, req.arguments),
+                            timeout=cfg.call_timeout)
+                        req.future.set_result(res)
+                    except Exception as e:
+                        req.future.set_exception(e)
+        except Exception as e:
+            st.status = "failed"
+            st.error = f"{type(e).__name__}: {e}"
+            if name in self._ready and not self._ready[name].done():
+                self._ready[name].set_result(False)
+                self._warn(f"MCP server '{name}' 连接失败：{st.error}")
+            else:
+                self._warn(f"MCP server '{name}' 会话中断：{st.error}")
+                self._fail_pending(name)
+
+    def _fail_pending(self, name: str) -> None:
+        q = self._queues.get(name)
+        while q is not None and not q.empty():
+            req = q.get_nowait()
+            if req is not None:
+                req.future.set_exception(McpToolError(f"server '{name}' 会话中断，请求未执行"))
+
+    def shutdown(self) -> None:
+        """通知各 serve 任务退出并停循环；幂等。"""
+        if self._closed:
+            return
+        self._closed = True
+        if self._loop is None:
+            return
+
+        async def _stop():
+            for q in self._queues.values():
+                await q.put(None)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_stop(), self._loop).result(timeout=5.0)
+        except Exception:
+            pass
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+
+    # —— 观测 ——
+
+    def get_server_status(self, name: str) -> ServerStatus | None:
+        return self._status.get(name)
+
+    def status_report(self) -> str:
+        """/mcp 命令的渲染体：状态 + 工具数 + 被隐藏工具及原因。"""
+        if not self._servers:
+            return "未接入 MCP（config.yaml 顶层 mcp_servers 为空）。"
+        lines: list[str] = []
+        for name, cfg in self._servers.items():
+            if not cfg.enabled:
+                lines.append(f"- {name} [{cfg.transport}] 已禁用（enabled: false）")
+                continue
+            st = self._status[name]
+            head = {"pending": "连接中…", "connected": "已连接",
+                    "failed": f"失败（{st.error}）"}[st.status]
+            line = f"- {name} [{cfg.transport}] {head}，工具 {len(st.tools)} 个"
+            if st.hidden:
+                line += "；已隐藏: " + "、".join(f"{n}（{r}）" for n, r in st.hidden)
+            lines.append(line)
+        return "\n".join(lines)
+
+    # —— 调用 ——
+
+    def ensure_ready(self, name: str, timeout: float | None = None) -> bool:
+        """阻塞等首次连接+列表；供装配路径与调用前置门。失败/未配置返回 False。"""
+        fut = self._ready.get(name)
+        if fut is None:
+            return False
+        try:
+            wait = timeout if timeout is not None else self._servers[name].connect_timeout + 5.0
+            return bool(fut.result(timeout=wait))
+        except Exception:        # TimeoutError / 未来被取消等一律视为未就绪
+            return False
+
+    def _schedule_reconnect(self, name: str) -> None:
+        """换新 ready future + 新队列 + 新 serve 任务（重连一次的载体）。
+
+        新 ready future 必须在调用线程同步换上：concurrent.futures.Future 线程安全，
+        可跨线程 set_result；若放到循环上的 _do 里异步换新，紧随其后的 ensure_ready
+        会读到旧的已完成 future 立即返回，attempt 2 在重连完成前就误判"已重试一次"
+        而抛错（实测必现的竞态）。
+        """
+        self._ready[name] = concurrent.futures.Future()
+
+        async def _do():
+            self._fail_pending(name)                 # 旧队列里未执行的请求直接判败
+            old = self._serve_tasks.get(name)
+            if old is not None and not old.done():
+                old.cancel()                         # 旧 serve 退出 → 工厂 __aexit__
+            self._spawn_serve(name)                  # 在同任务内关闭旧会话/传输，
+                                                     # 否则旧任务挂在废队列上永久泄漏
+        self._loop.call_soon_threadsafe(lambda: self._loop.create_task(_do()))
+
+    def call_tool_sync(self, name: str, tool: str, arguments: dict):
+        """同步调用入口（runtime 工作线程）：投递后台循环并等待；不可用重连一次。"""
+        if self._closed or name not in self._status:
+            raise McpToolError(f"server '{name}' 不可用（未配置或已关闭）")
+        cfg = self._servers[name]
+        st = self._status[name]
+        for attempt in (1, 2):
+            if st.status == "connected":
+                break
+            self.ensure_ready(name)                    # 预取未完成的先等
+            if st.status == "connected":
+                break
+            if attempt == 2:
+                raise McpToolError(
+                    f"server '{name}' 未连接（{st.error or '连接中'}），已重试一次")
+            self._warn(f"MCP server '{name}' 会话不可用，重连一次…")
+            self._schedule_reconnect(name)
+            self.ensure_ready(name)
+        result_future = concurrent.futures.Future()
+
+        def _submit():
+            async def _run():
+                fut = self._loop.create_future()
+                await self._queues[name].put(_Request(tool, arguments, fut))
+                try:
+                    result_future.set_result(await fut)
+                except Exception as e:
+                    result_future.set_exception(e)
+            self._loop.create_task(_run())
+
+        self._loop.call_soon_threadsafe(_submit)
+        try:
+            return result_future.result(timeout=cfg.call_timeout + 5.0)
+        except concurrent.futures.TimeoutError as e:
+            st.status = "failed"
+            st.error = f"调用超时（>{cfg.call_timeout}s）"
+            raise McpToolError(st.error) from e
+        except Exception as e:
+            st.status = "failed"
+            st.error = f"{type(e).__name__}: {e}"
+            raise McpToolError(f"调用失败：{e}") from e
