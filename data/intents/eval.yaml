@@ -79,9 +79,6 @@ eval:
   intent: search_paper
 - query: 找一篇 link prediction 用 GNN 的综述
   intent: search_paper
-- query: 下载并整理成笔记那篇链路预测的论文
-  intent: search_paper
-  hard: true
 - query: 给这篇论文做个阅读笔记
   intent: generate_note
 - query: 把摘要整理成笔记形式
@@ -137,16 +134,10 @@ eval:
   intent: generate_note
 - query: 生成一份这篇文章的阅读笔记
   intent: generate_note
-- query: 总结一下这篇 miRNA 论文并保存
-  intent: generate_note
-  hard: true
 - query: 帮我给异构图神经网络那篇做个摘要
   intent: generate_note
 - query: 把药物靶点预测这篇的结论记下来
   intent: generate_note
-- query: 帮我整理这份笔记并导出
-  intent: generate_note
-  hard: true
 - query: 查完这篇 miRNA 论文帮我写个笔记
   intent: generate_note
   hard: true
@@ -185,9 +176,6 @@ eval:
   intent: research_discovery
   hard: true
 - query: 查查我这些笔记能做成什么
-  intent: research_discovery
-  hard: true
-- query: 精读我的笔记帮我找找研究空档
   intent: research_discovery
   hard: true
 - query: 讲讲我看过的文献里还能挖什么坑
@@ -268,7 +256,7 @@ eval:
   intent: ask_question
   hard: true
 - query: 读读这篇论文的关键发现
-  intent: ask_question
+  intent: analyze_paper
   hard: true
 - query: 帮我阅读这份文献资料
   intent: ask_question
@@ -345,7 +333,7 @@ eval:
   intent: manage_memory
   hard: true
 - query: 好嘞
-  intent: general
+  intent: chitchat
 - query: 嗯好
   intent: general
 - query: 哦哦明白了
@@ -408,51 +396,51 @@ eval:
 - query: 这个模型有什么问题
   intent: analyze_paper
 - query: 太老了吧
-  intent: refine_query
+  intent: search_paper
 - query: 只要英文文献
-  intent: refine_query
+  intent: search_paper
 - query: 换一个关键词
-  intent: refine_query
+  intent: search_paper
 - query: 近五年发表的
-  intent: refine_query
+  intent: search_paper
 - query: 太旧了换最新的
-  intent: refine_query
+  intent: search_paper
 - query: 重新找一下最新的
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 换个方向去检索
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 只要顶会
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 别要综述了
-  intent: refine_query
+  intent: search_paper
 - query: 换个期刊档次
-  intent: refine_query
+  intent: search_paper
 - query: 换个话题吧
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 我现在不想看这个了
-  intent: switch_topic
+  intent: set_research_topic
 - query: 换一个研究方向
-  intent: switch_topic
+  intent: set_research_topic
 - query: 换个课题来研究
-  intent: switch_topic
+  intent: set_research_topic
 - query: 不研究这个了
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 改看异构图了
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 转向药物靶点
-  intent: switch_topic
+  intent: set_research_topic
 - query: 现在改研究图对比学习了
-  intent: switch_topic
+  intent: set_research_topic
 - query: 换个方向
-  intent: switch_topic
+  intent: set_research_topic
 - query: 不搞circRNA了
-  intent: switch_topic
+  intent: set_research_topic
 - query: 你好哇
   intent: chitchat
 - query: 早啊
@@ -641,28 +629,7 @@ eval:
 - query: 搜一下近两年图神经网络的最新文献，我想从中挑一个还没被做透的课题。
   intent: research_discovery
   hard: true
-- query: 下载一些可解释AI的综述文章，我要找一个有潜力的研究切入点。
-  intent: research_discovery
-  hard: true
-- query: 查查多模态学习方面的论文，我想看看哪个子领域还存在研究空白。
-  intent: research_discovery
-  hard: true
-- query: 浏览一下大模型推理优化相关的文章，我想找出一个尚未解决的问题作为课题。
-  intent: research_discovery
-  hard: true
-- query: 收集一些小样本学习的论文，我想找一个适合入门的研究点。
-  intent: research_discovery
-  hard: true
-- query: 查阅自动驾驶感知领域的文献，我想发掘一个值得深入的研究题目。
-  intent: research_discovery
-  hard: true
 - query: 在改聊别的内容以前，先把刚才那段对话存进长期记忆。
-  intent: manage_memory
-  hard: true
-- query: 这个话题先搁置一下，顺手把我刚说的偏好更新到记忆里。
-  intent: manage_memory
-  hard: true
-- query: 咱们聊点别的吧，不过聊别的之前先看看你记得我哪些信息。
   intent: manage_memory
   hard: true
 - query: 换到新主题前，请把这条新资料加入记忆。
@@ -672,9 +639,6 @@ eval:
   intent: manage_memory
   hard: true
 - query: 我们进入下一个议题之前，把旧记忆里过时的条目删掉。
-  intent: manage_memory
-  hard: true
-- query: 先从这个任务抽离出来，抽离前请列出你保存的关于我的记忆。
   intent: manage_memory
   hard: true
 - query: 切到其他方向前，帮我把刚才的结论写进记忆。
@@ -710,12 +674,6 @@ eval:
 - query: 论文里的实验表格数据为什么呈现这种趋势，能结合全部实验设置解读一下吗？
   intent: analyze_paper
   hard: true
-- query: 这篇论文的图 4 和结论之间是什么关系，能帮我把图表和正文论证串起来吗？
-  intent: analyze_paper
-  hard: true
-- query: 作者提出的新方法真的比基线强吗，能基于论文里的实验细节做个完整评估吗？
-  intent: analyze_paper
-  hard: true
 - query: 这篇 PDF 的消融研究想说明哪些模块有效，结果是否支撑这个结论？
   intent: analyze_paper
   hard: true
@@ -728,44 +686,41 @@ eval:
 - query: 这篇论文的模型架构图里各组件如何协作，能根据全文给出系统解读吗？
   intent: analyze_paper
   hard: true
-- query: PDF 里表 3 的对比结果为什么和表 2 不一致，能深入查查实验部分吗？
-  intent: analyze_paper
-  hard: true
 - query: 这篇论文的局限性和未来工作写得合理吗，能结合实验不足做个整体分析吗？
   intent: analyze_paper
   hard: true
 - query: 把刚才检索论文用的关键词“图神经网络”改成“图表示学习”。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 帮我查文献时，把作者从张三换成李四再搜一遍。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 之前找论文的查询里，加上“2023年以后”这个条件。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 搜论文的检索式里，把“深度学习”和“医学影像”两个词调换一下顺序。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 在刚才那篇论文的搜索请求中，把标题字段改成摘要字段。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 找相关文献的时候，把会议限定从CVPR换成ICLR。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 我搜文献的关键词有点太宽了，把“人工智能”缩小到“多模态大模型”。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 下载论文的那条查询里，把作者名拼写错误改过来：Geoffery Hinton改成Geoffrey Hinton。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 帮我重新搜论文，但把上次查询里的“综述”去掉。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 检索最新进展的那条指令，把时间范围从近五年改成近两年。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 先别按原条件搜了，换成看看明天会不会下雨。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 能不能替我向月亮请个假，今晚不想值班？
   intent: chitchat
@@ -778,9 +733,6 @@ eval:
   hard: true
 - query: 能不能给云朵编个辫子，今天风太大了。
   intent: chitchat
-  hard: true
-- query: Howdy! I'm trying to relax. Can you give me a foot massage?
-  intent: out_of_scope
   hard: true
 - query: Hi! I'm feeling generous. Can you donate my car to charity?
   intent: out_of_scope
@@ -821,37 +773,19 @@ eval:
 - query: 引导流程怎么这么长，点半天还进不去主界面。
   intent: feedback
   hard: true
-- query: 选 2 号课题，继续研究。
-  intent: menu_selection
-  hard: true
 - query: 第六个选题吧，就研究这个。
   intent: menu_selection
-  hard: true
-- query: 研究主题设为扩散模型水印的话，下载几篇相关论文给我。
-  intent: search_paper
-  hard: true
-- query: 查看我上传的文献，然后生成一份按主题归纳的笔记。
-  intent: generate_note
   hard: true
 - query: 更新这篇综述对应的笔记，把新增的参考文献补进去。
   intent: generate_note
   hard: true
-- query: 清除资料里的重复段落，只保留核心内容做成笔记。
-  intent: generate_note
-  hard: true
 - query: 保存这几份 PDF 的关键结论，汇总成一页笔记。
-  intent: generate_note
-  hard: true
-- query: 记住这篇文章的论证脉络，再输出一份结构化笔记。
   intent: generate_note
   hard: true
 - query: 把刚才讨论的资料归档成一份可检索的知识笔记。
   intent: generate_note
   hard: true
 - query: 根据这份长文档整理出记忆卡片式的学习笔记。
-  intent: generate_note
-  hard: true
-- query: 忘记无关细节，从论文中提炼一份精读笔记。
   intent: generate_note
   hard: true
 - query: 帮我找一个新研究主题，我毫无头绪。
@@ -866,9 +800,6 @@ eval:
 - query: 帮我把实验结论记成笔记时，我分不清为什么消融实验能证明该模块有效，能解释下吗？
   intent: ask_question
   hard: true
-- query: 我想把核心机制做成笔记，但先问一下：这个门控结构为什么比直接拼接更好？
-  intent: ask_question
-  hard: true
 - query: 如果要用一句话记下这个定理，它的证明思路最关键的一步是什么？
   intent: ask_question
   hard: true
@@ -876,12 +807,6 @@ eval:
   intent: ask_question
   hard: true
 - query: 这份资料适合做成复习笔记，可我不明白结论里的置信区间为什么这么宽，能说明一下吗？
-  intent: ask_question
-  hard: true
-- query: 帮我梳理成知识卡片也行，但先回答：这个算法的时间复杂度是怎么从公式推出来的？
-  intent: ask_question
-  hard: true
-- query: 我准备把讨论部分归纳成笔记，不过作者说因果性不等于相关性在这里具体指什么？
   intent: ask_question
   hard: true
 - query: 帮我找一下之前对话里存过的那篇论文，不用重新搜。
@@ -908,15 +833,6 @@ eval:
 - query: 修改我保存的论文条目，把作者换成李四。
   intent: manage_memory
   hard: true
-- query: 别聊这个了，以后主线就放在多模态情感分析。
-  intent: set_research_topic
-  hard: true
-- query: 我们聊点别的——从今天起课题就围绕图神经网络与药物发现展开。
-  intent: set_research_topic
-  hard: true
-- query: 这个话题先放一放，把咱们的研究对象换成自动驾驶场景下的强化学习。
-  intent: set_research_topic
-  hard: true
 - query: 别说这个了，之后都按“可解释推荐系统”这个主题来。
   intent: set_research_topic
   hard: true
@@ -930,31 +846,22 @@ eval:
   intent: set_research_topic
   hard: true
 - query: 把论文搜索的关键词从“目标检测”改成“小样本目标检测”
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 文献查询里再加上“多模态”这个限定词
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 作者范围限定为Yoshua Bengio，重新找一下相关论文
-  intent: refine_query
-  hard: true
-- query: 会议只保留NeurIPS和ICML，再搜文献
-  intent: refine_query
-  hard: true
-- query: 时间范围改成2020年以后，继续查论文
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 排除arXiv预印本，只看正式发表的期刊论文
-  intent: refine_query
-  hard: true
-- query: 把排序方式从相关度改为引用量，再检索
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 检索式里的“大模型”换成“大语言模型”，其他不变
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 在当前的论文检索中加上“可解释性”和“医疗”两个条件
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 你今天说话怎么这么客气，是不是偷偷去上了礼仪课？
   intent: chitchat
@@ -983,12 +890,6 @@ eval:
 - query: 跟你聊天比开会轻松多了，我都有点不想回去干活了。
   intent: chitchat
   hard: true
-- query: Hey, how's it going? Could you warm up my lunch for me?
-  intent: out_of_scope
-  hard: true
-- query: Hi! How's your day going? Can you make me a sandwich?
-  intent: out_of_scope
-  hard: true
 - query: 写代码这个功能要从哪个菜单打开？
   intent: help
   hard: true
@@ -1003,21 +904,6 @@ eval:
   hard: true
 - query: 做税务筹划的操作入口在哪里？
   intent: help
-  hard: true
-- query: 嗨，今天过得怎么样？顺便说一句，你刚才帮我改的那段文案读起来顺多了。
-  intent: feedback
-  hard: true
-- query: 吃午饭了吗？刚那个翻译版本比我自己弄的准确不少。
-  intent: feedback
-  hard: true
-- query: 今天天气不错，你回答我的速度也挺快，体验挺好。
-  intent: feedback
-  hard: true
-- query: 嘿，忙不忙？你解释这个概念的方式比之前好懂多了。
-  intent: feedback
-  hard: true
-- query: 换个研究主题，我点第 7 个。
-  intent: menu_selection
   hard: true
 - query: 扩散模型 DDPM 的完整推导可以在哪篇文献里找到？
   intent: search_paper
@@ -1034,22 +920,10 @@ eval:
 - query: CRISPR-Cas9 基因编辑技术的原始论文是哪一篇？
   intent: search_paper
   hard: true
-- query: 这篇论文的 PDF 我已经下好了，帮我把方法、实验和图表都看一遍，再整理成一份复习提纲。
-  intent: generate_note
-  hard: true
-- query: 我想快速掌握这篇文章，你先分析一下它的研究思路，最后输出成课堂笔记。
-  intent: generate_note
-  hard: true
-- query: 把附件里论文的创新点、实验设置和结果讨论都过一遍，做成我能直接看的读书笔记。
-  intent: generate_note
-  hard: true
 - query: 这份 PDF 里的公式推导和实验表格有点多，帮我梳理成按知识点组织的学习摘要。
   intent: generate_note
   hard: true
 - query: 读完这篇论文后，请把它的方法框架和关键结论提炼成一份备考用的笔记。
-  intent: generate_note
-  hard: true
-- query: 帮我看看这篇文献的模型结构和对比实验，然后整理成条目式的学习记录。
   intent: generate_note
   hard: true
 - query: 这篇论文的图表和实验分析部分，我想留一份可回顾的整理稿，你帮我做一下。
@@ -1058,46 +932,16 @@ eval:
 - query: 针对这篇论文，把它的贡献、方法和实验部分提炼成方便我以后查阅的笔记。
   intent: generate_note
   hard: true
-- query: 最近有哪些关于量子计算和机器学习交叉的论文？我想看看有没有新的课题可以做。
-  intent: research_discovery
-  hard: true
 - query: 有没有关于联邦学习隐私保护的综述？我想从中挖掘一些潜在的研究点。
-  intent: research_discovery
-  hard: true
-- query: 我想下载几篇关于图神经网络可解释性的文章，看看这个领域还有哪些空白。
   intent: research_discovery
   hard: true
 - query: 最近有什么热门的论文是关于多模态学习的？我想选一个作为我的研究课题。
   intent: research_discovery
   hard: true
-- query: 帮我查一下自然语言处理中低资源语言的最新进展，我想找一个有潜力的切入点。
-  intent: research_discovery
-  hard: true
-- query: 今天食堂的饭真一般，对了你之前说的那个扩散模型反向过程，为什么每一步都要加噪声再预测噪声？
-  intent: ask_question
-  hard: true
 - query: 刚跑完步回来，突然想到你论文里那个消融实验，去掉位置编码后性能掉那么多，结论该怎么解释才严谨？
   intent: ask_question
   hard: true
-- query: 这杯拿铁拉花挺好看，话说你模型里的层归一化为什么放在注意力之前而不是之后？
-  intent: ask_question
-  hard: true
-- query: 周末打算看电影，不过先问你个事，你论文附录里那个 KL 散度项是怎么推出来的？
-  intent: ask_question
-  hard: true
-- query: 最近天气忽冷忽热的，你论文里说稀疏注意力能省计算，可它到底是怎么保证不丢关键信息的？
-  intent: ask_question
-  hard: true
-- query: 我刚看到一只猫在晒太阳，忽然好奇你论文里的 ROUGE 分数和 BLEU 分数，为什么一个侧重召回一个侧重精确率？
-  intent: ask_question
-  hard: true
 - query: 晚饭吃啥还没想好，你上次讲的那个知识蒸馏，学生模型为什么能从小模型里学到老师模型的暗知识？
-  intent: ask_question
-  hard: true
-- query: 地铁上人好多，想到你论文里那个图神经网络的过平滑问题，为什么层数一深节点表示就趋同了？
-  intent: ask_question
-  hard: true
-- query: 生日快乐呀，顺便问下你论文里的因果注意力掩码，为什么它能防止解码时看到未来 token？
   intent: ask_question
   hard: true
 - query: 我记忆里那篇论文的笔记帮我更新一下，不用重新整理新笔记。
@@ -1115,16 +959,10 @@ eval:
 - query: 我还在找方向呢，不过先把我的研究主题定成‘多模态学习’吧。
   intent: set_research_topic
   hard: true
-- query: 推荐几个课题给我参考一下，然后把我当前的课题改成‘因果推断’。
-  intent: set_research_topic
-  hard: true
 - query: 探索新方向的事先放放，把‘AI 对齐’设为我现在的研究主题。
   intent: set_research_topic
   hard: true
 - query: 你之前说的那几个方向里，我比较感兴趣的是第二个，把它更新为我的研究主题。
-  intent: set_research_topic
-  hard: true
-- query: 从这些新兴领域里挑一个当我的课题，我选‘扩散模型’，现在改过来。
   intent: set_research_topic
   hard: true
 - query: 关于下一步研究什么，我决定就设成‘知识图谱’作为当前研究主题。
@@ -1133,38 +971,35 @@ eval:
 - query: 虽然还在了解新课题，但先把‘边缘智能’定为我的研究主题。
   intent: set_research_topic
   hard: true
-- query: 把论文内容做成笔记吧，不过先帮我拆解一下它的模型结构和每个实验指标的变化原因。
-  intent: analyze_paper
-  hard: true
 - query: 把刚才找论文用的关键词换成“图神经网络 推荐系统”。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 当前这个文献检索再加一个条件：2020 年以后发表的。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 上一轮论文搜索里，把作者限定为 Yoshua Bengio。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 我刚才搜文献的查询太宽了，帮我收窄到只找综述。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 在现有论文检索基础上，排除掉预印本和学位论文。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 把这次找论文的主题词从“联邦学习”改成“联邦学习 隐私保护”。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 接着刚才的文献查找，再补上“医疗影像”这个限定词。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 当前检索式里把会议限定为 NeurIPS 和 ICML。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 之前那个找论文的请求，改成按被引量排序并只看近五年。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 把我正在搜的文献关键词里的“NLP”细化成“大语言模型 推理”。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 你能变身成一只猫陪我玩吗？算了不说这个了，你那边天气好吗？
   intent: chitchat
@@ -1175,13 +1010,7 @@ eval:
 - query: 你能听见我现在在想什么吗？别当真，我就是想找你唠两句。
   intent: chitchat
   hard: true
-- query: 你能让我立刻学会八门外语吗？哎呀随便说说，你今天心情如何？
-  intent: chitchat
-  hard: true
 - query: 帮我去银行金库拿点钱出来，开玩笑啦，晚上打算吃什么？
-  intent: chitchat
-  hard: true
-- query: 你能让时间倒流五分钟吗？不聊这个了，你平时喜欢听什么歌？
   intent: chitchat
   hard: true
 - query: 在哪里开启你的无人机模式去航拍小区全景？
@@ -1214,29 +1043,11 @@ eval:
 - query: 你们这个界面设计得也太绕了，我完全找不到导出按钮在哪，能说明一下吗？
   intent: help
   hard: true
-- query: 我觉得这功能很难用，有没有详细一点的操作步骤？
-  intent: help
-  hard: true
-- query: 怎么每次都要我重复输入？这体验不太好吧，能不能告诉我正确用法？
-  intent: help
-  hard: true
 - query: 这个设置项写得太模糊了，我都不知道选哪个，能给我讲讲每个选项吗？
   intent: help
   hard: true
 - query: 结果跟我预期的不一样，是我哪里操作错了吗？请指点一下。
   intent: help
-  hard: true
-- query: 这个功能入口藏得太深了，我找了好久，能告诉我具体路径吗？
-  intent: help
-  hard: true
-- query: 今天心情挺好，就是你这个推荐不太合我心意。
-  intent: feedback
-  hard: true
-- query: 在忙吗？我觉得你这次的回答比上次清楚不少。
-  intent: feedback
-  hard: true
-- query: 最近降温了，多穿点，顺便说下你这次答案挺有帮助的。
-  intent: feedback
   hard: true
 - query: 帮我看看这段话有没有语法错误。
   intent: general
@@ -1250,52 +1061,16 @@ eval:
 - query: 往前翻到2018年，找几篇关于BERT预训练的经典文献。
   intent: search_paper
   hard: true
-- query: 请查找作者Hinton关于知识蒸馏的文献，并做成结构化的文献笔记。
-  intent: generate_note
-  hard: true
-- query: 把arXiv上关于多模态推理的论文找几篇，提炼成课堂笔记。
-  intent: generate_note
-  hard: true
-- query: 搜索一下联邦学习隐私保护的综述，然后整理成带引用的阅读笔记。
-  intent: generate_note
-  hard: true
-- query: 查一查图神经网络可解释性的代表性论文，写成一份文献综述笔记。
-  intent: generate_note
-  hard: true
-- query: 找找今年ACL中关于检索增强生成的论文，帮我生成组会汇报笔记。
-  intent: generate_note
-  hard: true
-- query: 下载几篇关于蛋白质结构预测的论文，整理成算法原理笔记。
-  intent: generate_note
-  hard: true
-- query: 搜一下因果推断在推荐系统中的应用文献，做成一份主题笔记。
-  intent: generate_note
-  hard: true
-- query: 看看最新机器人操作模仿学习的论文，整理成方法对比笔记。
-  intent: generate_note
-  hard: true
-- query: 我想看看最近三年这个领域发了不少论文，但哪些空白点适合我开题？
-  intent: research_discovery
-  hard: true
 - query: 能不能根据最近的高引论文，给我推荐几个值得长期投入的选题？
   intent: research_discovery
   hard: true
 - query: 我想找一些综述和前沿论文，用来判断下一阶段该往哪个小方向钻。
   intent: research_discovery
   hard: true
-- query: 搜一下这个方向的文章，我想知道哪些问题反复出现但一直没被解决。
-  intent: research_discovery
-  hard: true
 - query: 看看最新会议论文里，有没有什么苗头可以发展成我自己的课题？
   intent: research_discovery
   hard: true
 - query: 我打算查一批文献，但目的不是读，而是摸清这个领域还有哪些可做的题目。
-  intent: research_discovery
-  hard: true
-- query: 帮我检索相关研究，我想评估一下哪个细分方向更容易做出新东西。
-  intent: research_discovery
-  hard: true
-- query: 有哪些近期论文能说明这个领域正在转向什么新主题？我想据此定题。
   intent: research_discovery
   hard: true
 - query: 我想从文献里找灵感，看看能不能发现一个没人系统研究过的角度。
@@ -1325,77 +1100,41 @@ eval:
 - query: 论文里提到注意力可视化结果符合直觉，这里的“符合直觉”在机制上通常指什么？
   intent: ask_question
   hard: true
-- query: 将这份报告提炼成摘要笔记，写入会话记忆，不要只留在当前上下文。
-  intent: manage_memory
-  hard: true
-- query: 整理一份会议纪要式笔记，设为可长期保留的记忆，后续能随时查看。
-  intent: manage_memory
-  hard: true
-- query: 把这篇文献整理成笔记并覆盖旧版记忆，确保下次回答使用最新内容。
-  intent: manage_memory
-  hard: true
-- query: 把刚才讨论的论文内容做成笔记，保存为跨对话可用的记忆项。
-  intent: manage_memory
-  hard: true
 - query: 不说刚才那个了，新的研究题目定为图神经网络的可解释性。
   intent: set_research_topic
   hard: true
 - query: 咱们聊点别的，具体来说就是研究小样本目标检测。
   intent: set_research_topic
   hard: true
-- query: 换一个任务上下文，我的研究主题改成对话系统中的角色一致性。
-  intent: set_research_topic
-  hard: true
-- query: 这个话题先搁置，重新设定研究题目为代码大模型的漏洞检测。
-  intent: set_research_topic
-  hard: true
 - query: 我们转移一下注意力，当前要研究的课题是具身智能中的长程规划。
   intent: set_research_topic
   hard: true
-- query: 请整理这篇论文的要点，并解释作者提出的损失函数每一项分别在起什么作用。
-  intent: analyze_paper
-  hard: true
-- query: 这篇 PDF 我想整理成知识卡片，你先分析作者如何从问题定义过渡到算法设计。
-  intent: analyze_paper
-  hard: true
-- query: 请把这篇论文归纳成提纲，并指出基线实验设置是否存在不公平之处。
-  intent: analyze_paper
-  hard: true
 - query: 先不聊这个了，但刚才那个“城市房价”查询只保留二手房数据。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 重新开一个，还是同一件事：把“洗发水”限定成控油型。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 不说那个了，把“儿童绘本”的查询年龄范围改成3-6岁。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 改聊别的吧，就在刚才那个“笔记本电脑”里排除游戏本。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 另起一题，但对象还是刚才的“餐厅推荐”，只要人均200以下的。
-  intent: refine_query
-  hard: true
-- query: 当前课题不用往下定了，直接切到下一个任务吧。
-  intent: switch_topic
-  hard: true
-- query: 别改研究主题了，我们跳到另一个话题继续。
-  intent: switch_topic
+  intent: search_paper
   hard: true
 - query: 关于这个学术题目先停一下，我想换个聊天主题。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 咱们从这个课题聊到别处去，并不是要更新研究主题。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 我不是让你设置新的研究主题，只是想换个任务场景。
-  intent: switch_topic
-  hard: true
-- query: 这个论文主题先搁置，切到刚才没说完的那件事。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 先把研究主题的讨论暂停，我们换一个上下文接着聊。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 如果明天太阳请假，你想让谁来值班？
   intent: chitchat
@@ -1445,44 +1184,11 @@ eval:
 - query: 这个按钮的位置让我有点困惑，能说明一下它具体是做什么的吗？
   intent: help
   hard: true
-- query: 我觉得这个流程设计得不太直观，可以教我怎么正确操作吗？
-  intent: help
-  hard: true
-- query: 你们这个搜索好像不太好用，能不能告诉我怎么筛选结果？
-  intent: help
-  hard: true
 - query: 这个功能藏得太深了，麻烦指一下入口到底在哪里。
-  intent: help
-  hard: true
-- query: 我试了半天也没弄明白，这个设置是不是有点复杂，能带我走一遍吗？
-  intent: help
-  hard: true
-- query: 这个提示信息写得有点模糊，能不能说明一下我下一步该点哪里？
-  intent: help
-  hard: true
-- query: 我觉得这个操作路径不太顺，能教我快捷完成的方法吗？
   intent: help
   hard: true
 - query: 这个报错让我很困惑，能帮我看看应该怎么继续使用吗？
   intent: help
-  hard: true
-- query: 嘿，周末过得怎么样？对了，你刚才那个推荐结果不太符合我的需求。
-  intent: feedback
-  hard: true
-- query: 你好呀，别来无恙？我觉得你这次总结得有点太长了。
-  intent: feedback
-  hard: true
-- query: 哎呀，今天地铁人真多，说到这个，你刚才的回复格式要是再整齐点就好了。
-  intent: feedback
-  hard: true
-- query: 嗨，午饭吃了啥？你上轮回答速度倒是挺快，但漏掉了一个关键点。
-  intent: feedback
-  hard: true
-- query: 哈喽，最近在追剧吗？不过你刚才那个方案我试了一下，好像跑不通。
-  intent: feedback
-  hard: true
-- query: 不聊这个了，第二个吧。
-  intent: menu_selection
   hard: true
 - query: 当前任务先停一下，切到第 7 条。
   intent: menu_selection
@@ -1491,9 +1197,6 @@ eval:
   intent: menu_selection
   hard: true
 - query: 重新开个话题，用第 9 个。
-  intent: menu_selection
-  hard: true
-- query: 这个方向不对，换第 1 项。
   intent: menu_selection
   hard: true
 - query: 我想切到别的内容，第 4 条吧。
@@ -1505,31 +1208,10 @@ eval:
 - query: 我现在的主攻方向是脑机接口，能给我下载几篇这个主题的代表作吗？
   intent: search_paper
   hard: true
-- query: 我想换个领域做文献综述，先找找‘联邦学习隐私保护’的论文。
-  intent: search_paper
-  hard: true
 - query: 先按‘自动驾驶决策规划’这个题目帮我查文献，等会儿再决定要不要改课题。
   intent: search_paper
   hard: true
-- query: 请记住这些资料的核心内容，并以读书笔记的形式输出。
-  intent: generate_note
-  hard: true
-- query: 我想在记忆里留一份这篇综述的摘要，你帮我生成笔记吧。
-  intent: generate_note
-  hard: true
-- query: 把上下文中的论文要点保存到记忆库，再做成复习笔记。
-  intent: generate_note
-  hard: true
-- query: 清空之前的记忆，只根据这份材料整理一份新笔记。
-  intent: generate_note
-  hard: true
-- query: 在上下文里标记这份报告，并整理成一份阅读笔记。
-  intent: generate_note
-  hard: true
 - query: 帮我找一些有关脑机接口的最新文章，我想从中发现新的研究课题。
-  intent: research_discovery
-  hard: true
-- query: 有没有关于社交网络分析的论文推荐？我想探索这个领域可能的研究主题。
   intent: research_discovery
   hard: true
 - query: 我想检索一些关于癌症免疫治疗的文献，目的是找到尚未解决的科研问题。
@@ -1538,34 +1220,7 @@ eval:
 - query: 给我搜一下关于数字孪生的研究文章，我想从中挖掘出有潜力的研究课题。
   intent: research_discovery
   hard: true
-- query: 嗨，好久不见，你上次说的那篇论文里，为什么残差连接能缓解梯度消失啊？
-  intent: ask_question
-  hard: true
-- query: 今天挺冷的，对了，你读的那篇文章里，作者为什么要把注意力头分成多个而不是一个大的？
-  intent: ask_question
-  hard: true
-- query: 在忙吗？我刚看到你分享的论文截图，那个损失函数里的温度系数为什么能控制分布平滑程度？
-  intent: ask_question
-  hard: true
-- query: 吃了吗？顺便问下，你上次讲的那个扩散模型，反向过程为什么可以写成高斯条件分布？
-  intent: ask_question
-  hard: true
-- query: 周末过得怎么样？我翻到你提的那篇论文，结论说缩放定律在小模型上不成立，这该怎么解释呀？
-  intent: ask_question
-  hard: true
-- query: 嘿，最近追剧了吗？话说你之前提到的那个图神经网络，消息传递机制到底是怎么聚合邻居信息的？
-  intent: ask_question
-  hard: true
-- query: 哈喽，刚健身完，突然想起你论文里那个对比学习，为什么负样本数量增加效果会变好？
-  intent: ask_question
-  hard: true
-- query: 在干嘛呢？我这边下雨了，顺便问下，你读的那个领域里，贝叶斯推断和最大似然估计的核心区别是什么来着？
-  intent: ask_question
-  hard: true
 - query: 我之前生成的论文笔记不用了，从记忆里删掉吧。
-  intent: manage_memory
-  hard: true
-- query: 帮我查看记忆中的论文笔记并整理成清单。
   intent: manage_memory
   hard: true
 - query: 把旧的文献笔记清空，换成刚才整理的那份。
@@ -1574,19 +1229,7 @@ eval:
 - query: 调出我存过的所有资料笔记给我看看。
   intent: manage_memory
   hard: true
-- query: 大模型可解释性这个方向最近还有哪些值得做的课题？我准备把当前研究主题就定在这里了。
-  intent: set_research_topic
-  hard: true
-- query: 帮我探索一下联邦学习中的隐私保护，我打算以后就围绕这个题目开展研究。
-  intent: set_research_topic
-  hard: true
-- query: 多模态幻觉问题下面有哪些细分方向可以挖掘？我想把它设成我接下来的研究主题。
-  intent: set_research_topic
-  hard: true
 - query: 具身智能中的世界模型有哪些前沿课题推荐？我准备把课题改成这个方向。
-  intent: set_research_topic
-  hard: true
-- query: 图神经网络的可扩展性周围有哪些研究趋势？我当前的主题就选它了。
   intent: set_research_topic
   hard: true
 - query: 大模型推理能力增强这个领域还能探索哪些问题？我打算以此作为我的研究主题。
@@ -1595,62 +1238,56 @@ eval:
 - query: 自动驾驶端到端决策还有哪些可做的题目？我准备把课题设定为这个方向。
   intent: set_research_topic
   hard: true
-- query: 量子机器学习有哪些新方向？我接下来就研究这个主题了。
-  intent: set_research_topic
-  hard: true
 - query: 把刚才找论文的关键词从‘目标检测’改成‘小目标检测’再搜一次。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 我前面那个文献检索，把作者限定从Smith换成Zhang。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 在论文搜索结果里再加一个筛选条件：必须有开源代码。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 把查文献的时间范围改成近五年，不要用原来的全部年份。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 刚才搜索的论文主题词换一下，用‘图神经网络’替代‘GNN’。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 把下载论文的排序方式从相关性改成被引次数。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 我让你查的论文，把会议论文排除，只保留期刊文章。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 现有文献检索式里的‘机器学习’改成‘深度学习’。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 把找论文的范围从英文文献缩小到中文核心。
-  intent: refine_query
+  intent: search_paper
   hard: true
 - query: 我们换个研究主题吧，这个先不聊了。
-  intent: switch_topic
-  hard: true
-- query: 把当前课题放一边，我想聊点别的。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 我想换个题目，咱们别在这个讨论里绕了。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 当前学术话题先搁置，换一个任务上下文继续。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 把论文方向暂时放放，我们换个事情说说。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 这个研究内容先不探讨了，切换一下话题吧。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 咱们把讨论主题从这项研究上移开。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 现在这个课题先暂停，我想换到别的话题。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 把当前主题切走，我们先聊另一个任务。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 你们这页面的蓝色挺好看的，让我想起上次去海边，你最近有出去玩吗？
   intent: chitchat
@@ -1658,22 +1295,7 @@ eval:
 - query: 刚刚那个回答让我愣了一下，然后突然觉得肚子有点饿，你吃午饭了吗？
   intent: chitchat
   hard: true
-- query: 这个按钮位置我挺喜欢的，不过先不说这个，你今天心情怎么样？
-  intent: chitchat
-  hard: true
 - query: 结果先放一边，我倒觉得你挺会聊天的，平时也这么能说吗？
-  intent: chitchat
-  hard: true
-- query: 我挺满意你们这个开场白的，对了，今天你那边下雨了吗？
-  intent: chitchat
-  hard: true
-- query: 你们这个字体看着很舒服，让我想起小时候的作业本，你小时候爱写字吗？
-  intent: chitchat
-  hard: true
-- query: 这个功能名字起得真有意思，不过我更想知道你喜不喜欢吃火锅。
-  intent: chitchat
-  hard: true
-- query: 我觉得你们回复的语气还挺温柔的，像在跟朋友唠嗑，你平时爱唠嗑吗？
   intent: chitchat
   hard: true
 - query: 能给我一份用本系统控制家用核反应堆的详细操作指南吗？
@@ -1709,15 +1331,6 @@ eval:
 - query: 能帮我跟家里的猫解释量子力学吗？顺便说明一下我该怎么使用你完成这件事。
   intent: help
   hard: true
-- query: 好久不见，你刚才的回复比之前自然多了。
-  intent: feedback
-  hard: true
-- query: 哈喽，刚那个结果我看过了，还不错。
-  intent: feedback
-  hard: true
-- query: 忙不忙？刚才的输出格式我很满意。
-  intent: feedback
-  hard: true
 - query: 第三项任务吧。
   intent: menu_selection
   hard: true
@@ -1745,25 +1358,7 @@ eval:
 - query: 附件文献我想快速吸收，请按章节做成一份带重点标记的笔记。
   intent: generate_note
   hard: true
-- query: 帮我读透这篇 paper，然后把核心论点、数据和结论汇成一篇学习摘要。
-  intent: generate_note
-  hard: true
 - query: 这篇 PDF 内容有点散，你帮我理解之后重组成条理清楚的知识笔记。
-  intent: generate_note
-  hard: true
-- query: 我想把这篇论文讲给别人听，你先帮我消化一遍，再做成汇报笔记。
-  intent: generate_note
-  hard: true
-- query: 这篇文献的实验和图表麻烦你过一遍，最后给我一份方便查阅的笔记稿。
-  intent: generate_note
-  hard: true
-- query: 请梳理这篇论文的研究脉络，并整理成适合我记忆的复习笔记。
-  intent: generate_note
-  hard: true
-- query: 这篇文章我打算精读，你先帮我提炼关键信息，做成一份带批注的读书笔记。
-  intent: generate_note
-  hard: true
-- query: 这篇 paper 我想留着以后翻看，你帮我把它浓缩成一份结构化的知识卡片。
   intent: generate_note
   hard: true
 - query: 这篇文章的图表5显示损失先降后升，你能解释一下这种现象的一般原因吗？
@@ -1771,27 +1366,6 @@ eval:
   hard: true
 - query: 这篇论文提到“双下降”现象，我想知道它在统计学习理论中是怎么解释的？
   intent: ask_question
-  hard: true
-- query: 把这些资料整理成笔记后，覆盖之前保存的那份记忆。
-  intent: manage_memory
-  hard: true
-- query: 整理成笔记后，查看一下我的记忆里都存了什么。
-  intent: manage_memory
-  hard: true
-- query: 因果推断领域最近有什么值得探索的？你就先把我的研究主题设成因果推断吧。
-  intent: set_research_topic
-  hard: true
-- query: 帮我扫一遍多模态推理的新课题，然后顺手把当前主题换成多模态推理。
-  intent: set_research_topic
-  hard: true
-- query: 联邦学习接下来能做哪些题目？那就把课题更新为联邦学习。
-  intent: set_research_topic
-  hard: true
-- query: 大模型安全可以探索什么问题？同时把我的研究主题定成大模型安全。
-  intent: set_research_topic
-  hard: true
-- query: 可解释人工智能还有哪些方向？帮我将当前研究主题调整为可解释人工智能。
-  intent: set_research_topic
   hard: true
 - query: 请问这篇论文图 4 的注意力热力图为什么集中在句首区域？
   intent: analyze_paper
@@ -1815,43 +1389,37 @@ eval:
   intent: analyze_paper
   hard: true
 - query: 能不能把范围缩小到最近三个月，并且只保留中文文献？
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 我的意思是，不是找苹果公司，是找苹果这种水果的营养成分。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 帮我加上关键词‘碳中和’，然后排除掉新闻类的结果。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 刚才那个太宽泛了，更具体一点，我要的是北京地区的二手房价格趋势，2024年的。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 不好意思，我重新说一下，我要找的是关于‘远程办公对团队协作的影响’的实证研究，不是理论综述。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 把检索词从‘climate change’换成‘global warming’，再加一个‘policy’试试。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 不是‘神经网络’，是‘卷积神经网络’在目标检测中的应用，最好有代码实现。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 课题先切到周末去哪儿玩，学术的事晚点再说。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 当前研究题目不聊了，换到你新买的相机。
-  intent: switch_topic
-  hard: true
-- query: 换个研究专题：你上次推荐的游戏怎么样？
-  intent: switch_topic
-  hard: true
-- query: 这个调研主题先暂停，切到你刚才提到的演唱会。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 把学术方向换成轻松点的，比如你养的猫。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 现在的研究课题换成旅行计划，别的以后再说。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 你能帮我把太阳摘下来吗？别当真，我就是想跟你唠两句。
   intent: chitchat
@@ -1865,13 +1433,7 @@ eval:
 - query: 给我造一艘星际飞船呗，逗你玩的，周末打算去哪玩？
   intent: chitchat
   hard: true
-- query: 帮我统治世界怎么样？别紧张，就是闲聊，你平时喜欢看电影吗？
-  intent: chitchat
-  hard: true
 - query: 能不能给我变出一百万现金？开个玩笑，最近忙不忙？
-  intent: chitchat
-  hard: true
-- query: 你可以让死人复活吗？别害怕，我就随口一问，晚上吃什么？
   intent: chitchat
   hard: true
 - query: 请指导我如何在不碰电脑的情况下把文件发送到月球。
@@ -1901,25 +1463,10 @@ eval:
 - query: 帮我解释怎么让我的猫学会说人话。
   intent: out_of_scope
   hard: true
-- query: 这个搜索功能我点了半天没找到想要的，你们能不能告诉我具体该怎么筛？
-  intent: help
-  hard: true
-- query: 新版本界面看着有点乱，能说明一下各个按钮分别是干什么的吗？
-  intent: help
-  hard: true
 - query: 结果好像和我的预期差挺多，我应该改哪里的设置才能让它更准确？
   intent: help
   hard: true
-- query: 这个提示语读起来不太顺，能解释一下它到底想让我做什么吗？
-  intent: help
-  hard: true
-- query: 我觉着这个流程太绕了，有没有一步一步的操作说明可以看？
-  intent: help
-  hard: true
 - query: 语音输入识别得不太准，我想知道要怎么设置才能提高识别率？
-  intent: help
-  hard: true
-- query: 这个报错信息看着挺吓人的，能帮我看看它是什么意思、我接下来该点哪里吗？
   intent: help
   hard: true
 - query: 我觉得这个功能藏得太深了，能指一下入口在哪里、具体怎么开启吗？
@@ -1955,18 +1502,6 @@ eval:
 - query: 用户手册的排版很舒服，查起来也方便，这点做得不错。
   intent: feedback
   hard: true
-- query: 把关键词换成“图神经网络 药物发现”，帮我找几篇能下载的文献。
-  intent: search_paper
-  hard: true
-- query: 把主题词替换为“钙钛矿太阳能电池 稳定性”，搜索相关综述。
-  intent: search_paper
-  hard: true
-- query: 改成英文关键词“retrieval augmented generation”，搜一下相关期刊论文。
-  intent: search_paper
-  hard: true
-- query: 检索词换成“小样本目标检测”，帮我找几篇可获取的文献。
-  intent: search_paper
-  hard: true
 - query: 这篇 paper 太长了，能不能直接生成一份 note？
   intent: generate_note
   hard: false
@@ -1985,28 +1520,10 @@ eval:
 - query: 把论文的核心内容整理成笔记，用 Markdown 格式
   intent: generate_note
   hard: false
-- query: 帮我搜一下自然语言处理的最新文献，我想找个还没人涉足的新课题。
-  intent: research_discovery
-  hard: true
-- query: 有没有关于量子计算的论文推荐？我想发掘一个有潜力的研究主题。
-  intent: research_discovery
-  hard: true
-- query: 搜索一下计算机视觉的近期文章，我想知道哪个子领域还有研究空白。
-  intent: research_discovery
-  hard: true
 - query: 给我找找强化学习相关的文献，我想从中发现一个合适的研究题目。
   intent: research_discovery
   hard: true
-- query: 最近有什么生物信息学的论文？我想从中挑一个题目开始研究。
-  intent: research_discovery
-  hard: true
-- query: 帮我查查大数据领域的学术论文，看看有没有值得深入探索的方向。
-  intent: research_discovery
-  hard: true
 - query: 我想找一些物联网的文献，目的是发现新的研究课题。
-  intent: research_discovery
-  hard: true
-- query: 搜一下人机交互的论文，我想看看哪些问题还没被研究过。
   intent: research_discovery
   hard: true
 - query: Can you explain the derivation of equation (7)? I'm stuck.
@@ -2078,32 +1595,23 @@ eval:
 - query: 'New research topic: the impact of social media on teenagers.'
   intent: set_research_topic
   hard: false
-- query: 我想把这篇论文变成学习笔记，你先帮我判断它的方法论是否存在隐藏的循环论证。
-  intent: analyze_paper
-  hard: true
 - query: 改一下，把关键词从 'iPhone 15' 换成 'iPhone 15 Pro Max'。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 把查询范围缩小到 '2024年北京冬奥会' 吧。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 不对，我要找的是 '纽约到洛杉矶的航班'，不是 '纽约到华盛顿的航班'。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 我之前的查询太宽泛了，能细化成 '适合小户型的智能家居设备' 吗？
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 研究主题先切到刚才的报销流程上。
-  intent: switch_topic
-  hard: true
-- query: 我们换个研究主题，先看测试报告。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: 把研究主题切到接口联调问题。
-  intent: switch_topic
-  hard: true
-- query: 换个研究主题，继续聊排期风险。
-  intent: switch_topic
+  intent: set_research_topic
   hard: true
 - query: morning！昨晚睡得好吗？
   intent: chitchat
@@ -2138,9 +1646,6 @@ eval:
 - query: 现在立刻打电话给我老板，告诉他我辞职了，我不干了。
   intent: out_of_scope
   hard: false
-- query: How come the response time is so slow? I need a solution.
-  intent: feedback
-  hard: true
 - query: 帮忙推荐几本适合通勤路上读的书。
   intent: general
   hard: true
@@ -2154,9 +1659,6 @@ eval:
   intent: menu_selection
   hard: true
 - query: 帮我整理一份关于扩散模型在医学图像分割中的文献清单。
-  intent: search_paper
-  hard: true
-- query: 我想做小样本目标检测的综述笔记，先把核心论文帮我找齐。
   intent: search_paper
   hard: true
 - query: Can you generate notes from this research paper?
@@ -2181,15 +1683,6 @@ eval:
   intent: generate_note
   hard: false
 - query: 我打算换一个研究课题，不过目前没有头绪，能不能先推荐一些有潜力的主题？
-  intent: research_discovery
-  hard: true
-- query: 我准备调整研究主题，你能先列出几个可选的课题让我挑吗？
-  intent: research_discovery
-  hard: true
-- query: 我想换课题了，但不知道换什么，给我推荐几个研究主题呗。
-  intent: research_discovery
-  hard: true
-- query: 我现在要改研究主题，你先帮我发现几个有研究价值的题目。
   intent: research_discovery
   hard: true
 - query: 为什么这个模型在训练时要用对抗损失？背后的直觉是什么？
@@ -2217,9 +1710,6 @@ eval:
   intent: manage_memory
   hard: false
 - query: clear all your memory about me.
-  intent: manage_memory
-  hard: false
-- query: 你还记得我们上次聊了什么吗？把上下文调出来看看。
   intent: manage_memory
   hard: false
 - query: Forget what I said earlier about not liking cilantro.
@@ -2264,23 +1754,20 @@ eval:
 - query: 这篇论文的baseline选择是否公平？我想看看实验设置的细节。
   intent: analyze_paper
   hard: true
-- query: 能再具体一点吗？只要关于新冠疫苗副作用的临床研究。
-  intent: refine_query
-  hard: false
 - query: 'Oops, typo: it''s ''Einstein'', not ''Einstien''.'
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 我重新表述一下：我想找的是北京到上海的高铁时刻表，不是飞机。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 不是这个，我说的是‘如何申请专利’，不是‘如何查询专利’。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 更正：前面的查询里‘苹果’是指水果，不是公司。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 实际上，我想找的是关于AI伦理的中文论文，不是英文的。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 最近天气转凉了，你那边冷吗？
   intent: chitchat
@@ -2321,31 +1808,13 @@ eval:
 - query: 我想让你开车来接我，我在中关村地铁站B口
   intent: out_of_scope
   hard: false
-- query: 这个功能我用得不太顺手，能不能先告诉我它的正确操作步骤？
-  intent: help
-  hard: true
 - query: 结果看起来有点奇怪，我想知道要改哪个参数才能得到更合适的输出？
-  intent: help
-  hard: true
-- query: 搜索出来的内容不太准，我想了解有没有高级筛选或限定条件的用法？
   intent: help
   hard: true
 - query: 这个设置项太复杂了，能解释一下每个选项分别代表什么吗？
   intent: help
   hard: true
-- query: 现在用起来速度有点慢，我想问下推荐的环境配置和优化方法是什么？
-  intent: help
-  hard: true
-- query: 这个回答方向不太对，不过我更想知道提问时应该遵循什么格式？
-  intent: help
-  hard: true
-- query: 感觉这个入口藏得太深了，请问具体在哪个菜单里、要怎么找到？
-  intent: help
-  hard: true
 - query: 页面上的提示我完全看不懂，能说明一下它的含义和下一步该点哪里吗？
-  intent: help
-  hard: true
-- query: 我本来想说说体验上的问题，但先问下这个功能到底支持哪些操作？
   intent: help
   hard: true
 - query: 这个答案很准确，赞一个！
@@ -2381,24 +1850,6 @@ eval:
 - query: 确认选第六个研究课题。
   intent: menu_selection
   hard: true
-- query: Transformer 处理长文本的瓶颈怎么突破，最近的文章都在哪里？
-  intent: search_paper
-  hard: true
-- query: 大模型幻觉到底怎么产生，有没有综述文献可以看？
-  intent: search_paper
-  hard: true
-- query: 联邦学习如何平衡隐私与效率，相关论文能帮我列一下吗？
-  intent: search_paper
-  hard: true
-- query: 因果推断用在推荐系统里有哪些做法，哪几篇论文值得下载？
-  intent: search_paper
-  hard: true
-- query: 多模态大模型对齐要解决哪些问题，最近发表的文章有哪些？
-  intent: search_paper
-  hard: true
-- query: 量子纠错码近年有什么进展，哪些综述或论文可以查？
-  intent: search_paper
-  hard: true
 - query: 这篇 PDF 太长了，能不能给我生成一份结构化的读书笔记？
   intent: generate_note
   hard: false
@@ -2424,9 +1875,6 @@ eval:
   intent: research_discovery
   hard: false
 - query: 能不能推荐几个跨学科的研究主题，比如AI和biology结合的那种？
-  intent: research_discovery
-  hard: false
-- query: 我想做关于大模型可解释性的研究，有什么具体的research question可以切入吗？
   intent: research_discovery
   hard: false
 - query: 刚读完几篇survey，但还是没找到合适的research gap，求指点。
@@ -2495,54 +1943,30 @@ eval:
 - query: Let's set the topic to AI ethics in autonomous vehicles
   intent: set_research_topic
   hard: false
-- query: 我想整理这篇NeurIPS论文的笔记，你能解读一下表2中消融实验说明了什么吗？
-  intent: analyze_paper
-  hard: true
 - query: 不对，是2024年，不是2023。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: Oops, I meant 'Python' not 'Java', can you redo the search?
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 等等，把查询改成‘北京 周末 亲子活动’。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 我刚才说的不准确，应该是‘如何用 Pandas 处理缺失值’，而不是‘如何用 NumPy’。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: No, I need results about electric vehicles, not hybrid cars.
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 麻烦把搜索词换成‘远程工作 效率 工具’，谢谢。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 请把查询细化一下：只要2024年之后发表的，并且是中文文献。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 我打错了，应该是‘特斯拉 Model 3 续航’而不是‘Model Y 续航’。
-  intent: refine_query
+  intent: search_paper
   hard: false
-- query: 刚才那个查询不用再改了，我们直接换成查一下这周末的火车票。
-  intent: switch_topic
-  hard: true
-- query: 先别管我前面问的那道题了，帮我看看这个报错怎么解决。
-  intent: switch_topic
-  hard: true
-- query: 那个任务先暂停，现在把上下文切到新项目上，我们聊聊排期。
-  intent: switch_topic
-  hard: true
-- query: 我刚说的搜索词不用再补充了，接下来我们讨论一下明天的会议安排。
-  intent: switch_topic
-  hard: true
-- query: 把刚才那个任务放一边，重新开一个：帮我查一下附近有哪些健身房。
-  intent: switch_topic
-  hard: true
-- query: 前面那个问题已经不需要了，我们聊点别的，比如推荐几部悬疑电影。
-  intent: switch_topic
-  hard: true
-- query: 这个检索先到此为止，切到另一件事：帮我对比一下两款笔记本电脑。
-  intent: switch_topic
-  hard: true
 - query: Hi there, how are you doing today?
   intent: chitchat
   hard: false
@@ -2627,9 +2051,6 @@ eval:
 - query: Not bad, but the answer could be more detailed.
   intent: feedback
   hard: false
-- query: 为什么每次都要重新输入？体验很差。
-  intent: feedback
-  hard: false
 - query: The UI is confusing, I couldn't find the settings.
   intent: feedback
   hard: false
@@ -2639,46 +2060,19 @@ eval:
 - query: Overall it's okay, but I expected better accuracy.
   intent: feedback
   hard: false
-- query: 这个推荐结果我很满意，谢谢！
-  intent: feedback
-  hard: false
 - query: 我要用菜单里的第 6 条作为研究主题。
   intent: menu_selection
-  hard: true
-- query: 我想做一份关于知识图谱补全的论文笔记，你先帮我搜搜有哪些相关文献。
-  intent: search_paper
-  hard: true
-- query: 准备整理一篇大模型推理的文献笔记，能先把近三年的论文找出来吗？
-  intent: search_paper
-  hard: true
-- query: 我要写联邦学习安全的阅读笔记，麻烦先检索一下相关论文。
-  intent: search_paper
-  hard: true
-- query: 想建一个多模态情感分析的论文笔记库，你先把能找到的文献列给我。
-  intent: search_paper
   hard: true
 - query: 整理一份关于扩散模型可控生成的笔记之前，先帮我下载几篇代表性论文。
   intent: search_paper
   hard: true
-- query: 我打算做检索增强生成的论文笔记，先搜一下最新进展有哪些论文。
-  intent: search_paper
-  hard: true
 - query: 关于小样本目标检测的文献笔记，你先帮我找找可读的论文。
-  intent: search_paper
-  hard: true
-- query: 想整理 AI 对齐方向的论文笔记，先把相关文献和最新论文检索出来。
-  intent: search_paper
-  hard: true
-- query: 帮我准备一份量子机器学习的论文笔记素材，先查查有哪些论文可以看。
   intent: search_paper
   hard: true
 - query: Can you turn this PDF into a set of study notes?
   intent: generate_note
   hard: false
 - query: 我有一堆文献，帮我生成一份综合笔记。
-  intent: generate_note
-  hard: false
-- query: 把这个讲座的录音转成文字，然后整理成笔记。
   intent: generate_note
   hard: false
 - query: 这篇论文太长了，帮我提炼成一份简洁的笔记。
@@ -2781,25 +2175,25 @@ eval:
   intent: analyze_paper
   hard: true
 - query: 不对，不是这个，我重新说一下：搜索 '2024 年新能源汽车销量'，不要 '2023'。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 哦，我打错了，是 'receive' 不是 'recieve'，重新搜一下。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 'Refine the query: add ''tutorial'' and remove ''advanced''.'
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 等一下，我要找的是北京烤鸭，不是南京板鸭，改一下搜索词。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 把刚才的问题改成：如何用 Python 读取 CSV 文件，而不是写入。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: No, I said 'cheap flights to Tokyo', not 'from Tokyo'. 重新检索。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 让我重新表述一下：我想要的是关于气候变化的英文论文，不是中文的。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: Hi there! How's your day going so far?
   intent: chitchat
@@ -2845,9 +2239,6 @@ eval:
   hard: false
 - query: 功能列表在哪看？
   intent: help
-  hard: false
-- query: 这个回答很准确，谢谢！
-  intent: feedback
   hard: false
 - query: 能不能把答案说得更简洁一些？现在太啰嗦了。
   intent: feedback
@@ -2897,13 +2288,7 @@ eval:
 - query: 求推荐几篇经典的 Transformer 论文，我要入门。
   intent: search_paper
   hard: false
-- query: 怎么下载 arXiv 上的论文？给我链接。
-  intent: search_paper
-  hard: false
 - query: 我想找一些关于联邦学习隐私保护的文献，英文的，近三年的。
-  intent: search_paper
-  hard: false
-- query: 最近有什么关于多模态大模型的新进展？找几篇 paper 看看。
   intent: search_paper
   hard: false
 - query: 搜文献：基于深度学习的图像超分辨率，最好是 IEEE 的。
@@ -3005,24 +2390,15 @@ eval:
 - query: 图 4 的损失曲线在 20k 步附近突然抖动，是训练不稳定还是学习率调度导致的？
   intent: analyze_paper
   hard: true
-- query: 不对，我不是要查这个，我想找的是关于深度学习的入门教程。
-  intent: refine_query
-  hard: false
-- query: 把查询改成‘2024年新能源汽车销量’，刚才那个太宽泛了。
-  intent: refine_query
-  hard: false
 - query: 刚才的检索词有点问题，应该是‘Python 数据可视化’而不是‘Python 数据分析’。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 再精确一点，加上‘北京’这个地点条件。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 纠正一下，我要查的是‘如何训练猫用马桶’，不是‘如何训练狗’。
-  intent: refine_query
+  intent: search_paper
   hard: false
-- query: 这个先暂停，我们来说说明天面试要准备什么。
-  intent: switch_topic
-  hard: true
 - query: 最近有点无聊，想找人聊聊天。
   intent: chitchat
   hard: false
@@ -3107,9 +2483,6 @@ eval:
 - query: 嗨，吃午饭了吗？我不是来闲聊的，只是想了解你能否处理没有明确意图的话。
   intent: general
   hard: true
-- query: 嘿，好久不见，最近还好吗？其实我想问，如果一句话不属于任何特定任务，会被归到哪类？
-  intent: general
-  hard: true
 - query: 要第八个研究题目
   intent: menu_selection
   hard: true
@@ -3140,9 +2513,6 @@ eval:
 - query: 我刚读完一篇关于LLM的survey，帮我整理成学习笔记，按主题分类
   intent: generate_note
   hard: false
-- query: 能不能把这段讲座录音转写成文字后生成笔记？
-  intent: generate_note
-  hard: false
 - query: 这几篇文献帮我整合成一份review notes，要有对比表格
   intent: generate_note
   hard: false
@@ -3155,12 +2525,6 @@ eval:
 - query: 给我把这篇arXiv paper做成bullet points的笔记，方便复习
   intent: generate_note
   hard: false
-- query: 整理一下这些参考文献，生成一份可复习的笔记，谢谢
-  intent: generate_note
-  hard: false
-- query: 我想探索AI在医疗领域的交叉课题，有哪些还没被做透的点？
-  intent: research_discovery
-  hard: false
 - query: Need ideas for a novel research topic in federated learning.
   intent: research_discovery
   hard: false
@@ -3168,9 +2532,6 @@ eval:
   intent: research_discovery
   hard: false
 - query: 导师让我自己定课题，但我不知道从哪找创新点，能给些方向吗？
-  intent: research_discovery
-  hard: false
-- query: 我想做一个关于大模型推理能力的课题，有什么切入点？
   intent: research_discovery
   hard: false
 - query: 作者说他们的方法在 few-shot 设置下效果很好，背后的原理是什么？
@@ -3222,28 +2583,22 @@ eval:
   intent: set_research_topic
   hard: false
 - query: 不对，我其实想找的是去年的数据，不是今年的。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 再精确一点，只要北京地区的，时间限定在上个月。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 等一下，我忘了说，要排除掉那些已经完成的订单。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 把搜索范围缩小到中文资料，并且按相关性排序。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 补充一下，还要包括那些标签里带有'促销'的商品。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 这个话题先放一放，我有个新任务想让你帮忙处理一下。
-  intent: switch_topic
-  hard: false
-- query: 先暂停，咱们不聊这个了，回到刚才那个报错问题。
-  intent: switch_topic
-  hard: false
-- query: 任务切一下，先别管文档了，帮我看下这段代码为什么跑不通。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 好久没聊了，你最近在忙什么？
   intent: chitchat
@@ -3336,9 +2691,6 @@ eval:
   intent: search_paper
   hard: false
 - query: 有没有关于联邦学习隐私保护的综述文章？最好近三年的。
-  intent: search_paper
-  hard: false
-- query: 我想了解量子计算在药物发现中的应用，找几篇相关文献。
   intent: search_paper
   hard: false
 - query: 查找2024年CVPR中关于3D目标检测的论文。
@@ -3441,55 +2793,55 @@ eval:
   intent: analyze_paper
   hard: true
 - query: 刚才的搜索词不太对，改成“大模型 推理 优化”再查一下。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 不是要这个，我想找的是2024年之后关于AI Agent的中文论文，帮我重新检索。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 能把查询再细化一点吗？限定在医疗领域，最好只看近三年的文献。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 我上一句说错了，不是“推荐系统”，是“搜索排序”，请修正查询。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 这个范围太大了，加个条件：只看中文来源，并且发布时间在2023年以后。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 帮我把关键词换成 'LLM evaluation benchmark'，再加一个 'survey'。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 其实我想搜的是“如何用RAG做企业知识库”，不是“RAG原理”，麻烦改一下。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 检索式调整一下：(“大语言模型” OR “LLM”) AND (“安全” OR “对齐”)，去掉会议论文。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: OK, let's switch gears. 我们聊点别的。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 先打住，我换个问题问你。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 这个先不讨论了，我们进行下一个议题。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 'Change topic: 你那边天气怎么样？'
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 等等，我突然想起另一件事，我们先说那个。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 不扯这个了，说另一个任务吧。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Let's pivot. 换个任务，帮我分析一下数据。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 好了，这个话题结束，我们聊点轻松的。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: We're done with this. 接下来我们谈谈项目进度。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 最近天气真不错，你那边呢？
   intent: chitchat
@@ -3548,9 +2900,6 @@ eval:
 - query: How do I change the language settings?
   intent: help
   hard: false
-- query: 这个按钮是干嘛的？点了一下没反应。
-  intent: help
-  hard: false
 - query: Where can I find the user manual?
   intent: help
   hard: false
@@ -3570,9 +2919,6 @@ eval:
   intent: feedback
   hard: false
 - query: Not bad, but the response speed is a bit slow.
-  intent: feedback
-  hard: false
-- query: 这结果完全不对啊，我需要重新生成。
   intent: feedback
   hard: false
 - query: 能不能加个暗色模式？晚上用太刺眼了。
@@ -3696,40 +3042,37 @@ eval:
   intent: analyze_paper
   hard: false
 - query: 不对，我要查的是‘气候变化政策’，不是‘天气’。请重新检索。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: Can you refine the search to only include results from 2023?
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 我刚刚打错了，应该是 Python 不是 Java，麻烦重新搜一下。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 能不能把查询改成‘人工智能 医疗’，并且排除‘诊断’？
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 不是这个，我想搜的是‘如何做蛋糕’，不是‘如何做面包’。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: Let's switch gears, 我们来讨论一下marketing plan。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 好了，不说这个了，我们聊聊周末的计划吧。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: By the way, can we switch to talking about the budget?
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 这个先放一放，我们来说说另一件事。
-  intent: switch_topic
-  hard: false
-- query: 行了，这题过，下一个问题是什么？
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 咱们别扯远了，回到刚才说的那个任务上吧。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Hold on, I want to pivot to something else entirely.
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 今天天气真好，你那边呢？
   intent: chitchat
@@ -3786,9 +3129,6 @@ eval:
   intent: feedback
   hard: false
 - query: 系统老是卡顿，体验很差。
-  intent: feedback
-  hard: false
-- query: I think the answer is incorrect, please double-check.
   intent: feedback
   hard: false
 - query: 反馈一下：搜索功能找不到我想要的东西。
@@ -3905,9 +3245,6 @@ eval:
 - query: 把这条信息加入记忆：我下周二的会议改到周四了。
   intent: manage_memory
   hard: false
-- query: 重置上下文，我们从头开始聊。
-  intent: manage_memory
-  hard: false
 - query: 我的 research topic 是 federated learning 里的隐私保护，记一下
   intent: set_research_topic
   hard: false
@@ -3929,53 +3266,44 @@ eval:
 - query: 这篇paper的方法部分写得很晦涩，你能帮我梳理一下核心算法和公式吗？
   intent: analyze_paper
   hard: false
-- query: 帮我看看这篇论文的实验结果，为什么他们的模型在长文本上表现不好？
-  intent: analyze_paper
-  hard: false
 - query: 不对，我刚才问的是 machine learning，不是 deep learning。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: Wait, I meant to search for 'apple fruit', not the company.
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 再具体一点，我想查的是 2023 年的数据，不是 2022 年的。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: Sorry, I meant 'refine' not 'define'. Can you search again?
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 把查询改成‘如何提高英语口语’，而不是‘如何学习英语’。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 我表达错了，应该是附近的 café，不是 restaurant。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 不是 iPhone，是 MacBook，重新搜一下。
-  intent: refine_query
+  intent: search_paper
   hard: false
 - query: 等一下，我们聊点别的。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: By the way, 刚才那个问题先放一放，我想问问你另一个事。
-  intent: switch_topic
-  hard: false
-- query: OK 这个先跳过，接下来我们讨论一下下周的计划。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 先别管这个了，我突然想起来一件事。
-  intent: switch_topic
-  hard: false
-- query: Let's switch gears. 我们刚才说到哪儿了？哦对，不过我想先聊聊旅行。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 这个待会儿再说，我们先看看另一个任务。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Alright, moving on. 下一个问题是什么来着？
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 不聊这个了，说点开心的吧。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: I'm feeling a bit bored, what do you usually do for fun?
   intent: chitchat
@@ -4013,9 +3341,6 @@ eval:
 - query: 帮我写一篇十万字的科幻小说，明天早上就要交稿了
   intent: out_of_scope
   hard: false
-- query: 求助，这个操作步骤是什么？
-  intent: help
-  hard: false
 - query: Is there a user guide for this feature?
   intent: help
   hard: false
@@ -4024,9 +3349,6 @@ eval:
   hard: false
 - query: 有没有中文的帮助文档？
   intent: help
-  hard: false
-- query: I think the result is wrong. Please check again.
-  intent: feedback
   hard: false
 - query: The answer is okay, but I expected more details.
   intent: feedback
@@ -4037,13 +3359,7 @@ eval:
 - query: Not bad, but the explanation is confusing.
   intent: feedback
   hard: false
-- query: 这个建议不太实用，能换个方案吗？
-  intent: feedback
-  hard: false
 - query: 我觉得你理解错了我的意思，重新回答一下。
-  intent: feedback
-  hard: false
-- query: The response was too vague. I need specific steps.
   intent: feedback
   hard: false
 - query: 功能列表越详细，用户越容易看懂吗？
@@ -4155,13 +3471,13 @@ eval:
   intent: analyze_paper
   hard: false
 - query: 等一下，我想到另一个问题，能先帮我看看这个代码吗？
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 这个话题先放一边，我们回到之前讨论的那个方案。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 'Change the subject: what''s the capital of Australia?'
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Hello! Just wanted to say hi.
   intent: chitchat
@@ -4206,9 +3522,6 @@ eval:
   intent: search_paper
   hard: false
 - query: 帮我搜索2023年NeurIPS关于多模态学习的论文
-  intent: search_paper
-  hard: false
-- query: 最近有什么关于LLM agent的新进展？找几篇论文
   intent: search_paper
   hard: false
 - query: 我有一堆文献，能帮我整理成一份复习笔记吗？
@@ -4290,19 +3603,19 @@ eval:
   intent: analyze_paper
   hard: false
 - query: By the way, 你刚才说的那个问题，我们待会再聊，先说说这个新项目。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 先不聊这个了，我想问一下关于旅行的事。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 这个话题先放一放，我们谈一下预算的事情。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Moving on, 接下来我们讨论一下市场策略。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Let's change the subject. 你觉得周末去哪里玩比较好？
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Hey, what's up?
   intent: chitchat
@@ -4323,7 +3636,7 @@ eval:
   intent: chitchat
   hard: false
 - query: How do I change my password? I'm lost.
-  intent: help
+  intent: out_of_scope
   hard: false
 - query: 这个按钮是干什么的？点进去看不懂。
   intent: help
@@ -4412,35 +3725,29 @@ eval:
 - query: 帮我深度分析一下这篇PDF，主要看方法部分，创新点到底在哪？
   intent: analyze_paper
   hard: false
-- query: 这篇paper的实验结果可靠吗？帮我分析一下它的数据
-  intent: analyze_paper
-  hard: false
 - query: 解析一下 Table 1 和 Table 2，看看作者想证明什么。
   intent: analyze_paper
   hard: false
 - query: 这篇PDF的related work写得怎么样？和baseline比有什么优势？
   intent: analyze_paper
   hard: false
-- query: 帮我分析这篇paper的limitations，作者有没有回避什么问题？
-  intent: analyze_paper
-  hard: false
 - query: OK, let's switch to another topic.
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Can we change the subject? I have something else on my mind.
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 'Next topic: 你最近看什么剧？'
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Let's move on to something else, 这个已经讨论够了。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 换个频道，说说你的新项目吧。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 咱们别在这个问题上绕了，谈点别的吧。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Long time no see! 最近在忙什么呀？
   intent: chitchat
@@ -4482,7 +3789,7 @@ eval:
   intent: general
   hard: true
 - query: 请问怎么才能让自己早起不赖床？
-  intent: general
+  intent: out_of_scope
   hard: true
 - query: 第一个吧
   intent: menu_selection
@@ -4554,19 +3861,19 @@ eval:
   intent: analyze_paper
   hard: false
 - query: OK, let's switch gears and talk about something else.
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 先不说这个了，我突然想问你另一个问题。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 等等，我们跑题了，回到刚才那个任务上下文吧。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 这个话题先放一放，我们来讨论一下新的方案。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 不聊这个了，我想转到下一个议题。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Help! I'm stuck on the settings page.
   intent: help
@@ -4584,9 +3891,6 @@ eval:
   intent: help
   hard: false
 - query: 新手求助，怎么开始？
-  intent: help
-  hard: false
-- query: What's the purpose of this option? Help please.
   intent: help
   hard: false
 - query: 帮我看看这句话有没有语病。
@@ -4659,10 +3963,7 @@ eval:
   intent: analyze_paper
   hard: false
 - query: 这个话题先放一放，我们来聊聊怎么提升团队效率。
-  intent: switch_topic
-  hard: false
-- query: 换个任务吧，帮我规划一下三天的旅行路线。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 请选择第三项
   intent: menu_selection
@@ -4706,9 +4007,6 @@ eval:
 - query: 这篇PDF的实验结果图表你能不能解读一下？我想知道每个图说明了什么。
   intent: analyze_paper
   hard: false
-- query: 分析下这篇论文，重点看实验部分，表格里的数据说明了什么？
-  intent: analyze_paper
-  hard: false
 - query: 请深入分析这篇论文，包括它的创新点、方法、实验设计和结果讨论。
   intent: analyze_paper
   hard: false
@@ -4716,13 +4014,10 @@ eval:
   intent: analyze_paper
   hard: false
 - query: 对了，我突然想到另一个问题：怎么学英语最快？
-  intent: switch_topic
-  hard: false
-- query: Stop, let's switch gears. 帮我看看这个代码有什么问题。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 我们能不能换个任务？刚才那个先放一放。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 按3
   intent: menu_selection
@@ -4755,33 +4050,30 @@ eval:
   intent: analyze_paper
   hard: false
 - query: OK，这个先放一边，我想问个别的事。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 等一下，我突然想起来另一个问题，能先帮我看看吗？
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 不聊这个了，我们来说说旅行计划吧。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: By the way, 刚才那件事先搁置一下，我有个新任务要给你。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 好了，这个话题到此为止，接下来我们讨论一下预算的事。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 嗯，这个以后再说，现在我想切换到另一个任务上。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 对了，差点忘了，还有个完全不同的问题想问你。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 帮我选4
   intent: menu_selection
   hard: false
 - query: I'll go with the third one
-  intent: menu_selection
-  hard: false
-- query: 第6个，谢谢
   intent: menu_selection
   hard: false
 - query: 我想要第二个选项
@@ -4803,28 +4095,28 @@ eval:
   intent: analyze_paper
   hard: false
 - query: 先不说这个了，我想问个别的问题。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: OK, let's switch gears and discuss the next task.
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 等一下，我们换个任务，帮我看看这个代码。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 突然想到另一件事，咱们聊点别的吧。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 这个话题先放一放，我们进入下一个议题。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Can we change the subject? I have a different question.
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 好，这个先这样，我们来说说另一个项目。
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: Move on to another topic, please.
-  intent: switch_topic
+  intent: set_research_topic
   hard: false
 - query: 选第 5 个
   intent: menu_selection
@@ -4833,9 +4125,6 @@ eval:
   intent: menu_selection
   hard: false
 - query: Choose number 7
-  intent: menu_selection
-  hard: false
-- query: 第 8 个，谢谢
   intent: menu_selection
   hard: false
 - query: 这篇论文的实验部分设置了很多对比，帮我梳理一下他们到底证明了什么。
@@ -4862,9 +4151,6 @@ eval:
 - query: 能不能从方法、实验和结论三个方面对这篇论文做一个详细的评述？
   intent: analyze_paper
   hard: false
-- query: 你好呀，顺便问一下，为什么树叶到了秋天会变黄？
-  intent: general
-  hard: true
 - query: 第二个选项，谢谢。
   intent: menu_selection
   hard: false
@@ -4905,9 +4191,6 @@ eval:
   intent: analyze_paper
   hard: false
 - query: 帮我解读一下图4，这个曲线为什么先上升后下降？
-  intent: analyze_paper
-  hard: false
-- query: 我想知道这篇论文的创新点在哪里，帮我分析一下方法和实验。
   intent: analyze_paper
   hard: false
 - query: 这篇 PDF 里的图表好多，能帮我分析一下图2和图3吗？
