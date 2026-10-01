@@ -414,7 +414,7 @@ class SpawnSubAgentTool(Tool):
         # 操作，绝不派发领域 agent（2026-10-01 收敛：refine_query 已并入 search_paper、
         # switch_topic 并入 set_research_topic，重派/切换不再有独立意图）。last_intent
         # 为 None（管线降级）时放行，不改变现状。
-        # steps 例外：LLM 兜底产出 GENERAL + 复合意图拆分（steps 非空）时放行——
+        # steps 例外：LLM 兜底产出 UNCLASSIFIED + 复合意图拆分（steps 非空）时放行——
         # steps 恒为 LLM 标注的业务意图，非派发意图不会带 steps；supervisor 按序
         # 调度各 step 时每一步 spawn 都应通过门禁（否则复合派发整条被误拒）。
         li = parent.last_intent
