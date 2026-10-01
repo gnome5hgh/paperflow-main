@@ -194,13 +194,13 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 ### Intent recognition
 
-`paperflow/core/intent/` — 意图识别框架，**仅 CLI 构造的 supervisor 装配**（子 agent 门控关闭，省 LLM 调用）。`IntentPipeline` 4 级级联，前一级未裁决才进下一级：
+`paperflow/core/intent/` — 意图识别框架，**仅 CLI 构造的 supervisor 装配**（子 agent 门控关闭，省 LLM 调用）。`IntentPipeline` 五级级联，前一级未裁决才进下一级：
 
 1. **实体抽取**（`routing/entities.py`）— 确定性正则，抽 pdf_path/arxiv_id/doi/note_path/figure（只抽实体不判意图）
 2. **选项答复检测**（`routing/option_reply.py`）— 确定性正则识别纯编号菜单选择（`1`/`1.`/`选项2`/`第3个`）；命中直接产出 `MENU_SELECTION`（confidence=1.0），**不经路由/LLM 重分类**——对齐 Rasa 按钮 payload 惯例：选择动作的语义由发菜单的一方（supervisor 对照上轮菜单）承载，避免 0 阈值路由以微小分数误命中任意意图后误拦派发
 3. **追问判别**（`routing/followup.py`）— 词表启发式（那/这/呢/然后 + 无动词无数量词）；命中则继承上一轮意图并合并实体
 4. **混合路由**（`HybridRouter`）— 稠密（千问嵌入）+ 稀疏（jieba BM25）融合（`dense × alpha + sparse × (1-alpha)`，生产 `alpha=0.5`（2026-09-05 标定实验选定：seed 固定后 0.3-0.6 实测 0.793/0.824/0.831/0.716））；`load_routes()` 读 `data/intents/routes.yaml`（唯一知识库源，含各意图示例句 + 标定阈值）；命中阈值则产出
-5. **LLM 兜底** — 无路由命中时注入 top-3 近邻候选，经 `StructuredOutput` 分类，最终兜底 `IntentionResult(GENERAL, 0.0)`；提示词交代 `clarification` 的填写条件（指代/动作不明才填，能推断则留空用 confidence 表达不确定），该字段的 pydantic `description` 随 schema 展开进 system 消息——两处都给模型交代过条件，它才会产出澄清
+5. **LLM 兜底** — 无路由命中时注入 top-3 近失候选，经 `StructuredOutput` 分类，解析失败/判定失败兜底 `IntentionResult(UNCLASSIFIED, 0.0)`（unclassified 是显式失败信号，路由层不建兜底路由）；提示词交代 `clarification` 的填写条件（指代/动作不明才填，能推断则留空用 confidence 表达不确定），该字段的 pydantic `description` 随 schema 展开进 system 消息——两处都给模型交代过条件，它才会产出澄清。复合拆分 `steps` 同理走 `Field(description)` 触发契约（≥2 个独立业务动作才填、≤3 步、steps[0]==intent_type），`_steps_guard` 三重护栏（业务白名单/≤3 步/首步一致）违规整体置空，spawn 门禁对 steps 非空放行
 
 产出 `IntentOutput`（intent_type/confidence/entities/rewritten_query/source/steps/clarification）注入 ReAct head 的 `INTENT:` 块。`INTENT_META` 是意图元数据的**单一真相源**：13 个 `IntentType` 值分 3 类（2026-10-01 收敛：switch_topic 并入 set_research_topic、refine_query 并入 search_paper）（business 业务派发 / dialogue 会话状态 / system 直接回答），`dispatch_allowed` 决定 spawn 门禁（chitchat/out_of_scope 等永远不能 spawn）。业务意图与子 agent 的对应：search_paper→searcher、generate_note→noter、ask_question/analyze_paper/manage_memory→qa-agent、research_discovery→researcher（选题发现）；`menu_selection`（选项答复，对话管理可派发）由 supervisor 对照上轮菜单转换成对应动作/派发，无法对应先 ask_user 确认。
 
