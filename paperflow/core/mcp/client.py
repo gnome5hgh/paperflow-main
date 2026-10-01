@@ -99,6 +99,7 @@ class McpClientManager:
         self._queues: dict[str, asyncio.Queue] = {}
         self._serve_tasks: dict[str, asyncio.Task] = {}
         self._ready: dict[str, concurrent.futures.Future] = {}
+        self._reconnect_lock = threading.Lock()   # 重连决策互斥：每 server 至多一条会话
         self._status: dict[str, ServerStatus] = {
             name: ServerStatus(name=name, transport=cfg.transport)
             for name, cfg in self._servers.items() if cfg.enabled}
@@ -263,15 +264,21 @@ class McpClientManager:
         for attempt in (1, 2):
             if st.status == "connected":
                 break
-            self.ensure_ready(name)                    # 预取未完成的先等
+            self.ensure_ready(name)                    # 预取未完成的先等（锁外阻塞）
             if st.status == "connected":
                 break
             if attempt == 2:
                 raise McpToolError(
                     f"server '{name}' 未连接（{st.error or '连接中'}），已重试一次")
-            self._warn(f"MCP server '{name}' 会话不可用，重连一次…")
-            self._schedule_reconnect(name)
-            self.ensure_ready(name)
+            # 临界区只做"是否由本线程调度重连"的决策与调度，绝不含阻塞等待：
+            # 并发线程里最多一个真正调度（其余看到在途的未完成 ready future 直接去
+            # 等），保证每 enabled server 至多一条 serve 任务/会话（spec 全局约束）。
+            with self._reconnect_lock:
+                fut = self._ready.get(name)
+                if st.status != "connected" and (fut is None or fut.done()):
+                    self._warn(f"MCP server '{name}' 会话不可用，重连一次…")
+                    self._schedule_reconnect(name)
+            self.ensure_ready(name)                    # 等重连完成（锁外阻塞）
         result_future = concurrent.futures.Future()
 
         def _submit():
@@ -288,10 +295,12 @@ class McpClientManager:
         try:
             return result_future.result(timeout=cfg.call_timeout + 5.0)
         except concurrent.futures.TimeoutError as e:
-            st.status = "failed"
-            st.error = f"调用超时（>{cfg.call_timeout}s）"
-            raise McpToolError(st.error) from e
+            # Python ≥3.11：asyncio.TimeoutError / concurrent.futures.TimeoutError 均为
+            # builtin TimeoutError 的别名，_serve 里 wait_for 的调用超时经 future 传回
+            # 时才会命中本分支（result 等待上限是 call_timeout+5s，晚于调用超时）。
+            raise McpToolError(f"调用超时（>{cfg.call_timeout}s）") from e
         except Exception as e:
-            st.status = "failed"
-            st.error = f"{type(e).__name__}: {e}"
+            # 工具级失败只判本请求败：状态流转归 _serve（连接/会话级）独占，
+            # 这里不动 st——否则一次工具异常会把健康 server 标成 failed，
+            # 触发对活会话的无谓重连（评审 F1）。
             raise McpToolError(f"调用失败：{e}") from e
