@@ -157,7 +157,17 @@ class IntentionResult(BaseModel):
     #: 意图的业务动作；每个 step 必须是单业务意图（dispatch_allowed=True），按执行
     #: 顺序排列，最多 3 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时
     #: 必须留空（宁缺勿滥——steps 非空会放行 spawn 门禁，误拆即高权限口子）。
-    steps: list["IntentType"] = []
+    #: 注意：# 注释不产生 pydantic description（评审 Critical 实证）——触发契约
+    #: 必须走下面的 Field(description=...) 才能进 LLM 提示词，这里仅留出处索引。
+    steps: list["IntentType"] = Field(
+        default=[],
+        description=(
+            "复合意图的有序拆分，仅在输入包含 ≥2 个相互独立、分属不同意图的业务动作时填写；"
+            "每个 step 必须是单业务意图（dispatch_allowed=True 的枚举值），按执行顺序排列，"
+            "最多 3 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时必须留空"
+            "（宁缺勿滥——steps 非空会放行 spawn 门禁，误拆即高权限口子）。"
+        ),
+    )
 
     @model_validator(mode="after")
     def _steps_guard(self) -> "IntentionResult":
@@ -166,6 +176,8 @@ class IntentionResult(BaseModel):
         GENERAL+steps 会放行 spawn 门禁（spawn.py:417-419 的例外分支），LLM 误拆
         等于给非派发意图开派发口子。违规整体置空，不抛错——解析失败的兜底路径
         （fallback=GENERAL）不应因护栏再炸一次。
+        注意：spec §4.2-2 原文为「超出截断」，本实现按 brief 取「整体置空」——
+        更严格，且防 fallback 路径携带半截非法 steps，差异是有意的。
         """
         if self.steps:
             business = {t for t, (_, allowed) in INTENT_META.items() if allowed}

@@ -14,8 +14,9 @@ from paperflow.core.intent.schemas.intent import IntentType
 #: 数据 yaml（routes/eval）的重标迁移属 Task 3/4——在此之前加载侧对这两个旧值
 #: **过滤并告警**而非报错：过滤掉的旧路由不可能再被路由器选中，其 query 落到近邻
 #: 意图或 LLM 兜底（正是合并后的预期行为）；若照旧放行，pipeline 的
-#: IntentType(choice.name) 会在旧路由胜出时崩溃。Task 3/4 重标完成后此表自然清空，
-#: 过滤分支成为死防御（保留，防历史备份/分支数据回流）。
+#: IntentType(choice.name) 会在旧路由胜出时崩溃。Task 3/4 重标落地后手动删除
+#: 此表（显式 set 不会自己清空），过滤分支随之成为死防御（保留，防历史备份/
+#: 分支数据回流）。
 _REMOVED_VALUES = {"switch_topic", "refine_query"}
 
 
