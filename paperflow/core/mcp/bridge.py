@@ -113,9 +113,15 @@ class McpToolAdapter(Tool):
         from paperflow.core.mcp.client import McpToolError, result_to_text
         try:
             result = self._manager.call_tool_sync(self._server_name, self._tool_name, kwargs)
+            # 成功路径的转换也必须在 try 内：result_to_text 对畸形非文本内容
+            # （如缺 model_dump 的项）会抛 AttributeError——"绝不抛进 ReAct 循环"
+            # 是适配器的硬性不变量（finding 3）。
+            text, is_error = result_to_text(result)
         except McpToolError as e:
             return ToolResult(text=f"MCP 工具调用失败：{e}", is_error=True)
-        text, is_error = result_to_text(result)
+        except Exception as e:
+            return ToolResult(
+                text=f"MCP 工具结果转换失败：{type(e).__name__}: {e}", is_error=True)
         return ToolResult(text=text, is_error=is_error)
 
 

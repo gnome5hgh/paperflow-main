@@ -149,11 +149,18 @@ class McpServerConfig:
             raise ValueError(f"MCP server '{name}': transport=http 必须提供 http(s) url")
 
 
-def parse_mcp_servers(raw: dict) -> dict[str, McpServerConfig]:
+def parse_mcp_servers(raw: dict | None) -> dict[str, McpServerConfig]:
     """yaml 原始 dict → 校验后的 McpServerConfig 表；未知键忽略（同仓库 hasattr 守卫精神）。"""
+    # 顶层类型守卫：用户写成 mcp_servers: [a, b]（列表）或字符串时，直接
+    # .items() 会抛裸 AttributeError——改为干净的 ValueError（finding 4）。
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"mcp_servers: 顶层配置必须是映射（server 名 → 配置段），得到 {type(raw).__name__}")
     known = {f.name for f in fields(McpServerConfig)}
     servers: dict[str, McpServerConfig] = {}
-    for name, item in (raw or {}).items():
+    for name, item in raw.items():
         if not isinstance(item, dict):
             raise ValueError(f"MCP server '{name}': 配置段必须是映射")
         cfg = McpServerConfig(**{k: v for k, v in item.items() if k in known})

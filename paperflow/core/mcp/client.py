@@ -100,6 +100,9 @@ class McpClientManager:
         self._serve_tasks: dict[str, asyncio.Task] = {}
         self._ready: dict[str, concurrent.futures.Future] = {}
         self._reconnect_lock = threading.Lock()   # 重连决策互斥：每 server 至多一条会话
+        # 在途调用（call_tool_sync 正在阻塞等待的 concurrent.futures.Future）：
+        # shutdown 时逐个判败，唤醒卡在工作线程的调用者（finding 2）。
+        self._inflight: set[concurrent.futures.Future] = set()
         self._status: dict[str, ServerStatus] = {
             name: ServerStatus(name=name, transport=cfg.transport)
             for name, cfg in self._servers.items() if cfg.enabled}
@@ -161,7 +164,17 @@ class McpClientManager:
                             session.call_tool(req.tool, req.arguments),
                             timeout=cfg.call_timeout)
                         req.future.set_result(res)
+                    except asyncio.TimeoutError as e:
+                        # 我们自己的 wait_for 调用超时：会话仍活着（只是这次调用慢），
+                        # 仅本请求判败，状态不动——否则一次慢调用会误杀健康会话（F1）。
+                        req.future.set_exception(e)
                     except Exception as e:
+                        # 真实 SDK 错误模型：工具级错误以 isError=True 的结果返回、
+                        # 不抛异常；能从 call_tool 抛出的异常实际只有传输/协议死亡
+                        # （uvx 崩溃/OOM/被 kill 等）。此时会话已不可用，标记 failed，
+                        # 下一次 call_tool_sync 走既定的"重连一次"路径（spec §6）。
+                        st.status = "failed"
+                        st.error = f"{type(e).__name__}: {e}"
                         req.future.set_exception(e)
         except Exception as e:
             st.status = "failed"
@@ -180,6 +193,22 @@ class McpClientManager:
             if req is not None:
                 req.future.set_exception(McpToolError(f"server '{name}' 会话中断，请求未执行"))
 
+    def _abort_inflight(self) -> None:
+        """把全部在途调用判败（finding 2）。
+
+        McpToolAdapter.execute 经 asyncio.to_thread 在不可取消的工作线程里阻塞
+        result(timeout=call_timeout+5)；REPL 退出时 asyncio 要 join 默认执行器，
+        若不先唤醒这些线程，退出会冻结到超时。concurrent.futures.Future 的
+        set_exception 线程安全；future 已 resolve/cancel 时抛 InvalidStateError /
+        CancelledError，吞掉即可（竞态下谁先到谁生效）。
+        """
+        for fut in list(self._inflight):
+            try:
+                fut.set_exception(McpToolError("客户端正在关闭，请求中止"))
+            except Exception:
+                pass
+        self._inflight.clear()
+
     def shutdown(self) -> None:
         """通知各 serve 任务退出并停循环；幂等。"""
         if self._closed:
@@ -187,6 +216,7 @@ class McpClientManager:
         self._closed = True
         if self._loop is None:
             return
+        self._abort_inflight()
 
         async def _stop():
             for q in self._queues.values():
@@ -286,12 +316,23 @@ class McpClientManager:
                 fut = self._loop.create_future()
                 await self._queues[name].put(_Request(tool, arguments, fut))
                 try:
-                    result_future.set_result(await fut)
+                    res = await fut
                 except Exception as e:
-                    result_future.set_exception(e)
+                    try:                       # shutdown 已判败（_abort_inflight）时失效即忽略
+                        result_future.set_exception(e)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        result_future.set_result(res)
+                    except Exception:
+                        pass
             self._loop.create_task(_run())
 
         self._loop.call_soon_threadsafe(_submit)
+        if self._closed:                       # 与 shutdown 竞态：提交后才关闭则直接判败
+            raise McpToolError("客户端正在关闭，请求中止")
+        self._inflight.add(result_future)
         try:
             return result_future.result(timeout=cfg.call_timeout + 5.0)
         except concurrent.futures.TimeoutError as e:
@@ -304,3 +345,5 @@ class McpClientManager:
             # 这里不动 st——否则一次工具异常会把健康 server 标成 failed，
             # 触发对活会话的无谓重连（评审 F1）。
             raise McpToolError(f"调用失败：{e}") from e
+        finally:
+            self._inflight.discard(result_future)
