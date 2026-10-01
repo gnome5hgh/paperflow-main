@@ -8,9 +8,13 @@
   （索引侧拼的「标题 > 章节」前缀行）才算 strict 命中——切块升级前无前缀行，
   strict 指标自然偏低，仅作改造前后对照。
 
-用法（需 Milvus 与真实索引在跑）：
-    python -m paperflow.rag.evaluation --golden data/rag/eval/rag_golden.jsonl \
-        --out data/rag/eval/after.json --compare data/rag/eval/baseline.json
+本模块只负责「读题集 → 逐条检索 → 算指标」；题集、文档清单与分数存档都在
+`scripts/rag/`（个人工作区，gitignored），完整实验的编排（建索引 / 清库 / 基线对比）
+用同目录的 `run_eval.py`。
+
+直接当 CLI 用（需 Milvus 与真实索引在跑）：
+    python -m paperflow.rag.evaluation --golden scripts/rag/retrieval_eval/rag_golden.jsonl \
+        --out scripts/rag/retrieval_eval/after.json --compare scripts/rag/retrieval_eval/baseline.json
 """
 import argparse
 import json

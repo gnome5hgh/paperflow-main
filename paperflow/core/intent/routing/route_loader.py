@@ -1,11 +1,23 @@
 # paperflow/core/intent/routing/route_loader.py
 """意图知识库加载器——routes.yaml 是唯一知识库源（测试与生产共用路径）。"""
+import warnings
 from pathlib import Path
 
 import yaml
 
 from paperflow.core.intent.schemas.route import Route
 from paperflow.core.intent.schemas.intent import IntentType
+
+
+#: 2026-10-01 枚举收敛（spec 2026-10-01-intent-taxonomy-and-steps-design §3）过渡期
+#: 已移除值：switch_topic 并入 set_research_topic、refine_query 并入 search_paper。
+#: 数据 yaml（routes/eval）的重标迁移属 Task 3/4——在此之前加载侧对这两个旧值
+#: **过滤并告警**而非报错：过滤掉的旧路由不可能再被路由器选中，其 query 落到近邻
+#: 意图或 LLM 兜底（正是合并后的预期行为）；若照旧放行，pipeline 的
+#: IntentType(choice.name) 会在旧路由胜出时崩溃。Task 3/4 重标落地后手动删除
+#: 此表（显式 set 不会自己清空），过滤分支随之成为死防御（保留，防历史备份/
+#: 分支数据回流）。
+_REMOVED_VALUES = {"switch_topic", "refine_query"}
 
 
 #: 仓库安装根下的 routes.yaml（默认路径不可用时回退：从非仓库目录启动、
@@ -31,7 +43,8 @@ def load_routes(path: Path | None = None) -> list[Route]:
         Route 对象列表。
 
     Raises:
-        ValueError: 当 route 名不在 IntentType 中，或 utterances 为空时。
+        ValueError: 当 route 名不在 IntentType 中（已移除的收敛旧值除外——过滤告警，
+            见 _REMOVED_VALUES），或 utterances 为空时。
     """
     if path is None:
         path = (Path("data/intents/routes.yaml") if Path("data/intents/routes.yaml").is_file()
@@ -44,6 +57,12 @@ def load_routes(path: Path | None = None) -> list[Route]:
     for r in data["routes"]:
         # 校验1：路由名必须存在于 IntentType 枚举中
         if r["name"] not in valid_names:
+            if r["name"] in _REMOVED_VALUES:
+                warnings.warn(
+                    f"route '{r['name']}' 已于 2026-10-01 枚举收敛中移除"
+                    f"（数据重标属 Task 3/4），本次加载过滤该路由",
+                    stacklevel=2)
+                continue
             raise ValueError(f"route 名不在 IntentType 中: {r['name']}")
 
         # 校验2：每个路由至少有一个示例句，否则训练时 BM25 会因空语料崩溃
@@ -93,7 +112,8 @@ def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, st
         列表，每个元素为三元组 (query文本, 意图标签, 是否为硬负样本布尔值)。
 
     Raises:
-        ValueError: 当 eval 中的意图标签不在 IntentType 中时。
+        ValueError: 当 eval 中的意图标签不在 IntentType 中（已移除的收敛旧值除外——
+            过滤告警，见 _REMOVED_VALUES）时。
     """
     if path is None:
         path = (Path("data/intents/routes.yaml") if Path("data/intents/routes.yaml").is_file()
@@ -105,6 +125,12 @@ def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, st
     for e in data["eval"]:
         # 校验标签合法性
         if e["intent"] not in valid_names:
+            if e["intent"] in _REMOVED_VALUES:
+                warnings.warn(
+                    f"eval 意图 '{e['intent']}' 已于 2026-10-01 枚举收敛中移除"
+                    f"（数据重标属 Task 3/4），本次加载过滤该样本",
+                    stacklevel=2)
+                continue
             raise ValueError(f"eval 意图标签不在 IntentType 中: {e['intent']}")
         # hard 字段默认为 False（若未提供）
         items.append((e["query"], e["intent"], bool(e.get("hard", False))))
