@@ -416,17 +416,27 @@ class SpawnSubAgentTool(Tool):
             result = SubAgentResult(status="denied",
                                     summary=f"未知 mode: {mode}，合法值: {sorted(SUB_AGENT_MODES)}")
             return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-        # 意图派发门禁（spec 2026-10-02 §4.2，代码级确定性强制，不依赖 LLM 遵循
-        # AGENT.md）。两层：
-        # - 复合队列非空（INTENT steps 轮次）：spawn 必须声明 intent 且等于队头——
-        #   steps 的顺序性在代码层保证；admitted/去重命中出队，denied 不出队。
-        #   原先「UNCLASSIFIED+steps 放行」的例外分支随之消亡：复合授权改由队列
-        #   逐 step 承载，每个声明意图仍过 INTENT_META 派发校验（双保险）。
-        # - 队列空（普通轮次）：INTENT_META 门禁照旧——dispatch_allowed=False
-        #   的意图拒绝 spawn（非派发意图=陈述方向/系统类，绝不派发领域 agent）。
-        # last_intent 为 None（管线降级）时放行，不改变现状。
-        # 门禁防的是漂移（LLM 跳步/乱序）而非对抗：intent 由 supervisor 声明，
-        # 传错换不到任何权限——各规则照查。
+        # 意图派发门禁：按「本轮是否带着复合意图队列」分两种走法。全部是代码级
+        # 确定性检查，不依赖 supervisor 遵循 AGENT.md 提示词。
+        #
+        # 走法一：复合队列非空（本轮识别出 steps 的复合请求）。队列在 runtime
+        # 装载意图时初始化，队头即当前应该派发的步骤。此时 spawn 必须用 intent
+        # 参数声明「我派的就是队头这个步骤」：漏带声明、声明和队头对不上（跳步/
+        # 乱序）都直接拒绝，拒绝信息里写明当前应派的步骤，supervisor 照着改即可。
+        # 这样「按顺序逐 step 派发」就从 AGENT.md 的强提示变成了门禁的硬约束。
+        # 出队时机：只有放行（注册 running）或去重命中（同任务已在跑/刚跑完可
+        # 复用，视为该步骤已满足）才弹队头；拒绝路径一律不出队——步骤没完成，
+        # 重试还得对上同一个队头。原先「主意图 UNCLASSIFIED 但 steps 非空就放行」
+        # 的例外分支不再需要：复合授权由队列逐步骤承载，声明的步骤仍要过
+        # INTENT_META 的可派发校验（双保险，schema 层的 _steps_guard 是第一道）。
+        #
+        # 走法二：队列空（普通单意图轮次）。维持原门禁——last_intent 是
+        # dispatch_allowed=False 的意图（陈述方向/系统类）就拒绝派发领域 agent；
+        # last_intent 为 None（意图管线失败降级）时放行，不因门禁误伤主流程。
+        #
+        # 防护定位：防的是 supervisor 的行为漂移（跳步、乱序、漏派），不是对抗
+        # 性攻击——intent 是 supervisor 自己声明的，报个假的换不到任何额外权限，
+        # 各条检查照常执行。
         parent_queue = getattr(parent, "_pending_steps", [])
         declared: IntentType | None = None
         if intent is not None:
@@ -456,7 +466,8 @@ class SpawnSubAgentTool(Tool):
                 return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
             def _pop_step() -> None:
-                """过闸出队：原地弹队头（runtime._pending_steps 与此共享同一列表）。"""
+                """过闸后弹队头。闭包持有的 parent_queue 就是 runtime 的
+                _pending_steps 列表本体，原地 pop 即完成出队。"""
                 parent_queue.pop(0)
         else:
             li = parent.last_intent
@@ -466,7 +477,7 @@ class SpawnSubAgentTool(Tool):
                 return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
             def _pop_step() -> None:
-                """普通轮次无队列可出。"""
+                """普通轮次没有复合队列，空操作——与复合分支共用同一调用点。"""
                 pass
         # ① spawn 权限运行时校验(_check_spawn_allowed 单点)。
         #    supervisor 硬编码放行;非 supervisor 越界 spawn → denied。
@@ -489,12 +500,15 @@ class SpawnSubAgentTool(Tool):
             hit = reg.get(fp)
             now = time.monotonic()
             if hit and hit["state"] == "running":
-                # 去重命中（同任务在跑）= 该 step 视为已满足，出队（spec §4.2-R2）
+                # 去重命中：同指纹任务正在跑。对复合队列而言这等价于该步骤已经
+                # 有人在做——视为满足，弹队头；否则 supervisor 等它跑完后重试
+                # 会被队头卡死
                 _pop_step()
                 return ToolResult(text="同任务正在执行中，请等待其结果（已去重，勿重复派发）")
             if hit and hit["state"] == "done" and not has_path \
                     and now - hit["started_at"] < _SPAWN_REUSE_WINDOW_S:
-                # done 窗口复用 = 该 step 视为已满足，出队
+                # done 缓存复用：同任务刚做完、结果直接给你。同理视为该步骤已
+                # 满足，弹队头
                 _pop_step()
                 return hit["result"]
             # ③ 审稿预算门:审稿类 mode 在注册 running 前计数检查——超限拒绝(不注册,
@@ -512,7 +526,8 @@ class SpawnSubAgentTool(Tool):
                                       summary=denied_result.model_dump())
                 _REVIEW_SPAWN_COUNTS[bkey] = used + 1
             reg[fp] = {"state": "running", "result": None, "started_at": now}
-        # 过闸 + 注册成功：队头出队（denied 路径在上方已 return，不会走到这里）
+        # 走到这说明全部检查通过、任务已注册 running：弹复合队列队头（普通轮次
+        # 是空操作）。拒绝路径都在上方提前 return，不会经过这里
         _pop_step()
         return fp, has_path
 

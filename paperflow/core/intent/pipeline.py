@@ -5,15 +5,20 @@
 - 实体提取：正则提取 PDF 路径/arXiv ID/DOI/Figure 等实体
 - 选项答复检测：纯编号菜单选择直接产出 MENU_SELECTION（确定性正则，不重分类）
 - 追问检测：判断是否承接上一轮意图（依赖会话中的上一轮意图）
-- 混合路由：一次打分三用（spec 2026-10-02 §2）——multi-label 多命中产 steps /
-  S1-S2 澄清判据 / LLM 兜底近失候选，均为对 scores() 输出的确定性过滤
-- LLM 兜底：用结构化输出解析意图，注入路由近失候选供参考，改写缺省原文；
-  clarification 的「问不问」由代码判据决定（§3），LLM 只负责问题文案
+- 混合路由：对 scores() 的输出做一组确定性过滤，一次打分派三个用场——
+  ① 多标签裁决：不止一个业务意图过了各自的标定阈值时，直接拆成有序 steps；
+  ② 澄清判据：分数贴着阈值线、或两个业务候选分数咬得很近时，转入强制澄清轮；
+  ③ 给 LLM 兜底提供近失候选（没过线但分数靠前的意图，供模型参考改判）
+- LLM 兜底：用结构化输出解析意图，注入路由近失候选供参考，改写缺省原文
 
-多意图双通道（spec 2026-10-02）：
-- steps：路由 multi-label 命中 ≥2 业务意图，或 LLM 兜底拆分（触发契约不变）
-- clarification：S1 贴线（top1 刚过自己的 accept 线）∨ S2 竞争（业务候选分差小）
-  时强制澄清轮；非强制轮代码丢弃 LLM 产出的 clarification——触发权收归代码
+一句话多意图的处理走两条通道，共同原则是「要不要」由代码判据决定，「怎么做」
+才交给 LLM：
+- steps（拆分执行）：路由层多命中直接拆，或 LLM 兜底拆（提示词约定何时拆）。
+  顺序性由 spawn 门禁的 steps 队列在代码层强制（见 runtime._pending_steps 与
+  spawn._admit），不依赖 supervisor 提示词自觉。
+- clarification（澄清反问）：触发与否完全由上面 ② 的分数判据决定——分数够自信
+  时，LLM 即使在输出里写了澄清也会被丢弃；判据说要问时，LLM 必须写出问题，
+  写不出来就用模板合成。这样「问不问」永远确定，「问什么」才交给模型。
 """
 from pydantic import BaseModel
 
@@ -25,21 +30,28 @@ from paperflow.core.intent.routing.entities import extract_entities
 from paperflow.core.intent.routing.followup import detect_followup
 from paperflow.core.intent.routing.option_reply import is_option_reply
 
-#: 复合拆分步数上限（与 IntentionResult._steps_guard 同值，源此处引用）。
+#: 复合拆分步数上限。一句话里能合理安排的动作就两三个，超出基本是模型在硬凑；
+#: IntentionResult._steps_guard 的 schema 层护栏用的是同一个数，两处改要一起改。
 MAX_STEPS = 3
 
-#: 路由 multi-label 的后续命中独立自信线：score ≥ τ + EPSILON 才可入 steps
-#: （spec 2026-10-02 §2.2-a）。分数为未归一化融合值（clip 后 [0,1]，非概率），
-#: 阈值为 fit 逐路由标定的 accept 线；0.05 为保守初值——刚好过线的「搭车命中」
-#: 不拆。标定方法：复合句评测集上扫 EPSILON，取 steps 精确率 × 召回率最大点。
-#: 前置：阈值未标定（None 或 ≤0）的路由不参与拆分（见 run() 第 4 级注释）。
+#: 多标签拆分的「独立自信」余量：一个候选意图的分数要超过（自身标定阈值 +
+#: 本余量）才有资格被拆进 steps，仅仅压着阈值线过线不算数。为什么需要它：
+#: 路由阈值是「多低就接受这个意图」的下界，第二高分哪怕只比线高一点也会过线，
+#: 但那种擦线命中往往是同一句话顺带蹭到的（搭车命中），拆进 steps 就会造成
+#: 误派发。分数是稠密/稀疏两路融合的未归一化值（截断后落在 [0,1]，不是概率），
+#: 0.05 是保守初值；标定方法：在复合句评测集上扫这个值，取 steps 精确率×召回率
+#: 最高的点。另见 run() 第 4 级注释——阈值未标定的路由根本不参与拆分。
 ROUTER_STEPS_EPSILON = 0.05
 
-#: S1 贴线判据容差：top1 分数 < τ + FLOOR_DELTA 即视为不够自信（含未过线情形）
-#: （spec 2026-10-02 §3.1）。同分数量纲，标定方法同上。
+#: 「贴线」澄清判据的容差：业务候选里分数最高的那个，若分数低于（自身标定阈值
+#: + 本容差），视为不够自信——无论是刚好压线通过还是差一点没过，都说明路由器
+#: 其实没认准，此时该问用户一句，而不是硬选一个意图往下走。与上面的余量同分
+#: 数量纲，标定方法相同。
 CLARIFY_FLOOR_DELTA = 0.05
 
-#: S2 竞争判据：业务候选 top1 − top2 < MARGIN 即视为无法取舍（spec 2026-10-02 §3.1）。
+#: 「竞争」澄清判据的分差线：分数最高的两个业务候选意图分差小于此值时，说明
+#: 两个意图都有可能、路由器无法取舍（比如「这本书讲什么」到底算问答还是精读
+#: 分析），与其赌一个，不如让用户二选一。
 CLARIFY_MARGIN = 0.05
 
 
@@ -125,10 +137,14 @@ class IntentPipeline:
                 rewritten_query=query # 追问不改写原文
             )
 
-        # ====== 第4级：混合路由（一次打分三用） ======
-        # scores() 与 __call__ 同数据源同聚合（按路由分组均值、降序），一次编码一次
-        # 检索同时供给：multi-label 过滤、S1/S2 澄清判据、LLM 兜底近失候选——
-        # 替代原先 __call__ + scores() 的两次编码。__call__ 语义不变（fit/eval 用）。
+        # ====== 第4级：混合路由 ======
+        # 这里只调 scores()，不再调 router(query)——两者的打分来自同一份索引、
+        # 同一种「按路由分组取均值再降序」的聚合，但 __call__ 只回一个 argmax 命中，
+        # scores() 把每个路由的分数全数给出，正好够下面三件事共用：
+        # ① 按各自阈值过滤出所有「过线」路由（多标签拆分的原料）；
+        # ② 喂给 _ambiguous() 算「要不要澄清」（它需要看没过线的候选分数）；
+        # ③ 喂给 LLM 兜底当近失候选（原先在第 5 级还要再调一次 scores()，省了）。
+        # __call__ 本身一个字没改，fit/eval/sweep 走的还是老路径，单标签指标不受影响。
         scored = self.router.scores(query, k=self.router.top_k)
 
         # 多标签过滤：过各自生效阈值（路由专属优先，全局 None = 无门槛恒过，同 __call__）
@@ -138,11 +154,16 @@ class IntentPipeline:
         if passed:
             top_name, top_score = passed[0]
             if _is_business(top_name):
-                # --- multi-label：后续命中须过「自身阈值 + EPSILON」且为业务意图 ---
-                # 阈值未标定（None 或 ≤0，routes.yaml 出厂态）的路由不参与拆分——
-                # 没有标定 accept 线就没有「独立自信」可言，τ=0 时 EPSILON 形同
-                # 虚设（实测 FakeEmbedder 下任意第二高分 0.86+ 都会被误拆）。
-                # 多标签是标定后的能力：fit 写回阈值之前，管线退化为单标签（同旧）。
+                # --- 多标签拆分：分数最高的业务意图之外，还有哪些也算「认准了」？ ---后续候选要同时满足三个条件才能拆进 steps：
+                # ① 它自己这条路由的阈值是 fit 标定过的（> 0）。routes.yaml 出厂时
+                #    阈值全是 0.0，此时「过线」毫无含金量——任何第二高分都能过一条
+                #    0.0 的线，整句会被拆得面目全非（实测未标定状态下任意复合句的
+                #    第二高分都在 0.86 以上）。所以标定之前路由层不拆分，行为与
+                #    旧版单标签完全一致；fit 写回真实阈值后拆分才自然激活。
+                # ② 分数超过「自身阈值 + ROUTER_STEPS_EPSILON」：压线过的算搭车
+                #    命中，不拆（见常量注释）。
+                # ③ 是可派发的业务意图：闲聊、帮助这类系统意图永远不该出现在
+                #    steps 里——它们不派发，拆进去只会让 spawn 门禁拒掉整条链。
                 steps_names = [top_name]
                 for name, score in passed[1:]:
                     if len(steps_names) >= MAX_STEPS:
@@ -154,38 +175,51 @@ class IntentPipeline:
                             and _is_business(name)):
                         steps_names.append(name)
                 if len(steps_names) >= 2:
-                    # 复合句被路由直接拆分：短路返回不进 LLM 兜底。
-                    # intent_type = steps[0]（首步即主意图），spawn 门禁按 steps 队列放行。
+                    # 至少两个业务意图都「认准了」→ 这是一句复合请求，直接在路由层
+                    # 拆开短路返回，不进 LLM 兜底。主意图取第一步（intent_type =
+                    # steps[0]），spawn 门禁会按这个 steps 列表建队列，逐个校验
+                    # supervisor 的派发顺序。
                     return IntentOutput(
                         intent_type=IntentType(steps_names[0]),
                         confidence=self._clip01(top_score),
                         entities=entities, source=IntentStep.ROUTER,
                         prev_intent=prev_intent, rewritten_query=query,
                         steps=[IntentType(n) for n in steps_names])
-                # --- 单业务命中：S1/S2 澄清判据（spec 2026-10-02 §3） ---
+                # --- 只有一个业务意图过线：先问一句「要不要向用户澄清」 ---
+                # 路由认准了但认得吃力（分数贴线）或有人和它咬得很近（分差小）时，
+                # 与其硬选一个意图执行错方向，不如让用户补一句话。
                 if self._ambiguous(scored):
                     return await self._clarify_round(
                         query, entities, prev_intent, scored)
-                # 自信单意图：现状直出，无澄清无拆分
+                # 路由认得又准又稳：直接产出单意图，不澄清不拆分——这是绝大多数
+                # 输入的快路径，一次 LLM 调用都不花
                 return IntentOutput(
                     intent_type=IntentType(top_name),
                     confidence=self._clip01(top_score),
                     entities=entities, source=IntentStep.ROUTER,
                     prev_intent=prev_intent, rewritten_query=query)
-            # 非业务命中（闲聊/超范围等）：现状直出，永不澄清/拆分
+            # 分数最高的是闲聊/超范围这类系统意图：直接照旧产出，不澄清也不拆——
+            # 这类输入要么轻回复要么明确拒绝，不存在「在意图间取舍」的问题
             return IntentOutput(
                 intent_type=IntentType(top_name),
                 confidence=self._clip01(top_score),
                 entities=entities, source=IntentStep.ROUTER,
                 prev_intent=prev_intent, rewritten_query=query)
 
-        # ====== 路由全未命中：先过澄清判据，再落 LLM 兜底 ======
+        # ====== 路由全未命中：同样先过一遍澄清判据 ======
+        # 未命中不代表没有候选——scored 里还有没过线的「近失」意图。若近失候选里
+        # 有业务意图且分数贴线/互相咬近，说明用户输入处在几个意图的模糊地带，
+        # 值得问一句；否则才真正交给 LLM 兜底盲解析。
         if self._ambiguous(scored):
             return await self._clarify_round(query, entities, prev_intent, scored)
 
         # ====== 第5级：LLM 兜底（常规解析） ======
-        # clarification 触发权在代码：非强制轮 LLM 即使产出也丢弃（steps 非空时
-        # schema 互斥护栏已清，此处对「有 clarification 但没拆」的违命输出收口）
+        # 走到这里说明代码判据认为「不需要澄清」。但 LLM 拿到输入后仍可能自作主张
+        # 产出 clarification——一律丢弃：澄清的「问不问」只认代码判据，否则等于
+        # 又把触发权交回给模型心证（上一版澄清死路径的病根就在这）。
+        # steps 照常透传：LLM 拆分是复合句在「路由没拆动」时的第二 chances，
+        # 触发契约在提示词里约定；steps 非空时 schema 护栏会自动清掉 clarification，
+        # 这里再显式置 None，把「拆了还要问」的违命输出也收口。
         result = await self._llm_extract(query, scored, force_clarification=False)
         return IntentOutput(
             intent_type=result.intent_type,
@@ -232,27 +266,36 @@ class IntentPipeline:
         return max(0.0, min(1.0, score))
 
     def _ambiguous(self, scored: list[tuple[str, float]]) -> bool:
-        """S1/S2 澄清判据（spec 2026-10-02 §3.1）——只看业务意图候选。
+        """判断当前输入是否值得向用户澄清——路由分数层面的两条「不自信」信号。
 
-        S1 贴线：业务 top1 分数 < 自身生效阈值 + FLOOR_DELTA（含未过线情形——
-        「刚过线」与「差一点」都是不自信）。
-        S2 竞争：业务候选 top1 − top2 < MARGIN（两个业务意图分数贴着，无法取舍）。
-        非业务候选（闲聊/超范围）不参与——那些永远不需要澄清。
+        只看业务意图候选（可派发的那几类），闲聊/超范围这类永远不参与：它们要么
+        轻回复要么拒绝，不存在选错方向执行下去的代价。两条信号满足任一即澄清：
+
+        - 贴线：分数最高的业务候选，分数低于（自身标定阈值 + CLARIFY_FLOOR_DELTA）。
+          「刚压线通过」和「差一点没过」在这里是同一回事——路由器都没能把它和
+          其他意图拉开差距，硬选一个大概率选错。
+        - 竞争：分数最高的两个业务候选分差小于 CLARIFY_MARGIN。两个意图都有可能
+          （典型如「这本书讲什么」落在问答和精读分析之间），让用户二选一比赌
+          一个便宜得多。
+
+        两条判据都锚定在 fit 标定的阈值上，所以有个共同前提：top1 候选的路由
+        阈值必须是标定过的（> 0）。routes.yaml 出厂态阈值全 0.0，那时路由层本来
+        就没有「认准」的能力可言，判据整体不启用，行为与旧版一致（未命中才落
+        LLM 兜底）。
         """
         biz = [(name, score) for name, score in scored
                if score > 0 and _is_business(name)]
         if not biz:
             return False
         top_name, top_score = biz[0]
-        # S1：阈值未标定（None 或 ≤0）时无从「贴线」，不触发——标定前澄清不启用，
-        # 路由表现与旧行为一致（ miss 才落 LLM 兜底）
+        # 贴线判据：阈值未标定时不启用（见 docstring 末段）
         threshold = self._effective_threshold(top_name)
-        s1 = (threshold is not None and threshold > 0.0
-              and top_score < threshold + CLARIFY_FLOOR_DELTA)
-        # S2：存在第二个业务候选且分差小于 MARGIN
-        s2 = (len(biz) >= 2
-              and (top_score - biz[1][1]) < CLARIFY_MARGIN)
-        return bool(s1 or s2)
+        barely_confident = (threshold is not None and threshold > 0.0
+                            and top_score < threshold + CLARIFY_FLOOR_DELTA)
+        # 竞争判据：第二名也是业务意图，且和第一名咬得很近
+        runner_up_close = (len(biz) >= 2
+                           and (top_score - biz[1][1]) < CLARIFY_MARGIN)
+        return bool(barely_confident or runner_up_close)
 
     # ------------------------------------------------------------------
     # LLM 兜底
@@ -261,12 +304,19 @@ class IntentPipeline:
     async def _clarify_round(self, query: str, entities: dict,
                              prev_intent: IntentType | None,
                              scored: list[tuple[str, float]]) -> IntentOutput:
-        """强制澄清轮：进 LLM 兜底产出澄清问题，文案权在模型、触发权在代码。
+        """强制澄清轮：代码判据认定「该问了」，让 LLM 把问题写出来。
 
-        LLM 违命未产出 clarification 时，用业务候选 top2 合成模板兜底问题——
-        判据说了「要问」就一定要问出去，否则澄清链路退化为死路径（上次修复教训）。
-        intent_type/confidence 照常产出：澄清是附加通道，不改变单标签答案，
-        评估指标不受影响。
+        分工是「触发权在代码、文案权在模型」：要不要问由 _ambiguous() 的分数
+        判据说了算，这里只负责让 LLM 生成一句能展示给用户的澄清问题。两个兜底
+        设计保证「说要问就一定问出去」：
+
+        - LLM 违命没写 clarification 时，用业务候选前两名合成模板问题（二选一
+          问法；只有一个候选就开放式确认）。若连模板都不兜底，判据白算、澄清
+          链路退化成永远不触发的死路径——这正是上一版澄清机制修过的病。
+        - intent_type/confidence 照常产出不缺席：澄清是搭在正常识别结果上的
+          附加通道，不改变单标签答案，所以离线评估指标不受澄清轮影响。
+
+        steps 显式为空：澄清和拆分互斥——都要拆了就不需要问，都要问了就别拆。
         """
         result = await self._llm_extract(query, scored, force_clarification=True)
         clarification = result.clarification or self._synthesize_clarification(scored)
@@ -275,7 +325,7 @@ class IntentPipeline:
             confidence=result.confidence,
             entities=entities, source=IntentStep.LLM, prev_intent=prev_intent,
             rewritten_query=result.query_rewrite or query,
-            steps=[],  # 澄清轮不拆分（schema 互斥护栏兜底，此处显式为空）
+            steps=[],  # 澄清轮不拆分
             clarification=clarification,
         )
 
@@ -291,7 +341,11 @@ class IntentPipeline:
         )
 
     def _synthesize_clarification(self, scored: list[tuple[str, float]]) -> str:
-        """合成兜底澄清问题：业务候选 top2 用二选一模板，仅一个用开放确认模板。"""
+        """合成兜底澄清问题（LLM 违命没写 clarification 时用）。
+
+        按业务候选分数取前两名：有两个就二选一地问（「你想让我「A」还是「B」？」），
+        只有一个就开放式确认。标签用 INTENT_LABELS_ZH 的中文短名——这个问题会
+        原样打给用户，枚举英文值用户看不懂。"""
         biz = [IntentType(name) for name, score in scored
                if score > 0 and _is_business(name)][:2]
         labels = [INTENT_LABELS_ZH.get(t, t.value) for t in biz]
@@ -315,8 +369,11 @@ class IntentPipeline:
 
         Args:
             query: 用户原始输入文本。
-            near_miss: 路由层 top-k 候选列表，每项为 (路由名, 分数)。
-            force_clarification: 强制澄清轮标记（spec 2026-10-02 §3.2）。
+            near_miss: 路由层 top-k 候选列表，每项为 (路由名, 分数)——含未过阈值
+                线的候选，供 LLM 在路由先验上确认或改判，而非盲猜。
+            force_clarification: 是否强制澄清轮。True 时提示词改为「必须产出
+                clarification」且禁用 steps——调用方（_clarify_round）已用分数
+                判据认定该问，提示词只负责把问题文案要出来。
 
         Returns:
             组合后的提示词字符串。

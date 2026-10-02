@@ -91,10 +91,14 @@ def _intent_block(intent) -> str:
 
 
 def _steps_incomplete_note(agent: "Agent") -> str:
-    """复合任务完备性告警（spec 2026-10-02 §4.3）：ReAct 收尾时队列非空 = 漏步。
+    """复合任务的完备性告警：ReAct 收尾时队列还剩 step，说明 supervisor 漏派了。
 
-    软告警不阻断——诚实暴露「steps 没派完」这一事实（此前唯一表现是静默丢失），
-    去不去补由用户决定。追加在最终回答之后，落盘内容与用户所见一致。
+    生成一句追加在最终回答尾部的中文提示（「本次复合任务还有未完成的步骤：
+    …」），列出剩余步骤的中文名。定位是软告警不阻断：漏步是事实，就该如实
+    告诉用户、由用户决定要不要继续，而不是静默丢掉（改这个函数之前的唯一
+    表现就是静默丢失），也不是由系统强行再派——补派该派什么子任务文本只有
+    supervisor 能组织，代码层代劳只会派空壳任务。队列空时返回空串，正常
+    回答零尾缀。调用点在 run() 的两条正常返回路径上（自然收尾 / 终止型工具）。
     """
     if not agent._pending_steps:
         return ""
@@ -373,9 +377,13 @@ class Agent:
         self.ask_user_callback = ask_user_callback
         #: 本轮 run 的 IntentOutput（CLI 读 clarification 判定 + 跨轮 prev_intent）
         self.last_intent = None
-        #: 复合意图待派发队列（spec 2026-10-02 §4）：last_intent.steps 非空时初始化
-        #: 为完整 steps（队头即主意图）。spawn 门禁按队头校验顺序，admitted/去重命中
-        #: 出队——steps 的顺序性与完备性由此在代码层保证，不再依赖 supervisor 提示词。
+        #: 复合意图待派发队列。当意图管线识别出一句复合请求（last_intent.steps
+        #: 非空）时，_build_head 把完整的 steps 列表装进来，队头就是本轮主意图
+        #: （steps[0] == intent_type）——supervisor 的第一次 spawn 必须对上它，
+        #: 派发成功后队首出队，依此类推。这样「按顺序逐 step 派发、一步不落」
+        #: 就由 spawn 门禁在代码层强制（见 spawn._admit），而不是靠 AGENT.md
+        #: 提示词指望 supervisor 自觉；这个 run 没有复合意图时队列恒空，门禁
+        #: 走原有的单意图检查，行为不变。
         self._pending_steps: list[IntentType] = []
 
         # opt-in 注入：仅对声明 needs_parent 的工具注入父引用。

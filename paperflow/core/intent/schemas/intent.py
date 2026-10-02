@@ -75,8 +75,8 @@ INTENT_META: dict[IntentType, tuple[IntentCategory, bool]] = {
 }
 
 
-#: 意图 → 中文短标签（澄清模板/日志展示用；spec 2026-10-02 §3.2 合成兜底问题）。
-#: 只求自足易懂，不复述枚举注释里的完整判据。
+#: 意图 → 中文短标签。用于两类面向用户的场合：澄清模板合成兜底问题（枚举英文值
+#: 用户看不懂）、日志/展示层。只求自足易懂，不复述枚举注释里的完整判据。
 INTENT_LABELS_ZH: dict[IntentType, str] = {
     IntentType.SET_RESEARCH_TOPIC: "设定/切换研究方向",
     IntentType.MENU_SELECTION:     "菜单选项选择",
@@ -190,13 +190,17 @@ class IntentionResult(BaseModel):
 
     @model_validator(mode="after")
     def _steps_guard(self) -> "IntentionResult":
-        """steps 三重护栏 + steps×clarification 互斥（spec 2026-10-02 §3.3，代码级防御）。
+        """steps 合法性护栏 + steps 与 clarification 互斥（代码级防御）。
 
-        非业务意图混入 steps 会开出派发口子：队列门禁（spawn._admit）按 step 逐个
-        校验 INTENT_META，这里在 schema 层再拦一道。违规整体置空，不抛错——解析失败
-        的兜底路径（fallback=UNCLASSIFIED）不应因护栏再炸一次。
-        注意：spec 2026-10-01 §4.2-2 原文为「超出截断」，本实现按 brief 取「整体置空」——
-        更严格，且防 fallback 路径携带半截非法 steps，差异是有意的。
+        steps 里的每一项都会被 spawn 门禁当作可派发意图放行，所以这里必须在
+        schema 层拦住三类非法拆分：超过 3 步（LLM 硬凑的长链）、混入非派发意图
+        （LLM 把闲聊/帮助也拆进去，等于给不派发的意图开派发口子）、首步与主意图
+        不一致（主意图是 spawn 门禁和 INTENT 块的第一参考，错位会让两者打架）。
+        违规不做半截修正，整体置空；也不抛校验错误——解析失败的兜底路径
+        （fallback=UNCLASSIFIED）不该因护栏再炸一次。
+        互斥：steps 非空说明输入已被拆解执行，无需再澄清；两者同时产出属模型
+        违命，clarification 让位。两字段的「要不要」上游管线均已用代码判据决定，
+        这里是最后一条防线。
         """
         if self.steps:
             business = {t for t, (_, allowed) in INTENT_META.items() if allowed}
@@ -204,8 +208,8 @@ class IntentionResult(BaseModel):
                     or any(s not in business for s in self.steps)
                     or self.steps[0] != self.intent_type):
                 object.__setattr__(self, "steps", [])
-        # steps × clarification 互斥（spec 2026-10-02 §3.3）：复合句已拆就无需澄清，
-        # 两者同时产出属模型违命，代码级强制 clarification 让位。
+        # steps × clarification 互斥：复合句已拆就无需澄清，两者同时产出属模型
+        # 违命，代码级强制 clarification 让位（不抛错，静默清空即可）
         if self.steps and self.clarification:
             object.__setattr__(self, "clarification", None)
         return self
