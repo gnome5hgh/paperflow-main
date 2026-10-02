@@ -62,6 +62,7 @@ from paperflow.core.security import (
 )
 from paperflow.core.tool import ToolResult
 from paperflow.core.security.text import sanitize_surrogates
+from paperflow.core.intent.schemas.intent import INTENT_LABELS_ZH, IntentType
 
 #: 模块级 logger:意图管线的网络异常/解析失败降级时在此留痕,供运维排查而不是静默吞掉。
 logger = logging.getLogger(__name__)
@@ -87,6 +88,19 @@ def _intent_block(intent) -> str:
     Supervisor（避免其用 AskUserQuestionTool 双问）；prev_intent 是 conversation 内部状态。
     """
     return "INTENT: " + intent.model_dump_json(exclude={"clarification", "prev_intent"})
+
+
+def _steps_incomplete_note(agent: "Agent") -> str:
+    """复合任务完备性告警（spec 2026-10-02 §4.3）：ReAct 收尾时队列非空 = 漏步。
+
+    软告警不阻断——诚实暴露「steps 没派完」这一事实（此前唯一表现是静默丢失），
+    去不去补由用户决定。追加在最终回答之后，落盘内容与用户所见一致。
+    """
+    if not agent._pending_steps:
+        return ""
+    remaining = "、".join(INTENT_LABELS_ZH.get(t, t.value)
+                          for t in agent._pending_steps)
+    return f"\n\n（系统提示：本次复合任务还有未完成的步骤：{remaining}。如需继续请告知。）"
 
 
 #: 取消路径合成的 tool 消息（历史自愈）。自解释措辞：真实会话复验发现，裸的
@@ -359,6 +373,10 @@ class Agent:
         self.ask_user_callback = ask_user_callback
         #: 本轮 run 的 IntentOutput（CLI 读 clarification 判定 + 跨轮 prev_intent）
         self.last_intent = None
+        #: 复合意图待派发队列（spec 2026-10-02 §4）：last_intent.steps 非空时初始化
+        #: 为完整 steps（队头即主意图）。spawn 门禁按队头校验顺序，admitted/去重命中
+        #: 出队——steps 的顺序性与完备性由此在代码层保证，不再依赖 supervisor 提示词。
+        self._pending_steps: list[IntentType] = []
 
         # opt-in 注入：仅对声明 needs_parent 的工具注入父引用。
         # 原子工具不需要 parent；只有嵌套子 agent 的工具声明——权限最小化。
@@ -496,6 +514,7 @@ class Agent:
                 # last_intent 显式置 None:CLI 澄清检查跳过、conversation 的上一轮意图不更新。
                 logger.warning("intent pipeline failed, degraded to plain ReAct", exc_info=True)
                 self.last_intent = None
+                self._pending_steps = []
                 intent = None
 
             if intent is not None:
@@ -509,7 +528,12 @@ class Agent:
                 if intent.clarification and not force_dispatch:
                     # 跨轮澄清:早退在落盘前 → 不持久化(非任务轮)。澄清只走 CLI 层;
                     # INTENT 块不含澄清问题(避免与 ask_user_question 工具双重发问)。
+                    # 澄清轮不拆分（管线互斥保证），队列恒空。
+                    self._pending_steps = []
                     return [Message(role="user", content=intent.clarification)]
+                # 复合意图队列初始化：完整 steps，队头 = steps[0] = intent_type 本身
+                # ——首个 spawn 必须对上主意图，admitted/去重命中后依次出队。
+                self._pending_steps = list(intent.steps)
 
                 # 正常路径：将意图结果序列化为 INTENT 块，注入 system 消息，
                 # 让 LLM 在执行任务时获得路由先验。
@@ -820,6 +844,9 @@ class Agent:
                     self.conversation.prev_intent = self.last_intent.intent_type
                     self.conversation.prev_user_input = task
 
+                # 完备性告警：复合队列非空 = 有 step 未派发（软提示，不阻断）
+                content += _steps_incomplete_note(self)
+
                 # 最终回答(经 on_finish 改写——回放给下轮的是"用户看到的事实",
                 # SAFE_PROMPT 等安全声明跨轮保留)落盘 + 进 in-context,供下轮回放
                 final = Message(role="assistant", content=content)
@@ -908,6 +935,8 @@ class Agent:
                 final_text = next(r.text for r in results if r.summary.get("terminal"))
                 for mw in self.security_middleware:
                     final_text = await mw.on_finish(self, final_text)
+                # 完备性告警：复合队列非空 = 有 step 未派发（软提示，不阻断）
+                final_text += _steps_incomplete_note(self)
                 final = Message(role="assistant", content=final_text)
                 self._append_to_messages(final)
                 self._persist_conversation([final])

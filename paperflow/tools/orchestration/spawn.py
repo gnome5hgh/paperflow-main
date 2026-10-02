@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, StreamEvent
-from paperflow.core.intent.schemas.intent import INTENT_META
+from paperflow.core.intent.schemas.intent import INTENT_META, IntentType
 from paperflow.core.llm import StructuredOutput
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.tools.orchestration.modes import SubAgentMode, SUB_AGENT_MODES
@@ -362,6 +362,12 @@ class SpawnSubAgentTool(Tool):
                      "description": "子 agent 运行模式(可选)。noter: note;"
                                     "reviewer: note_review/download_review;"
                                     "不传 = 子 agent 默认模式"},
+            "intent": {"type": "string",
+                       "enum": [t.value for t in IntentType],
+                       "description": "本次派发对应的意图 step(可选)。复合任务"
+                                      "(INTENT 块 steps 非空)时必填且须等于当前待派 "
+                                      "step——门禁按队列强制顺序,乱序/跳步会被拒;"
+                                      "单意图任务无需传"},
         },
         "required": ["agent_type", "task"],
     }
@@ -386,16 +392,17 @@ class SpawnSubAgentTool(Tool):
         """解析该 agent 生效超时:配置命中优先,否则类默认。"""
         return self._agent_timeouts.get(agent_type, self.timeout)
 
-    def execute(self, agent_type: str, task: str, mode: str | None = None) -> ToolResult:
+    def execute(self, agent_type: str, task: str, mode: str | None = None,
+                intent: str | None = None) -> ToolResult:
         """同步兼容路径：在调用方线程新建事件循环跑 aexecute。
 
         Agent 执行器对 async_execute 工具走 aexecute（父循环 await，级联取消）；
         本方法仅供测试/无事件循环上下文直接调用。
         """
-        return asyncio.run(self.aexecute(agent_type, task, mode))
+        return asyncio.run(self.aexecute(agent_type, task, mode, intent))
 
-    def _admit(self, agent_type: str, task: str,
-               mode: str | None) -> "ToolResult | tuple[str, bool]":
+    def _admit(self, agent_type: str, task: str, mode: str | None,
+               intent: str | None = None) -> "ToolResult | tuple[str, bool]":
         """派发前的五道闸（mode/意图/白名单/去重/审稿预算）。
 
         通过时返回 (任务指纹, 是否含路径)——调用方负责在执行完的 finally 里
@@ -409,19 +416,58 @@ class SpawnSubAgentTool(Tool):
             result = SubAgentResult(status="denied",
                                     summary=f"未知 mode: {mode}，合法值: {sorted(SUB_AGENT_MODES)}")
             return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-        # 意图派发门禁：dispatch_allowed=False 的意图拒绝 spawn（代码级确定性兜底，
-        # 不依赖 LLM 遵循 AGENT.md）。非派发意图=陈述方向/系统类——直接回复或记忆
-        # 操作，绝不派发领域 agent（2026-10-01 收敛：refine_query 已并入 search_paper、
-        # switch_topic 并入 set_research_topic，重派/切换不再有独立意图）。last_intent
-        # 为 None（管线降级）时放行，不改变现状。
-        # steps 例外：LLM 兜底产出 UNCLASSIFIED + 复合意图拆分（steps 非空）时放行——
-        # steps 恒为 LLM 标注的业务意图，非派发意图不会带 steps；supervisor 按序
-        # 调度各 step 时每一步 spawn 都应通过门禁（否则复合派发整条被误拒）。
-        li = parent.last_intent
-        if li is not None and not li.steps and not INTENT_META[li.intent_type][1]:
-            result = SubAgentResult(status="denied",
-                                    summary=f"当前意图 {li.intent_type.value} 不派发领域 agent")
-            return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+        # 意图派发门禁（spec 2026-10-02 §4.2，代码级确定性强制，不依赖 LLM 遵循
+        # AGENT.md）。两层：
+        # - 复合队列非空（INTENT steps 轮次）：spawn 必须声明 intent 且等于队头——
+        #   steps 的顺序性在代码层保证；admitted/去重命中出队，denied 不出队。
+        #   原先「UNCLASSIFIED+steps 放行」的例外分支随之消亡：复合授权改由队列
+        #   逐 step 承载，每个声明意图仍过 INTENT_META 派发校验（双保险）。
+        # - 队列空（普通轮次）：INTENT_META 门禁照旧——dispatch_allowed=False
+        #   的意图拒绝 spawn（非派发意图=陈述方向/系统类，绝不派发领域 agent）。
+        # last_intent 为 None（管线降级）时放行，不改变现状。
+        # 门禁防的是漂移（LLM 跳步/乱序）而非对抗：intent 由 supervisor 声明，
+        # 传错换不到任何权限——各规则照查。
+        parent_queue = getattr(parent, "_pending_steps", [])
+        declared: IntentType | None = None
+        if intent is not None:
+            try:
+                declared = IntentType(intent)
+            except ValueError:
+                result = SubAgentResult(
+                    status="denied",
+                    summary=f"未知 intent: {intent}，合法值为 IntentType 枚举")
+                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+        if parent_queue:
+            head = parent_queue[0]
+            if declared is None:
+                result = SubAgentResult(
+                    status="denied",
+                    summary=f"复合任务派发必须带 intent 字段指向当前 step；当前应派: {head.value}")
+                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+            if declared != head:
+                result = SubAgentResult(
+                    status="denied",
+                    summary=f"steps 乱序/跳步：当前应派 {head.value}，收到 {declared.value}")
+                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+            if not INTENT_META[declared][1]:
+                result = SubAgentResult(
+                    status="denied",
+                    summary=f"step {declared.value} 非可派发意图（steps 护栏应已拦截，此处双保险）")
+                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+
+            def _pop_step() -> None:
+                """过闸出队：原地弹队头（runtime._pending_steps 与此共享同一列表）。"""
+                parent_queue.pop(0)
+        else:
+            li = parent.last_intent
+            if li is not None and not INTENT_META[li.intent_type][1]:
+                result = SubAgentResult(status="denied",
+                                        summary=f"当前意图 {li.intent_type.value} 不派发领域 agent")
+                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+
+            def _pop_step() -> None:
+                """普通轮次无队列可出。"""
+                pass
         # ① spawn 权限运行时校验(_check_spawn_allowed 单点)。
         #    supervisor 硬编码放行;非 supervisor 越界 spawn → denied。
         denied = _check_spawn_allowed(parent, agent_type)
@@ -443,9 +489,13 @@ class SpawnSubAgentTool(Tool):
             hit = reg.get(fp)
             now = time.monotonic()
             if hit and hit["state"] == "running":
+                # 去重命中（同任务在跑）= 该 step 视为已满足，出队（spec §4.2-R2）
+                _pop_step()
                 return ToolResult(text="同任务正在执行中，请等待其结果（已去重，勿重复派发）")
             if hit and hit["state"] == "done" and not has_path \
                     and now - hit["started_at"] < _SPAWN_REUSE_WINDOW_S:
+                # done 窗口复用 = 该 step 视为已满足，出队
+                _pop_step()
                 return hit["result"]
             # ③ 审稿预算门:审稿类 mode 在注册 running 前计数检查——超限拒绝(不注册,
             #    不污染去重注册表);去重命中早退不计数。置于注册前是 _admit 的既有
@@ -462,16 +512,18 @@ class SpawnSubAgentTool(Tool):
                                       summary=denied_result.model_dump())
                 _REVIEW_SPAWN_COUNTS[bkey] = used + 1
             reg[fp] = {"state": "running", "result": None, "started_at": now}
+        # 过闸 + 注册成功：队头出队（denied 路径在上方已 return，不会走到这里）
+        _pop_step()
         return fp, has_path
 
-    async def aexecute(self, agent_type: str, task: str,
-                       mode: str | None = None) -> ToolResult:
+    async def aexecute(self, agent_type: str, task: str, mode: str | None = None,
+                       intent: str | None = None) -> ToolResult:
         """派发一个子 agent（父事件循环上 await），返回 SubAgentResult 序列化结果。
 
         与同步路径同一套门禁与去重；子 agent 与父同循环——取消级联、流式事件、
         审计归属全部天然对齐，不再经工作线程 + 独立事件循环。
         """
-        admitted = self._admit(agent_type, task, mode)
+        admitted = self._admit(agent_type, task, mode, intent)
         if isinstance(admitted, ToolResult):
             return admitted
         fp, has_path = admitted

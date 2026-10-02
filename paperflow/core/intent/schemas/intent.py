@@ -75,6 +75,25 @@ INTENT_META: dict[IntentType, tuple[IntentCategory, bool]] = {
 }
 
 
+#: 意图 → 中文短标签（澄清模板/日志展示用；spec 2026-10-02 §3.2 合成兜底问题）。
+#: 只求自足易懂，不复述枚举注释里的完整判据。
+INTENT_LABELS_ZH: dict[IntentType, str] = {
+    IntentType.SET_RESEARCH_TOPIC: "设定/切换研究方向",
+    IntentType.MENU_SELECTION:     "菜单选项选择",
+    IntentType.SEARCH_PAPER:       "搜索论文",
+    IntentType.ASK_QUESTION:       "论文问答",
+    IntentType.GENERATE_NOTE:      "撰写笔记",
+    IntentType.RESEARCH_DISCOVERY: "选题发现",
+    IntentType.ANALYZE_PAPER:      "精读分析",
+    IntentType.MANAGE_MEMORY:      "记忆/清单管理",
+    IntentType.CHITCHAT:           "闲聊",
+    IntentType.OUT_OF_SCOPE:       "超出能力范围的请求",
+    IntentType.HELP:               "使用帮助",
+    IntentType.FEEDBACK:           "结果反馈",
+    IntentType.UNCLASSIFIED:       "未分类",
+}
+
+
 class IntentStep(str, Enum):
     """产出阶段枚举——让审计/监控能看出意图由哪一级产出。"""
 
@@ -110,7 +129,7 @@ class IntentOutput(BaseModel):
     #: 上一轮意图（追问检测阶段填充，来自会话上下文）
     prev_intent: IntentType | None = None
 
-    #: 复合意图的有序拆分（LLM 兜底阶段填充；路由命中时保持为空——单意图无需拆分）
+    #: 复合意图的有序拆分（LLM 兜底或路由 multi-label 命中 ≥2 时填充；单意图为空）
     steps: list["IntentType"] = []
 
     #: 歧义澄清问题（LLM 兜底阶段填充；非空时管线提前返回，由调用方跨轮挂起待澄清意图）
@@ -171,12 +190,12 @@ class IntentionResult(BaseModel):
 
     @model_validator(mode="after")
     def _steps_guard(self) -> "IntentionResult":
-        """steps 三重护栏（spec 2026-10-01 §4.2，代码级防御）。
+        """steps 三重护栏 + steps×clarification 互斥（spec 2026-10-02 §3.3，代码级防御）。
 
-        UNCLASSIFIED+steps 会放行 spawn 门禁（spawn.py:417-419 的例外分支），LLM 误拆
-        等于给非派发意图开派发口子。违规整体置空，不抛错——解析失败的兜底路径
-        （fallback=UNCLASSIFIED）不应因护栏再炸一次。
-        注意：spec §4.2-2 原文为「超出截断」，本实现按 brief 取「整体置空」——
+        非业务意图混入 steps 会开出派发口子：队列门禁（spawn._admit）按 step 逐个
+        校验 INTENT_META，这里在 schema 层再拦一道。违规整体置空，不抛错——解析失败
+        的兜底路径（fallback=UNCLASSIFIED）不应因护栏再炸一次。
+        注意：spec 2026-10-01 §4.2-2 原文为「超出截断」，本实现按 brief 取「整体置空」——
         更严格，且防 fallback 路径携带半截非法 steps，差异是有意的。
         """
         if self.steps:
@@ -185,6 +204,10 @@ class IntentionResult(BaseModel):
                     or any(s not in business for s in self.steps)
                     or self.steps[0] != self.intent_type):
                 object.__setattr__(self, "steps", [])
+        # steps × clarification 互斥（spec 2026-10-02 §3.3）：复合句已拆就无需澄清，
+        # 两者同时产出属模型违命，代码级强制 clarification 让位。
+        if self.steps and self.clarification:
+            object.__setattr__(self, "clarification", None)
         return self
 
     #: 歧义澄清问题（非空时管线提前返回，由调用方跨轮挂起待澄清意图）
