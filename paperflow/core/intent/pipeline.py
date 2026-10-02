@@ -106,7 +106,7 @@ class IntentPipeline:
 
         # ====== 第1级：实体提取（确定性正则） ======
         # 从当前输入中提取所有可能实体，不依赖任何模型
-        entities = self._extract_entities(query)
+        entities = extract_entities(query)
 
         # ====== 第2级：选项答复检测（确定性正则，在追问之前） ======
         # 纯编号菜单选择是「选择」动作而非自由文本，不经 NLU 重分类——
@@ -123,7 +123,7 @@ class IntentPipeline:
 
         # ====== 第3级：追问检测（词表启发式） ======
         # 若判定为追问，则继承上一轮意图，同时合并实体：上轮实体 + 本轮实体（同键覆盖）
-        if self._detect_followup(query, prev_intent):
+        if detect_followup(query, prev_intent):
             # 若存在上轮输入，则重跑实体提取（获取上轮实体）
             prev_entities = extract_entities(prev_user_input) if prev_user_input else {}
             # 实体合并顺序：上轮在前，本轮在后，确保本轮同键实体覆盖上轮
@@ -154,16 +154,14 @@ class IntentPipeline:
         if passed:
             top_name, top_score = passed[0]
             if _is_business(top_name):
-                # --- 多标签拆分：分数最高的业务意图之外，还有哪些也算「认准了」？ ---后续候选要同时满足三个条件才能拆进 steps：
+                # --- 多意图标签拆分，后续候选意图要同时满足三个条件才能拆进 steps：
                 # ① 它自己这条路由的阈值是 fit 标定过的（> 0）。routes.yaml 出厂时
                 #    阈值全是 0.0，此时「过线」毫无含金量——任何第二高分都能过一条
                 #    0.0 的线，整句会被拆得面目全非（实测未标定状态下任意复合句的
                 #    第二高分都在 0.86 以上）。所以标定之前路由层不拆分，行为与
                 #    旧版单标签完全一致；fit 写回真实阈值后拆分才自然激活。
-                # ② 分数超过「自身阈值 + ROUTER_STEPS_EPSILON」：压线过的算搭车
-                #    命中，不拆（见常量注释）。
-                # ③ 是可派发的业务意图：闲聊、帮助这类系统意图永远不该出现在
-                #    steps 里——它们不派发，拆进去只会让 spawn 门禁拒掉整条链。
+                # ② 分数超过「自身阈值 + ROUTER_STEPS_EPSILON」：压线过的算搭车命中，不拆（见常量注释）。
+                # ③ 是可派发的业务意图：闲聊、帮助这类系统意图永远不该出现在steps 里——它们不派发，拆进去只会让 spawn 门禁拒掉整条链。
                 steps_names = [top_name]
                 for name, score in passed[1:]:
                     if len(steps_names) >= MAX_STEPS:
@@ -186,13 +184,11 @@ class IntentPipeline:
                         prev_intent=prev_intent, rewritten_query=query,
                         steps=[IntentType(n) for n in steps_names])
                 # --- 只有一个业务意图过线：先问一句「要不要向用户澄清」 ---
-                # 路由认准了但认得吃力（分数贴线）或有人和它咬得很近（分差小）时，
-                # 与其硬选一个意图执行错方向，不如让用户补一句话。
+                # 路由认准了但认得吃力（分数贴线）或有人和它咬得很近（分差小）时，与其硬选一个意图执行错方向，不如让用户补一句话。
                 if self._ambiguous(scored):
                     return await self._clarify_round(
                         query, entities, prev_intent, scored)
-                # 路由认得又准又稳：直接产出单意图，不澄清不拆分——这是绝大多数
-                # 输入的快路径，一次 LLM 调用都不花
+                # 路由认得又准又稳：直接产出单意图，不澄清不拆分——这是绝大多数输入的快路径，一次 LLM 调用都不花
                 return IntentOutput(
                     intent_type=IntentType(top_name),
                     confidence=self._clip01(top_score),
@@ -214,12 +210,10 @@ class IntentPipeline:
             return await self._clarify_round(query, entities, prev_intent, scored)
 
         # ====== 第5级：LLM 兜底（常规解析） ======
-        # 走到这里说明代码判据认为「不需要澄清」。但 LLM 拿到输入后仍可能自作主张
-        # 产出 clarification——一律丢弃：澄清的「问不问」只认代码判据，否则等于
-        # 又把触发权交回给模型心证（上一版澄清死路径的病根就在这）。
-        # steps 照常透传：LLM 拆分是复合句在「路由没拆动」时的第二 chances，
-        # 触发契约在提示词里约定；steps 非空时 schema 护栏会自动清掉 clarification，
-        # 这里再显式置 None，把「拆了还要问」的违命输出也收口。
+        # 走到这里说明代码判据认为「不需要澄清」。但 LLM 拿到输入后仍可能自作主张产出 clarification——
+        # 一律丢弃：澄清的「问不问」只认代码判据，否则等于又把触发权交回给模型心证。
+        # steps 照常透传：LLM 拆分是复合意图在第四级时没有成功拆分后的第二个兜底，触发契约在提示词里约定；
+        # steps 非空时 schema 护栏会自动清掉 clarification，这里再显式置 None，把「拆了还要问」的违命输出也收口。
         result = await self._llm_extract(query, scored, force_clarification=False)
         return IntentOutput(
             intent_type=result.intent_type,
@@ -229,18 +223,6 @@ class IntentPipeline:
             steps=result.steps or [],
             clarification=None,
         )
-
-    # ------------------------------------------------------------------
-    # 级联前级委托（保留方法形态便于测试替换）
-    # ------------------------------------------------------------------
-
-    def _extract_entities(self, query: str) -> dict:
-        """实体提取（委托 entities.extract_entities；保留方法形态便于测试替换）。"""
-        return extract_entities(query)
-
-    def _detect_followup(self, query: str, prev_intent) -> bool:
-        """追问检测（委托 followup.detect_followup；保留方法形态便于测试替换）。"""
-        return detect_followup(query, prev_intent)
 
     # ------------------------------------------------------------------
     # 路由判定辅助
