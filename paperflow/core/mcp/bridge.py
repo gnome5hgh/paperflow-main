@@ -2,7 +2,9 @@
 
 命名与规范化吸收 Letta（normalize_mcp_schema）与 OpenAI SDK（_safe_tool_name_part、
 64 上限 + hash 后缀）的做法；写分类用 MCP annotations.readOnlyHint，缺注解按"可能写"
-处理——MCP 规范明确 annotations 是不可信提示，缺省保守（spec §5.3）。
+处理——MCP 规范明确 annotations 是不可信提示，缺省保守（spec §5.3）。风险姿态对齐
+业界（2026-10 调研：Cline/Goose/Claude Code/VS Code 均可见但审批，default-hidden
+无先例）：写类工具可见但 requires_confirm 逐次确认，write_tools 预批准豁免。
 """
 from __future__ import annotations
 
@@ -64,7 +66,12 @@ def is_write_tool(annotations) -> bool:
 
 
 def filter_tool_specs(cfg: McpServerConfig, specs: list[McpToolSpec]):
-    """过滤顺序（spec §4）：allowed → disabled → schema 合法性 → 风险分级。"""
+    """过滤顺序（spec §4）：allowed → disabled → schema 合法性。
+
+    风险分级不再隐藏工具——写类转为可见但 requires_confirm（见 build_mcp_tools），
+    业界对齐（2026-10 调研：Cline/Goose/Claude Code/VS Code 均可见但审批，
+    default-hidden 无先例）。
+    """
     visible: list[McpToolSpec] = []
     hidden: list[tuple[str, str]] = []
     for s in specs:
@@ -77,9 +84,6 @@ def filter_tool_specs(cfg: McpServerConfig, specs: list[McpToolSpec]):
         if normalize_input_schema(s.input_schema) is None:
             hidden.append((s.name, "inputSchema 非法（不可修复），已跳过"))
             continue
-        if is_write_tool(s.annotations) and s.name not in cfg.write_tools:
-            hidden.append((s.name, "写类工具默认禁用（如需开启加入 write_tools）"))
-            continue
         visible.append(s)
     return visible, hidden
 
@@ -91,7 +95,8 @@ class McpToolAdapter(Tool):
     validate_tool 都是实例属性读取，动态工具无需动态子类（spec §5.2 定稿结论）。
     """
 
-    def __init__(self, manager, server_name: str, spec: McpToolSpec, write_enabled: bool):
+    def __init__(self, manager, server_name: str, spec: McpToolSpec, write_enabled: bool,
+                 requires_confirm: bool = False):
         self.name = bridged_tool_name(server_name, spec.name)
         self.description = (
             f"{(spec.description or '').rstrip()}\n"
@@ -104,6 +109,10 @@ class McpToolAdapter(Tool):
         # 同义合法值 "write_file"。
         self.side_effects = ["network", "write_file"] if write_enabled else ["network"]
         self.output_scan = "mark"
+        # 写类默认可见但需逐次确认，write_tools 预批准豁免；readOnlyHint=true 只读
+        # 工具自动放行（业界对齐，2026-10 调研：Cline/Goose/Claude Code/VS Code
+        # 均可见但审批，default-hidden 无先例）。
+        self.requires_confirm = requires_confirm
         self._manager = manager
         self._server_name = server_name
         self._tool_name = spec.name
@@ -126,16 +135,25 @@ class McpToolAdapter(Tool):
 
 
 def build_mcp_tools(server_name: str, cfg: McpServerConfig, manager) -> list[Tool]:
-    """按过滤结果构造适配器列表；隐藏名单（含原因）写回 ServerStatus 供 /mcp 展示。"""
+    """按过滤结果构造适配器列表；隐藏名单与需确认名单写回 ServerStatus 供 /mcp 展示。
+
+    写类（readOnlyHint 非 true，含缺注解）可见但 requires_confirm=True，
+    cfg.write_tools 预批准豁免；排序保持只读在前。
+    """
     st = manager.get_server_status(server_name)
     if st is None or st.status != "connected":
         return []
     visible, hidden = filter_tool_specs(cfg, st.tools)
     st.hidden = hidden
+    st.pending_confirm = [s.name for s in visible
+                          if is_write_tool(s.annotations)
+                          and s.name not in cfg.write_tools]
     reads = [s for s in visible if not is_write_tool(s.annotations)]
     writes = [s for s in visible if is_write_tool(s.annotations)]
     return ([McpToolAdapter(manager, server_name, s, write_enabled=False) for s in reads]
-            + [McpToolAdapter(manager, server_name, s, write_enabled=True) for s in writes])
+            + [McpToolAdapter(manager, server_name, s, write_enabled=True,
+                              requires_confirm=(s.name not in cfg.write_tools))
+               for s in writes])
 
 
 def collect_mcp_agent_tools(agent_type: str, servers: dict[str, McpServerConfig],
