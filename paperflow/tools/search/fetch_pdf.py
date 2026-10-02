@@ -1,4 +1,4 @@
-"""FetchPdfTool：从搜索结果 URL 下载 PDF 到本地资料库（独立下载工具）。
+"""FetchPdfTool：从检索结果（含 MCP 工具结果）中的 PDF 链接下载 PDF 到本地资料库（独立下载工具）。
 
 下载职责独立成工具，让搜索工具保持纯只读：写盘副作用集中在本工具，审计日志里
 「写盘」动作归于 fetch_pdf，不藏在名为 search 的工具下。SSRF 校验与搜索客户端
@@ -21,8 +21,8 @@ class FetchPdfTool(Tool):
     """下载 PDF 工具：带 SSRF 校验的网络抓取 + 写盘 + 索引热更新。"""
 
     name = "fetch_pdf"
-    # description 与行为对齐:纯下载,url 取搜索结果行的 pdf= 字段(LLM 据此传参)
-    description = "下载 PDF 到本地资料库（SSRF 校验 + 写盘后索引热更新）。url 取搜索结果行的 pdf= 字段。"
+    # description 与行为对齐:纯下载,url 取检索结果（含 MCP 工具结果）中的 PDF 链接(LLM 据此传参)
+    description = "下载 PDF 到本地资料库（SSRF 校验 + 写盘后索引热更新）。url 取检索结果（含 MCP 工具结果）中的 PDF 链接。"
     parameters = {
         "type": "object",
         "properties": {
