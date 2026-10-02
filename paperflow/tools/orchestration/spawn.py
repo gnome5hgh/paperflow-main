@@ -493,6 +493,10 @@ class SpawnSubAgentTool(Tool):
                 session_id=parent.session_id, confirm_callback=parent.confirm_callback,
                 ask_user_callback=parent.ask_user_callback,
                 stream_callback=_make_child_stream_callback(parent),
+                # 继承父 trace_id：去重池（get_run_state 按 trace_id 键控）在
+                # 一次用户任务内跨 agent 共享——子 agent 不重复下载/抓取父任务
+                # 已处理过的资源（supervisor 超时重试派发新 searcher 的实测缺陷）。
+                trace_id=getattr(parent, "_trace_id", None),
             )
             if mode:
                 child.system_prompt = f"当前模式：{mode}\n{child.system_prompt}"

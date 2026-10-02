@@ -224,6 +224,7 @@ class Agent:
         max_turns: int = 20,
         stream_callback: Callable[[StreamEvent], None] | None = None,
         skill_registry: SkillRegistry | None = None,   # Skill 注册表；None = 无 skill 体系
+        trace_id: str | None = None,   # 继承的追踪 ID；None = 每次 run 自行生成
     ):
         """
         :param llm: LLM 客户端实例
@@ -260,6 +261,9 @@ class Agent:
         :param skill_registry: Skill 注册表(可选)。提供时按 agent_type 计算 L1
             <available_skills> 清单块注入 head(静态,每轮重建 head 时原样携带);
             None 时整块省略零开销
+        :param trace_id: 继承的追踪 ID(可选)。spawn 工具传父 agent 的当前
+            trace_id,使子 agent 与父共享同一次用户任务的去重池与审计链;
+            None 时每次 run 自行生成新 trace_id(默认,行为不变)
         """
         # Pull 模式:从唯一注册表按类型加载完整配置
         config = agent_registry.get_config(agent_type)
@@ -336,6 +340,11 @@ class Agent:
 
         #: 当前 run 的追踪 ID，每次 run 开始时重新生成，注入 ToolContext
         self._trace_id: str | None = None
+
+        #: 构造时继承的追踪 ID（spawn 场景由父 agent 传入）。非 None 时 run()
+        #: 不再生成新 trace_id，而是沿用此值——去重池按 trace_id 键控，子 agent
+        #: 由此与父共享同一次用户任务的去重池。
+        self._inherited_trace_id: str | None = trace_id
 
         #: 当前 ReAct 轮次:run() 每轮循环开头更新。spawn 摘要提取的 LLM 调用
         #: 读父 agent 的此属性归属轮次(父在做摘要提取,归父的 trace/轮次)。
@@ -691,8 +700,11 @@ class Agent:
             7. 回到步骤 4，LLM 根据工具执行结果继续推理
             8. 若超过 max_turns → 抛出 MaxTurnsExceeded（安全阀）
         """
-        # 每次 run 独立追踪 ID：同一 conversation 的多次 run 由 trace_id 区分
-        self._trace_id = f"trace_{uuid.uuid4().hex[:12]}"
+        # 每次 run 独立追踪 ID：同一 conversation 的多次 run 由 trace_id 区分。
+        # spawn 的子 agent 继承父 trace_id——去重池（get_run_state 按其键控）因此
+        # 在「一次用户任务」内跨 agent 共享：supervisor 超时重试派发的新 searcher
+        # 不会重复下载父任务已下载过的论文（验收实测缺陷 2026-10-02）。
+        self._trace_id = self._inherited_trace_id or f"trace_{uuid.uuid4().hex[:12]}"
 
         # 信任边界：清洗用户输入里的未配对 surrogate（外部粘贴/合成文本可能携带，
         # 见 core/security/text.py）——否则下游意图管线/实体提取在脏字符上工作，且
