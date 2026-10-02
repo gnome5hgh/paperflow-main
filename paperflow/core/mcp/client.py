@@ -36,6 +36,8 @@ class ServerStatus:
     error: str = ""
     tools: list[McpToolSpec] = field(default_factory=list)
     hidden: list[tuple[str, str]] = field(default_factory=list)
+    #: 写类（含缺注解）可见但需逐次确认的工具名；write_tools 预批准者不在列
+    pending_confirm: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -236,7 +238,7 @@ class McpClientManager:
         return self._status.get(name)
 
     def status_report(self) -> str:
-        """/mcp 命令的渲染体：状态 + 工具数 + 被隐藏工具及原因。"""
+        """/mcp 命令的渲染体：状态 + 工具数 + 被隐藏工具及原因 + 需确认工具。"""
         if not self._servers:
             return "未接入 MCP（config.yaml 顶层 mcp_servers 为空）。"
         lines: list[str] = []
@@ -250,6 +252,8 @@ class McpClientManager:
             line = f"- {name} [{cfg.transport}] {head}，工具 {len(st.tools)} 个"
             if st.hidden:
                 line += "；已隐藏: " + "、".join(f"{n}（{r}）" for n, r in st.hidden)
+            if st.pending_confirm:
+                line += f"；需确认: {'、'.join(st.pending_confirm)}（write_tools 可预批准）"
             lines.append(line)
         return "\n".join(lines)
 

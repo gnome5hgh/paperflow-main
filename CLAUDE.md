@@ -235,7 +235,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 `paperflow/tools/` — 原子工具，一工具一文件，按域分包；`paperflow/tools/__init__.py` 再导出全部 13 个工具供消费方统一导入（导出符号名稳定，内部路径随便拆）：
 
-另有**动态 MCP 工具**（不计入 13 的原子工具清单）：config.yaml 顶层 `mcp_servers` 声明的 server，其工具经 `paperflow/core/mcp/` 桥接为原生 Tool 注入 agent（命名 `mcp__<server>__<tool>`，与 skill 工具同一 `merge_tools` 装配缝），**写类工具默认禁用**（按 readOnlyHint 分类，缺注解按「可能写」处理，`write_tools` 显式开启）。配置示例见 `docs/learning/11-MCP客户端.md`（docs/ 为本地文档，不入库）。
+另有**动态 MCP 工具**（不计入 13 的原子工具清单）：config.yaml 顶层 `mcp_servers` 声明的 server，其工具经 `paperflow/core/mcp/` 桥接为原生 Tool 注入 agent（命名 `mcp__<server>__<tool>`，与 skill 工具同一 `merge_tools` 装配缝），**写类工具可见但需逐次用户确认**（按 readOnlyHint 分类，缺注解按「可能写」处理），config 的 `write_tools` 预批准豁免；`readOnlyHint=true` 只读工具自动放行。配置示例见 `docs/learning/11-MCP客户端.md`（docs/ 为本地文档，不入库）。
 
 - `file/` — 读/写/编辑/glob/grep/read_pdf/format_check（+ `atomic.py` 原子写盘）
 - `search/` — `web_search`（按 source 搜：arxiv/openalex/semantic_scholar，`_SOURCE_REGISTRY` 注册；单源一次调用，多源由 searcher 并行多次调、结果自动去重入池；semantic_scholar 走 `PAPERFLOW_S2_API_KEY`，缺 key 用公共端点，源失败沿熔断降级）、`fetch_pdf`（下载）；`clients/` 是纯 API 客户端（共享 `_HttpClientMixin` SSRF 校验 + 逐跳重定向校验）；`_common.py` 有 `SearchRunState` 跨调用去重池（`wants_run_state` opt-in）、查询 LRU 缓存、源级熔断器
