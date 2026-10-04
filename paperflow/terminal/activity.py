@@ -11,16 +11,46 @@
 SLOW_MS = 2000
 
 #: 工具名 → (emoji+动词, 计数词)。未知工具走 _DEFAULT。
+#: 完整性由 tests/terminal/test_activity.py::test_labels_cover_all_registered_tools
+#: 守护：遍历 paperflow.tools 包全部 Tool 子类，注册名必须都在表内或有豁免
+#: （ask_user_question 走确认中心弹框不出活动行；mcp__* 前缀动态解析）。
 ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
+    # ── 文件与检索 ──
     "read_file": ("🔍 查阅", "文件"),
     "read_pdf": ("🔍 查阅", "文件"),
     "grep": ("🔍 检索", "次"),
     "glob": ("🔍 检索", "次"),
     "rag_retrieve": ("📚 检索", "次"),
+    "fetch_pdf": ("📥 下载", "次"),
+    "format_check": ("✅ 校验", "次"),
+    # ── 写入 ──
     "write_file": ("✏️ 写入", "文件"),
     "edit_file": ("✏️ 编辑", "文件"),
+    # ── 引用 ──
+    "lookup_citation": ("📎 查引", "次"),
+    "add_citation": ("📎 引用", "次"),
+    "list_citations": ("📎 列引", "次"),
+    "format_citations": ("📎 排版", "次"),
+    "lookup_venue_rank": ("🏛 查刊", "次"),
+    # ── 视觉 ──
     "analyze_figures": ("🖼️ 解析", "次"),   # 视觉解析 PDF 插图（noter 高频、耗时数秒）
+    # ── 记忆与笔记 ──
+    "history_append": ("🧠 记忆", "次"),
+    "memory": ("🧠 记忆", "次"),
+    "memory_insert": ("🧠 记忆", "次"),
+    "memory_replace": ("🧠 记忆", "次"),
+    "memory_apply_patch": ("🧠 记忆", "次"),
+    "memory_rethink": ("🧠 记忆", "次"),
+    "memory_finish_edits": ("🧠 记忆", "次"),
+    "extract_title": ("🏷️ 摘题", "次"),
+    "unread_list_add": ("📋 待读", "次"),
+    "unread_list_remove": ("📋 待读", "次"),
+    "conversation_search": ("💬 回溯", "次"),
+    # ── 编排与技能 ──
     "spawn_sub_agent": ("🤖 子任务", "次"),
+    "load_skill": ("🧩 技能", "次"),
+    "submit_review": ("📮 提审", "次"),
+    "submit_download_review": ("📮 提审", "次"),
 }
 _DEFAULT = ("🔧 执行", "次")
 
