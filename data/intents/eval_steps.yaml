@@ -1,0 +1,840 @@
+version: 1
+generated_at: '2026-10-04T18:28:50'
+note: steps/澄清标定评测集——steps 标签为 LLM 标注+独立自检（build_steps_eval.py），跑标定前建议人工抽检；steps len<2
+  为「期望不拆」负例
+compound:
+- query: 下载并整理成笔记那篇链路预测的论文
+  steps:
+  - search_paper
+  - generate_note
+- query: 总结一下这篇 miRNA 论文并保存
+  steps:
+  - generate_note
+  - manage_memory
+- query: 帮我整理这份笔记并导出
+  steps: []
+- query: 下载一些可解释AI的综述文章，我要找一个有潜力的研究切入点。
+  steps:
+  - search_paper
+  - research_discovery
+- query: 查查多模态学习方面的论文，我想看看哪个子领域还存在研究空白。
+  steps: []
+- query: 浏览一下大模型推理优化相关的文章，我想找出一个尚未解决的问题作为课题。
+  steps: []
+- query: 收集一些小样本学习的论文，我想找一个适合入门的研究点。
+  steps:
+  - search_paper
+  - research_discovery
+- query: 查阅自动驾驶感知领域的文献，我想发掘一个值得深入的研究题目。
+  steps: []
+- query: 这个话题先搁置一下，顺手把我刚说的偏好更新到记忆里。
+  steps: []
+- query: 先从这个任务抽离出来，抽离前请列出你保存的关于我的记忆。
+  steps: []
+- query: 作者提出的新方法真的比基线强吗，能基于论文里的实验细节做个完整评估吗？
+  steps: []
+- query: Howdy! I'm trying to relax. Can you give me a foot massage?
+  steps: []
+- query: 研究主题设为扩散模型水印的话，下载几篇相关论文给我。
+  steps: []
+- query: 清除资料里的重复段落，只保留核心内容做成笔记。
+  steps: []
+- query: 记住这篇文章的论证脉络，再输出一份结构化笔记。
+  steps:
+  - manage_memory
+  - generate_note
+- query: 忘记无关细节，从论文中提炼一份精读笔记。
+  steps: []
+- query: 我想把核心机制做成笔记，但先问一下：这个门控结构为什么比直接拼接更好？
+  steps:
+  - ask_question
+  - generate_note
+- query: 帮我梳理成知识卡片也行，但先回答：这个算法的时间复杂度是怎么从公式推出来的？
+  steps:
+  - ask_question
+  - generate_note
+- query: 我准备把讨论部分归纳成笔记，不过作者说因果性不等于相关性在这里具体指什么？
+  steps:
+  - generate_note
+  - ask_question
+- query: 我们聊点别的——从今天起课题就围绕图神经网络与药物发现展开。
+  steps: []
+- query: 这个话题先放一放，把咱们的研究对象换成自动驾驶场景下的强化学习。
+  steps: []
+- query: 会议只保留NeurIPS和ICML，再搜文献
+  steps: []
+- query: 时间范围改成2020年以后，继续查论文
+  steps: []
+- query: 把排序方式从相关度改为引用量，再检索
+  steps: []
+- query: Hey, how's it going? Could you warm up my lunch for me?
+  steps: []
+- query: Hi! How's your day going? Can you make me a sandwich?
+  steps: []
+- query: 今天天气不错，你回答我的速度也挺快，体验挺好。
+  steps: []
+- query: 嘿，忙不忙？你解释这个概念的方式比之前好懂多了。
+  steps: []
+- query: 换个研究主题，我点第 7 个。
+  steps: []
+- query: 这篇论文的 PDF 我已经下好了，帮我把方法、实验和图表都看一遍，再整理成一份复习提纲。
+  steps:
+  - analyze_paper
+  - generate_note
+- query: 我想快速掌握这篇文章，你先分析一下它的研究思路，最后输出成课堂笔记。
+  steps:
+  - analyze_paper
+  - generate_note
+- query: 把附件里论文的创新点、实验设置和结果讨论都过一遍，做成我能直接看的读书笔记。
+  steps:
+  - analyze_paper
+  - generate_note
+- query: 帮我看看这篇文献的模型结构和对比实验，然后整理成条目式的学习记录。
+  steps:
+  - analyze_paper
+  - generate_note
+- query: 最近有哪些关于量子计算和机器学习交叉的论文？我想看看有没有新的课题可以做。
+  steps:
+  - search_paper
+  - research_discovery
+- query: 今天食堂的饭真一般，对了你之前说的那个扩散模型反向过程，为什么每一步都要加噪声再预测噪声？
+  steps: []
+- query: 这杯拿铁拉花挺好看，话说你模型里的层归一化为什么放在注意力之前而不是之后？
+  steps: []
+- query: 周末打算看电影，不过先问你个事，你论文附录里那个 KL 散度项是怎么推出来的？
+  steps: []
+- query: 最近天气忽冷忽热的，你论文里说稀疏注意力能省计算，可它到底是怎么保证不丢关键信息的？
+  steps: []
+- query: 我刚看到一只猫在晒太阳，忽然好奇你论文里的 ROUGE 分数和 BLEU 分数，为什么一个侧重召回一个侧重精确率？
+  steps: []
+- query: 地铁上人好多，想到你论文里那个图神经网络的过平滑问题，为什么层数一深节点表示就趋同了？
+  steps: []
+- query: 生日快乐呀，顺便问下你论文里的因果注意力掩码，为什么它能防止解码时看到未来 token？
+  steps: []
+- query: 推荐几个课题给我参考一下，然后把我当前的课题改成‘因果推断’。
+  steps: []
+- query: 从这些新兴领域里挑一个当我的课题，我选‘扩散模型’，现在改过来。
+  steps: []
+- query: 把论文内容做成笔记吧，不过先帮我拆解一下它的模型结构和每个实验指标的变化原因。
+  steps:
+  - analyze_paper
+  - generate_note
+- query: 你能让我立刻学会八门外语吗？哎呀随便说说，你今天心情如何？
+  steps: []
+- query: 你能让时间倒流五分钟吗？不聊这个了，你平时喜欢听什么歌？
+  steps: []
+- query: 我觉得这功能很难用，有没有详细一点的操作步骤？
+  steps: []
+- query: 怎么每次都要我重复输入？这体验不太好吧，能不能告诉我正确用法？
+  steps: []
+- query: 这个功能入口藏得太深了，我找了好久，能告诉我具体路径吗？
+  steps: []
+- query: 今天心情挺好，就是你这个推荐不太合我心意。
+  steps: []
+- query: 在忙吗？我觉得你这次的回答比上次清楚不少。
+  steps: []
+- query: 最近降温了，多穿点，顺便说下你这次答案挺有帮助的。
+  steps: []
+- query: 请查找作者Hinton关于知识蒸馏的文献，并做成结构化的文献笔记。
+  steps:
+  - search_paper
+  - generate_note
+- query: 把arXiv上关于多模态推理的论文找几篇，提炼成课堂笔记。
+  steps:
+  - search_paper
+  - generate_note
+- query: 搜索一下联邦学习隐私保护的综述，然后整理成带引用的阅读笔记。
+  steps:
+  - search_paper
+  - generate_note
+- query: 查一查图神经网络可解释性的代表性论文，写成一份文献综述笔记。
+  steps:
+  - search_paper
+  - generate_note
+- query: 找找今年ACL中关于检索增强生成的论文，帮我生成组会汇报笔记。
+  steps:
+  - search_paper
+  - generate_note
+- query: 下载几篇关于蛋白质结构预测的论文，整理成算法原理笔记。
+  steps:
+  - search_paper
+  - generate_note
+- query: 搜一下因果推断在推荐系统中的应用文献，做成一份主题笔记。
+  steps:
+  - search_paper
+  - generate_note
+- query: 看看最新机器人操作模仿学习的论文，整理成方法对比笔记。
+  steps:
+  - search_paper
+  - generate_note
+- query: 我想看看最近三年这个领域发了不少论文，但哪些空白点适合我开题？
+  steps: []
+- query: 搜一下这个方向的文章，我想知道哪些问题反复出现但一直没被解决。
+  steps: []
+- query: 帮我检索相关研究，我想评估一下哪个细分方向更容易做出新东西。
+  steps: []
+- query: 有哪些近期论文能说明这个领域正在转向什么新主题？我想据此定题。
+  steps: []
+- query: 将这份报告提炼成摘要笔记，写入会话记忆，不要只留在当前上下文。
+  steps:
+  - generate_note
+  - manage_memory
+- query: 整理一份会议纪要式笔记，设为可长期保留的记忆，后续能随时查看。
+  steps:
+  - generate_note
+  - manage_memory
+- query: 把这篇文献整理成笔记并覆盖旧版记忆，确保下次回答使用最新内容。
+  steps:
+  - generate_note
+  - manage_memory
+- query: 把刚才讨论的论文内容做成笔记，保存为跨对话可用的记忆项。
+  steps:
+  - generate_note
+  - manage_memory
+- query: 换一个任务上下文，我的研究主题改成对话系统中的角色一致性。
+  steps: []
+- query: 这个话题先搁置，重新设定研究题目为代码大模型的漏洞检测。
+  steps: []
+- query: 请整理这篇论文的要点，并解释作者提出的损失函数每一项分别在起什么作用。
+  steps:
+  - generate_note
+  - ask_question
+- query: 这篇 PDF 我想整理成知识卡片，你先分析作者如何从问题定义过渡到算法设计。
+  steps:
+  - analyze_paper
+  - generate_note
+- query: 请把这篇论文归纳成提纲，并指出基线实验设置是否存在不公平之处。
+  steps:
+  - generate_note
+  - analyze_paper
+- query: 当前课题不用往下定了，直接切到下一个任务吧。
+  steps: []
+- query: 别改研究主题了，我们跳到另一个话题继续。
+  steps: []
+- query: 这个论文主题先搁置，切到刚才没说完的那件事。
+  steps: []
+- query: 我觉得这个流程设计得不太直观，可以教我怎么正确操作吗？
+  steps: []
+- query: 你们这个搜索好像不太好用，能不能告诉我怎么筛选结果？
+  steps: []
+- query: 我试了半天也没弄明白，这个设置是不是有点复杂，能带我走一遍吗？
+  steps: []
+- query: 这个提示信息写得有点模糊，能不能说明一下我下一步该点哪里？
+  steps: []
+- query: 我觉得这个操作路径不太顺，能教我快捷完成的方法吗？
+  steps: []
+- query: 嘿，周末过得怎么样？对了，你刚才那个推荐结果不太符合我的需求。
+  steps: []
+- query: 你好呀，别来无恙？我觉得你这次总结得有点太长了。
+  steps: []
+- query: 哎呀，今天地铁人真多，说到这个，你刚才的回复格式要是再整齐点就好了。
+  steps: []
+- query: 嗨，午饭吃了啥？你上轮回答速度倒是挺快，但漏掉了一个关键点。
+  steps: []
+- query: 哈喽，最近在追剧吗？不过你刚才那个方案我试了一下，好像跑不通。
+  steps: []
+- query: 这个方向不对，换第 1 项。
+  steps: []
+- query: 我想换个领域做文献综述，先找找‘联邦学习隐私保护’的论文。
+  steps: []
+- query: 请记住这些资料的核心内容，并以读书笔记的形式输出。
+  steps:
+  - manage_memory
+  - generate_note
+- query: 我想在记忆里留一份这篇综述的摘要，你帮我生成笔记吧。
+  steps:
+  - generate_note
+  - manage_memory
+- query: 把上下文中的论文要点保存到记忆库，再做成复习笔记。
+  steps:
+  - manage_memory
+  - generate_note
+- query: 清空之前的记忆，只根据这份材料整理一份新笔记。
+  steps:
+  - manage_memory
+  - generate_note
+- query: 有没有关于社交网络分析的论文推荐？我想探索这个领域可能的研究主题。
+  steps:
+  - search_paper
+  - research_discovery
+- query: 今天挺冷的，对了，你读的那篇文章里，作者为什么要把注意力头分成多个而不是一个大的？
+  steps: []
+- query: 在忙吗？我刚看到你分享的论文截图，那个损失函数里的温度系数为什么能控制分布平滑程度？
+  steps: []
+- query: 吃了吗？顺便问下，你上次讲的那个扩散模型，反向过程为什么可以写成高斯条件分布？
+  steps: []
+- query: 周末过得怎么样？我翻到你提的那篇论文，结论说缩放定律在小模型上不成立，这该怎么解释呀？
+  steps: []
+- query: 嘿，最近追剧了吗？话说你之前提到的那个图神经网络，消息传递机制到底是怎么聚合邻居信息的？
+  steps: []
+- query: 哈喽，刚健身完，突然想起你论文里那个对比学习，为什么负样本数量增加效果会变好？
+  steps: []
+- query: 帮我查看记忆中的论文笔记并整理成清单。
+  steps:
+  - manage_memory
+  - generate_note
+- query: 大模型可解释性这个方向最近还有哪些值得做的课题？我准备把当前研究主题就定在这里了。
+  steps: []
+- query: 帮我探索一下联邦学习中的隐私保护，我打算以后就围绕这个题目开展研究。
+  steps: []
+- query: 多模态幻觉问题下面有哪些细分方向可以挖掘？我想把它设成我接下来的研究主题。
+  steps: []
+- query: 图神经网络的可扩展性周围有哪些研究趋势？我当前的主题就选它了。
+  steps: []
+- query: 量子机器学习有哪些新方向？我接下来就研究这个主题了。
+  steps: []
+- query: 把当前课题放一边，我想聊点别的。
+  steps: []
+- query: 我挺满意你们这个开场白的，对了，今天你那边下雨了吗？
+  steps: []
+- query: 你们这个字体看着很舒服，让我想起小时候的作业本，你小时候爱写字吗？
+  steps: []
+- query: 这个功能名字起得真有意思，不过我更想知道你喜不喜欢吃火锅。
+  steps: []
+- query: 我觉得你们回复的语气还挺温柔的，像在跟朋友唠嗑，你平时爱唠嗑吗？
+  steps: []
+- query: 好久不见，你刚才的回复比之前自然多了。
+  steps: []
+- query: 哈喽，刚那个结果我看过了，还不错。
+  steps: []
+- query: 忙不忙？刚才的输出格式我很满意。
+  steps: []
+- query: 帮我读透这篇 paper，然后把核心论点、数据和结论汇成一篇学习摘要。
+  steps:
+  - analyze_paper
+  - generate_note
+- query: 我想把这篇论文讲给别人听，你先帮我消化一遍，再做成汇报笔记。
+  steps:
+  - analyze_paper
+  - generate_note
+- query: 请梳理这篇论文的研究脉络，并整理成适合我记忆的复习笔记。
+  steps:
+  - analyze_paper
+  - generate_note
+- query: 这篇文章我打算精读，你先帮我提炼关键信息，做成一份带批注的读书笔记。
+  steps: []
+- query: 这篇 paper 我想留着以后翻看，你帮我把它浓缩成一份结构化的知识卡片。
+  steps: []
+- query: 把这些资料整理成笔记后，覆盖之前保存的那份记忆。
+  steps:
+  - generate_note
+  - manage_memory
+- query: 整理成笔记后，查看一下我的记忆里都存了什么。
+  steps:
+  - generate_note
+  - manage_memory
+- query: 因果推断领域最近有什么值得探索的？你就先把我的研究主题设成因果推断吧。
+  steps: []
+- query: 帮我扫一遍多模态推理的新课题，然后顺手把当前主题换成多模态推理。
+  steps: []
+- query: 联邦学习接下来能做哪些题目？那就把课题更新为联邦学习。
+  steps: []
+- query: 大模型安全可以探索什么问题？同时把我的研究主题定成大模型安全。
+  steps: []
+- query: 可解释人工智能还有哪些方向？帮我将当前研究主题调整为可解释人工智能。
+  steps: []
+- query: 换个研究专题：你上次推荐的游戏怎么样？
+  steps: []
+- query: 这个调研主题先暂停，切到你刚才提到的演唱会。
+  steps: []
+- query: 帮我统治世界怎么样？别紧张，就是闲聊，你平时喜欢看电影吗？
+  steps: []
+- query: 你可以让死人复活吗？别害怕，我就随口一问，晚上吃什么？
+  steps: []
+- query: 这个搜索功能我点了半天没找到想要的，你们能不能告诉我具体该怎么筛？
+  steps: []
+- query: 新版本界面看着有点乱，能说明一下各个按钮分别是干什么的吗？
+  steps: []
+- query: 这个提示语读起来不太顺，能解释一下它到底想让我做什么吗？
+  steps: []
+- query: 我觉着这个流程太绕了，有没有一步一步的操作说明可以看？
+  steps: []
+- query: 这个报错信息看着挺吓人的，能帮我看看它是什么意思、我接下来该点哪里吗？
+  steps: []
+- query: 把关键词换成“图神经网络 药物发现”，帮我找几篇能下载的文献。
+  steps: []
+- query: 把主题词替换为“钙钛矿太阳能电池 稳定性”，搜索相关综述。
+  steps: []
+- query: 改成英文关键词“retrieval augmented generation”，搜一下相关期刊论文。
+  steps: []
+- query: 检索词换成“小样本目标检测”，帮我找几篇可获取的文献。
+  steps: []
+- query: 有没有关于量子计算的论文推荐？我想发掘一个有潜力的研究主题。
+  steps:
+  - search_paper
+  - research_discovery
+- query: 搜索一下计算机视觉的近期文章，我想知道哪个子领域还有研究空白。
+  steps: []
+- query: 最近有什么生物信息学的论文？我想从中挑一个题目开始研究。
+  steps: []
+- query: 帮我查查大数据领域的学术论文，看看有没有值得深入探索的方向。
+  steps: []
+- query: 搜一下人机交互的论文，我想看看哪些问题还没被研究过。
+  steps:
+  - search_paper
+  - research_discovery
+- query: 我们换个研究主题，先看测试报告。
+  steps: []
+- query: 换个研究主题，继续聊排期风险。
+  steps: []
+- query: How come the response time is so slow? I need a solution.
+  steps: []
+- query: 我准备调整研究主题，你能先列出几个可选的课题让我挑吗？
+  steps: []
+- query: 我想换课题了，但不知道换什么，给我推荐几个研究主题呗。
+  steps: []
+- query: 我现在要改研究主题，你先帮我发现几个有研究价值的题目。
+  steps: []
+- query: 你还记得我们上次聊了什么吗？把上下文调出来看看。
+  steps: []
+- query: 能再具体一点吗？只要关于新冠疫苗副作用的临床研究。
+  steps: []
+- query: 这个功能我用得不太顺手，能不能先告诉我它的正确操作步骤？
+  steps: []
+- query: 搜索出来的内容不太准，我想了解有没有高级筛选或限定条件的用法？
+  steps: []
+- query: 现在用起来速度有点慢，我想问下推荐的环境配置和优化方法是什么？
+  steps: []
+- query: 这个回答方向不太对，不过我更想知道提问时应该遵循什么格式？
+  steps: []
+- query: 感觉这个入口藏得太深了，请问具体在哪个菜单里、要怎么找到？
+  steps: []
+- query: Transformer 处理长文本的瓶颈怎么突破，最近的文章都在哪里？
+  steps:
+  - ask_question
+  - search_paper
+- query: 大模型幻觉到底怎么产生，有没有综述文献可以看？
+  steps:
+  - ask_question
+  - search_paper
+- query: 联邦学习如何平衡隐私与效率，相关论文能帮我列一下吗？
+  steps:
+  - ask_question
+  - search_paper
+- query: 因果推断用在推荐系统里有哪些做法，哪几篇论文值得下载？
+  steps:
+  - ask_question
+  - search_paper
+- query: 多模态大模型对齐要解决哪些问题，最近发表的文章有哪些？
+  steps:
+  - ask_question
+  - search_paper
+- query: 量子纠错码近年有什么进展，哪些综述或论文可以查？
+  steps: []
+- query: 我想做关于大模型可解释性的研究，有什么具体的research question可以切入吗？
+  steps: []
+- query: 刚才那个查询不用再改了，我们直接换成查一下这周末的火车票。
+  steps: []
+- query: 先别管我前面问的那道题了，帮我看看这个报错怎么解决。
+  steps:
+  - manage_memory
+  - ask_question
+- query: 那个任务先暂停，现在把上下文切到新项目上，我们聊聊排期。
+  steps: []
+- query: 我刚说的搜索词不用再补充了，接下来我们讨论一下明天的会议安排。
+  steps: []
+- query: 把刚才那个任务放一边，重新开一个：帮我查一下附近有哪些健身房。
+  steps: []
+- query: 前面那个问题已经不需要了，我们聊点别的，比如推荐几部悬疑电影。
+  steps: []
+- query: 这个检索先到此为止，切到另一件事：帮我对比一下两款笔记本电脑。
+  steps: []
+- query: 为什么每次都要重新输入？体验很差。
+  steps: []
+- query: 这个推荐结果我很满意，谢谢！
+  steps: []
+- query: 我想做一份关于知识图谱补全的论文笔记，你先帮我搜搜有哪些相关文献。
+  steps:
+  - search_paper
+  - generate_note
+- query: 准备整理一篇大模型推理的文献笔记，能先把近三年的论文找出来吗？
+  steps:
+  - search_paper
+  - generate_note
+- query: 想建一个多模态情感分析的论文笔记库，你先把能找到的文献列给我。
+  steps: []
+- query: 我打算做检索增强生成的论文笔记，先搜一下最新进展有哪些论文。
+  steps: []
+- query: 想整理 AI 对齐方向的论文笔记，先把相关文献和最新论文检索出来。
+  steps:
+  - search_paper
+  - generate_note
+- query: 帮我准备一份量子机器学习的论文笔记素材，先查查有哪些论文可以看。
+  steps:
+  - search_paper
+  - generate_note
+- query: 把这个讲座的录音转成文字，然后整理成笔记。
+  steps: []
+- query: 这个回答很准确，谢谢！
+  steps: []
+- query: 怎么下载 arXiv 上的论文？给我链接。
+  steps: []
+- query: 最近有什么关于多模态大模型的新进展？找几篇 paper 看看。
+  steps: []
+- query: 不对，我不是要查这个，我想找的是关于深度学习的入门教程。
+  steps: []
+- query: 把查询改成‘2024年新能源汽车销量’，刚才那个太宽泛了。
+  steps: []
+- query: 这个先暂停，我们来说说明天面试要准备什么。
+  steps: []
+- query: 能不能把这段讲座录音转写成文字后生成笔记？
+  steps: []
+- query: 整理一下这些参考文献，生成一份可复习的笔记，谢谢
+  steps: []
+- query: 我想探索AI在医疗领域的交叉课题，有哪些还没被做透的点？
+  steps: []
+- query: 我想做一个关于大模型推理能力的课题，有什么切入点？
+  steps: []
+- query: 先暂停，咱们不聊这个了，回到刚才那个报错问题。
+  steps: []
+- query: 任务切一下，先别管文档了，帮我看下这段代码为什么跑不通。
+  steps: []
+- query: 我想了解量子计算在药物发现中的应用，找几篇相关文献。
+  steps: []
+- query: 这个按钮是干嘛的？点了一下没反应。
+  steps: []
+- query: 这结果完全不对啊，我需要重新生成。
+  steps: []
+- query: 行了，这题过，下一个问题是什么？
+  steps: []
+- query: I think the answer is incorrect, please double-check.
+  steps: []
+- query: 重置上下文，我们从头开始聊。
+  steps: []
+- query: 帮我看看这篇论文的实验结果，为什么他们的模型在长文本上表现不好？
+  steps: []
+- query: OK 这个先跳过，接下来我们讨论一下下周的计划。
+  steps: []
+- query: Let's switch gears. 我们刚才说到哪儿了？哦对，不过我想先聊聊旅行。
+  steps: []
+- query: 求助，这个操作步骤是什么？
+  steps: []
+- query: I think the result is wrong. Please check again.
+  steps: []
+- query: 最近有什么关于LLM agent的新进展？找几篇论文
+  steps: []
+- query: 这篇paper的实验结果可靠吗？帮我分析一下它的数据
+  steps: []
+- query: 帮我分析这篇paper的limitations，作者有没有回避什么问题？
+  steps: []
+- query: 换个任务吧，帮我规划一下三天的旅行路线。
+  steps: []
+- query: Stop, let's switch gears. 帮我看看这个代码有什么问题。
+  steps: []
+- query: 第6个，谢谢
+  steps: []
+- query: 你好呀，顺便问一下，为什么树叶到了秋天会变黄？
+  steps: []
+- query: 先解释一下 Figure 3 那条 loss 曲线为什么在 20k step 附近突然掉下去？另外这份 60 页的 survey 我想让你完整读一遍，出一份带图表解读和实验对比的分析报告。
+  steps:
+  - ask_question
+  - analyze_paper
+- query: 我上传了 BERT 原论文，麻烦做一次深入精读，重点拆解预训练目标和全部消融实验；对了，[CLS] token 的向量到底是怎么被下游任务使用的？
+  steps:
+  - analyze_paper
+  - ask_question
+- query: 请 generate_note 把这份 paper 变成结构化 notes，标注关键结论；请 analyze_paper，对实验设计和 Figure
+    3 做深入解读。
+  steps:
+  - generate_note
+  - analyze_paper
+- query: 这篇 arXiv 论文我想快速吃透：请 analyze_paper，重点分析 method 和 ablation study；请 generate_note，把
+    related work 和附录整理成 bullet notes。
+  steps:
+  - analyze_paper
+  - generate_note
+- query: 先把这篇 arXiv PDF 做一次系统性精读，重点拆方法、实验设计和图表解读；另外帮我把“偏好 Transformer 长上下文”这条记忆更新成“偏好所有长上下文模型”，再列一下当前记忆列表。
+  steps:
+  - analyze_paper
+  - manage_memory
+- query: 帮我先查看记忆里有没有关于这篇 paper 的笔记，如果有就更新；同时对上传的 PDF 做精读分析，重点解读 Figure 3 和 Table 2。
+  steps:
+  - manage_memory
+  - analyze_paper
+- query: 这篇 paper 我上传了，麻烦做系统性精读，method、experiments 和 figures 都要解读并汇总成报告；对了，编号菜单里我点第一个。
+  steps:
+  - analyze_paper
+  - menu_selection
+- query: 我想知道 2025 年多模态推理还有哪些值得挖的坑，帮我出一份选题建议，最好列出候选课题和理由；同时，把我发你的那篇 diffusion model
+    论文也系统精读一遍，讲清楚模型结构、训练细节、实验结果和每张图表。
+  steps:
+  - research_discovery
+  - analyze_paper
+- query: 'Paper: 《LoRA learns less and forgets less》——请做深度阅读，分析它的 methods、experiments
+    以及每个 figure 想证明什么；与此同时，帮我探索 parameter-efficient fine-tuning 之后可能的新方向，给出课题清单和可行性判断。'
+  steps:
+  - analyze_paper
+  - research_discovery
+- query: 把我上传的这篇 Diffusion Policy 论文做一次系统精读，重点拆解它的方法框架、实验设置和图表结果；另外帮我搜一下最近两年机器人模仿学习方向的综述，有
+    PDF 最好直接下载。
+  steps:
+  - analyze_paper
+  - search_paper
+- query: 我手头这篇《Attention Is All You Need》想请你逐节精读，解释模型结构、训练细节和所有图表的含义；另外再查一下作者 Vaswani
+    后续有没有关于长上下文的新论文，帮我找可下载版本。
+  steps:
+  - analyze_paper
+  - search_paper
+- query: 帮我把这份 survey 做成结构化笔记，顺便告诉我文中提到的 retrieval-augmented generation 是怎么缓解幻觉的？
+  steps:
+  - generate_note
+  - ask_question
+- query: 请解释一下这篇论文里 InfoNCE 损失函数的梯度是怎么推导的；另外，把我刚才标注的论文标题和作者保存到长期记忆。
+  steps:
+  - ask_question
+  - manage_memory
+- query: 先看一下你当前记住的关于 Transformer 的上下文；顺便问一下，多头注意力中 Q、K、V 的维度为什么要按 d_k 缩放？
+  steps:
+  - manage_memory
+  - ask_question
+- query: 把记忆里关于 GAN 的旧笔记更新成现在这篇 diffusion 论文的要点；同时，请解释 DDPM 的反向扩散过程中均值和方差是怎么得到的。
+  steps:
+  - manage_memory
+  - ask_question
+- query: Could you explain 一下 formula (4) 中正则项的作用机制？在编号菜单里选第 2 个。
+  steps:
+  - ask_question
+  - menu_selection
+- query: 帮我探索几个把 diffusion 用于 robot planning 的新课题方向，要具体到可开题。另外，解释一下 reverse process
+    的均值为什么能写成那个后验形式。
+  steps:
+  - research_discovery
+  - ask_question
+- query: 先给我想 3 个 long-context RAG 尚未饱和的博士选题。另外，为什么 self-attention 要除以 sqrt(d_k)？
+  steps:
+  - research_discovery
+  - ask_question
+- query: 解释一下 RLHF 中 PPO clip 项限制策略更新的机制。同时，基于最新顶会论文帮我找一个因果推断+LLM 评测的可开题方向。
+  steps:
+  - ask_question
+  - research_discovery
+- query: 先解释一下 LoRA 为什么能减少可训练参数量？然后帮我搜 2024 年以来关于 LLM 参数高效微调的代表性论文。
+  steps:
+  - ask_question
+  - search_paper
+- query: Find recent papers on diffusion models for time series forecasting，另外用一两句话解释
+    DDPM 的训练目标是什么。
+  steps:
+  - search_paper
+  - ask_question
+- query: 能不能下载几篇图神经网络推荐系统的综述？顺便问下，GCN 里的对称归一化邻接矩阵具体起什么作用？
+  steps:
+  - search_paper
+  - ask_question
+- query: 用我上传的 survey 资料生成一份结构化笔记；对了，先 remember 一下：我偏好 APA 引用格式。
+  steps:
+  - manage_memory
+  - generate_note
+- query: 清除掉之前关于“论文结构”的上下文记忆吧。把刚才那三篇 related work 合并成一份文献笔记。
+  steps:
+  - manage_memory
+  - generate_note
+- query: 把这份 PDF 的核心方法和实验结论整理成一份结构化笔记；另外，基于同一批文献，给我三个值得投入的选题方向。
+  steps:
+  - generate_note
+  - research_discovery
+- query: 我手头有组会和访谈的零散材料，帮我生成一份主题笔记方便回顾；另外，探索一下这个方向还有哪些 blank 可以变成新课题。
+  steps:
+  - generate_note
+  - research_discovery
+- query: 帮我把刚上传的 Transformer 论文整理成一份中文笔记；另外再搜一下 2024 年以来关于 long-context 的最新文献，按引用量排一下。
+  steps:
+  - generate_note
+  - search_paper
+- query: 最近想了解 diffusion model 在视频生成上的进展，帮我查查相关论文并下载几篇代表性的；顺便把上周存的那篇 DiT 论文整理成笔记。
+  steps:
+  - search_paper
+  - generate_note
+- query: 查看一下我的记忆里有没有‘图神经网络’这个主题；第一个选项就它了。
+  steps:
+  - manage_memory
+  - menu_selection
+- query: 查看一下你现在存了我哪些研究偏好，顺便帮我探索一下联邦学习在隐私保护方向还有哪些值得做的选题。
+  steps:
+  - manage_memory
+  - research_discovery
+- query: 把我最新的兴趣标签更新为『AI for Science, 科学知识图谱』，然后基于近两年文献，给我三个可能发顶会的选题方向。
+  steps:
+  - manage_memory
+  - research_discovery
+- query: 帮我记住：我偏好 quantitative methods；另外，search papers on generative AI in education,
+    last 3 years.
+  steps:
+  - manage_memory
+  - search_paper
+- query: Show 一下你记得的我的研究兴趣；另外，按作者 Yoshua Bengio 找 2022 年后的 survey。
+  steps:
+  - manage_memory
+  - search_paper
+- query: 把 memory 里我的默认语言从中文更新为英文；顺便 download 两篇 federated learning 隐私保护论文。
+  steps:
+  - manage_memory
+  - search_paper
+- query: 我想探索一下 LLM 智能体在医疗中的应用方向，帮我看看有哪些值得做的课题；另外搜一下最近两年关于 multi-agent healthcare
+    的论文，最好能下载几篇综述。
+  steps:
+  - research_discovery
+  - search_paper
+- query: Could you suggest a few promising research topics on quantum machine learning
+    for drug discovery? Also, search and download recent papers by Xiaoyang Wang on
+    quantum chemistry, maybe 2022–2024.
+  steps:
+  - research_discovery
+  - search_paper
+clarify:
+- query: 那个再帮我看看。
+  intents:
+  - search_paper
+  - research_discovery
+- query: 这个处理一下。
+  intents:
+  - search_paper
+  - research_discovery
+- query: 上次那个继续吧。
+  intents:
+  - search_paper
+  - research_discovery
+- query: 关于这个，接下来呢？
+  intents:
+  - search_paper
+  - research_discovery
+- query: 之前说的那个，能帮我再看看吗？
+  intents:
+  - search_paper
+  - research_discovery
+- query: 这个方面，接下来该怎么弄比较好？
+  intents:
+  - search_paper
+  - research_discovery
+- query: 我这边有个想法，你帮我理一理。
+  intents:
+  - search_paper
+  - research_discovery
+- query: 有没有什么值得参考的，给我一些。
+  intents:
+  - search_paper
+  - research_discovery
+- query: 帮我处理一下那个。
+  intents:
+  - generate_note
+  - manage_memory
+- query: 这个你弄一下吧。
+  intents:
+  - generate_note
+  - manage_memory
+- query: 之前那个能搞一下吗？
+  intents:
+  - generate_note
+  - manage_memory
+- query: 那个东西你安排一下。
+  intents:
+  - generate_note
+  - manage_memory
+- query: 帮我操作一下这个。
+  intents:
+  - generate_note
+  - manage_memory
+- query: 之前那个，你帮我弄一下吧。
+  intents:
+  - generate_note
+  - manage_memory
+- query: 把那个东西搞一下。
+  intents:
+  - generate_note
+  - manage_memory
+- query: 关于那个，接下来怎么处理？
+  intents:
+  - generate_note
+  - manage_memory
+- query: 帮我处理一下那篇。
+  intents:
+  - generate_note
+  - analyze_paper
+- query: 这个你帮我看看。
+  intents:
+  - generate_note
+  - analyze_paper
+- query: 我之前发的那个，你弄一下。
+  intents:
+  - generate_note
+  - analyze_paper
+- query: 那份材料你看着办。
+  intents:
+  - generate_note
+  - analyze_paper
+- query: 那个东西能帮我操作一下吗？
+  intents:
+  - generate_note
+  - analyze_paper
+- query: 那个文件你帮我搞一下吧。
+  intents:
+  - generate_note
+  - analyze_paper
+- query: 我之前发的那个，你帮我看看，弄个东西出来。
+  intents:
+  - generate_note
+  - analyze_paper
+- query: 这份东西你看着办，先给我个结果。
+  intents:
+  - generate_note
+  - analyze_paper
+- query: 帮我看看那篇。
+  intents:
+  - ask_question
+  - analyze_paper
+- query: 这个你能处理一下吗？
+  intents:
+  - ask_question
+  - analyze_paper
+- query: 关于它，给我讲讲吧。
+  intents:
+  - ask_question
+  - analyze_paper
+- query: 我发你的那个，麻烦看一下。
+  intents:
+  - ask_question
+  - analyze_paper
+- query: 那份东西你看着弄一下。
+  intents:
+  - ask_question
+  - analyze_paper
+- query: 我这儿有个东西，你帮我过一遍。
+  intents:
+  - ask_question
+  - analyze_paper
+- query: 关于那个，能给我讲讲吗？
+  intents:
+  - ask_question
+  - analyze_paper
+- query: 你帮我看下这份内容，说说你的看法。
+  intents:
+  - ask_question
+  - analyze_paper
+- query: 换一个。
+  intents:
+  - menu_selection
+  - search_paper
+- query: 这个怎么弄？
+  intents:
+  - menu_selection
+  - search_paper
+- query: 看一下这个吧。
+  intents:
+  - menu_selection
+  - search_paper
+- query: 我需要这个。
+  intents:
+  - menu_selection
+  - search_paper
+- query: 这个可以吗？
+  intents:
+  - menu_selection
+  - search_paper
+- query: 有没有别的？
+  intents:
+  - menu_selection
+  - search_paper
+- query: 再看看其他的。
+  intents:
+  - menu_selection
+  - search_paper
