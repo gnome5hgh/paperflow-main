@@ -14,7 +14,7 @@ from paperflow.core.intent.encoders.index import HybridLocalIndex
 from paperflow.core.intent.routing.router import HybridRouter
 from paperflow.core.intent.pipeline import IntentPipeline
 from paperflow.core.intent.routing.route_loader import load_routes
-from paperflow.core.intent.conversation_state import ConversationState, PendingClarification
+from paperflow.core.intent.conversation_state import ConversationState
 
 __all__ = [
     "IntentType", "IntentStep", "IntentOutput", "IntentionResult",
@@ -22,5 +22,5 @@ __all__ = [
     "JiebaTokenizer", "BM25Encoder",
     "HybridLocalIndex", "HybridRouter",
     "IntentPipeline", "load_routes",
-    "ConversationState", "PendingClarification",
+    "ConversationState",
 ]

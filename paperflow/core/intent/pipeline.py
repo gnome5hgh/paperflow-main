@@ -27,6 +27,7 @@ from paperflow.core.intent.schemas.intent import (
     IntentOutput, IntentType, IntentStep, IntentionResult,
 )
 from paperflow.core.intent.routing.entities import extract_entities
+from paperflow.core.intent.routing.confirm import format_intent_options
 from paperflow.core.intent.routing.followup import detect_followup
 from paperflow.core.intent.routing.option_reply import is_option_reply
 
@@ -351,9 +352,19 @@ class IntentPipeline:
           附加通道，不改变单标签答案，所以离线评估指标不受澄清轮影响。
 
         steps 显式为空：澄清和拆分互斥——都要拆了就不需要问，都要问了就别拆。
+
+        候选回传锚点（2026-10-04 澄清统一）：业务候选 top2 写入
+        clarify_candidates，问题末尾由代码追加编号选项行（format_intent_options）
+        ——文案权在模型、选项枚举权在代码：散文式提问无法保证可解析，编号行
+        保证用户回复经 match_option_choice 确定性解析回意图，落地为
+        会话意图（runtime 在 run 内同步问、代码级落地，无跨轮状态）。
         """
+        candidates = [IntentType(name) for name, score in scored
+                      if score > 0 and _is_business(name)][:2]
         result = await self._llm_extract(query, scored, force_clarification=True)
         clarification = result.clarification or self._synthesize_clarification(scored)
+        if candidates:
+            clarification = f"{clarification}\n{format_intent_options(candidates)}"
         return IntentOutput(
             intent_type=result.intent_type,
             confidence=result.confidence,
@@ -361,6 +372,7 @@ class IntentPipeline:
             rewritten_query=result.query_rewrite or query,
             steps=[],  # 澄清轮不拆分
             clarification=clarification,
+            clarify_candidates=candidates,
         )
 
     async def _llm_extract(self, query: str, scored: list[tuple[str, float]],

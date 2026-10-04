@@ -64,7 +64,11 @@ from paperflow.core.security import (
 )
 from paperflow.core.tool import ToolResult
 from paperflow.core.security.text import sanitize_surrogates
-from paperflow.core.intent.schemas.intent import INTENT_LABELS_ZH, IntentType
+from paperflow.core.intent.schemas.intent import (
+    INTENT_LABELS_ZH, IntentOutput, IntentStep, IntentType,
+)
+from paperflow.core.intent.routing.confirm import match_option_choice
+from paperflow.core.intent.routing.entities import extract_entities
 
 #: 模块级 logger:意图管线的网络异常/解析失败降级时在此留痕,供运维排查而不是静默吞掉。
 logger = logging.getLogger(__name__)
@@ -87,9 +91,11 @@ def _intent_block(intent) -> str:
     """把 IntentOutput 格式化为 INTENT 块（ReAct context 的强提示，非命令）。
 
     排除 clarification 与 prev_intent：澄清只走 CLI 层（跨轮 pending），不暴露给
-    Supervisor（避免其用 AskUserQuestionTool 双问）；prev_intent 是 conversation 内部状态。
+    Supervisor（避免其用 AskUserQuestionTool 双问）；prev_intent 是 conversation 内部状态；
+    clarify_candidates 是澄清回传锚点（CLI 层消费），对模型是噪声。
     """
-    return "INTENT: " + intent.model_dump_json(exclude={"clarification", "prev_intent"})
+    return "INTENT: " + intent.model_dump_json(
+        exclude={"clarification", "prev_intent", "clarify_candidates"})
 
 
 def _steps_incomplete_note(agent: "Agent") -> str:
@@ -522,7 +528,7 @@ class Agent:
             return None
         return Message(role="system", content=compiled)
 
-    async def _build_head(self, task: str, force_dispatch: bool = False) -> list[Message]:
+    async def _build_head(self, task: str) -> list[Message]:
         """构建本轮 ReAct 循环的头部消息列表（system 层 + 用户任务）。
 
         此方法在每个 ReAct 轮次开始时被调用，用于组装 LLM 输入的前置部分（system 消息）。
@@ -533,19 +539,16 @@ class Agent:
             4. system: 意图识别块（若启用意图管线且管线成功，格式化为 system 消息的 INTENT 块）
             5. 末尾追加 user task。
 
-        特殊路径：若意图管线返回了 clarification（澄清问题）且 force_dispatch=False，
-        则直接返回 [user: clarification]（单元素列表），以此通知 run() 跳过 ReAct 循环，
-        将澄清问题直接返回给调用方（CLI 层），实现跨轮澄清。
+        澄清（2026-10-04 统一）：管线判据认定该问时，由本方法内**同步**调 ask 回调
+        问用户（_resolve_clarification）——不经 supervisor 的 LLM 转手（「要问」由
+        代码强制，不靠提示词自觉），答案在代码层落地为意图后 ReAct 直接以正确意图
+        启动，无跨轮挂起。
 
         Args:
             task: 本轮用户输入文本（原始任务）。
-            force_dispatch: 强制调度标志。若为 True，即使意图管线要求澄清，也跳过早退，
-                继续执行 ReAct（用于跨轮澄清达到 `PendingClarification.MAX_ROUNDS`
-                上限后的强制终止路径；阈值定义在 core/intent/conversation_state.py）。
 
         Returns:
-            list[Message]: 头部消息列表。正常返回 [system_prompt, skills(可选), memory(可选), intent(可选), user_task]；
-                澄清早退时返回 [user(clarification)]，长度仅为 1 且 role 为 user。
+            list[Message]: 头部消息列表 [system_prompt, skills(可选), memory(可选), intent(可选), user_task]。
         """
         # ====== 第1层：AGENT.md 系统提示 ======
         head: list[Message] = [Message(role="system", content=self.system_prompt)]
@@ -562,7 +565,6 @@ class Agent:
                 head.append(m)
 
         # ====== 第4层：意图识别块 ======
-        # 若管线返回 clarification，则表明当前输入意图不明确，需要向用户追问。
         if self.intent_enabled and self.intent_pipeline is not None and self.conversation is not None:
             try:
                 # 调用意图管线，传入上一轮意图和输入（用于追问检测）
@@ -572,26 +574,21 @@ class Agent:
             except Exception:
                 # 管线失败（如 LLM 调用超时）：降级处理，不阻断主流程，
                 # 不阻断本轮:记日志 + 跳过 INTENT 块 + 普通 ReAct 继续。
-                # last_intent 显式置 None:CLI 澄清检查跳过、conversation 的上一轮意图不更新。
+                # last_intent 显式置 None:conversation 的上一轮意图不更新。
                 logger.warning("intent pipeline failed, degraded to plain ReAct", exc_info=True)
                 self.last_intent = None
                 self._pending_steps = []
                 intent = None
 
             if intent is not None:
-                # ---------- 跨轮澄清早退路径 ----------
-                # 如果意图管线返回了 clarification 字段（即需要向用户提问）且 force_dispatch 未置 True，
-                # 则不走 ReAct，而是直接返回澄清问题作为用户消息。
-                # run() 检测到 head 长度为 1 且 role 为 user 时，会直接返回该文本，不落盘、不进入工具循环。
-                # 这样，本轮对话实际上是一个“非任务轮”，CLI 层将问题展示给用户，等待用户回答后重新调用 run()，实现跨轮澄清
-                # （最多 PendingClarification.MAX_ROUNDS 轮，见 core/intent/conversation_state.py）。
+                # ---------- 澄清：本轮内同步问用户（2026-10-04 统一） ----------
+                # 代码判据（S1/S2）说该问就一定问出去：直接调 ask 回调，不经
+                # supervisor 的 LLM 转手（提示词契约在这上面失守过）。答案在
+                # _resolve_clarification 内代码级落地（source=USER），本 run 以
+                # 确认后的意图启动，无跨轮挂起。
+                if intent.clarification:
+                    intent, task = await self._resolve_clarification(task, intent)
                 self.last_intent = intent
-                if intent.clarification and not force_dispatch:
-                    # 跨轮澄清:早退在落盘前 → 不持久化(非任务轮)。澄清只走 CLI 层;
-                    # INTENT 块不含澄清问题(避免与 ask_user_question 工具双重发问)。
-                    # 澄清轮不拆分（管线互斥保证），队列恒空。
-                    self._pending_steps = []
-                    return [Message(role="user", content=intent.clarification)]
                 # 复合意图队列初始化：完整 steps，队头 = steps[0] = intent_type 本身
                 # ——首个 spawn 必须对上主意图，admitted/去重命中后依次出队。
                 self._pending_steps = list(intent.steps)
@@ -601,9 +598,44 @@ class Agent:
                 head.append(Message(role="system", content=_intent_block(intent)))
 
         # ====== 第5层：用户任务 ======
-        # 最后将当前用户输入作为 user 消息追加。
+        # 最后将当前用户输入作为 user 消息追加（含澄清答案附录，见 _resolve_clarification）。
         head.append(Message(role="user", content=task))
         return head
+
+    async def _resolve_clarification(self, task: str, intent) -> tuple:
+        """同步澄清：把管线的澄清问题问出去，答案在代码层落地为意图。
+
+        统一后的唯一自动问询通道（agent 中途问走 ask_user_question 工具，同一
+        confirm 原语）。流程：
+          1. 无回调（程序化环境）→ 放弃澄清，按管线最佳猜测继续（fail-safe）；
+          2. 调 ask 回调展示问题（问题文本已由管线追加编号选项行）；
+          3. 回复可解析为候选之一 → 合成 source=USER 的确认意图（跳过复判——
+             同一句话复判只会复现同一误判）；
+          4. 解析不出/空回答 → 原文附录进任务，带用户上下文按最佳猜测继续，
+             绝不再问（单次问答，无循环）。
+
+        返回 (最终意图, 最终任务文本)；澄清问题已问过即从意图上抹除（clarification
+        字段只承载「待问」状态，repl 不再挂起）。"""
+        cb = self.ask_user_callback
+        question = intent.clarification
+        if cb is None:
+            intent.clarification = None
+            return intent, task
+        answer = await asyncio.to_thread(cb, question)
+        candidates = intent.clarify_candidates or []
+        confirmed = match_option_choice(answer, candidates) if answer.strip() else None
+        if confirmed is not None:
+            resolved = IntentOutput(
+                intent_type=confirmed, confidence=1.0,
+                entities=extract_entities(task), rewritten_query=task,
+                source=IntentStep.USER,
+                prev_intent=self.conversation.prev_intent)
+            resolved.clarification = None
+            return resolved, f"{task}（用户澄清：{answer}）"
+        if answer.strip():
+            task = f"{task}（用户澄清：{answer}）"
+        intent.clarification = None
+        return intent, task
 
     def _refresh_head_memory(self, head: list[Message]) -> None:
         """会话内刷新 head 里的记忆 system 消息（memory 工具编辑后即时生效）。
@@ -753,7 +785,7 @@ class Agent:
             return False
         return should_compress(messages, self.compaction, self.llm.context_window)
 
-    async def run(self, task: str, *, force_dispatch: bool = False) -> str:
+    async def run(self, task: str) -> str:
         """
         执行 ReAct 循环，返回 LLM 的最终文本回答。
 
@@ -762,8 +794,6 @@ class Agent:
 
         :param task: 用户任务文本（对于 Supervisor 是原始用户输入；
                      对于 SubAgent 是 Supervisor 拆分后的子任务）
-        :param force_dispatch: 强制调度开关（跨轮澄清达到 `PendingClarification.MAX_ROUNDS`
-            上限的终止路径）——置 True 时即使管线产出 clarification 也跳过早退，直接跑 ReAct
         :returns: LLM 的最终文本回答（经过所有中间件的 on_finish 钩子改写）
         :raises MaxTurnsExceeded: 超过 max_turns 轮仍未停止
 
@@ -773,7 +803,7 @@ class Agent:
             2. 构建 head：① AGENT（AGENT.md 系统提示）→ ② SKILLS 清单块（若装配
                SkillRegistry 且有可见 skill）→ ③ Memory.compile()（system/ 记忆块，
                若有）→ ④ INTENT 块（intent_enabled 且管线成功时）→ user_task。
-               澄清早退直接返回澄清文本（不落盘、不进入 ReAct）
+               管线判据说该澄清时，在本步内同步问用户并代码级落地意图
             3. 从 MessageManager 加载该会话的 in-context 消息（跨轮回放），当前
                user task 落盘；消息归属 self._messages（in-context 窗口）
             4. 调用 LLM 前检查压缩（compaction.should_compress → run_compaction
@@ -797,14 +827,8 @@ class Agent:
         task = sanitize_surrogates(task)
 
         # head:① AGENT ② SKILLS ③ Memory ④ INTENT 块,每轮重建
-        # 不进累积;末尾 user task。澄清早退时 head=[user 澄清文本] → 直接返回,
-        # 不落盘不加载(澄清是"非任务轮",只走 CLI 层)。
-        head = await self._build_head(task, force_dispatch=force_dispatch)
-
-        # run() 在看到 head 只有一个 user 消息，直接返回那句话就结束了——
-        # 没有加载跨轮历史、没有落盘、没有进 ReAct、一个工具都没调。所以这一轮在数据库里不留任何痕迹。
-        if len(head) == 1 and head[0].role == "user":
-            return head[0].content
+        # 不进累积;末尾 user task。澄清在 _build_head 内同步问用户并落地（2026-10-04）。
+        head = await self._build_head(task)
 
         #: in-context 窗口每轮重建:跨轮回放统一经 MessageManager(SQL) 加载,避免: self._messages 跨 run 残留导致下一轮重复加载(每步都从权威源重新 load)。
         self._messages = []

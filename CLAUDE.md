@@ -127,7 +127,7 @@ Every agent lives in `agents/<name>/` with two files:
 
 `Agent.run(task) -> str` 是 async ReAct 循环:
 
-1. 构造 head：① AGENT.md(system_prompt) ② SKILLS 清单（若有）③ `Memory.compile()`（仅渲染 `system/` 块 assistant/profile + 文件树索引，渐进暴露）④ INTENT 块（intent_enabled 且管线成功时）；末尾 user task。**澄清早退**：管线产出 clarification 且非 force_dispatch → 直接返回澄清文本（不落盘、不进 ReAct，澄清只在 CLI 层跨轮处理）
+1. 构造 head：① AGENT.md(system_prompt) ② SKILLS 清单（若有）③ `Memory.compile()`（仅渲染 `system/` 块 assistant/profile + 文件树索引，渐进暴露）④ INTENT 块（intent_enabled 且管线成功时）；末尾 user task。**澄清同步问**（2026-10-04 统一）：管线产出 clarification → runtime 在构建 head 时同步调 ask 回调问用户（routing.confirm 原语解析编号选择），答案代码级落地为意图（source=user）后本 run 直接以正确意图启动——无跨轮挂起、无 force_dispatch 通道
 2. 从 MessageManager 加载该会话 in-context 消息（跨轮回放，Letta 语义）；当前 user task 落盘
 3. 调 LLM 前检查压缩（`should_compress` → `run_compaction`，只改 in-context 窗口不删 SQL）；随后 `chat()` 或 `chat_stream()`（挂 stream_callback 才走流式）
 4. 无 tool_calls → 顺序执行各中间件 `on_finish` 钩子（可改写最终回答）→ 落盘 → 返回。**截断续写**：`finish_reason=="length"` 时暂存半截、把「半截 + 续写提示」放回 in-context 继续循环，绝不把残缺内容当最终回答交付
@@ -206,7 +206,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 产出 `IntentOutput`（intent_type/confidence/entities/rewritten_query/source/steps/clarification）注入 ReAct head 的 `INTENT:` 块。`INTENT_META` 是意图元数据的**单一真相源**：13 个 `IntentType` 值分 3 类（2026-10-01 收敛：switch_topic 并入 set_research_topic、refine_query 并入 search_paper）（business 业务派发 / dialogue 会话状态 / system 直接回答），`dispatch_allowed` 决定 spawn 门禁（chitchat/out_of_scope 等永远不能 spawn）。业务意图与子 agent 的对应：search_paper→searcher、generate_note→noter、ask_question/analyze_paper/manage_memory→qa-agent、research_discovery→researcher（选题发现）；`menu_selection`（选项答复，对话管理可派发）由 supervisor 对照上轮菜单转换成对应动作/派发，无法对应先 ask_user 确认。
 
-跨轮澄清：`IntentPipeline` 产出 `clarification` → Agent 早退返回问题（不落盘）→ CLI `ConversationState.pending_intent` 挂起、下一轮合并重跑；`round >= 2` 超轮终止（force_dispatch 强制调度，绝不重跑后再次挂起）。`prev_intent`/`prev_user_input` 供追问判别。触发侧是**提示词层契约**（是否该问由 LLM 依提示词判断），轮数上限是**代码层硬约束**（`_merge_pending` 的 `round >= 2` 逃逸 + runtime 的 `force_dispatch` 旁路）。
+澄清（2026-10-04 统一为单通道）：触发权在代码（`_ambiguous` 的 S1 贴线/S2 竞争分数判据）→ runtime `_resolve_clarification` 同步调 ask 回调问用户（问题文本由强制澄清 LLM 调用生成、末尾代码追加编号选项行）→ `routing.confirm.match_option_choice` 解析回复，命中候选 → 合成 `source=USER` 的确认意图（跳过路由复判），未命中 → 答案附录进任务按最佳猜测继续（单次问答、无循环）。`prev_intent`/`prev_user_input` 供追问判别。agent 执行中途问用户走 `ask_user_question(intent_options=...)`——同一 confirm 原语、同一落地代码（父 agent 的 last_intent/prev_intent 立即更新）。spawn 门禁声明优先：显式声明的可派发意图即放行（会话意图误判时本轮唯一申诉通道），声明的不可派发意图明确拒绝。
 
 ### RAG
 
@@ -265,7 +265,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 返回 `ToolResult(text=SubAgentResult.model_dump_json(), summary=model_dump())`。`SubAgentResult.status` ∈ {success, failed, timeout, denied}，`needs_attention=True` 表示「被拒且需用户介入」。只有 supervisor（和需要 reviewer/searcher 的 searcher/noter/researcher）装配此工具——权限最小化：叶子 agent 不递归。
 
-**AskUserQuestionTool**（`ask_user_question`，`needs_parent=True`）：读 `parent.ask_user_callback`（CLI 注入，worker 线程读 stdin）；回调为 None 时 fail-safe 返回「无法交互，请基于已有信息决定」，绝不挂起。装配权限在装配层（supervisor/searcher/noter/qa-agent/researcher 有，reviewer 无）。
+**AskUserQuestionTool**（`ask_user_question`，`needs_parent=True`）：读 `parent.ask_user_callback`（CLI 注入，worker 线程读 stdin）；回调为 None 时 fail-safe 返回「无法交互，请基于已有信息决定」，绝不挂起。可选 `intent_options` 参数（意图确认协议）：展示编号选项、回复经 confirm 原语解析后代码级更新父 agent 会话意图。装配权限在装配层（supervisor/searcher/noter/qa-agent/researcher 有，reviewer 无）。
 
 ### Terminal
 

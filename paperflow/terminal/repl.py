@@ -6,8 +6,8 @@
 ——依赖 core 的类型（Agent/ConversationState）但不组装对象图，对象图仍由
 cli.main 装配后注入；不进包级 __init__ 导出（避免包级导入拖入 core 依赖链）。
 
-每轮:读 stdin → 合并挂起的澄清(若有)→ supervisor.run(query, force_dispatch) →
-若产生澄清问题且未超轮 → 挂起打印问题;否则打印结果。
+每轮:读 stdin → supervisor.run(query) → 打印结果。澄清由 runtime 在 run 内
+同步问用户（2026-10-04 统一），REPL 不再持有跨轮澄清状态。
 
 嵌套关系：
 进程
@@ -26,8 +26,7 @@ from pathlib import Path
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, MaxTurnsExceeded
-from paperflow.core.intent.conversation_state import (
-    ConversationState, PendingClarification)
+from paperflow.core.intent.conversation_state import ConversationState
 from paperflow.terminal.diff import compute_diff, truncate_diff
 from paperflow.terminal.errors import translate_error
 from paperflow.terminal.io import InputIO
@@ -167,40 +166,6 @@ def _make_ask_callback(io: InputIO, renderer: StreamRenderer, center=None):
     return _ask
 
 
-def _merge_pending(conversation: ConversationState, raw: str) -> tuple[str, bool]:
-    """
-    合并跨轮澄清输入，返回 (query, force_dispatch)。
-
-    当上一轮产生了澄清问题且未达上限（`PendingClarification.is_exhausted` 为 False），
-    本轮输入视为对澄清的回答，将其与原始查询拼接作为新查询，并设置
-    force_dispatch=False 以便重新运行 intent 管线。
-    若已达上限，则强制调度（force_dispatch=True），使用累积的 original_input
-    （不含本轮澄清）直接进入 ReAct 循环，避免无限澄清循环。
-
-    轮数上限由 `PendingClarification.MAX_ROUNDS` 定义，此处只做判定、不写常量——
-    计数器与阈值必须同源，否则改设定时两边静默失配。
-
-    Args:
-        conversation: 会话状态（包含 pending_intent）。
-        raw: 当前轮的用户输入。
-
-    Returns:
-        (query: str, force_dispatch: bool)
-            - query: 实际用于 supervisor.run 的查询文本。
-            - force_dispatch: 若为 True，则跳过意图识别，直接执行 ReAct 循环。
-    """
-    p = conversation.pending_intent
-    if p is None:
-        return raw, False
-    if p.is_exhausted:
-        # 已达上限：强制调度，清除 pending 状态
-        conversation.pending_intent = None
-        return p.original_input, True
-    # 未达上限：合并澄清内容，清除 pending
-    conversation.pending_intent = None
-    return f"{p.original_input}（用户澄清：{raw}）", False
-
-
 def _shorten_path(p: str) -> str:
     """将路径中的 home 目录缩写为 '~'，用于 banner 显示。"""
     home = str(Path.home())
@@ -224,13 +189,11 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
     每轮：
         1. 触发后台记忆整合（Sleeptime）。
         2. 读取用户输入（通过 io.read，工作线程）。
-        3. 若有挂起的澄清，合并查询（_merge_pending）。
         4. 重置渲染器（renderer.reset），注册 SIGINT 处理器以取消运行中的任务。
-        5. 异步执行 supervisor.run(query, force_dispatch)。
+        5. 异步执行 supervisor.run(query)。
         6. 根据结果：
             - 若任务被取消（Ctrl+C）：打印 "Cancelled"，继续循环。
             - 若超轮：提示并继续。
-            - 若产生澄清且未强制：挂起澄清（pending_intent），打印问题，继续下一轮。
             - 否则：结束渲染（finalize），根据 should_print 决定是否打印最终答案。
 
     Ctrl+C 三态处理：
@@ -338,14 +301,10 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 # 避免用户以为卡死。
                 renderer.print("（空输入已忽略）", style="dim")
                 continue
-            # 用户回显（spec §6）：每轮的翻历史锚点；澄清合并轮回显原始输入
+            # 用户回显（spec §6）：每轮的翻历史锚点
             renderer.print_raw(f"❯ {raw}")
-            # 必须在 _merge_pending 之前取快照：该调用会消费掉这条挂起（清空conversation.pending_intent），
-            # 而下方重新挂起澄清时要用旧记录的 round 做链式累计。
-            # p 持有旧对象引用，conversation 上的引用被清掉后依然可读。
-            p = conversation.pending_intent
-            query, force = _merge_pending(conversation, raw)
-            # 每轮清残留：异常与澄清路径都不消费 should_print，
+            query = raw
+            # 每轮清残留：异常路径不消费 should_print，
             # 不重置则上一轮的流式缓冲会带进本轮的三段比对，导致最终答案漏打或重打。
             renderer.reset()
             # 先注册 SIGINT handler 再 create_task：注册与建任务之间的同步间隙若落一个 SIGINT，
@@ -360,7 +319,7 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                     can_sigint = False
             # 用 create_task 而非直接 await：需要一个可取消句柄交给 SIGINT handler（await 表达式本身无法被外部 cancel）。
             # 本行只把协程入队、不阻塞，真正的等待在下一行的 await。
-            run_task = asyncio.create_task(supervisor.run(query, force_dispatch=force))
+            run_task = asyncio.create_task(supervisor.run(query))
             # 本轮 run 的三种失败都在紧跟的 except 里就地消化，都 continue、不 re-raise：
             # 一次 API 抖动 / 超轮 / 用户中断只终结本轮，不该把整个会话带走。
             try:
@@ -387,24 +346,6 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                         loop.remove_signal_handler(signal.SIGINT)
                     except (NotImplementedError, RuntimeError):
                         pass
-            # last_intent 由 _build_head 写入（构造时初值 None）：意图管线失败降级时被
-            # 显式置 None，无意图装配的 agent（子 agent）也恒为 None —— 两种情况都靠
-            # 这里的非空判定跳过澄清分支。澄清早退路径反而会写入 intent，故判定成立
-            # 时 intent.clarification 必非空。
-            # force=True 表示本轮已是上限后的强制调度——此时即使管线再次产出澄清
-            # 也不能再挂起，否则 MAX_ROUNDS 上限失效、追问可以无限循环。
-            intent = supervisor.last_intent
-            if intent is not None and intent.clarification and not force:
-                # 挂起本轮澄清。original_input 取 query 而非 raw：query 已把历轮澄清
-                # 拼进上下文，达上限强制调度时以它为最佳猜测，比裸输入更准。
-                prev_round = p.round if p is not None else 0
-                conversation.pending_intent = PendingClarification(
-                    question=intent.clarification, original_input=query,
-                    round=prev_round + 1)
-                # 澄清问题直接打屏，不走 finalize / should_print：本轮没有正常答案，
-                # 问题本身就是交付物。是否落盘由 run() 决定——澄清早退不落盘（非任务轮）。
-                renderer.print(intent.clarification)
-                continue
             # 正常收尾：finalize 终态渲染最后一个 live 块（停 spinner）；
             # should_print 比对流式缓冲与最终答案——一致则只补换行，被中间件
             # on_finish 改写过则补打最终版，既不重复也不漏打。
