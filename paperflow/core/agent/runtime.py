@@ -182,13 +182,14 @@ def _compact(v) -> str:
 
 
 #: _tool_summary 的参数键优先级：取第一个非空值作活动行摘要
-_SUMMARY_KEYS = ("path", "query", "pattern", "agent_type", "task")
+_SUMMARY_KEYS = ("path", "url", "query", "pattern", "venue", "pdf_path",
+                 "agent_type", "task")
 
 
 def _tool_summary(name: str, args: dict) -> str:
     """活动行摘要：按 _SUMMARY_KEYS 优先级取第一个非空参数值。
 
-    path 取尾段（basename）——活动行只关心「哪个文件」，全路径太长；
+    path/pdf_path 取尾段（basename）——活动行只关心「哪个文件」，全路径太长；
     其余键原样。统一经 _compact 头尾截断。args 非法/为空返回 ""（调用方自行兜底）。
     """
     if not isinstance(args, dict):
@@ -197,7 +198,7 @@ def _tool_summary(name: str, args: dict) -> str:
         v = args.get(key)
         if v:
             s = str(v)
-            if key == "path":
+            if key in ("path", "pdf_path"):
                 s = s.rstrip("/").rsplit("/", 1)[-1]
             return _compact(s)
     return ""
