@@ -289,6 +289,12 @@ class PromptToolkitIO(InputIO):
             auto_suggest=AutoSuggestFromHistory(),   # 灰色自动建议来自历史匹配
             key_bindings=_session_key_bindings(),
             enable_history_search=True,
+            # 提交后擦掉输入框 UI（含已打文本）——否则提交内容残留在滚动区，
+            # 与 repl 的 `❯ ` 回显叠成两份。参数在构造处而非 prompt() 调用处：
+            # app 在 __init__ 一次性创建（erase_when_done 是构造参数，
+            # PromptSession.prompt() 不接受它——prompt_toolkit 3.0.53 实测），
+            # prompt() 复用该 app。
+            erase_when_done=True,
         )
 
     def read(self, prompt: str) -> str:
@@ -304,11 +310,10 @@ class PromptToolkitIO(InputIO):
         Note:
             此方法内部会启动新的事件循环（asyncio.run），因此调用方应使用
             asyncio.to_thread 将其移至工作线程，避免与主事件循环冲突。
-            erase_when_done：提交后擦掉输入框 UI（含已打的文本）——否则提交的
-            内容会残留在滚动区，与 repl 的 `❯ ` 回显叠成两份。回显是唯一的
-            输入记录（ZCode 式翻历史锚点）。
+            输入框的提交后擦除（erase_when_done）在会话构造处配置——回显是
+            屏上唯一的输入记录（ZCode 式翻历史锚点）。
         """
-        return self._session.prompt(prompt, erase_when_done=True)
+        return self._session.prompt(prompt)
 
     def confirm(self, text: str) -> bool:
         """
