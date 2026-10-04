@@ -1,10 +1,26 @@
 # paperflow/terminal/render.py
-"""输出渲染器——rich 渐进式 markdown 流式渲染 REPL 输出。
+"""输出渲染器——rich 渐进式 markdown 流式渲染 REPL 输出（双模式）。
 
-段模型：root/child content（live 重绘的 markdown 块）+ tool（状态行）。
-content 累积成 markdown 缓冲、节流重绘 live 块；tool 行终态打印并清 root
-缓冲。should_print 比对流式缓冲与最终答案，防止最终答案重复打印——中间件的
-on_finish 钩子可能改写最终回答（如安全扫描的 SAFE_PROMPT 替换）。
+双模式（终端交互界面重构）：
+    - activity=False（非 TTY / 测试）：legacy 路径，行为与重构前完全一致——
+      tool 事件（含 tool_start/tool_end，按 "tool" 同型处理）按行打印 ev.text，
+      content 增量流式，段切换补换行。
+    - activity=True（TTY 装配，见 make_renderer）：ZCode 风格活动流——
+      首个 tool_start 之前 root content 照旧 live 流式 markdown；此后所有
+      content 静默（不进 live、不进 shown 缓冲），工具调用聚合为活动行
+      （RichBlock.show：spinner + 文本一体），动词/agent 键切换或收尾时以
+      完成态落屏（✓，慢操作标注耗时）；写类工具的 diffstat 在 finalize 时
+      汇成 dim 徽标（`更改 +A -D · K 个文件`）。
+
+should_print 比对「真正渲染过的 root content」（_shown_buffer）与最终答案，
+防止重复打印——中间件的 on_finish 钩子可能改写最终回答（如安全扫描的
+SAFE_PROMPT 替换）。三态逻辑两种模式共用：直答 shown==result → 只补换行；
+有工具轮 shown≠result → 补打最终答案；纯工具轮 shown 空 → 原样打印。
+
+活动行映射（emoji+动词、计数词）与格式化在 paperflow.terminal.activity
+（纯函数）；本模块只管 live 区调度、聚合状态机与落屏时机。落屏时机：
+动词/agent 键切换、finalize、interrupt、任何 print* 方法前——活动行一旦
+落屏不再改动（终端滚动区不可擦除）。
 
 线程安全：on_event 被主 ReAct 的 chat_stream 线程与并行子 agent 的线程池
 worker 并发调用（spawn 子 agent 的 tool 事件经上层加前缀透传），_lock 串行化
@@ -26,6 +42,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from paperflow.core.agent import StreamEvent
+from .activity import activity_label, format_activity
 from .diff import truncate_diff
 
 
@@ -33,10 +50,11 @@ class BlockRenderer:
     """
     live 块渲染通道的抽象基类。
 
-    定义了三种操作：
+    定义了四种操作：
         - update(text)：实时更新当前块的内容（重绘）。
         - end(text)：终态渲染并停止块，释放资源。
         - spinner(label)：显示空闲指示（如“working”动画）。
+        - show(text)：活动行 + spinner 一体显示（活动流模式 live 区承载物）。
 
     两种实现：
         - RichBlock：使用 rich.Live 实现 Markdown 富文本重绘（TTY）。
@@ -53,6 +71,10 @@ class BlockRenderer:
 
     def spinner(self, label: str) -> None:
         """显示空闲工作指示（非 TTY 实现为 no-op）。"""
+        pass
+
+    def show(self, text: str) -> None:
+        """活动行 + spinner 一体显示（默认 no-op，与 spinner 同待遇）。"""
         pass
 
 
@@ -104,23 +126,29 @@ class StreamRenderer:
     将 Agent 流式事件渲染为终端输出，并决定最终结果如何打印。
 
     核心职责：
-        1. 接收 StreamEvent（content 或 tool），按段模型渲染。
+        1. 接收 StreamEvent（content / tool_start / tool_end），按模式渲染。
         2. 使用 BlockRenderer 实现富文本（TTY）或纯文本（非TTY）输出。
         3. 节流重绘（render_interval）避免高频刷新。
-        4. 管理 root_buffer 用于 should_print 去重。
+        4. 管理 shown 缓冲（仅真正渲染过的 root content）用于 should_print 去重。
         5. 线程安全：所有公共方法持 _lock，防止并发渲染交错。
 
-    段模型：
-        - content 段：累积为 Markdown 文本，由 BlockRenderer 实时重绘。
-        - tool 段：打印一行状态行（如“[agent] 调用工具”），并停止当前 live 块。
-        - 段切换时自动补换行，避免排版混乱。
+    双模式（activity 构造参数）：
+        - activity=False：legacy 路径。tool 型事件（"tool"/"tool_start"/"tool_end"）
+          统一按行打印 ev.text，content 流式进 live 块；root 的工具事件清空
+          shown 缓冲（工具前的过程内容不作最终答案缓冲）。
+        - activity=True：活动流模型。首个 tool_start 前 content 照旧流式并进
+          _shown_buffer；此后 content 全部静默；tool_start 聚合为活动行
+          （同动词+同 agent 的连续调用合并计数，live 区 spinner 一体显示）；
+          tool_end 记录耗时并累积 diffstat；活动行在键切换/收尾时以完成态落屏。
+          ask_user_question 的 tool 事件不出活动行（走确认中心弹框）。
 
     中断处理：
-        - interrupt() 设置 _cancelled 标志，后续 on_event 直接丢弃事件（无法真正取消已发出的流）。
+        - interrupt() 设置 _cancelled 标志，后续 on_event 直接丢弃事件（无法真正取消
+          已发出的流）；悬挂的 tool_start（无 end）以完成态收口（duration_ms=None）。
     """
 
     def __init__(self, print_fn, root_agent_type: str, *, block, render_interval: float = 0.08,
-                 console=None):
+                 console=None, activity: bool = False):
         """
         构造渲染器。
 
@@ -130,16 +158,21 @@ class StreamRenderer:
             block: BlockRenderer 实例（TTY=RichBlock，非TTY=PlainBlock）。
             render_interval: content 节流重绘间隔（秒），同一间隔内多次 content 只重绘一次。
             console: rich.Console 实例（TTY 下用于 print_diff 语法着色），非 TTY 为 None。
+            activity: 活动流模式开关（TTY 装配传 True，见 make_renderer）。
+                False 时新增状态全部闲置，行为与 legacy 路径完全一致。
         """
         self._print = print_fn
         self._root = root_agent_type
         self._block = block
         self._render_interval = render_interval
         self._console = console       # TTY rich console（print_diff 着色用）；非 TTY None
+        self._activity = activity     # 活动流模式开关（False = legacy 路径）
 
         # 状态追踪
         self._last_segment = None        # 上一个段类型: None | "root" | "child" | "tool"
-        self._root_buffer: list[str] = []   # 仅 root content 的流式文本片段，用于 should_print 比对
+        self._shown_buffer: list[str] = []  # 真正渲染过的 root content（should_print 比对用）。
+        #   legacy：全部 root content，root 工具事件时清空；activity：仅首个 tool_start
+        #   之前的部分，工具事件不清（那些内容确实展示过）。
         self._block_text = ""            # 当前 live 块的累积文本（Markdown 原始内容）
         self._last_render = 0.0          # 上次重绘的时间戳（单调时钟）
         self._cancelled = False          # 中断标志，过滤中断后收到的孤儿事件
@@ -148,41 +181,52 @@ class StreamRenderer:
         self._suppressed = False         # 确认/提问弹框期间的渲染抑制标志（P0-1）
         self._suppressed_dropped = 0     # 抑制期间被丢弃的事件计数（恢复时提示）
 
+        # 活动流模式状态（activity=False 时全部闲置）
+        self._started_tools = False      # 首个 tool_start 后 True；此后 root content 静默
+        self._pending: dict | None = None   # 聚合中的活动 {verb, count_word, agent_type,
+        #   count, last_summary, duration_ms}；live 区经 block.show 显示
+        self._changed: dict[str, tuple[int, int]] = {}   # path → (added, removed)，徽标用
+
     def reset(self) -> None:
         """
         每轮 run 前调用：清残留状态并重置中断标志。
 
-        清空 root_buffer、block_text，重置 last_segment 和 last_render，
-        取消 cancelled 标记，并启动 spinner 显示空闲指示。
-        （异常/澄清路径不消费 should_print，因此每轮必须重置）
+        清空 shown 缓冲、block_text、活动流状态（_started_tools/_pending/_changed），
+        重置 last_segment 和 last_render，取消 cancelled 标记，并启动 spinner 显示
+        空闲指示。（异常/澄清路径不消费 should_print，因此每轮必须重置）
         """
         with self._lock:
-            self._root_buffer.clear()
+            self._shown_buffer.clear()
             self._block_text = ""
             self._last_segment = None
             self._last_render = 0.0
             self._cancelled = False
             self._current_agent = self._root
+            self._started_tools = False
+            self._pending = None
+            self._changed = {}
             if self._block is not None:
                 self._block.spinner(self._current_agent)   # run 开始 → 空闲指示
 
     def interrupt(self) -> None:
         """
-        Ctrl+C 中断当前 run：设置 cancelled 标志并终止当前 live 块。
+        Ctrl+C 中断当前 run：设置 cancelled 标志、落屏聚合中的活动行并终止当前 live 块。
 
         由于 asyncio.to_thread 无法真正取消正在执行的输入线程，
         中断前已发出的后续 StreamEvent 靠此标志丢弃，避免污染界面（已知限制）。
         """
         with self._lock:
             self._cancelled = True
+            if self._activity:
+                self._commit_pending()
             self._end_block()
 
     def on_event(self, ev) -> None:
         """
-        处理 Agent 流式事件（content/tool），可被多线程并发调用，锁内串行。
+        处理 Agent 流式事件（content/tool_start/tool_end），可被多线程并发调用，锁内串行。
 
         Args:
-            ev: StreamEvent 对象，包含 kind（"content"/"tool"）、text、agent_type 等。
+            ev: StreamEvent 对象，包含 kind、text、agent_type 及 tool_* 结构化字段。
         """
         with self._lock:
             if self._cancelled:
@@ -192,26 +236,19 @@ class StreamRenderer:
                 # 输入框盖掉（正是并行场景确认框「从不出现」的机制），丢弃并计数
                 self._suppressed_dropped += 1
                 return
-            if ev.kind == "content":
-                self._on_content(ev)
-            elif ev.kind == "tool":
-                self._on_tool(ev)
+            if self._activity:
+                self._on_event_activity(ev)
+            else:
+                self._on_event_legacy(ev)
 
-    def suppress(self, on: bool) -> int:
-        """
-        确认中心专用：开启/关闭渲染抑制，返回关闭时被丢弃的事件数。
+    # ── legacy 路径（activity=False，行为与重构前一致）─────────────────
 
-        弹框前置 True（并终态渲染当前块，与 suspend 等效），弹框结束后置 False。
-        线程安全：确认中心消费者与 on_event 可能在不同线程，锁内串行。
-        """
-        with self._lock:
-            self._end_block()
-            self._suppressed = on
-            if not on:
-                dropped = self._suppressed_dropped
-                self._suppressed_dropped = 0
-                return dropped
-            return 0
+    def _on_event_legacy(self, ev) -> None:
+        """legacy 分发：content 流式；tool 型事件（含 tool_start/tool_end）按行打 text。"""
+        if ev.kind == "content":
+            self._on_content(ev)
+        elif ev.kind in ("tool", "tool_start", "tool_end"):
+            self._on_tool(ev)
 
     def _on_content(self, ev) -> None:
         """
@@ -232,12 +269,12 @@ class StreamRenderer:
         self._maybe_render()
         # 仅 root 的流式文本进缓冲，供 should_print 与最终答案比对
         if seg == "root":
-            self._root_buffer.append(ev.text)
+            self._shown_buffer.append(ev.text)
         self._last_segment = seg
 
     def _on_tool(self, ev) -> None:
         """
-        处理 tool 事件：打印一行状态行，并在打印前停止 live。
+        处理 tool 型事件（legacy）：打印一行状态行，并在打印前停止 live。
 
         关键设计：
             - rich.Live 在活动期间，若用 end="" 打印部分行，会被重绘吞掉（中间日志消失）。
@@ -245,7 +282,7 @@ class StreamRenderer:
             - 工具行以 dim 样式打印，并显式换行。
             - content → tool：先 _end_block() 再补换行（与 content 段分开）。
             - tool → tool：不补换行（避免多余空行）。
-            - 工具调用前的 root 流式内容作废（清空 _root_buffer），
+            - 工具调用前的 root 流式内容作废（清空 _shown_buffer），
               因为那些内容属于工具执行前的过程，不应作为最终答案的流式缓冲。
         """
         # 如果上一个段是 root/child，需要结束块并补换行
@@ -258,14 +295,117 @@ class StreamRenderer:
         # 打印工具状态行
         self._print(f"[{ev.agent_type}] {ev.text}", end="", flush=True, style="dim")
         self._print("\n", end="")
-        # 若工具是 root agent 调用的，清空 root_buffer（之前的中间内容作废）
+        # 若工具是 root agent 调用的，清空 shown 缓冲（之前的中间内容作废）
         if ev.agent_type == self._root:
-            self._root_buffer.clear()
+            self._shown_buffer.clear()
         self._last_segment = "tool"
         self._current_agent = ev.agent_type
         # 恢复 spinner 指示（表示 agent 正在工作）
         if self._block is not None:
             self._block.spinner(self._current_agent)
+
+    # ── 活动流路径（activity=True）──────────────────────────────────
+
+    def _on_event_activity(self, ev) -> None:
+        """活动流分发：content → _on_content_activity；tool_start/tool_end → 各自处理。"""
+        if ev.kind == "content":
+            self._on_content_activity(ev)
+        elif ev.kind == "tool_start":
+            self._on_tool_start(ev)
+        elif ev.kind == "tool_end":
+            self._on_tool_end(ev)
+
+    def _on_content_activity(self, ev) -> None:
+        """
+        处理 content 事件（活动流）。
+
+        - 首个 tool_start 之前：同现状渲染（累积 live 块、节流重绘、root 进 shown 缓冲）。
+        - 首个 tool_start 之后：root content 静默丢弃（不进 live、不进缓冲——
+          中间过程不该抢滚动区，最终答案由 should_print 交还），child content 同样忽略。
+        """
+        if self._started_tools:
+            return
+        self._on_content(ev)
+
+    def _on_tool_start(self, ev) -> None:
+        """
+        处理 tool_start 事件（活动流）：聚合进当前活动行或开新行。
+
+        - ask_user_question 直接 return（走确认中心弹框，不出活动行）。
+        - 否则先 _end_block()（提交已流 prose）→ _commit_pending()（键切换时落屏
+          上一活动行）→ _started_tools=True（此后 root content 静默）。
+        - 同动词+同 agent 的连续调用合并计数；live 区显示
+          format_activity(..., done=False) + "…"（block.show，spinner 一体）。
+        """
+        if ev.tool_name == "ask_user_question":
+            return
+        self._end_block()
+        verb, count_word = activity_label(ev.tool_name)
+        if (self._pending is not None and self._pending["verb"] == verb
+                and self._pending["agent_type"] == ev.agent_type):
+            # 同键：聚合计数，不落屏（上一活动行仍在进行）
+            self._pending["count"] += 1
+            self._pending["last_summary"] = ev.summary
+        else:
+            # 键切换（或首个工具）：先落屏上一活动行，再开新行
+            self._commit_pending()
+            self._pending = {"verb": verb, "count_word": count_word,
+                             "agent_type": ev.agent_type, "count": 1,
+                             "last_summary": ev.summary, "duration_ms": None}
+        self._started_tools = True
+        if self._block is not None:
+            p = self._pending
+            line = format_activity(p["verb"], p["agent_type"], self._root,
+                                   count=p["count"], count_word=p["count_word"],
+                                   summary=p["last_summary"])
+            self._block.show(line + "…")
+
+    def _on_tool_end(self, ev) -> None:
+        """
+        处理 tool_end 事件（活动流）：记录耗时、累积 diffstat。
+
+        - ask_user_question 直接 return。
+        - pending 同键（动词+agent）→ 记 duration_ms（落屏时 ≥SLOW_MS 才标注）。
+        - pending 为 None（防御：start 丢失/未知路径）→ 直接落屏该事件的完成行。
+        - diffstat（仅写类工具）按 path 累积进 _changed，finalize 时汇成徽标。
+        """
+        if ev.tool_name == "ask_user_question":
+            return
+        if ev.diffstat is not None:
+            path, added, removed = ev.diffstat
+            prev_added, prev_removed = self._changed.get(path, (0, 0))
+            self._changed[path] = (prev_added + added, prev_removed + removed)
+        verb, _ = activity_label(ev.tool_name)
+        if (self._pending is not None and self._pending["verb"] == verb
+                and self._pending["agent_type"] == ev.agent_type):
+            self._pending["duration_ms"] = ev.duration_ms
+        elif self._pending is None:
+            # 防御：没有聚合中的 start 可收口 → 直接落屏该事件行
+            self._print(format_activity(verb, ev.agent_type, self._root,
+                                        summary=ev.summary,
+                                        duration_ms=ev.duration_ms, done=True),
+                        end="\n", flush=True, style="dim")
+
+    def _commit_pending(self) -> None:
+        """
+        落屏聚合中的活动行（完成态），并清空 pending。
+
+        调用时机：动词/agent 键切换、finalize/interrupt、任何 print* 方法前——
+        活动行一旦落屏不再改动（终端滚动区不可擦除）。悬挂的 tool_start（无
+        tool_end）在此以完成态收口：duration_ms=None（✓ 后无耗时，✓ 表示该活动
+        已不再进行）。仅在持 _lock 时调用。
+        """
+        p = self._pending
+        if p is None:
+            return
+        self._pending = None
+        self._print(format_activity(p["verb"], p["agent_type"], self._root,
+                                    count=p["count"], count_word=p["count_word"],
+                                    summary=p["last_summary"],
+                                    duration_ms=p["duration_ms"], done=True),
+                    end="\n", flush=True, style="dim")
+
+    # ── 公共终态方法（两模式共用；activity 下先落屏活动行）─────────────
 
     def _end_block(self) -> None:
         """
@@ -292,9 +432,32 @@ class StreamRenderer:
             self._last_render = now
 
     def finalize(self) -> None:
-        """一轮 run 结束：终态渲染最后一个块（后续 should_print 决定是否补打最终答案）。"""
+        """一轮 run 结束（活动流：落屏活动行 → 徽标 → 终态渲染最后一块）。"""
+        with self._lock:
+            if self._activity:
+                self._commit_pending()
+                if self._changed:
+                    added = sum(a for a, _ in self._changed.values())
+                    removed = sum(r for _, r in self._changed.values())
+                    self._print(f"更改 +{added} -{removed} · {len(self._changed)} 个文件",
+                                end="\n", flush=True, style="dim")
+            self._end_block()
+
+    def suppress(self, on: bool) -> int:
+        """
+        确认中心专用：开启/关闭渲染抑制，返回关闭时被丢弃的事件数。
+
+        弹框前置 True（并终态渲染当前块，与 suspend 等效），弹框结束后置 False。
+        线程安全：确认中心消费者与 on_event 可能在不同线程，锁内串行。
+        """
         with self._lock:
             self._end_block()
+            self._suppressed = on
+            if not on:
+                dropped = self._suppressed_dropped
+                self._suppressed_dropped = 0
+                return dropped
+            return 0
 
     def suspend(self) -> None:
         """
@@ -310,9 +473,11 @@ class StreamRenderer:
         """
         终态行输出（banner/错误/澄清/run-guard 提示）。
 
-        若当前有 live 块活动，先终态渲染再打印新行。
+        若当前有 live 块活动，先终态渲染再打印新行；活动流模式下先落屏聚合中的活动行。
         """
         with self._lock:
+            if self._activity:
+                self._commit_pending()
             self._end_block()
             self._print(text, end="\n", flush=True, style=style)
 
@@ -325,6 +490,8 @@ class StreamRenderer:
         线程安全：确认期间无并发流式事件，但锁内打印确保一致。
         """
         with self._lock:
+            if self._activity:
+                self._commit_pending()
             self._end_block()
             capped = truncate_diff(diff_text)
             if self._console is not None:
@@ -347,6 +514,8 @@ class StreamRenderer:
         if not text:
             return
         with self._lock:
+            if self._activity:
+                self._commit_pending()
             self._end_block()
             if self._console is not None:
                 self._console.print(Markdown(text), style=style, overflow="fold")
@@ -361,6 +530,8 @@ class StreamRenderer:
         输出——escape 会在这里多打出反斜杠。
         """
         with self._lock:
+            if self._activity:
+                self._commit_pending()
             self._end_block()
             if self._console is not None:
                 self._console.print(escape(text), style=style, overflow="fold")
@@ -371,12 +542,12 @@ class StreamRenderer:
         """
         决定最终答案如何打印，返回「要打印的内容」（空串表示只补换行）。
 
-        逻辑：
-            - 若 _root_buffer 为空（无流式 content），说明结果未经过流式展示（如澄清早退、纯工具轮），
-              需要原样打印 result。
+        逻辑（三态，两模式共用；缓冲为「真正渲染过的 root content」）：
+            - 若 _shown_buffer 为空（无流式 content），说明结果未经过流式展示
+              （如澄清早退、纯工具轮），需要原样打印 result。
             - 若流式内容与 result 完全相等，说明已逐字展示过，只需补换行（返回空串）。
-            - 若流式内容与 result 不相等（被中间件 on_finish 改写，如安全扫描替换），
-              则补打最终版（前面加换行分隔）。
+            - 若流式内容与 result 不相等（被中间件 on_finish 改写，或工具轮后
+              内容静默），则补打最终版（前面加换行分隔）。
 
         Args:
             result: Agent 返回的最终答案字符串。
@@ -384,7 +555,7 @@ class StreamRenderer:
         Returns:
             应打印的文本（可能为空字符串，此时调用方应 print("") 仅换行）。
         """
-        streamed = "".join(self._root_buffer)
+        streamed = "".join(self._shown_buffer)
         if not streamed:
             return result               # 没流式（澄清早退/纯工具轮）→ 维持现状
         if streamed == result:
@@ -399,9 +570,10 @@ class RichBlock(BlockRenderer):
     update(text) 将文本渲染为 Markdown 并更新 live 区域。
     end(text) 终态渲染并停止 live（若未启动且 text 为空则跳过）。
     spinner(label) 显示带转动动画的指示器。
+    show(text) 活动行 + spinner 一体显示（活动流模式 live 区承载物）。
 
     设计要点：
-        - 惰性启动 live（_start()）仅在首次 update/spinner 时启动。
+        - 惰性启动 live（_start()）仅在首次 update/spinner/show 时启动。
         - end() 即使 text 为空也必须停止 live，避免 spinner 残留。
         - live 可注入（测试用），生产时使用共享 Console。
     """
@@ -432,11 +604,15 @@ class RichBlock(BlockRenderer):
             self._live.stop()
             self._started = False
 
+    def show(self, text: str) -> None:
+        """活动行 + spinner 一体显示（活动流模式 live 区承载物）。"""
+        self._start()
+        self._live.update(Spinner("dots", text=Text(f" {text}", style="dim"),
+                                  style="dim"))
+
     def spinner(self, label: str) -> None:
         """显示带标签的转动指示器（dim 样式），content update 到达时会被替换。"""
-        self._start()
-        self._live.update(Spinner("dots", text=Text(f" {label} working", style="dim"),
-                                  style="dim"))
+        self.show(f"{label} working")
 
     def _start(self) -> None:
         """惰性启动 live（refresh=False 避免启动时强制重绘当前帧）。"""
@@ -457,10 +633,11 @@ def make_renderer(print_fn, root_agent_type: str, *, is_tty: bool, console=None)
 
     Returns:
         StreamRenderer: 配置好的渲染器实例。
-            若 is_tty=True，使用 RichBlock（富文本 Markdown）。
-            否则使用 PlainBlock（纯文本增量打印）。
+            若 is_tty=True，使用 RichBlock（富文本 Markdown）+ 活动流模式。
+            否则使用 PlainBlock（纯文本增量打印）+ legacy 路径。
     """
     if is_tty:
         return StreamRenderer(print_fn, root_agent_type,
-                              block=RichBlock(console=console), console=console)
+                              block=RichBlock(console=console), console=console,
+                              activity=True)
     return StreamRenderer(print_fn, root_agent_type, block=PlainBlock(print_fn))
