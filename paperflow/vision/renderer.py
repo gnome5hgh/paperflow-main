@@ -12,6 +12,7 @@ fitz 文档里的 Page（渲染由所属文档驱动），区域用我们自己�
 from __future__ import annotations
 
 import fitz
+fitz.TOOLS.mupdf_display_errors(False)  # C 层 stderr 告警（损坏对象/字体）不糊屏：失败仍经工具返回值可见
 
 from paperflow.vision.geometry import Box
 

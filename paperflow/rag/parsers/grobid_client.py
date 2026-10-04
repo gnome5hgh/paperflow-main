@@ -242,6 +242,7 @@ class PyMuPDFParser:
             ParsedDoc: 解析结果，其中 tables 和 figures 列表为空（备用解析不支持）。
         """
         import fitz
+        fitz.TOOLS.mupdf_display_errors(False)  # C 层 stderr 告警不糊屏
         doc = fitz.open(path)
         # 初始化一个空标题章节，用于容纳开头的正文
         sections: list[tuple[str, str]] = [("", "")]
