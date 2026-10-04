@@ -16,6 +16,12 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
+# 必须在任何可能拉起 grpc 的导入（paperflow.rag → pymilvus）之前设置——gRPC C 核心在
+# 初始化时读取。不设时 gRPC 打 INFO 级日志：MCP server 子进程 fork 时，pymilvus
+# 已建连的轮询 fd 残留会让每个子进程打一行 "FD from fork parent still in poll
+# list"（ev_poll_posix.cc），纯噪音。setdefault 不覆盖用户显式配置。
+os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
+
 from rich.console import Console
 
 from paperflow.config import PaperFlowConfig
