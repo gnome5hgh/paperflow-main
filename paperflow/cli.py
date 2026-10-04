@@ -502,6 +502,17 @@ def main(argv: list[str] | None = None) -> int | None:
                                        llm=structured),
     ))
 
+    # RAG 检索工具的对话历史提供者（query 改写 condense 用，spec 2026-10-04）：
+    # 只取 in-context 窗口内的 user/assistant 消息尾部 6 条——窗口投影与模型
+    # 所见一致（压缩后摘要也在窗口内，可理解长程指代），tool 消息不进改写。
+    from paperflow.tools.rag.runtime_context import set_rag_context, RagToolsContext
+
+    def _recent_chat_history() -> list:
+        msgs = message_manager.get_in_context_messages(session_id)
+        return [m for m in msgs if m.role in ("user", "assistant")][-6:]
+
+    set_rag_context(RagToolsContext(history_provider=_recent_chat_history))
+
     # 安全管道：四中间件（经验记忆中间件已移除——工具调用经验不再注入 prompt，
     # 改由 Sleeptime 后台整合进核心记忆块）。
     middlewares = [
