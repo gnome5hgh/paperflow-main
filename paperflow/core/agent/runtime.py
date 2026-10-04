@@ -41,12 +41,14 @@ ReAct 循环流程::
 """
 
 import asyncio
+import difflib
 import json
 import logging
 import sys
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from datetime import datetime
 from typing import Callable
 
@@ -143,10 +145,19 @@ class MaxTurnsExceeded(Exception):
 
 @dataclass
 class StreamEvent:
-    """流式事件：kind ∈ {"content","tool"}；text 为片段；agent_type 区分 root/child。"""
+    """流式事件：kind ∈ {"content","tool_start","tool_end"}；text 为片段；agent_type 区分 root/child。
+
+    结构化字段仅 tool_* 事件携带：tool_name/summary（start+end 都有）、
+    duration_ms/diffstat（仅 end；diffstat=(path, added, removed)，仅写类工具）。
+    全部带默认值：旧位置构造（content 事件）兼容不变。
+    """
     kind: str
     text: str
     agent_type: str
+    tool_name: str | None = None
+    summary: str | None = None
+    duration_ms: int | None = None
+    diffstat: tuple | None = None
 
 
 def _compact(v) -> str:
@@ -162,6 +173,48 @@ def _compact(v) -> str:
     if n <= 120:
         return s[:35] + "…" + s[-10:]
     return s[:40] + "…(%d chars)…" % n + s[-20:]
+
+
+#: _tool_summary 的参数键优先级：取第一个非空值作活动行摘要
+_SUMMARY_KEYS = ("path", "query", "pattern", "agent_type", "task")
+
+
+def _tool_summary(name: str, args: dict) -> str:
+    """活动行摘要：按 _SUMMARY_KEYS 优先级取第一个非空参数值。
+
+    path 取尾段（basename）——活动行只关心「哪个文件」，全路径太长；
+    其余键原样。统一经 _compact 头尾截断。args 非法/为空返回 ""（调用方自行兜底）。
+    """
+    if not isinstance(args, dict):
+        return ""
+    for key in _SUMMARY_KEYS:
+        v = args.get(key)
+        if v:
+            s = str(v)
+            if key == "path":
+                s = s.rstrip("/").rsplit("/", 1)[-1]
+            return _compact(s)
+    return ""
+
+
+def _diffstat(old: str, new: str) -> tuple[int, int]:
+    """unified diff 行级统计 (added, removed)，不计 +++/--- 头。"""
+    added = removed = 0
+    for line in difflib.unified_diff(old.splitlines(), new.splitlines(), n=0):
+        if line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    return added, removed
+
+
+def _read_text_or_none(path: str) -> str | None:
+    """读文件文本；不存在返回 ""（新写文件场景），IO/解码失败返回 None（无徽标）。"""
+    try:
+        p = Path(path)
+        return p.read_text(encoding="utf-8") if p.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def _format_tool_call(name: str, raw_args: str) -> str:
