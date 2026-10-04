@@ -45,6 +45,7 @@ class RAGService:
         self._bm25 = None              # BM25 索引 (Bm25Index)
         self._indexer = None           # 索引器视图 (RagIndexer)
         self._retriever = None         # 检索器视图 (Retriever)
+        self._rewriter = None          # 改写器 (QueryRewriter)
 
         # 纯逻辑组件，无副作用，直接构造
         self.chunker = AcademicChunker()
@@ -244,6 +245,28 @@ class RAGService:
             from paperflow.rag.services.retriever import Retriever
             self._retriever = Retriever(self)
         return self._retriever
+
+    def get_rewriter(self):
+        """惰性创建并返回 query 改写器（RAG 包内首个 LLM 调用点）。
+
+        模型取 rag_query_rewrite_model，留空回退主模型（dataclasses.replace
+        只换 model 字段，base_url/api_key/超时沿用主配置）。LLMClient 对空
+        api_key fail-fast——调用方（RagRetrieveTool）catch 后降级原 query。
+
+        Returns:
+            QueryRewriter: 改写器实例（进程内缓存）。
+        """
+        if self._rewriter is None:
+            from dataclasses import replace
+
+            from paperflow.core.llm.client import LLMClient
+            from paperflow.rag.services.query_rewriter import QueryRewriter
+            llm_cfg = self.config.llm
+            rewrite_model = getattr(self.config, "rag_query_rewrite_model", "")
+            if rewrite_model:
+                llm_cfg = replace(llm_cfg, model=rewrite_model)
+            self._rewriter = QueryRewriter(LLMClient(llm_cfg))
+        return self._rewriter
 
     # ---------- 对外便捷入口（索引/检索持同一把锁） ----------
     def index_document(self, path: str) -> None:
