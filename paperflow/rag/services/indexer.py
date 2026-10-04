@@ -36,9 +36,9 @@ _TABLE_TEXT_LIMIT = 8000
 class _FileContent:
     """单篇文档解析产物：切块所需的全部原料。
 
-    source: "pdf" | "note"；title: 文档标题（PDF=GROBID 主标题，笔记=H1，
-    取不到为空串）；tables/figures: GROBID 提取的表格文本与图注（笔记与
-    PyMuPDF 回退路径为空）。
+    source: "pdf" | "note"；
+    title: 文档标题（PDF=GROBID 主标题，笔记=H1，取不到为空串）；
+    tables/figures: GROBID 提取的表格文本与图注（笔记与 PyMuPDF 回退路径为空）。
     """
     source: str
     title: str
@@ -131,9 +131,8 @@ class RagIndexer:
         index_all 遇到不符版本则全量重扫）。
 
         Returns:
-            tuple[int, dict] | None: (版本号, {绝对路径: mtime})；文件不存在或
-            JSON 非法返回 None。旧格式（裸 {abs_path: mtime}，无 version 字段）
-            按版本 0 处理，保证升级路径上旧状态被识别为「不符」而非崩溃。
+            tuple[int, dict] | None: (版本号, {绝对路径: mtime})；
+            文件不存在或JSON 非法返回 None。
         """
         if not self._state_path.exists():
             return None
@@ -160,7 +159,7 @@ class RagIndexer:
 
     # ---------- 文档解析 → 分块 ----------
     def _parse_file(self, path: Path) -> _FileContent:
-        """读取并解析文档，产出切块所需的全部原料。
+        """读取并解析文档，产出 chunker 切块所需的全部原料。
 
         - PDF: 解析器（GROBID 优先 / PyMuPDF 回退）给出章节、表格、图注与主
           标题；回退路径 title/tables/figures 为空，切块退化为「章节标题前缀 +
@@ -174,7 +173,11 @@ class RagIndexer:
         Returns:
             _FileContent: 解析产物（source/title/sections/tables/figures）。
         """
+        # PDF 论文：使用（GROBID 优先 / PyMuPDF 回退）解析
         if path.suffix.lower() == ".pdf":
+            # parsed：ParsedDoc
+            # grobid 解析 PDF 时，除了章节正文，还从 TEI XML 里抽出 <table>（表格文本）和 <figDesc>（图注），
+            # 装进 ParsedDoc.tables / ParsedDoc.figures
             parsed = self.service.pdf_parser().parse_pdf(str(path))
             return _FileContent("pdf", parsed.title or "", parsed.sections,
                                 parsed.tables, parsed.figures)
@@ -222,12 +225,17 @@ class RagIndexer:
 
         def _add(heading: str, text: str) -> None:
             nonlocal idx
-            # 折叠连续空白：GROBID 表格是单元格拼接，换行/多空格只是噪声，
-            # 压平后对 BM25 分词和 embedding 都更干净
+            # ① 折叠连续空白：GROBID 表格是单元格拼接，换行/多空格只是噪声，压平后对 BM25 分词更干净
             text = " ".join(text.split())
+
+            # ② 空白项跳过
             if not text:
                 return
+
+            # ③ 表格与图注块 id 与章节块 id 的生成是同一套规则
             chunk_id = hashlib.sha1(f"{rel}:{idx}".encode()).hexdigest()[:16]
+
+            # ④ 表格与图注块前缀规则也与章节块一致
             chunks.append(Chunk(
                 id=chunk_id, text=context_prefix(parsed.title, heading, text),
                 path=rel, source=parsed.source, heading=heading, chunk_index=idx,
@@ -319,9 +327,12 @@ class RagIndexer:
         store.delete_doc(rel) # 按相对路径删除所有块
 
         # 3. 切分：章节块 + 表格/图注块，过滤空白块
+        # 3.1 处理章节块
         chunks = self.service.chunker.split_doc(rel, parsed.sections, parsed.source,
                                                 title=parsed.title)
+        # 3.2 处理表格/图注块
         chunks.extend(self._media_chunks(rel, parsed, start_index=len(chunks)))
+
         chunks = [c for c in chunks if c.text.strip()]   # 过滤空白文本的块，避免产生无意义向量
         if not chunks:
             # 文档被清空：旧块已删，无需写新内容
@@ -330,7 +341,9 @@ class RagIndexer:
         # 4. 编码并写入
         vecs = self._embed_chunks(chunks)
         mtime = p.stat().st_mtime
+        # 向量数据库存：① 原文全文；② 原文压缩成的一个 1024 维浮点向量；③ 元数据
         store.upsert(chunks, vecs, mtime=mtime)
+        # bm25存的是：① 原文分词后的 token 列表，比如：["多意图","执行","clarification","触发","判定",...]；② 词频矩阵 + idf 表（“这个词在几篇文档里出现过”的统计）
         bm25.add_documents([(c.id, c.text) for c in chunks])
 
         # 5. 更新状态文件——仅「状态缺失或同版本」时写入。状态缺失时没有可

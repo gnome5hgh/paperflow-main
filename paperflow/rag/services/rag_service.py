@@ -144,7 +144,8 @@ class RAGService:
             Bm25Index: BM25 索引实例。
         """
         # Bm25Index 是纯内存结构，无持久化，进程重启后需从向量库重建。
-        # 这里只创建空索引，后续由索引器填充。
+        # 这里只创建空索引；填充有两条路径——检索器首次查询时的进程级恢复
+        # （retriever.py，裸 rebuild 自向量库）与索引器的增量/全量写入。
         if self._bm25 is None:
             with self.lock:
                 if self._bm25 is None:

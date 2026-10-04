@@ -97,9 +97,11 @@ class SbertReranker:
         pairs = [[query, d] for d in docs]
 
         # 3. 调用模型的 `predict` 方法，得到每对的相关性分数（float 值，越高越相关）。
+        # scores：list[float]，每条候选的分数，顺序 = 输入顺序
         scores = self._model.predict(pairs)
 
         # 4. 按分数从高到低对所有文档下标排序。
+        # order：把分数排名换算成“下标的排名”，比如：[3, 1, 2, 0, 4] # 第1名是 doc3，第2名是 doc1，……
         order = sorted(range(len(docs)), key=lambda i: scores[i], reverse=True)
 
         # 5. 截取前 top_k 个下标返回。

@@ -84,64 +84,142 @@ class AcademicChunker:
     def _token_window(self, tokens: list[int]) -> list[str]:
         """对 token 序列做硬滑窗（步长 = max_tokens - overlap_tokens）。
 
-        只用于两个回退场景：全文不足两句但超预算、单句超长。
+        用于：1、全文超预算但切不出两句（比如一整段没句号）
+             2、_pack_sentences——单个句子自己超过整个预算
         """
         stride = max(1, self.max_tokens - self.overlap_tokens)
         return [self._enc.decode(tokens[start:start + self.max_tokens])
                 for start in range(0, len(tokens), stride)]
 
     def _pack_sentences(self, sentences: list[str]) -> list[str]:
-        """按句装窗：逐句累加，超过 max_tokens 封窗。
+        """按句装窗：逐句累加，超过 max_tokens 封窗。……
 
         新窗以「上一窗尾部约 overlap_tokens 的完整句子」开头；凑不出完整句、
         或重叠句加上当前句会超预算时放弃重叠（宁少重叠，不超预算、不切句）。
+
+        Args:
+            sentences: 句子列表，须由 _split_sentences 切出（句末标点边界、
+                       已滤空白片段、元素非空）。顺序即原文顺序——窗口重叠
+                       的"尾部回收集句"依赖此顺序保证语义连贯。
+                       单个句子本身可超 max_tokens：该句在循环内单独回退
+                       token 硬滑窗（唯一切句场景），不影响其余句子的按句装窗。
+
+        Returns:
+            list[str]: 封好的窗口文本列表，顺序与输入句子顺序一致、内容无遗漏
+                       （每句恰好属于一个窗口，或经硬滑窗拆进多个连续窗口；
+                       重叠使相邻窗口共享句子，但重叠句同时位于两窗是刻意设计）。
+                       每窗 token 数 ≤ max_tokens（重叠句计入下一窗预算）；
+                       空输入返回空列表。窗口文本为句子直接拼接（无分隔符），
+                       不含「标题 > 章节」前缀——前缀由调用方 split_doc 逐窗拼接。
         """
-        windows: list[str] = []
-        cur: list[str] = []
-        cur_len = 0
+
+        windows: list[str] = []   # 已封窗的成品
+        cur: list[str] = []       # 当前正在攒的窗（保存攒着的句子）
+        cur_len = 0               # 当前窗的 token 总数（缓存，避免反复 encode 整窗）
+
+        # 遍历一个章节的全部句子
         for sent in sentences:
+            # 本句的 token 数（每句 encode 一次）
             t = len(self._enc.encode(sent))
+
+            # ---- 封窗判定：当前窗非空，且装下本句会超预算则开始封窗 ----
             if cur and cur_len + t > self.max_tokens:
+                # 封窗包含四步骤：
+                # ① 当前正在攒的窗拼接入成品
                 windows.append("".join(cur))
+
+                # ② 从当前窗【尾部】往回收集“重叠句”：
+                #    逆序遍历，逐句往前插（insert(0, prev) 保持原顺序），
+                #    直到再加一句就会超过 overlap_tokens 为止。
+                #    注意条件里的 `overlap and`：第一句无条件收——即使它自己
+                #    就超过 overlap 预算也先收着（好过没有重叠），
+                #    这是"宁少重叠"而非"零重叠"的体现
                 overlap: list[str] = []
                 overlap_len = 0
                 for prev in reversed(cur):
-                    pt = len(self._enc.encode(prev))
+                    pt = len(self._enc.encode(prev)) # 当前遍历到的句子的 token 数
+                    # if overlap 表示 overlap 为空时就不满足条件，
+                    # 那么逆序遍历到的第一句永远收，即使这个第一句本身的 token 数就超过 overlap_tokens
+                    # overlap_len + pt > self.overlap_tokens 表示再加上当前的句子就会超过 overlap_tokens，则 break，不处理当前句子
                     if overlap and overlap_len + pt > self.overlap_tokens:
                         break
+
+                    # 将当前句子加入“重叠句”
                     overlap.insert(0, prev)
                     overlap_len += pt
+
+                # ③ 重叠可行性检查：重叠句 + 本句如果已经超出块的最大 token 预算，
+                #    说明上一窗尾部是一句超大的话——放弃重叠，新窗从本句干净起步
+                #    （宁少重叠，不超预算：重叠是锦上添花，预算是硬约束）
                 if overlap_len + t > self.max_tokens:
                     overlap, overlap_len = [], 0
+
+                # ④ 通过了重叠可行性检查：新窗从"上一窗的尾部句子"开始
                 cur, cur_len = overlap, overlap_len
+
+            # ---- 单句超出块的最大 token 预算：唯一允许切句的场景 ----
+            # 走 token 硬滑窗把这一句单独切小；若当前窗里已有句子，先封掉。
+            # （注意此判定在封窗之后：因此上面刚攒好的 overlap 若非空，
+            #   会先被当作独立小窗封出去——边界行为上的小冗余，语义无害）
             if t > self.max_tokens:
-                # 单句超长：唯一允许切句的场景，回退 token 硬滑窗
                 if cur:
                     windows.append("".join(cur))
                     cur, cur_len = [], 0
                 windows.extend(self._token_window(self._enc.encode(sent)))
-                continue
+                continue                              # 本句已被消费，跳过入窗
+
+            # ---- 常规：句子入窗，累加长度 ----
             cur.append(sent)
             cur_len += t
+
+        # ---- 收尾：最后一批句子不足一窗（没触发过封窗），也要封出去 ----
         if cur:
             windows.append("".join(cur))
         return windows
 
     def _split_long(self, text: str) -> list[str]:
-        """超长文本切分：先按句切再按 token 预算装窗（不切句）。
+        """章节级：判断"切不切、怎么切"的调度器。
+
+        超长文本切分：先按句切再按 token 预算装窗（不切句）。
 
         回退：全文不足两句但超预算、或单句超长时用 token 硬滑窗。
+
+        Args:
+            text: 单个章节的正文文本（不含「标题 > 章节」前缀，前缀由调用方 split_doc 逐窗拼接）。
+
+        Returns:
+            list[str]: 切分后的窗口文本列表。每个窗口 token 数不超过 max_tokens 硬滑窗路径下严格相等，按句路径下 ≤）；
+                       未超预算时为只含原文一个元素的列表。窗口可能为空列表——
+                       text 去除空白后无内容时各分支均无可切之物（调用方 split_doc 侧
+                       不做二次过滤，索引侧 index_document 有空白块过滤兜底）。
         """
+        # ---- 分支①：没超预算，不值得切，原文整段返回 ----
+        # 用 token 计数（不是字符数）做判断——预算是给嵌入模型的输入长度定的，
+        # 中英文 token 密度差异大，字符数判断会失真
         if len(self._enc.encode(text)) <= self.max_tokens:
             return [text]
+
+        # ---- 超预算：先试着按句切 ----
+        # _split_sentences 用句末标点（。！？!? / 英文句点+空白）的正则切分，
+        # 过滤纯空白片段，得到句子列表
         sentences = self._split_sentences(text)
+
+        # ---- 分支②：切不出两个句子的回退 ----
+        # 不足两句（如一整段没有句号、或英文小数/缩写导致正则只切出 1 段）却又超了预算——
+        # 按句装窗无从谈起，只能对整个 token 序列做硬滑窗：
+        # 每窗 max_tokens，步长 max_tokens - overlap（即相邻窗重叠 overlap_tokens），
+        # 纯 token 边界，会切在句子中间，是"保长度、牺牲句子完整性"的兜底
         if len(sentences) <= 1:
             return self._token_window(self._enc.encode(text))
+
+        # ---- 分支③：正常路径——按句装窗 ----
+        # _pack_sentences 逐句累加，凑满 max_tokens 封一窗；新窗以前 至 窗尾部约 overlap_tokens 的【完整句子】开头（保持跨窗语义连贯）；
+        # 全程不切断句子——除非某一句本身就超过整个预算（ _pack_sentences 调用 _token_window）
         return self._pack_sentences(sentences)
 
     def split_doc(self, rel_path: str, sections: list[tuple[str, str]], source: str,
                   title: str = "") -> list[Chunk]:
-        """把带章节结构的一篇文档切成 Chunk 列表，跳过参考文献章节。
+        """文档级：逐章节遍历，把带章节结构的一篇文档切成 Chunk 列表，跳过参考文献章节。
 
         Args:
             title: 文档标题（PDF=GROBID 主标题，笔记=H1）；与 heading 一起拼成
@@ -158,8 +236,8 @@ class AcademicChunker:
             if self._is_reference(heading):
                 continue
             # 3. 否则，对章节正文调用 `_split_long` 分割（可能返回一个或多个片段）。
-            # 4. 前缀逐窗拼接（而非拼进原文再切）：长章节切多窗时每个窗口都自带
-            #    「标题 > 章节」上下文，任一窗口被单独检回都不丢所属信息。
+            # 4. 前缀逐窗拼接（而非拼进原文再切）：长章节切多窗时每个窗口都自带「标题 > 章节」上下文，任一窗口被单独检回都不丢所属信息。
+            # split_doc 逐章节调 _split_long，每得到一个窗口片段就拼上「标题>章节」前缀、哈希出 块 id
             for part in self._split_long(text):
                 # 5. 为每个片段生成一个 Chunk 对象，其中 id 由 `sha1(rel_path + 全局序号)[:16]` 生成。
                 chunk_id = hashlib.sha1(f"{rel_path}:{idx}".encode()).hexdigest()[:16]
