@@ -208,27 +208,8 @@ def _shorten_path(p: str) -> str:
 
 
 def _render_banner(model: str, workspace: str) -> str:
-    """
-    生成启动横幅，使用 box-drawing 字符绘制方框。
-
-    Args:
-        model: 模型名称（如 "gpt-4"）。
-        workspace: 工作区路径（已缩写）。
-
-    Returns:
-        str: 多行横幅字符串，包含标题、模型和工作区信息。
-    """
-    lines = [
-        ">_ paperFlow Academic Assistant",
-        "",
-        f"model:     {model}",
-        f"workspace: {workspace}",
-    ]
-    inner = max(len(l) for l in lines)
-    top = "╭" + "─" * (inner + 2) + "╮"
-    body = "\n".join(f"│ {l:<{inner}} │" for l in lines)
-    bottom = "╰" + "─" * (inner + 2) + "╯"
-    return f"{top}\n{body}\n{bottom}"
+    """两行 dim 横幅：`❯ paperFlow   <model> · <workspace>`（替代 box 框，spec §6）。"""
+    return f"❯ paperFlow   {model} · {workspace}"
 
 
 async def _repl(supervisor: Agent, conversation: ConversationState, *,
@@ -326,7 +307,7 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 # 而 _repl 跑在主事件循环线程——
                 # 直接同步调用会抛 "asyncio.run() cannot be called from a running event loop"。
                 # confirm/ask 回调已是 to_thread，read 对齐之。
-                raw = await asyncio.to_thread(io.read, "> ")
+                raw = await asyncio.to_thread(io.read, "❯ ")
             except (EOFError, KeyboardInterrupt):
                 break                # Ctrl-D / 空框 Ctrl+C：与 /exit 同效，优雅退出
             except Exception as e:
@@ -355,6 +336,8 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 # 避免用户以为卡死。
                 renderer.print("（空输入已忽略）", style="dim")
                 continue
+            # 用户回显（spec §6）：每轮的翻历史锚点；澄清合并轮回显原始输入
+            renderer.print_raw(f"❯ {raw}")
             # 必须在 _merge_pending 之前取快照：该调用会消费掉这条挂起（清空conversation.pending_intent），
             # 而下方重新挂起澄清时要用旧记录的 round 做链式累计。
             # p 持有旧对象引用，conversation 上的引用被清掉后依然可读。
@@ -424,7 +407,11 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
             # should_print 比对流式缓冲与最终答案——一致则只补换行，被中间件
             # on_finish 改写过则补打最终版，既不重复也不漏打。
             renderer.finalize()
-            renderer.print(renderer.should_print(result))
+            text = renderer.should_print(result)
+            if text:
+                renderer.print_markdown(text)
+            else:
+                renderer.print("")
 
     finally:
         # 确认中心收尾：取消消费者任务，避免退出后任务泄漏告警
