@@ -19,6 +19,7 @@ ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
     "rag_retrieve": ("📚 检索", "次"),
     "write_file": ("✏️ 写入", "文件"),
     "edit_file": ("✏️ 编辑", "文件"),
+    "analyze_figures": ("🖼️ 解析", "次"),   # 视觉解析 PDF 插图（noter 高频、耗时数秒）
     "spawn_sub_agent": ("🤖 子任务", "次"),
 }
 _DEFAULT = ("🔧 执行", "次")

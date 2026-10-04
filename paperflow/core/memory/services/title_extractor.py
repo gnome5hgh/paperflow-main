@@ -140,6 +140,7 @@ class TitleExtractor:
         """
         try:
             import fitz
+            fitz.TOOLS.mupdf_display_errors(False)  # C 层 stderr 告警不糊屏
             doc = fitz.open(pdf_path)
             text = doc[0].get_text("text")[:1000]  # 只取首页前 1000 字符
             meta = doc.metadata or {}
@@ -188,6 +189,7 @@ class TitleExtractor:
             这一启发式在格式标准的 PDF 中准确率很高，作为最后的兜底方案足够可靠。
         """
         import fitz
+        fitz.TOOLS.mupdf_display_errors(False)  # C 层 stderr 告警不糊屏
         try:
             doc = fitz.open(pdf_path)
             page = doc[0]

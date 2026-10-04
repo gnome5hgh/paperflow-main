@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import fitz
+fitz.TOOLS.mupdf_display_errors(False)  # C 层 stderr 告警（损坏对象/字体）不糊屏：失败仍经工具返回值可见
 
 from paperflow.vision.parsers.caption import (
     FigureType,
