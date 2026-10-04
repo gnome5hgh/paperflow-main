@@ -471,11 +471,25 @@ class SpawnSubAgentTool(Tool):
                 _pending_steps 列表本体，原地 pop 即完成出队。"""
                 parent_queue.pop(0)
         else:
-            li = parent.last_intent
-            if li is not None and not INTENT_META[li.intent_type][1]:
-                result = SubAgentResult(status="denied",
-                                        summary=f"当前意图 {li.intent_type.value} 不派发领域 agent")
-                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+            # 声明优先（2026-10-04）：supervisor 显式声明了 intent 时按声明校验——
+            # 可派发即放行，不可派发明确拒绝。这是会话意图被误判时唯一的申诉通道：
+            # 用户已在澄清中确认真实意图、而 last_intent 要到下一轮才更新，此前
+            # 门禁只认 last_intent 会把「模型+用户都确认正确」的派发也锁死（实测
+            # 同一派发被拒 6 次、追问 3 轮的死锁）。安全性与原设计一致——intent
+            # 是自声明，报假声明换不到任何额外权限，声明什么就按什么校验；门禁
+            # 防的是行为漂移（跳步/乱序/漏派），不是对抗。
+            if declared is not None:
+                if not INTENT_META[declared][1]:
+                    result = SubAgentResult(
+                        status="denied",
+                        summary=f"声明的意图 {declared.value} 不可派发领域 agent（仅业务意图可派发）")
+                    return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+            else:
+                li = parent.last_intent
+                if li is not None and not INTENT_META[li.intent_type][1]:
+                    result = SubAgentResult(status="denied",
+                                            summary=f"当前意图 {li.intent_type.value} 不派发领域 agent")
+                    return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
             def _pop_step() -> None:
                 """普通轮次没有复合队列，空操作——与复合分支共用同一调用点。"""

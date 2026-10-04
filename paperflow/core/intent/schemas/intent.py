@@ -102,6 +102,9 @@ class IntentStep(str, Enum):
     FOLLOWUP = "followup"                  # 追问检测阶段（依赖会话上下文）
     ROUTER = "router"                      # 混合路由阶段
     LLM = "llm"                            # LLM 兜底阶段
+    USER = "user"                          # 用户确认阶段——澄清回路的用户选择代码级落地
+                                           # （管线澄清编号选择 / ask_user 带 intent_options），
+                                           # 不经路由器复判（2026-10-04 澄清统一）
 
 
 class IntentOutput(BaseModel):
@@ -134,6 +137,12 @@ class IntentOutput(BaseModel):
 
     #: 歧义澄清问题（LLM 兜底阶段填充；非空时管线提前返回，由调用方跨轮挂起待澄清意图）
     clarification: str | None = None
+
+    #: 澄清的候选意图（仅 clarification 非空时填充，业务候选 top2，按展示顺序）。
+    #: 澄清回路的代码级回传锚点：CLI 挂起澄清时带走，用户回复经
+    #: routing.confirm.match_option_choice 解析回其中之一，直接落地会话意图——
+    #: 不进 INTENT 块（对模型是噪声），_intent_block 序列化时排除。
+    clarify_candidates: list["IntentType"] = []
 
     @model_validator(mode="after")
     def _sanitize_surrogates(self) -> "IntentOutput":
