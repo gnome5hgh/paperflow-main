@@ -1045,17 +1045,22 @@ class Agent:
 
         流程(中间件管道)::
 
+            0. 发射 tool_start 事件（门控 stream_callback；带 tool_name/summary）
             1. 构造 ToolContext（trace_id / session_id / agent_type / 工具 / 参数）
                —— ctx 在参数解析前构造，保证所有路径都能走 after 链审计
-            2. 解析 JSON 参数（失败 → 走 after 链 → 错误 ToolResult）
-            3. 非 dict 参数归一化为 {}（防止 ** 展开崩溃，审计记录空参数）
-            4. 未知工具（不存在 → 走 after 链 → 错误 ToolResult）
-            5. before 阶段：顺序执行各中间件的 before 钩子
-               - 抛 ConfirmRequired → 调用 confirm_callback 决策：
-                 拒绝 → user_denied ToolResult；通过 → 执行工具
-               - 抛其他 SecurityError → policy_denied / security_blocked ToolResult
-            6. 执行工具（异常 → ToolResult(text="Tool error: ...")）
-            7. after 阶段：逆序执行各中间件的 after 钩子（洋葱模型）
+            2. _exec_tool_parsed 执行解析后的管道（原 3-8 步）：
+               a. 解析 JSON 参数（失败 → 走 after 链 → 错误 ToolResult）
+               b. 非 dict 参数归一化为 {}（防止 ** 展开崩溃，审计记录空参数）
+               c. 写类工具采样目标旧文本（diffstat 徽标数据源）
+               d. 未知工具（不存在 → 走 after 链 → 错误 ToolResult）
+               e. before 阶段：顺序执行各中间件的 before 钩子
+                  - 抛 ConfirmRequired → 调用 confirm_callback 决策：
+                    拒绝 → user_denied ToolResult；通过 → 执行工具
+                  - 抛其他 SecurityError → policy_denied / security_blocked ToolResult
+               f. 执行工具（异常 → ToolResult(text="Tool error: ...")）
+               g. after 阶段：逆序执行各中间件的 after 钩子（洋葱模型）
+            3. finally 收口发射恰好一条 tool_end 事件（耗时 + 写类 diffstat +
+               completion/错误兜底文本）——正常/异常/拦截/解析失败全覆盖
 
         注意:JSON 解析失败和未知工具不绕过中间件管道——ctx 在解析前构造,
         早退路径也走 after 链(仅审计),保证这些异常路径同样留下审计痕迹
@@ -1077,12 +1082,19 @@ class Agent:
         """
         name = tool_call["function"]["name"]
 
-        # 0. 发送工具调用事件（流式渲染）
+        # 0. 发送工具调用开始事件（流式渲染）
         # 目的：在参数解析前就发出流式事件，这样即使后续出现 JSON 解析失败或未知工具，终端渲染器也能及时清空中间内容缓冲区，避免将思考文本误判为最终答案。
         # 门控：仅当 stream_callback 存在时才执行（即 CLI 交互模式），否则零开销。
         if self.stream_callback is not None:
-            self._emit(StreamEvent("tool", _format_tool_call(
-                name, tool_call["function"]["arguments"]), self.agent_type))
+            try:
+                args_for_summary = json.loads(tool_call["function"]["arguments"])
+            except (json.JSONDecodeError, TypeError):
+                args_for_summary = {}
+            self._emit(StreamEvent(
+                "tool_start", _format_tool_call(
+                    name, tool_call["function"]["arguments"]), self.agent_type,
+                tool_name=name,
+                summary=_tool_summary(name, args_for_summary) or None))
 
         # 1. 按工具名查找 Tool 实例
         # 若 self.tools 中无此名称，说明 LLM 幻觉或受提示注入攻击生成了非法工具名。此时 tool = None，后续会处理并返回错误 ToolResult。
@@ -1102,6 +1114,19 @@ class Agent:
             turn=turn,
         )
 
+        try:
+            return await self._exec_tool_parsed(tool_call, ctx, tool,
+                                                _confirm_lock, turn)
+        finally:
+            # tool_end 恰好一条：正常/异常/拦截/解析失败都经 finally 收口（spec §4.1）
+            if self.stream_callback is not None:
+                self._emit(self._tool_end_event(ctx))
+
+    async def _exec_tool_parsed(
+        self, tool_call: dict, ctx: ToolContext, tool, _confirm_lock, turn
+    ) -> ToolResult:
+        """_exec_tool 的解析后管道（原 3-8 步）；tool_end 收口在调用方 finally。"""
+
         # 3. 解析 JSON 参数
         # LLM 生成的 arguments 是 JSON 字符串，必须解析为 dict。
         # 若解析失败（非法 JSON），记录错误到 ctx，执行 after 钩子，然后返回带有解析错误的 ToolResult，让 LLM 自己决定是否重试。
@@ -1117,6 +1142,13 @@ class Agent:
         # 如果 raw_args 不是 dict（例如 LLM 生成了数组或字符串），为了安全将其归一化为空字典 {}，防止后续 tool.execute(**ctx.args) 时展开崩溃。
         # 这种异常情况也会被记录在 ctx.args 中供审计。
         ctx.args = raw_args if isinstance(raw_args, dict) else {}
+
+        # 4.5 写类工具采样旧文本（diffstat 徽标数据源；读失败 → 无徽标，不影响执行）
+        if ctx.tool_name in {"write_file", "edit_file"} and isinstance(ctx.args, dict) and ctx.args:
+            target = (tool.effective_target_path(ctx.args)
+                      if tool is not None else ctx.args.get("path"))
+            if isinstance(target, str):
+                ctx.diffstat_old = _read_text_or_none(target)
 
         # 当在一轮工具调用里并行发两个 edit_file 改同一个文件时会出现两个问题：
         # 1、丢写竞态：两个协程对同一文件并发读-改-写，后写者会把先写者的修改覆盖掉
@@ -1198,11 +1230,31 @@ class Agent:
 
         # 8. after 阶段（逆序 = 洋葱模型，后注册的中间件先看到结果）
         await self._run_after_hooks(ctx)
-        # 完成摘要（写/编辑工具）经 tool 事件发到渲染器——用户看到 File written/edited
-        # 完成行；门控 stream_callback（非 CLI 调用方零开销）。复用 "tool" kind 无需新 kind。
-        if ctx.result.completion and self.stream_callback is not None:
-            self._emit(StreamEvent("tool", ctx.result.completion, self.agent_type))
+        # 完成摘要（写/编辑工具）不再单独发事件：并入调用方 finally 收口的
+        # tool_end 事件文本（_tool_end_event），保证每条工具调用恰好一条收口。
         return ctx.result
+
+    def _tool_end_event(self, ctx: ToolContext) -> StreamEvent:
+        """tool_end 事件：耗时 + 写类 diffstat + completion/错误兜底文本。"""
+        duration = (int((time.monotonic() - ctx.started_at) * 1000)
+                    if ctx.started_at is not None else None)
+        diffstat = None
+        if ctx.tool_name in {"write_file", "edit_file"} and ctx.diffstat_old is not None:
+            target = (ctx.tool.effective_target_path(ctx.args)
+                      if ctx.tool is not None else ctx.args.get("path"))
+            new_text = _read_text_or_none(target) if isinstance(target, str) else None
+            if new_text is not None:
+                added, removed = _diffstat(ctx.diffstat_old, new_text)
+                diffstat = (target, added, removed)
+        if ctx.result is not None and ctx.result.completion:
+            text = ctx.result.completion
+        elif ctx.error is not None:
+            text = f"Tool failed: {ctx.error}"
+        else:
+            text = ""
+        return StreamEvent("tool_end", text, self.agent_type,
+                           tool_name=ctx.tool_name or None,
+                           duration_ms=duration, diffstat=diffstat)
 
     async def _run_before_hooks(self, ctx: ToolContext, confirm_lock: asyncio.Lock | None = None) -> ToolResult | None:
         """
