@@ -250,6 +250,12 @@ class PaperFlowConfig:
     #: rag_rerank_candidates 或 PAPERFLOW_RAG_RERANK_CANDIDATES 覆盖。
     rag_rerank_candidates: int = 24
 
+    #: query 改写用模型（spec docs/superpowers/specs/2026-10-04-rag-query-rewrite-design.md）：
+    #: 改写是轻量任务，留空回退 llm.model 主模型；换轻量模型经此覆盖，不改代码。
+    #: 可经 config.yaml 顶层 rag_query_rewrite_model 或
+    #: PAPERFLOW_RAG_QUERY_REWRITE_MODEL 覆盖。
+    rag_query_rewrite_model: str = ""
+
     #: 子 agent 超时覆盖表(按 agent 类型→秒数)。默认 120s 对完整流程太短,各值由
     #: audit 历史数据校准(2026-09-05,45 次 spawn 实测 + research_discovery 链路分解,
     #: 见 docs/superpowers/specs/2026-09-05-agent-timeout-recalibration-design.md):
@@ -312,6 +318,7 @@ class PaperFlowConfig:
                     "citations_bib_path",
                     "grobid_endpoint", "milvus_uri", "milvus_collection",
                     "embed_model", "rerank_model", "rag_rerank_candidates",
+                    "rag_query_rewrite_model",
                     "agent_timeouts", "sleeptime_enable", "sleeptime_agent_frequency"):
             if key in data:
                 setattr(self, key, data[key])
@@ -343,6 +350,7 @@ class PaperFlowConfig:
             PAPERFLOW_EMBED_MODEL    → embed_model
             PAPERFLOW_RERANK_MODEL   → rerank_model
             PAPERFLOW_RAG_RERANK_CANDIDATES → rag_rerank_candidates
+            PAPERFLOW_RAG_QUERY_REWRITE_MODEL → rag_query_rewrite_model
             PAPERFLOW_VISION_BASE_URL → vision.base_url
             PAPERFLOW_VISION_API_KEY  → vision.api_key
             PAPERFLOW_VISION_MODEL    → vision.model
@@ -376,6 +384,7 @@ class PaperFlowConfig:
             "PAPERFLOW_EMBED_MODEL": (None, "embed_model"),
             "PAPERFLOW_RERANK_MODEL": (None, "rerank_model"),
             "PAPERFLOW_RAG_RERANK_CANDIDATES": (None, "rag_rerank_candidates"),
+            "PAPERFLOW_RAG_QUERY_REWRITE_MODEL": (None, "rag_query_rewrite_model"),
             "PAPERFLOW_SLEEPTIME_ENABLE": (None, "sleeptime_enable"),
             "PAPERFLOW_SLEEPTIME_FREQUENCY": (None, "sleeptime_agent_frequency"),
             "PAPERFLOW_RESUME_REPLAY": (None, "resume_replay"),
