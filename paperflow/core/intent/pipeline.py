@@ -63,6 +63,82 @@ def _is_business(name: str) -> bool:
         return False
 
 
+#: 路由前要剥离的实体键——路径类实体。文件名常含论文主题词（如
+#: ".../Link-Prediction-in-Knowledge-Graphs.pdf"），整段进入编码器后，稀疏与稠密
+#: 两路都会被主题词拽向「主题相近」的意图（实测「<知识图谱链接预测的 PDF 路径>
+#: 这篇论文是干什么的」被 set_research_topic 以 0.716 险胜 analyze_paper 0.687——
+#: 动作词「这篇论文是干什么的」单独路由时两路分数都到不了该意图）。意图由用户
+#: 的动作词决定，路径只是载荷：剥离后再路由，剥离后为空白则回退原文（纯路径
+#: 输入仍可路由）。arxiv_id/doi/figure 短且不含主题词序列，不剥离。
+_ROUTING_STRIP_KEYS = ("pdf_path", "note_path")
+
+
+def routing_text(query: str, entities: dict) -> str:
+    """剥离路径类实体后的路由文本：意图信号只来自用户的动作词，不来自文件名。
+
+    模块级函数而非方法：alpha sweep / steps 评测的矩阵路径必须复刻同一剥离，
+    否则评测口径与生产不一致（管线第 4 级与两处评测共用本函数）。
+
+    Args:
+        query: 用户原始输入。
+        entities: 第 1 级 extract_entities 的产出（本函数只读）。
+
+    Returns:
+        剥离路径后的文本（空白收敛为单空格）；剥完为空白则原样返回 query。
+    """
+    text = query
+    for key in _ROUTING_STRIP_KEYS:
+        value = entities.get(key)
+        if value:
+            text = text.replace(value, " ")
+    text = " ".join(text.split())
+    return text if text else query
+
+
+def is_ambiguous(scored: list[tuple[str, float]],
+                 threshold_of) -> bool:
+    """模块级澄清判据：路由分数层面的两条「不自信」信号（S1 贴线 / S2 竞争）。
+
+    模块级纯函数而非方法：steps/澄清评测（steps_eval.py）的矩阵路径必须复刻
+    同一份判据，评测口径才不会与生产漂移；IntentPipeline._ambiguous 委托本函数。
+
+    只看业务意图候选（可派发的那几类），闲聊/超范围这类永远不参与：它们要么
+    轻回复要么拒绝，不存在选错方向执行下去的代价。两条信号满足任一即澄清：
+
+    - S1 贴线：分数最高的业务候选，分数低于（自身标定阈值 + CLARIFY_FLOOR_DELTA）。
+      「刚压线通过」和「差一点没过」在这里是同一回事——路由器都没能把它和
+      其他意图拉开差距，硬选一个大概率选错。
+    - S2 竞争：分数最高的两个业务候选分差小于 CLARIFY_MARGIN。两个意图都有可能
+      （典型如「这本书讲什么」落在问答和精读分析之间），让用户二选一比赌
+      一个便宜得多。
+
+    两条判据都锚定在 fit 标定的阈值上，所以有个共同前提：top1 候选的路由
+    阈值必须是标定过的（> 0）。routes.yaml 出厂态阈值全 0.0，那时路由层本来
+    就没有「认准」的能力可言，判据整体不启用，行为与旧版一致（未命中才落
+    LLM 兜底）。
+
+    Args:
+        scored: [(路由名, 融合分数)]，按分数降序（router.scores 的输出形态）。
+        threshold_of: 路由名 → 生效阈值（路由专属优先，否则全局；未设为 None）。
+
+    Returns:
+        True 表示该向用户澄清（触发强制澄清轮）。
+    """
+    biz = [(name, score) for name, score in scored
+           if score > 0 and _is_business(name)]
+    if not biz:
+        return False
+    top_name, top_score = biz[0]
+    # S1 贴线：阈值未标定时不启用（见 docstring 末段）
+    threshold = threshold_of(top_name)
+    barely_confident = (threshold is not None and threshold > 0.0
+                        and top_score < threshold + CLARIFY_FLOOR_DELTA)
+    # S2 竞争：第二名也是业务意图，且和第一名咬得很近
+    runner_up_close = (len(biz) >= 2
+                       and (top_score - biz[1][1]) < CLARIFY_MARGIN)
+    return bool(barely_confident or runner_up_close)
+
+
 class IntentPipeline:
     """意图识别五级级联编排：依赖混合路由器与结构化输出模块。"""
 
@@ -145,7 +221,10 @@ class IntentPipeline:
         # ② 喂给 _ambiguous() 算「要不要澄清」（它需要看没过线的候选分数）；
         # ③ 喂给 LLM 兜底当近失候选（原先在第 5 级还要再调一次 scores()，省了）。
         # __call__ 本身一个字没改，fit/eval/sweep 走的还是老路径，单标签指标不受影响。
-        scored = self.router.scores(query, k=self.router.top_k)
+        # 路由输入用剥离路径实体后的文本（routing_text）——评分/拆分/澄清三件事
+        # 共用这份 stripped 口径；LLM 兜底仍看原文（模型对路径鲁棒，且改写契约基于原文）。
+        scored = self.router.scores(routing_text(query, entities),
+                                    k=self.router.top_k)
 
         # 多标签过滤：过各自生效阈值（路由专属优先，全局 None = 无门槛恒过，同 __call__）
         passed = [(name, score) for name, score in scored
@@ -248,36 +327,9 @@ class IntentPipeline:
         return max(0.0, min(1.0, score))
 
     def _ambiguous(self, scored: list[tuple[str, float]]) -> bool:
-        """判断当前输入是否值得向用户澄清——路由分数层面的两条「不自信」信号。
-
-        只看业务意图候选（可派发的那几类），闲聊/超范围这类永远不参与：它们要么
-        轻回复要么拒绝，不存在选错方向执行下去的代价。两条信号满足任一即澄清：
-
-        - 贴线：分数最高的业务候选，分数低于（自身标定阈值 + CLARIFY_FLOOR_DELTA）。
-          「刚压线通过」和「差一点没过」在这里是同一回事——路由器都没能把它和
-          其他意图拉开差距，硬选一个大概率选错。
-        - 竞争：分数最高的两个业务候选分差小于 CLARIFY_MARGIN。两个意图都有可能
-          （典型如「这本书讲什么」落在问答和精读分析之间），让用户二选一比赌
-          一个便宜得多。
-
-        两条判据都锚定在 fit 标定的阈值上，所以有个共同前提：top1 候选的路由
-        阈值必须是标定过的（> 0）。routes.yaml 出厂态阈值全 0.0，那时路由层本来
-        就没有「认准」的能力可言，判据整体不启用，行为与旧版一致（未命中才落
-        LLM 兜底）。
-        """
-        biz = [(name, score) for name, score in scored
-               if score > 0 and _is_business(name)]
-        if not biz:
-            return False
-        top_name, top_score = biz[0]
-        # 贴线判据：阈值未标定时不启用（见 docstring 末段）
-        threshold = self._effective_threshold(top_name)
-        barely_confident = (threshold is not None and threshold > 0.0
-                            and top_score < threshold + CLARIFY_FLOOR_DELTA)
-        # 竞争判据：第二名也是业务意图，且和第一名咬得很近
-        runner_up_close = (len(biz) >= 2
-                           and (top_score - biz[1][1]) < CLARIFY_MARGIN)
-        return bool(barely_confident or runner_up_close)
+        """判断当前输入是否值得向用户澄清——委托模块级 is_ambiguous（S1/S2 判据
+        与判定表见其 docstring；判定表单测在 tests/intent/test_pipeline.py）。"""
+        return is_ambiguous(scored, self._effective_threshold)
 
     # ------------------------------------------------------------------
     # LLM 兜底
