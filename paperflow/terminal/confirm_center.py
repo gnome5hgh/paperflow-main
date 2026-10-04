@@ -26,8 +26,26 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from paperflow.terminal.activity import activity_label
+
 #: 确认看门狗默认时限（秒）：5 分钟无渲染/无输入即判挂死，自动拒绝
 DEFAULT_WATCHDOG_S = 300.0
+
+
+def _confirm_prompt(cr) -> str:
+    """确认框一行提示（spec §5.3 卡片观感）：左边条 + 图标动词 + 目标 + 键提示。
+
+    图标动词复用活动行的 activity_label；目标取 params 里的 path 尾段
+    （basename），取不到 path（如 spawn_sub_agent）就只显示工具名。
+    键绑定不变：y=本次放行 / a=本会话放行 / n=拒绝。
+    """
+    tool_name = getattr(cr, "tool_name", "") or ""
+    verb, _ = activity_label(tool_name)
+    params = getattr(cr, "params", None)
+    path = params.get("path") if isinstance(params, dict) else None
+    target = (str(path).rstrip("/").rsplit("/", 1)[-1]
+              if path else (tool_name or "确认"))
+    return f"┃ {verb} {target}　y 放行 / a 本会话放行 / n 拒绝"
 
 
 @dataclass
@@ -102,8 +120,7 @@ class ConfirmCenter:
         if self._loop is None:
             # 未启动（无 REPL 装配，如测试/程序化调用）：直连 io 兜底
             if kind == "confirm":
-                return self._io.confirm_choice(
-                    f"[Confirm] {getattr(payload, 'tool_name', '确认')}?")
+                return self._io.confirm_choice(_confirm_prompt(payload))
             try:
                 return self._io.ask(payload)
             except (EOFError, KeyboardInterrupt):
@@ -149,8 +166,7 @@ class ConfirmCenter:
         self._renderer.suppress(True)
         try:
             read = asyncio.ensure_future(asyncio.to_thread(
-                self._io.confirm_choice,
-                f"[Confirm] {cr.tool_name}? (y=本次 / a=本文件本次任务都同意 / N=拒绝)"))
+                self._io.confirm_choice, _confirm_prompt(cr)))
             done, _ = await asyncio.wait({read}, timeout=self._watchdog_s)
             if done:
                 return next(iter(done)).result()

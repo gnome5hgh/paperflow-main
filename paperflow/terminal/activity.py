@@ -6,7 +6,6 @@
 聚合规则见 spec §4.1：连续同动词合并计数、聚合行省略摘要、
 耗时 ≥ SLOW_MS 才标注、子 agent 调用加 [agent] 前缀。
 """
-from dataclasses import dataclass
 
 #: 慢操作阈值：tool_end 耗时 ≥ 此值（毫秒）才在活动行标注耗时
 SLOW_MS = 2000
@@ -23,13 +22,6 @@ ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
     "spawn_sub_agent": ("🤖 子任务", "次"),
 }
 _DEFAULT = ("🔧 执行", "次")
-
-
-@dataclass
-class ActivityKey:
-    """聚合键：动词相同且 agent 归属相同的连续调用合并为一行。"""
-    verb: str
-    agent_type: str
 
 
 def activity_label(tool_name: str) -> tuple[str, str]:

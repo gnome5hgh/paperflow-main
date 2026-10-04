@@ -366,7 +366,9 @@ class StreamRenderer:
 
         - ask_user_question 直接 return。
         - pending 同键（动词+agent）→ 记 duration_ms（落屏时 ≥SLOW_MS 才标注）。
-        - pending 为 None（防御：start 丢失/未知路径）→ 直接落屏该事件的完成行。
+        - 键不匹配（或 pending 为 None）→ 先 commit 现有 pending，再直接落屏该
+          end 事件的完成行。并行子 agent 交错时 root 的 tool_end 可能晚于子 agent
+          开的新行到达——直接丢弃会静默丢掉 root 工具的耗时，故必须落屏。
         - diffstat（仅写类工具）按 path 累积进 _changed，finalize 时汇成徽标。
         """
         if ev.tool_name == "ask_user_question":
@@ -379,8 +381,9 @@ class StreamRenderer:
         if (self._pending is not None and self._pending["verb"] == verb
                 and self._pending["agent_type"] == ev.agent_type):
             self._pending["duration_ms"] = ev.duration_ms
-        elif self._pending is None:
-            # 防御：没有聚合中的 start 可收口 → 直接落屏该事件行
+        else:
+            # 键不匹配（或 pending 为 None）：先落屏已有 pending，再直接落屏该事件行
+            self._commit_pending()
             self._print(format_activity(verb, ev.agent_type, self._root,
                                         summary=ev.summary,
                                         duration_ms=ev.duration_ms, done=True),

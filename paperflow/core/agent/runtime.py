@@ -48,8 +48,8 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from paperflow.core.llm import (
@@ -1254,6 +1254,10 @@ class Agent:
             text = ""
         return StreamEvent("tool_end", text, self.agent_type,
                            tool_name=ctx.tool_name or None,
+                           summary=_tool_summary(
+                               ctx.tool_name,
+                               ctx.args if isinstance(ctx.args, dict) else {})
+                           or None,
                            duration_ms=duration, diffstat=diffstat)
 
     async def _run_before_hooks(self, ctx: ToolContext, confirm_lock: asyncio.Lock | None = None) -> ToolResult | None:

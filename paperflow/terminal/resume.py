@@ -85,7 +85,7 @@ def build_resume_replay(message_manager, session_id: str, *,
 def render_resume_replay(renderer, replay: ResumeReplay) -> None:
     """把回放载荷逐条渲染进滚动区（同步纯打印，不调模型、不落盘）。
 
-    渲染映射刻意与 live 路径对齐：用户消息用 ``> `` 前缀（prompt 回显的观感），
+    渲染映射刻意与 live 路径对齐：用户消息用 ``❯ `` 前缀（prompt 回显的观感），
     assistant 消息走 Markdown（与流式回答落屏后的观感一致），ask_user 问答还原成
     「问题 + [回答模式] > 答案」（与 InputIO.ask 真实出现过的形态一致）。
 
@@ -114,7 +114,7 @@ def render_resume_replay(renderer, replay: ResumeReplay) -> None:
                 renderer.print_raw(question)
                 renderer.print_raw(f"[回答模式] > {answer}", style="dim")
             else:
-                renderer.print_raw(f"> {text}")
+                renderer.print_raw(f"❯ {text}")
         else:
             renderer.print_markdown(text)
 
