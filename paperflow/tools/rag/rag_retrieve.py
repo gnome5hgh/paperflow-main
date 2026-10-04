@@ -1,10 +1,35 @@
 """RagRetrieveTool：暴露给外部调用方的 RAG 检索工具（薄封装）。
 
 只做三件事：惰性取全局 RAGService 单例、持锁调用检索器、把检索结果格式化成
-人类可读文本。检索与融合算法本身在 `rag/services/retriever.py` 的 Retriever。
+人类可读文本。query 先经 QueryRewriter 改写（锁外，一次 LLM 调用，失败降级原
+query），再持锁检索。检索与融合算法本身在 `rag/services/retriever.py` 的 Retriever。
 """
+import logging
+
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.rag.services.rag_service import get_rag_service
+from paperflow.tools.rag.runtime_context import get_rag_context
+
+logger = logging.getLogger(__name__)
+
+#: 喂给 condense 改写的历史上限（与 QueryRewriter._HISTORY_MESSAGES 同口径的兜底；
+#: provider 侧已截，此处再防一次 provider 返回超长）
+_HISTORY_LIMIT = 6
+
+
+def _recent_history() -> list:
+    """取最近对话历史（改写 condense 用）；未绑定上下文或 provider 异常一律返回 []。
+
+    provider 抛异常视为无历史而非检索失败——历史读取永远不该打断检索。
+    """
+    ctx = get_rag_context()
+    if ctx is None or ctx.history_provider is None:
+        return []
+    try:
+        return list(ctx.history_provider() or [])[-_HISTORY_LIMIT:]
+    except Exception:
+        logger.warning("读取对话历史失败，本次检索跳过 condense 改写", exc_info=True)
+        return []
 
 
 class RagRetrieveTool(Tool):
@@ -57,6 +82,16 @@ class RagRetrieveTool(Tool):
         # 1. 获取 RAGService 单例（若已注入则使用注入的实例）。
         svc = self._service or get_rag_service()
 
+        # 1.5 锁外改写（spec 2026-10-04 §5.3）：LLM 调用慢且不碰共享检索状态，
+        # 不能占着 svc.lock 阻塞索引/其他检索；任何失败降级为 [原query]。
+        queries = [query]
+        rewriter = getattr(svc, "get_rewriter", None)
+        if rewriter is not None:
+            try:
+                queries = rewriter().rewrite(query, _recent_history()).queries
+            except Exception as e:
+                logger.warning("query 改写失败，降级为原始 query 检索：%s", e)
+
         # 2. 持锁调用检索器（保证与索引操作的互斥）。Milvus 中途崩溃（真实使用
         # 测试 P1-4：容器 Exited(1) 静默降级 3.5 小时无人知晓）时异常透传会变成
         # 千篇一律的 Tool error——这里捕获并返回固定降级声明，让上层明确知道
@@ -64,7 +99,7 @@ class RagRetrieveTool(Tool):
         try:
             with svc.lock:
                 # source 原样透传给检索器（非法值由 Retriever 侧按不过滤防御处理）。
-                chunks = svc.get_retriever().retrieve(query, top_k, source)
+                chunks = svc.get_retriever().retrieve(queries, top_k, source)
         except Exception as e:
             return ToolResult(
                 text="⚠️ 向量检索不可用（Milvus 异常），本次检索失败，结果可能不完整。"
