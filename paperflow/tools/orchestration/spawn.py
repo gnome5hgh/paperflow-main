@@ -329,18 +329,19 @@ async def _run_child_with_budget(coro, timeout: float, clock: _UserWaitClock):
 
 
 def _make_child_stream_callback(parent) -> Callable[[StreamEvent], None] | None:
-    """构造子 agent 的流式回调：不流 content，tool 事件透传（前缀由渲染器统一加）。
+    """构造子 agent 的流式回调：不流 content，结构化 tool 事件透传（前缀由渲染器统一加）。
 
-    子 agent 推理内容不向终端流式输出（多路并发会串字），只透传工具行；渲染层按
-    ev.agent_type 统一加 [{agent}] 前缀（root 也带 supervisor）。父无 stream_callback
-    （非 CLI 调用方）时返回 None——子 agent 零流式，零开销。
+    子 agent 推理内容不向终端流式输出（多路并发会串字），只透传结构化工具事件
+    （tool_start/tool_end）；渲染层按 ev.agent_type 统一加 [{agent}] 前缀
+    （root 也带 supervisor）。父无 stream_callback（非 CLI 调用方）时返回
+    None——子 agent 零流式，零开销。
     """
     pcb = getattr(parent, "stream_callback", None)
     if pcb is None:
         return None
 
     def child_cb(ev: StreamEvent) -> None:
-        if ev.kind == "tool":
+        if ev.kind in ("tool_start", "tool_end"):
             pcb(ev)          # 前缀由渲染器统一加，此处不再拼 agent_type
     return child_cb
 

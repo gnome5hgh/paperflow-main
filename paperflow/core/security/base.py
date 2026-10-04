@@ -45,6 +45,9 @@ class ToolContext:
     # --- 用户确认状态（由 Agent 在确认流程中设置） ---
     user_confirmed: bool = False       # 是否已获得用户确认（仅对需要确认的工具有效）
 
+    diffstat_old: str | None = None   # 仅渲染遥测：写类工具执行前采样的旧文本，
+                                      # Agent 填充；中间件不读、审计不含
+
     # --- 审计树与决策信息（由各中间件分别填充） ---
     turn: int = 0                      # ReAct 循环的轮次（从 0 开始）
     span_id: str | None = None         # 当前工具调用的审计 span ID（由 AuditMiddleware 生成）
