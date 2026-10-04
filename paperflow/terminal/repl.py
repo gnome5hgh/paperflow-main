@@ -173,8 +173,27 @@ def _shorten_path(p: str) -> str:
 
 
 def _render_banner(model: str, workspace: str) -> str:
-    """两行 dim 横幅：`❯ paperFlow   <model> · <workspace>`（替代 box 框，spec §6）。"""
-    return f"❯ paperFlow   {model} · {workspace}"
+    """
+    生成启动横幅，使用 box-drawing 字符绘制方框。
+
+    Args:
+        model: 模型名称（如 "gpt-4"）。
+        workspace: 工作区路径（已缩写）。
+
+    Returns:
+        str: 多行横幅字符串，包含标题、模型和工作区信息。
+    """
+    lines = [
+        ">_ paperFlow Academic Assistant",
+        "",
+        f"model:     {model}",
+        f"workspace: {workspace}",
+    ]
+    inner = max(len(l) for l in lines)
+    top = "╭" + "─" * (inner + 2) + "╮"
+    body = "\n".join(f"│ {l:<{inner}} │" for l in lines)
+    bottom = "╰" + "─" * (inner + 2) + "╯"
+    return f"{top}\n{body}\n{bottom}"
 
 
 async def _repl(supervisor: Agent, conversation: ConversationState, *,
@@ -218,10 +237,8 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
     # 三者必须按此序打——回放若在横幅之前渲染，历史会印到横幅上方，用户上翻看到的
     # 顺序即颠倒（故回放数据由 cli 传入、在此处渲染，而不是在装配层直接打印）。
     cfg = config or PaperFlowConfig.from_env()
-    renderer.print(_render_banner(cfg.llm.model, _shorten_path(cfg.workspace)),
-                   style="dim")
-    renderer.print("\n  Tip: Type a research task to begin, or /exit to quit",
-                   style="dim")
+    renderer.print(_render_banner(cfg.llm.model, _shorten_path(cfg.workspace)))
+    renderer.print("\n  Tip: Type a research task to begin, or /exit to quit")
     if resume_hint:
         renderer.print(f"  {resume_hint}", style="dim")
     if resume_replay is not None:

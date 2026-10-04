@@ -304,8 +304,11 @@ class PromptToolkitIO(InputIO):
         Note:
             此方法内部会启动新的事件循环（asyncio.run），因此调用方应使用
             asyncio.to_thread 将其移至工作线程，避免与主事件循环冲突。
+            erase_when_done：提交后擦掉输入框 UI（含已打的文本）——否则提交的
+            内容会残留在滚动区，与 repl 的 `❯ ` 回显叠成两份。回显是唯一的
+            输入记录（ZCode 式翻历史锚点）。
         """
-        return self._session.prompt(prompt)
+        return self._session.prompt(prompt, erase_when_done=True)
 
     def confirm(self, text: str) -> bool:
         """
