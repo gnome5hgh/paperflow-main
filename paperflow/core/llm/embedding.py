@@ -82,7 +82,14 @@ class CloudEmbedder:
         return _l2_normalize(np.vstack(out))
 
     def _embed_batch(self, batch: list[str]) -> np.ndarray:
-        """单批请求 + 重试。响应 data 按 index 排序后取 embedding（服务端不保证有序）。"""
+        """单批请求 + 重试。响应 data 按 index 排序后取 embedding（服务端不保证有序）。
+
+        只对**可恢复**错误退避重试：连接错误 / 超时 / 5xx（以及 408/429）。
+        4xx（认证/参数错误）与客户端请求构造错误（如空 api_key 产生的非法
+        Authorization header）重试必然同样失败——立即中止，避免冷启动/索引在
+        必败请求上空耗退避。回归背景：api_key 为空时一次全量路由编码白等 ~1.5s
+        退避，直接把 spec §1「冷启动 ≤2s」顶出预算。
+        """
         last_err: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
@@ -94,6 +101,17 @@ class CloudEmbedder:
                 r.raise_for_status()
                 data = sorted(r.json()["data"], key=lambda d: d["index"])
                 return np.array([d["embedding"] for d in data], dtype=np.float32)
+            except httpx.HTTPStatusError as e:
+                last_err = e
+                # 4xx 不可恢复（408/429 例外）——立即中止，不空耗退避
+                if e.response.status_code < 500 and e.response.status_code not in (408, 429):
+                    break
+                if attempt < self._max_retries:
+                    time.sleep(0.5 * (2 ** attempt))
+            except httpx.LocalProtocolError as e:
+                last_err = e
+                # 客户端请求构造错误（非法 header 等）重试无意义
+                break
             except (httpx.HTTPError, KeyError, ValueError) as e:
                 last_err = e
                 if attempt < self._max_retries:
