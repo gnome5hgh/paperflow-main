@@ -496,9 +496,9 @@ def main(argv: list[str] | None = None) -> int | None:
     # 改由 Sleeptime 后台整合进核心记忆块）。
     middlewares = [
         # 审计目录从 workspace 派生（真实会话复验发现：默认 cwd 相对导致
-        # PAPERFLOW_RUNTIME_WORKSPACE 重定向时审计仍写进仓库 data/audit，与真实会话混写；
-        # 且 cwd 下的 data/audit 在 WorkspacePolicy 的 ws/audit 保护约定之外）
-        AuditMiddleware(audit_dir=str(Path(config.runtime.workspace) / "audit")),
+        # PAPERFLOW_RUNTIME_WORKSPACE 重定向时审计仍写进仓库 data/security/audit，与真实会话混写；
+        # 且 cwd 下的 data/security/audit 在 WorkspacePolicy 的 ws/security 保护约定之外）
+        AuditMiddleware(audit_dir=str(Path(config.runtime.workspace) / "security" / "audit")),
         WorkspacePolicyMiddleware(workspace=config.runtime.workspace),
         SecurityScanMiddleware(),
         PolicyEngineMiddleware(max_risk=config.runtime.max_risk),

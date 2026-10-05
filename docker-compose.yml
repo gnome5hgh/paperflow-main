@@ -1,7 +1,7 @@
 # paperFlow 依赖服务栈：Milvus Standalone（etcd 元数据 + minio 对象存储 + milvus 计算）+ GROBID（PDF 解析）。
 # 启动: docker compose up -d   验证: curl http://localhost:9091/healthz → OK（Milvus）、curl http://localhost:8070/api/isalive → true（GROBID）
-# 数据卷统一收进 ./data/（workspace，gitignore 已盖）：Milvus 走 ./data/milvus/，GROBID 走 ./data/grobid/。
-# ⚠️ GROBID 的 grobid-home 是 bind mount：首次需一次性把镜像内置的 grobid-home 复制到 ./data/grobid/
+# 数据卷统一收进 ./data/（workspace，gitignore 已盖）：Milvus 走 ./data/infra/milvus/，GROBID 走 ./data/infra/grobid/。
+# ⚠️ GROBID 的 grobid-home 是 bind mount：首次需一次性把镜像内置的 grobid-home 复制到 ./data/infra/grobid/
 #    （否则空目录会遮蔽模型导致 GROBID 起不来），命令见 docs/测试指南/ 迁移 runbook。
 # 注：GROBID 镜像是 linux/amd64，在 Apple Silicon 上经 OrbStack 仿真运行（与 docker run 一致）。
 services:
@@ -14,7 +14,7 @@ services:
       - ETCD_QUOTA_BACKEND_BYTES=4294967296
       - ETCD_SNAPSHOT_COUNT=50000
     volumes:
-      - ./data/milvus/etcd:/etcd
+      - ./data/infra/milvus/etcd:/etcd
     command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
     restart: unless-stopped
     healthcheck:
@@ -34,7 +34,7 @@ services:
     volumes:
       # 必须挂 /data（minio 镜像声明的 VOLUME 路径）而非其他路径：挂别的路径会触发
       # Docker 为未覆盖的 /data 自动创建匿名卷（落在 OrbStack volumes 目录的 hash 目录）。
-      - ./data/milvus/minio:/data
+      - ./data/infra/milvus/minio:/data
     command: minio server /data --console-address ":9001"
     restart: unless-stopped
     healthcheck:
@@ -53,7 +53,7 @@ services:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
     volumes:
-      - ./data/milvus/milvus:/var/lib/milvus
+      - ./data/infra/milvus/milvus:/var/lib/milvus
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
       interval: 30s
@@ -79,8 +79,8 @@ services:
       - "8070:8070"
     restart: unless-stopped
     volumes:
-      # 持久化 grobid-home（模型+配置），须先一次性从镜像复制内容到 ./data/grobid/grobid-home
-      - ./data/grobid/grobid-home:/opt/grobid/grobid-home
+      # 持久化 grobid-home（模型+配置），须先一次性从镜像复制内容到 ./data/infra/grobid/grobid-home
+      - ./data/infra/grobid/grobid-home:/opt/grobid/grobid-home
 
 networks:
   default:

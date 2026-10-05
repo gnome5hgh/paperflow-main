@@ -21,7 +21,7 @@ def _root_map(config: PaperFlowConfig) -> dict[str, str]:
         "memory": str(Path(config.runtime.workspace) / "memory"),
         # 模板与 scratch 统一从 workspace 派生基准(FormatCheckTool 默认同此基准,骨架仅降级)
         "templates": str(Path(config.runtime.workspace) / "templates"),
-        "scratch": str(Path(config.runtime.workspace) / "tmp"),
+        "scratch": str(Path(config.runtime.workspace) / "scratch"),
     }
 
 

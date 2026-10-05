@@ -87,20 +87,20 @@ class RagIndexer:
     - 将工作区内的 Markdown 笔记和 PDF 切块、编码后写入向量库和 BM25。
     - 通过修改时间戳判断文档是否变更，只增量更新有变化的文档。
     - 自动清理已被删除的文档的索引数据。
-    - 维护索引状态文件（index_state.json，带配方哈希版本），保证跨进程的增量一致性；
+    - 维护索引状态文件（rag/index_state.json，带配方哈希版本），保证跨进程的增量一致性；
       配方哈希不符时放弃旧状态走全量重扫（切块参数/逻辑升级后的自愈机制）。
       状态文件另带旁挂的 `parsers` 诊断映射（PDF 实际解析器），不参与门控。
     """
 
     def __init__(self, service):
-        """绑定门面服务，并定位索引状态文件（工作区下的 index_state.json）。
+        """绑定门面服务，并定位索引状态文件（工作区 rag/ 下的 index_state.json）。
 
         Args:
             service: RAGService 单例，索引器和检索器共享 service 中的组件（向量库、BM25、编码器等）。
         """
         self.service = service
         # 状态文件：记录已索引文档的绝对路径 → 最后修改时间（浮点数时间戳）
-        self._state_path = Path(service.config.runtime.workspace) / "index_state.json"
+        self._state_path = Path(service.config.runtime.workspace) / "rag" / "index_state.json"
 
     @property
     def _recipe(self) -> str:

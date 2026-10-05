@@ -27,18 +27,18 @@ _INSTALL_ROOT = Path(__file__).resolve().parents[4]
 #: 仓库安装根下的 routes.yaml（默认路径不可用时回退：从非仓库目录启动、
 #: 或 cwd 相对路径不存在时——routes.yaml 是随仓库发布的知识资产，恒锚仓库根，
 #: 不随 PAPERFLOW_RUNTIME_WORKSPACE 重定向）
-_INSTALL_ROOT_ROUTES = _INSTALL_ROOT / "data" / "intents" / "routes.yaml"
+_INSTALL_ROOT_ROUTES = _INSTALL_ROOT / "data" / "intent" / "routes.yaml"
 
 #: 路由向量缓存（HybridRouter 的 vector_cache_path）。语料源自安装根下的
-#: data/intents，故与 routes.yaml 同锚安装根——不随 workspace 重定向；
+#: data/intent，故与 routes.yaml 同锚安装根——不随 workspace 重定向；
 #: 命中即零网络启动，未命中现算回写。
-VECTOR_CACHE_PATH = _INSTALL_ROOT / "data" / "intents" / "routes_vectors.npz"
+VECTOR_CACHE_PATH = _INSTALL_ROOT / "data" / "intent" / "routes_vectors.npz"
 
 
 def load_routes(path: Path | None = None) -> list[Route]:
     """yaml → [Route(name, utterances, score_threshold)]。只读加载。
 
-    路径解析：显式传入用之；否则 cwd 相对 data/intents/routes.yaml 优先
+    路径解析：显式传入用之；否则 cwd 相对 data/intent/routes.yaml 优先
     （历史行为，仓库内启动零变化），不存在则回退仓库安装根副本。
 
     校验：① route 名必须在 IntentType 枚举中——否则 pipeline 的
@@ -46,7 +46,7 @@ def load_routes(path: Path | None = None) -> list[Route]:
     ② utterances 非空——空列表 route 导致 fit([])（avg_doc_len 对空数组报错/NaN）
 
     Args:
-        path: routes.yaml 文件路径，默认为 data/intents/routes.yaml。
+        path: routes.yaml 文件路径，默认为 data/intent/routes.yaml。
 
     Returns:
         Route 对象列表。
@@ -56,7 +56,7 @@ def load_routes(path: Path | None = None) -> list[Route]:
             见 _REMOVED_VALUES），或 utterances 为空时。
     """
     if path is None:
-        path = (Path("data/intents/routes.yaml") if Path("data/intents/routes.yaml").is_file()
+        path = (Path("data/intent/routes.yaml") if Path("data/intent/routes.yaml").is_file()
                 else _INSTALL_ROOT_ROUTES)
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
@@ -106,7 +106,7 @@ def save_thresholds(path: Path, routes: list[Route]) -> None:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
 
 
-def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, str, bool]]:
+def load_eval(path: Path = Path("data/intent/eval.yaml")) -> list[tuple[str, str, bool]]:
     """eval.yaml → [(query, intent_label, is_hard)]。
 
     独立评估样本集。is_hard 标记 query 为与其他意图近形的硬负样本：
@@ -115,7 +115,7 @@ def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, st
     是"自己给自己打分"的漏洞。
 
     Args:
-        path: eval.yaml 文件路径，默认为 data/intents/eval.yaml。
+        path: eval.yaml 文件路径，默认为 data/intent/eval.yaml。
 
     Returns:
         列表，每个元素为三元组 (query文本, 意图标签, 是否为硬负样本布尔值)。
@@ -125,7 +125,7 @@ def load_eval(path: Path = Path("data/intents/eval.yaml")) -> list[tuple[str, st
             过滤告警，见 _REMOVED_VALUES）时。
     """
     if path is None:
-        path = (Path("data/intents/routes.yaml") if Path("data/intents/routes.yaml").is_file()
+        path = (Path("data/intent/routes.yaml") if Path("data/intent/routes.yaml").is_file()
                 else _INSTALL_ROOT_ROUTES)
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)

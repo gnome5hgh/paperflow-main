@@ -5,7 +5,7 @@
 从工具参数声明中提取 ``format="path"`` 的参数，做两道检查：
 ① 相对路径直接拒绝（``workspace_boundary``）——工作区为外部绝对路径，
    相对路径无法可靠映射，直接判越界并给出可行动报错；
-② 敏感路径黑名单（``denied_path``）——审计目录、向量库目录、.git/.claude/.zcode、
+② 敏感路径黑名单（``denied_path``）——审计目录、依赖服务数据卷、.git/.claude/.zcode、
    密钥与凭证文件、shell 配置、系统目录前缀，命中即拒绝。
 
 白名单机制已退役（spec 2026-09-30）：path 工具统一「任意绝对路径 + 黑名单」，
@@ -43,10 +43,11 @@ def is_denied_path(resolved: Path, workspace: str) -> bool:
     """敏感路径黑名单：硬拦截——命中即拒绝。
 
     分六段：
-    ① 系统运行时数据：workspace/audit（审计日志防篡改）、workspace/milvus
-       （向量库防绕过/防写坏）——精确绝对路径，工作区里同名文件夹（如笔记
-       "audit"）不误伤。约定审计目录 = workspace/audit；若将来改为自定义
-       目录，此派生需同步。
+    ① 系统运行时数据：workspace/security（审计日志防篡改）、workspace/infra
+       （Milvus/GROBID 依赖服务数据卷防绕过/防写坏）——按工作区根下的模块前缀
+       精确匹配，工作区里同名文件夹（如笔记 "security"）不误伤。约定审计目录
+       = workspace/security/audit、服务卷 = workspace/infra/*；若将来改为
+       自定义目录，此派生需同步。
     ② 仓库内部段（任何位置）：.git / .claude / .zcode（settings 可能含
        API key）。
     ③ 密钥文件名（任何位置）：config.yaml / .env / .env.local。
@@ -72,13 +73,13 @@ def is_denied_path(resolved: Path, workspace: str) -> bool:
     resolved = Path(resolved).resolve() # 用户请求的文件路径
     ws = Path(workspace).resolve()      # 允许访问的工作空间根目录
 
-    # ----- 第一段：工作区内的系统运行时数据目录（精确匹配，大小写不敏感） -----
-    # 使用前缀归属判断 resolved 是否在 ws/audit 或 ws/milvus 之下，
-    # 注意：这要求 audit 目录直接位于工作区根下，不会误伤工作区内名为 audit 的普通笔记文件夹。
-    # 大小写不敏感：APFS 上 workspace/AUDIT 与 workspace/audit 是同一目录（防绕过）。
-    if _is_relative_to_ci(resolved, ws / "audit"):
+    # ----- 第一段：工作区内的系统运行时数据目录（前缀匹配，大小写不敏感） -----
+    # 前缀判断 resolved 是否落在 ws/security 或 ws/infra 之下：审计目录与依赖
+    # 服务数据卷按模块归位到这两个前缀（spec 2026-10-05-data-layout-by-module）。
+    # 大小写不敏感：APFS 上 workspace/SECURITY 与 workspace/security 同目录（防绕过）。
+    if _is_relative_to_ci(resolved, ws / "security"):
         return True
-    if _is_relative_to_ci(resolved, ws / "milvus"):
+    if _is_relative_to_ci(resolved, ws / "infra"):
         return True
 
     # ----- 第二段：版本控制/配置目录（任何路径位置） -----
