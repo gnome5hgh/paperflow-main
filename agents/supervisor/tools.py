@@ -29,7 +29,7 @@ def _make_supervisor_tools() -> list:
     无副作用）；记忆工具是无状态类，执行时才取运行时上下文。"""
     cfg = PaperFlowConfig.from_env()
     return [
-        SpawnSubAgentTool(agent_timeouts=cfg.agent_timeouts),
+        SpawnSubAgentTool(agent_timeouts=cfg.agents.timeouts),
         AskUserQuestionTool(),
     ] + [cls() for cls in _MEMORY_TOOLS]
 

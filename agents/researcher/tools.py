@@ -24,7 +24,7 @@ _cm = CitationManager(PaperFlowConfig.from_env())
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
     ReadPdfTool, ReadFileTool, WriteFileTool, EditFileTool,
     RagRetrieveTool, GlobTool, GrepTool, AskUserQuestionTool,
-    SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agent_timeouts),
+    SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts),
     LookupCitationTool(_cm), AddCitationTool(_cm),
     FormatCitationsTool(_cm), ListCitationsTool(_cm),
 ], default_write_root="research")

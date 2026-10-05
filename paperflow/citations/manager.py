@@ -128,8 +128,8 @@ class CitationManager:
         """
         self.config = config
         # bib 路径：优先使用 config 指定，否则 fallback 到 workspace/citations/references.bib
-        self.bib_path = Path(config.citations_bib_path or
-                             Path(config.workspace) / "citations" / "references.bib")
+        self.bib_path = Path(config.corpus.citations_bib_path or
+                             Path(config.runtime.workspace) / "citations" / "references.bib")
         self._index = CorpusIndex(config, rag_service=rag_service,
                                   title_extractor=title_extractor)
         self._lock = threading.RLock()

@@ -12,8 +12,8 @@ from __future__ import annotations
 _RULES: list[tuple[str, str]] = [
     ("insufficient balance", "模型服务余额不足——请前往服务商控制台充值后重试。"),
     ("error code: 402", "模型服务余额不足——请前往服务商控制台充值后重试。"),
-    ("error code: 401", "API key 无效或已过期——请检查 .env 中的 PAPERFLOW_API_KEY。"),
-    ("invalid api key", "API key 无效或已过期——请检查 .env 中的 PAPERFLOW_API_KEY。"),
+    ("error code: 401", "API key 无效或已过期——请检查 .env 中的 PAPERFLOW_LLM_API_KEY。"),
+    ("invalid api key", "API key 无效或已过期——请检查 .env 中的 PAPERFLOW_LLM_API_KEY。"),
     ("error code: 429", "请求过于频繁（限流）——稍等片刻后重试。"),
     ("must be followed by tool messages",
      "会话历史出现异常（已自动修复）——请重新发送上一条消息。"),

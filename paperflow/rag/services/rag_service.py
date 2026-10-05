@@ -8,6 +8,7 @@
 import threading
 
 from paperflow.config import PaperFlowConfig
+from paperflow.rag.constants import DEFAULT_TOP_K
 from paperflow.rag.parsers.chunker import AcademicChunker
 from paperflow.rag.parsers.grobid_client import ParsedDoc
 
@@ -69,9 +70,9 @@ class RAGService:
             with self.lock:
                 if self._embedder is None:
                     from paperflow.core.llm.embedding import CloudEmbedder
-                    self._embedder = CloudEmbedder(self.config.embedding.base_url,
-                                                   self.config.embedding.api_key,
-                                                   self.config.embedding.embed_model)
+                    self._embedder = CloudEmbedder(self.config.rag.embedding.base_url,
+                                                   self.config.rag.embedding.api_key,
+                                                   self.config.rag.embedding.embed_model)
         return self._embedder
 
     def _ensure_reranker(self):
@@ -84,9 +85,9 @@ class RAGService:
             with self.lock:
                 if self._reranker is None:
                     from paperflow.core.llm.rerank import CloudReranker
-                    self._reranker = CloudReranker(self.config.embedding.base_url,
-                                                   self.config.embedding.api_key,
-                                                   self.config.embedding.rerank_model)
+                    self._reranker = CloudReranker(self.config.rag.embedding.base_url,
+                                                   self.config.rag.embedding.api_key,
+                                                   self.config.rag.embedding.rerank_model)
         return self._reranker
 
     def _ensure_vector_store(self):
@@ -109,12 +110,12 @@ class RAGService:
                     dim = self._ensure_embedder().dim
                     try:
                         self._vector_store = VectorStore(
-                            self.config.milvus_uri, dim,
-                            collection_name=self.config.milvus_collection,
+                            self.config.rag.storage.uri, dim,
+                            collection_name=self.config.rag.storage.collection,
                         )
                     except Exception as e:
                         raise RuntimeError(
-                            f"Milvus 未连接（{self.config.milvus_uri}）：{e}。"
+                            f"Milvus 未连接（{self.config.rag.storage.uri}）：{e}。"
                             "请运行 `docker compose up -d` 启动服务后重试。"
                         ) from e
         return self._vector_store
@@ -164,7 +165,7 @@ class RAGService:
             with self.lock:
                 if self._grobid_available is None:
                     from paperflow.rag.parsers.grobid_client import GrobidClient
-                    self._grobid = GrobidClient(self.config.grobid_endpoint)
+                    self._grobid = GrobidClient(self.config.rag.grobid.endpoint)
                     self._grobid_available = self._grobid.available()
         return self._grobid_available
 
@@ -248,7 +249,7 @@ class RAGService:
     def get_rewriter(self):
         """惰性创建并返回 query 改写器（RAG 包内首个 LLM 调用点）。
 
-        连接参数取 config.query_rewrite 三元组，以主 LLM 为基底逐项覆盖：
+        连接参数取 config.rag.query_rewrite 三元组，以主 LLM 为基底逐项覆盖：
         base_url/api_key 留空（from_env 已继承主 LLM，此处再兜底）沿用主配置，
         model 留空沿用主模型（历史默认行为）。LLMClient 对空 api_key fail-fast
         ——调用方（RagRetrieveTool）catch 后降级原 query。
@@ -264,7 +265,7 @@ class RAGService:
             # 以主 LLM 配置为基底，query_rewrite 三元组逐项覆盖（空值回退主配置）。
             # 直接构造 config 的调用方（测试/嵌入宿主）未必经过 from_env 的继承回填，
             # 故此处对空值再兜底一次。
-            qr = self.config.query_rewrite
+            qr = self.config.rag.query_rewrite
             llm_cfg = replace(
                 self.config.llm,
                 base_url=qr.base_url or self.config.llm.base_url,
@@ -295,7 +296,7 @@ class RAGService:
         with self.lock:
             self.get_indexer().index_all()
 
-    def retrieve(self, query: str, top_k: int = 5):
+    def retrieve(self, query: str, top_k: int = DEFAULT_TOP_K):
         """检索入口（持锁），返回按相关度排序的块列表。
 
         Args:

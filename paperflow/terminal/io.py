@@ -396,5 +396,5 @@ def make_input_io(config) -> InputIO:
     """
     if sys.stdin.isatty():
         # 主输入历史文件放在 workspace 下，跨会话保留
-        return PromptToolkitIO(str(Path(config.workspace) / "repl_history.txt"))
+        return PromptToolkitIO(str(Path(config.runtime.workspace) / "repl_history.txt"))
     return FallbackIO()

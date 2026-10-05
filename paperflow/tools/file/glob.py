@@ -36,14 +36,14 @@ class GlobTool(Tool):
         # 通过 _config 取默认根(make_tools 注入);root 显式传入则覆盖默认。
         # config 读取用防御式 getattr——测试与裸构造时可能没有 _config。
         cfg = getattr(self, "_config", None)
-        base = Path(root) if root else Path(cfg.note_dir if cfg else ".")
+        base = Path(root) if root else Path(cfg.corpus.note_dir if cfg else ".")
         try:
             # 白名单退役：读路径放开后无根约束，pattern 逃逸出 base 不再视为越界
             # （`../../**/*` 等命中照常返回），仅黑名单过滤防通配符枚举敏感路径。
             hits: list[str] = []
             for p in base.glob(pattern):
                 # 敏感路径黑名单：命中 workspace/audit、.git 等直接跳过（防通配符枚举）
-                if cfg is not None and is_denied_path(p.resolve(), cfg.workspace):
+                if cfg is not None and is_denied_path(p.resolve(), cfg.runtime.workspace):
                     continue
                 hits.append(str(p))
                 if len(hits) >= 50:                          # 封顶防爆炸

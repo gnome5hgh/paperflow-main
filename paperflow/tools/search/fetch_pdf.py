@@ -102,7 +102,7 @@ class FetchPdfTool(Tool):
         2. 语料库已有该论文（title 传入时查语料标题索引）→ 提示无需下载；
         3. 目标文件已存在 → 跳过下载。
         负缓存（现状语义不变）：同 URL 本任务内 4xx 永久失败即拒绝重试。
-        download_to 缺省时落语料库 pdf 根（config.pdf_dir），文件名按 URL 尾段推导。
+        download_to 缺省时落语料库 pdf 根（config.corpus.pdf_dir），文件名按 URL 尾段推导。
         """
         if _run_state is not None and url in getattr(_run_state, "failed_urls", {}):
             return ToolResult(
@@ -129,7 +129,8 @@ class FetchPdfTool(Tool):
             dest = Path(download_to)
         else:
             cfg = getattr(self, "_config", None)
-            pdf_root = getattr(cfg, "pdf_dir", "") if cfg is not None else ""
+            pdf_root = (getattr(getattr(cfg, "corpus", None), "pdf_dir", "")
+                        if cfg is not None else "")
             if not pdf_root:
                 return ToolResult(text="下载失败: 未配置语料库 pdf 根且未显式传 download_to——请显式传 download_to 绝对路径", is_error=True)
             try:

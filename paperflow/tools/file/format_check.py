@@ -44,7 +44,7 @@ class FormatCheckTool(Tool):
         直接读不存在的模板会抛 FileNotFoundError 中断 reviewer 流程,故先确保模板
         存在(生产路径不再抛错),再提取各级标题。"""
         cfg = get_rag_service().config
-        tpl = Path(self._template_path or (Path(cfg.workspace) / "templates" / "paper_note.md"))
+        tpl = Path(self._template_path or (Path(cfg.runtime.workspace) / "templates" / "paper_note.md"))
         if not tpl.exists():
             tpl.parent.mkdir(parents=True, exist_ok=True)
             tpl.write_text(self._SKELETON, encoding="utf-8")

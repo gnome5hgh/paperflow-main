@@ -64,7 +64,7 @@ class RagIndexer:
         """
         self.service = service
         # 状态文件：记录已索引文档的绝对路径 → 最后修改时间（浮点数时间戳）
-        self._state_path = Path(service.config.workspace) / "index_state.json"
+        self._state_path = Path(service.config.runtime.workspace) / "index_state.json"
 
     # ---------- 路径/状态工具 ----------
     def _rel_path(self, path: str) -> str | None:
@@ -90,8 +90,8 @@ class RagIndexer:
         """
         abs_path = Path(path).resolve()
         # 依次尝试在笔记目录和 PDF 目录下计算相对路径
-        for root in (Path(self.service.config.note_dir).resolve(),
-                     Path(self.service.config.pdf_dir).resolve()):
+        for root in (Path(self.service.config.corpus.note_dir).resolve(),
+                     Path(self.service.config.corpus.pdf_dir).resolve()):
             try:
                 return str(abs_path.relative_to(root))
             except ValueError:
@@ -114,13 +114,13 @@ class RagIndexer:
         Returns:
             str: 解析后的绝对路径字符串。
         """
-        for root in (Path(self.service.config.note_dir),
-                     Path(self.service.config.pdf_dir)):
+        for root in (Path(self.service.config.corpus.note_dir),
+                     Path(self.service.config.corpus.pdf_dir)):
             cand = Path(root) / rel
             if cand.exists():
                 return str(cand.resolve())
         # 文件已不存在，回退到笔记目录（仅用于状态重建，实际删除操作会后续清理）
-        return str(Path(self.service.config.note_dir) / rel)
+        return str(Path(self.service.config.corpus.note_dir) / rel)
 
     def _read_state(self) -> tuple[int, dict] | None:
         """读原始状态文件，返回 (版本号, docs)。
@@ -400,8 +400,8 @@ class RagIndexer:
             [(d[0], d[1]) for d in store.all_documents()])
 
         # 收集待索引文档：扫描两个知识库根目录，按修改时间比对找出变更项。
-        roots = [Path(self.service.config.note_dir),
-                 Path(self.service.config.pdf_dir)]
+        roots = [Path(self.service.config.corpus.note_dir),
+                 Path(self.service.config.corpus.pdf_dir)]
         new_state: dict = {}
         changed: list[Path] = []
         seen: set[Path] = set()

@@ -179,3 +179,21 @@ VALID_SOURCES = (None, "note", "pdf")
 #: - 改它的后果：改变工具返回体量与上层可用上下文窗口；不触发重建索引。
 #: - 是否进 YAML：否；PR B 将作为 ``rag.tools.excerpt_chars`` 的默认值来源。
 EXCERPT_CHARS = 400
+
+# ── 存储 / 解析（storage/vector_store.py、parsers/grobid_client.py 消费） ─────
+
+#: Milvus all_documents 分页遍历的每页行数。
+#: - 值：1000。
+#: - 含义与单位：query_iterator 每次取回的块行数（行），规避单次 query 16384 行上限；
+#:   测试可传小值验证跨页。
+#: - 改它的后果：仅影响全表读取的内存峰值与往返次数，不改变数据；不触发重建索引、无需重标定。
+#: - 是否进 YAML：否；作为 ``rag.storage.batch_size`` 的默认值来源。
+MILVUS_BATCH_SIZE = 1000
+
+#: GROBID HTTP 请求超时。
+#: - 值：60.0。
+#: - 含义与单位：GrobidClient 的 httpx 客户端超时（秒），覆盖健康检查与全文解析请求。
+#: - 改它的后果：改变 GROBID 慢响应容忍度与解析失败降级时点（超时后退 PyMuPDF）；
+#:   影响解析结果来源进而影响切块，但不触发已索引文档的重扫（配方哈希默认不纳入 GROBID）。
+#: - 是否进 YAML：否；作为 ``rag.grobid.timeout`` 的默认值来源。
+GROBID_TIMEOUT = 60.0

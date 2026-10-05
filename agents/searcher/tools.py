@@ -18,4 +18,4 @@ from paperflow.tools import (
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
     FetchPdfTool, GlobTool, GrepTool, AskUserQuestionTool,
     ExtractTitleTool, UnreadListAddTool,
-]) + [SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agent_timeouts)]
+]) + [SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts)]

@@ -3,9 +3,19 @@
 全局配置模块，提供 LLM 连接参数和项目运行时配置。
 
 配置加载优先级（从低到高）：
-    1. dataclass 默认值（代码中硬编码）
+    1. dataclass 默认值（代码中硬编码；部分默认值惰性引用模块 constants.py）
     2. config.yaml（可选，文件不存在则跳过）
-    3. 环境变量 PAPERFLOW_*（最高优先级，覆盖前两者）
+    3. 环境变量（最高优先级，按 ``PAPERFLOW_`` + 配置路径大写派生）
+
+配置结构与 config.yaml 同构（spec 2026-10-05-constants-and-config-reorg §4/§6）：
+``runtime`` / ``corpus`` / ``intent{encoder, router}`` / ``rag{embedding, retriever,
+query_rewrite, chunker, indexer, storage, grobid, tools}`` / ``memory`` / ``session`` /
+``agents{timeouts}``，外加保留的顶层 ``llm`` / ``vision`` / ``mcp_servers``。
+
+env 名约定：字段路径以 ``_`` 连接并大写，前缀 ``PAPERFLOW_``。例如
+``rag.storage.uri`` → ``PAPERFLOW_RAG_STORAGE_URI``，
+``intent.router.alpha`` → ``PAPERFLOW_INTENT_ROUTER_ALPHA``。无例外表；
+``agents.timeouts`` 与 ``mcp_servers`` 是自由 dict，仅 YAML 可配（不派生 env）。
 
 使用方式::
 
@@ -15,11 +25,12 @@
 
 import os
 import re
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
+
 
 def _default_compaction():
     """CompactionSettings 惰性导入——compaction.py 依赖 llm.py、llm.py 依赖本模块，
@@ -27,6 +38,29 @@ def _default_compaction():
     字段默认值走此工厂，把导入推迟到首次构造时，此刻 config 已完整加载。"""
     from paperflow.core.memory.compaction import CompactionSettings
     return CompactionSettings()
+
+
+# ── constants.py 的惰性访问器 ────────────────────────────────────────────────
+# YAML 字段的默认值必须引用模块 constants.py（单一真相源），但顶层
+# ``from paperflow.rag.constants import X`` 会先执行 ``paperflow/rag/__init__.py``，
+# 而该包聚合 rag_service → ``from paperflow.config import PaperFlowConfig``，
+# 构成 config→rag→config 的循环（core.llm 同理：client 依赖 LLMConfig）。
+# 故与 _default_compaction 同一手法：把导入推迟到字段工厂求值（首次构造）时。
+
+
+def _intent_constants():
+    from paperflow.core.intent import constants
+    return constants
+
+
+def _llm_constants():
+    from paperflow.core.llm import constants
+    return constants
+
+
+def _rag_constants():
+    from paperflow.rag import constants
+    return constants
 
 
 @dataclass
@@ -41,7 +75,7 @@ class LLMConfig:
     #: API 基础地址，默认为 DeepSeek 兼容端点
     base_url: str = "https://api.deepseek.com/v1"
 
-    #: API 密钥——**不硬编码默认值**。现必须经 PAPERFLOW_API_KEY env / .env /
+    #: API 密钥——**不硬编码默认值**。现必须经 PAPERFLOW_LLM_API_KEY env / .env /
     #: config.yaml llm.api_key 提供;留空由 LLMClient.__init__ 兜底报清晰错误。
     api_key: str = ""
 
@@ -112,24 +146,47 @@ class VisionLLMConfig:
     context_window: int = 32768
 
 
+# ── runtime / corpus ────────────────────────────────────────────────────────
+
 @dataclass
-class EmbeddingConfig:
-    """RAG 检索栈云端嵌入 + 精排配置（spec 2026-10-05-embedding-cloud-startup §6）。
+class RuntimeConfig:
+    """运行时基础设施：工作区、agent 插件目录、会话风险阈值。"""
 
-    云端 only——本地 sentence-transformers 已退役，api_key 缺失不阻塞启动，
-    由调用方按降级语义处理（路由退稀疏、检索跳稠密路）。
-    """
-    base_url: str = "https://api.siliconflow.cn/v1"
-    api_key: str = ""
-    embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
-    rerank_model: str = "Qwen/Qwen3-Reranker-0.6B"
+    #: 运行时数据根目录，存放 milvus、memory、audit、templates 等
+    workspace: str = "data"
 
+    #: Agent 插件扫描目录，默认扫描项目根下的 agents/
+    agents_dir: str = "agents"
+
+    #: 会话风险阈值（工具 risk_level 超过此值即被 PolicyEngine 拦截，
+    #: 取值 ∈ RISK_ORDER 的键，如 "medium" / "high"）
+    max_risk: str = "medium"
+
+
+@dataclass
+class CorpusConfig:
+    """语料库与产物路径。个人绝对路径，经 config.yaml / env 提供，留空走各自回退。"""
+
+    #: 语料库笔记目录（RAG 索引源,note/）——留空则文件类工具无可用根。
+    note_dir: str = ""
+
+    #: 语料库 PDF 目录（RAG 索引源,pdf/）。
+    pdf_dir: str = ""
+
+    #: 研究产物目录（产物区,research/）——空则由 factory 回退 workspace/research。
+    research_dir: str = ""
+
+    #: references.bib 路径（引用库真相源）。空则回退 workspace/citations/references.bib
+    citations_bib_path: str = ""
+
+
+# ── intent ──────────────────────────────────────────────────────────────────
 
 @dataclass
 class IntentEncoderConfig:
     """意图路由独立稠密编码器（与 RAG 解耦，为换编码器实验留口）。
 
-    base_url/api_key 留空 = 继承 embedding 同名字段，from_env 阶段解析完毕，
+    base_url/api_key 留空 = 继承 rag.embedding 同名字段，from_env 阶段解析完毕，
     装配侧拿到的是已合并值。
     """
     base_url: str = ""
@@ -138,14 +195,187 @@ class IntentEncoderConfig:
 
 
 @dataclass
+class RouterConfig:
+    """混合路由器装配参数（默认值来自 core.intent.constants）。"""
+
+    #: 稠密分支权重 alpha（稀疏路权重 1-alpha）。默认来自 ROUTER_ALPHA=0.5。
+    alpha: float = field(default_factory=lambda: _intent_constants().ROUTER_ALPHA)
+
+    #: 路由器每次查询检索的 utterances 条数。默认来自 ROUTER_TOP_K=5。
+    top_k: int = field(default_factory=lambda: _intent_constants().ROUTER_TOP_K)
+
+
+@dataclass
+class IntentConfig:
+    """意图识别子系统配置：独立编码器 + 路由器。"""
+
+    encoder: IntentEncoderConfig = field(default_factory=IntentEncoderConfig)
+    router: RouterConfig = field(default_factory=RouterConfig)
+
+
+# ── rag ─────────────────────────────────────────────────────────────────────
+
+@dataclass
+class EmbeddingConfig:
+    """RAG 检索栈云端嵌入 + 精排配置（spec 2026-10-05-embedding-cloud-startup §6）。
+
+    云端 only——本地 sentence-transformers 已退役，api_key 缺失不阻塞启动，
+    由调用方按降级语义处理（路由退稀疏、检索跳稠密路）。
+
+    batch_size/timeout/max_retries 默认值来自 core.llm.constants（CloudEmbedder
+    传输参数；改它们不改变向量结果，无需重建索引）。
+    """
+    base_url: str = "https://api.siliconflow.cn/v1"
+    api_key: str = ""
+    embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    rerank_model: str = "Qwen/Qwen3-Reranker-0.6B"
+    batch_size: int = field(default_factory=lambda: _llm_constants().EMBED_BATCH_SIZE)
+    timeout: float = field(default_factory=lambda: _llm_constants().EMBED_TIMEOUT)
+    max_retries: int = field(default_factory=lambda: _llm_constants().EMBED_MAX_RETRIES)
+
+
+@dataclass
+class RetrieverConfig:
+    """混合检索参数（默认值来自 rag.constants；改动需重评检索质量）。"""
+
+    #: 默认返回块数。默认来自 DEFAULT_TOP_K=5。
+    top_k: int = field(default_factory=lambda: _rag_constants().DEFAULT_TOP_K)
+    #: BM25 粗召回数。默认来自 BM25_TOPK=30。
+    bm25_topk: int = field(default_factory=lambda: _rag_constants().BM25_TOPK)
+    #: 向量粗召回数。默认来自 VECTOR_TOPK=30。
+    vector_topk: int = field(default_factory=lambda: _rag_constants().VECTOR_TOPK)
+    #: 重排候选池下限。默认来自 RERANK_CANDIDATES=24。
+    rerank_candidates: int = field(default_factory=lambda: _rag_constants().RERANK_CANDIDATES)
+    #: RRF 融合常数 k。默认来自 RRF_K=60。
+    rrf_k: int = field(default_factory=lambda: _rag_constants().RRF_K)
+
+
+@dataclass
 class QueryRewriteConfig:
     """query 改写模型完整三元组（此前只有模型名可配，端点/key 恒继承主 LLM）。
 
     字段留空逐项继承 llm 同名字段；model 留空 = 沿用主模型（历史行为）。
+    history_messages 默认来自 rag.constants.HISTORY_MESSAGES=6。
     """
     base_url: str = ""
     api_key: str = ""
     model: str = ""
+    history_messages: int = field(default_factory=lambda: _rag_constants().HISTORY_MESSAGES)
+
+
+@dataclass
+class ChunkerConfig:
+    """切块参数（默认值来自 rag.constants；改动改变切块结果 → 触发全量重索引）。"""
+
+    #: 每块最大 token 数。默认来自 CHUNK_MAX_TOKENS=512。
+    max_tokens: int = field(default_factory=lambda: _rag_constants().CHUNK_MAX_TOKENS)
+    #: 相邻块重叠 token 数。默认来自 CHUNK_OVERLAP_TOKENS=64。
+    overlap_tokens: int = field(default_factory=lambda: _rag_constants().CHUNK_OVERLAP_TOKENS)
+
+
+@dataclass
+class IndexerConfig:
+    """索引器参数。"""
+
+    #: 表格块文本截断上限。默认来自 TABLE_TEXT_LIMIT=8000。
+    table_text_limit: int = field(default_factory=lambda: _rag_constants().TABLE_TEXT_LIMIT)
+
+
+@dataclass
+class StorageConfig:
+    """Milvus 向量库连接配置。"""
+
+    #: Milvus 连接地址。本地文件路径 → Milvus Lite（内嵌，单测用）；
+    #: ``http://host:19530`` → Milvus Standalone（生产默认）。
+    uri: str = "http://localhost:19530"
+
+    #: Milvus 集合名（单一集合，对应迁移前的向量库 collection）
+    collection: str = "paperflow"
+
+    #: all_documents 分页遍历每页行数。默认来自 MILVUS_BATCH_SIZE=1000。
+    batch_size: int = field(default_factory=lambda: _rag_constants().MILVUS_BATCH_SIZE)
+
+
+@dataclass
+class GrobidConfig:
+    """GROBID PDF 解析服务配置。"""
+
+    #: GROBID 服务地址——RAG PDF 解析与 TitleExtractor 标题提取共用同一端点
+    endpoint: str = "http://localhost:8070"
+
+    #: 请求超时（秒）。默认来自 GROBID_TIMEOUT=60.0。
+    timeout: float = field(default_factory=lambda: _rag_constants().GROBID_TIMEOUT)
+
+
+@dataclass
+class RagToolsConfig:
+    """RAG 工具输出参数。"""
+
+    #: 单条命中正文摘录上限。默认来自 EXCERPT_CHARS=400。
+    excerpt_chars: int = field(default_factory=lambda: _rag_constants().EXCERPT_CHARS)
+
+
+@dataclass
+class RagConfig:
+    """RAG 检索栈配置（按子模块分区，与 config.yaml ``rag:`` 段同构）。"""
+
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    retriever: RetrieverConfig = field(default_factory=RetrieverConfig)
+    query_rewrite: QueryRewriteConfig = field(default_factory=QueryRewriteConfig)
+    chunker: ChunkerConfig = field(default_factory=ChunkerConfig)
+    indexer: IndexerConfig = field(default_factory=IndexerConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
+    grobid: GrobidConfig = field(default_factory=GrobidConfig)
+    tools: RagToolsConfig = field(default_factory=RagToolsConfig)
+
+
+# ── memory / session / agents ───────────────────────────────────────────────
+
+@dataclass
+class MemoryConfig:
+    """记忆系统配置。"""
+
+    #: Sleeptime 后台整合开关
+    sleeptime_enable: bool = True
+
+    #: Sleeptime 触发频率（每 N 条新消息检查一次）
+    sleeptime_agent_frequency: int = 50
+
+
+@dataclass
+class SessionConfig:
+    """会话恢复配置。"""
+
+    #: 会话恢复时把历史对话回放进终端滚动区。--resume 恢复的是模型上下文，
+    #: 屏幕上否则不留任何痕迹（用户会以为恢复失败）；见 terminal/resume.py。
+    #: 置 False 则只恢复上下文、不显示历史。
+    resume_replay: bool = True
+
+    #: 回放条数上限（取窗口末尾 N 条）。0 = 回放整个 in-context 窗口。
+    resume_replay_limit: int = 0
+
+
+@dataclass
+class AgentsConfig:
+    """子 agent 配置。
+
+    timeouts 是自由 dict（agent 类型 → 秒数），仅 YAML 可配（dict 无自然 env 形态）。
+    默认 120s 对完整流程太短，各值由 audit 历史数据校准（2026-09-05，45 次 spawn
+    实测 + research_discovery 链路分解，见
+    docs/superpowers/specs/2026-09-05-agent-timeout-recalibration-design.md）：
+    - noter 900:纯笔记端到端实测稳态 610-670s(含内审重试),600 帽 4/4 任务超线;
+    - searcher 420:常规检索 max 130s,但新颖性大批量检索实测 1/4 撞 300s 帽;
+    - reviewer 300:全文审阅类稳态 ≈185-278s,180 帽 5/7 任务撞线;
+    - researcher 1800:完整链路实测 1202s 被截断,估算 1300-1500s + 余量;
+    - qa-agent 180:显式化(此前隐式落 120s 类默认),精读任务留 2 倍余量。
+    撞帽复测触发点:任一 agent 再撞新帽即需重新评估该值,而非继续调大。
+    """
+
+    timeouts: dict[str, int] = field(
+        default_factory=lambda: {
+            "noter": 900, "searcher": 420, "reviewer": 300,
+            "researcher": 1800, "qa-agent": 180,
+        })
 
 
 _SERVER_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -205,12 +435,54 @@ def parse_mcp_servers(raw: dict | None) -> dict[str, McpServerConfig]:
     return servers
 
 
+# ── 通用合并原语 ────────────────────────────────────────────────────────────
+
+def _coerce(current, val):
+    """把标量 val 转成与 current 同类的类型（env 恒字符串 / YAML 可能写错类型）。
+
+    - bool：字符串按 "1"/"true"/"yes" 判真（"false" 必须落 False）；
+    - int / float：直接转换；
+    - str：原样保留；
+    - 其余（dict/list 等）：原样。
+    """
+    if isinstance(current, bool):
+        return val.lower() in ("1", "true", "yes") if isinstance(val, str) else bool(val)
+    if isinstance(current, int):
+        return int(val)
+    if isinstance(current, float):
+        return float(val)
+    return val
+
+
+def _merge(node, raw) -> None:
+    """通用递归合并：沿 ``dataclasses.fields()`` 下行，raw 覆盖 node。
+
+    - 字段当前值是 dataclass → 递归（要求 raw 为 dict，否则跳过）；
+    - 自由 dict/list 字段 → 整体赋值；
+    - 标量 → 按目标字段当前类型转换（``_coerce``）；
+    - raw 里的未知键被忽略（沿用现有 hasattr 守卫精神，运行期不因陌生键崩）。
+    """
+    if not isinstance(raw, dict):
+        return
+    for f in fields(node):
+        if f.name not in raw:
+            continue
+        cur = getattr(node, f.name)
+        val = raw[f.name]
+        if is_dataclass(cur) and not isinstance(cur, type):
+            _merge(cur, val)
+        elif isinstance(cur, (dict, list)):
+            setattr(node, f.name, val)
+        else:
+            setattr(node, f.name, _coerce(cur, val))
+
+
 @dataclass
 class PaperFlowConfig:
     """
     项目全局配置,聚合所有子系统的配置项。
 
-    ``workspace`` 是运行时数据根目录,各子系统的数据写入统一走此路径。
+    ``runtime.workspace`` 是运行时数据根目录,各子系统的数据写入统一走此路径。
     """
 
     #: LLM 连接配置
@@ -219,77 +491,29 @@ class PaperFlowConfig:
     #: 视觉模型连接配置（多模态图表分析，独立于文本 LLM）
     vision: VisionLLMConfig = field(default_factory=VisionLLMConfig)
 
-    #: 运行时数据根目录，存放 milvus、memory、audit、templates 等
-    workspace: str = "data"
+    #: 运行时基础设施（workspace / agents_dir / max_risk）
+    runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
 
-    #: Agent 插件扫描目录，默认扫描项目根下的 agents/
-    agents_dir: str = "agents"
+    #: 语料库与产物路径
+    corpus: CorpusConfig = field(default_factory=CorpusConfig)
 
-    #: 会话风险阈值（工具 risk_level 超过此值即被 PolicyEngine 拦截，
-    #: 取值 ∈ RISK_ORDER 的键，如 "medium" / "high"）
-    max_risk: str = "medium"
+    #: 意图识别子系统（编码器 + 路由器）
+    intent: IntentConfig = field(default_factory=IntentConfig)
+
+    #: RAG 检索栈（嵌入/检索/改写/切块/索引/存储/解析/工具）
+    rag: RagConfig = field(default_factory=RagConfig)
+
+    #: 记忆系统（sleeptime 后台整合）
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+
+    #: 会话恢复（屏上历史回放）
+    session: SessionConfig = field(default_factory=SessionConfig)
+
+    #: 子 agent 配置（timeouts 为 YAML-only 自由 dict）
+    agents: AgentsConfig = field(default_factory=AgentsConfig)
 
     #: 上下文压缩配置（惰性工厂见 _default_compaction——延迟导入切断循环依赖）
     compaction: "CompactionSettings" = field(default_factory=_default_compaction)
-
-    #: Sleeptime 后台整合开关
-    sleeptime_enable: bool = True
-
-    #: Sleeptime 触发频率（每 N 条新消息检查一次）
-    sleeptime_agent_frequency: int = 50
-
-    #: 会话恢复时把历史对话回放进终端滚动区。--resume 恢复的是模型上下文，
-    #: 屏幕上否则不留任何痕迹（用户会以为恢复失败）；见 terminal/resume.py。
-    #: 置 False 则只恢复上下文、不显示历史。
-    resume_replay: bool = True
-
-    #: 回放条数上限（取窗口末尾 N 条）。0 = 回放整个 in-context 窗口。
-    resume_replay_limit: int = 0
-
-    #: 语料库笔记目录（RAG 索引源,note/）——**个人绝对路径,不硬编码默认值**,
-    #: 经 .env(PAPERFLOW_NOTE_DIR)或 config.yaml 提供;留空则文件类工具无可用根。
-    note_dir: str = ""
-
-    #: 语料库 PDF 目录（RAG 索引源,pdf/）——同 note_dir,经 .env(PAPERFLOW_PDF_DIR)
-    #: 或 config.yaml 提供。
-    pdf_dir: str = ""
-
-    #: 研究产物目录（产物区,research/）——同 note_dir,经 .env
-    #: (PAPERFLOW_RESEARCH_DIR)或 config.yaml 提供;空则由 factory 回退 workspace/research。
-    research_dir: str = ""
-
-    #: references.bib 路径（引用库真相源）。空则回退 workspace/citations/references.bib
-    citations_bib_path: str = ""
-
-    #: GROBID 服务地址——RAG PDF 解析与 TitleExtractor 标题提取共用同一端点
-    #: （env PAPERFLOW_GROBID_ENDPOINT 覆盖）
-    grobid_endpoint: str = "http://localhost:8070"
-
-    #: Milvus 连接地址。本地文件路径 → Milvus Lite（内嵌，单测用）；
-    #: ``http://host:19530`` → Milvus Standalone（生产默认）。
-    milvus_uri: str = "http://localhost:19530"
-
-    #: Milvus 集合名（单一集合，对应迁移前的向量库 collection）
-    milvus_collection: str = "paperflow"
-
-    #: RAG 云端嵌入 + 精排（spec 2026-10-05）
-    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
-    #: 意图路由独立编码器（留空项在 from_env 尾部回填 embedding 值）
-    intent_encoder: IntentEncoderConfig = field(default_factory=IntentEncoderConfig)
-    #: query 改写模型（留空项在 from_env 尾部回填 llm 值）
-    query_rewrite: QueryRewriteConfig = field(default_factory=QueryRewriteConfig)
-
-    #: 子 agent 超时覆盖表(按 agent 类型→秒数)。默认 120s 对完整流程太短,各值由
-    #: audit 历史数据校准(2026-09-05,45 次 spawn 实测 + research_discovery 链路分解,
-    #: 见 docs/superpowers/specs/2026-09-05-agent-timeout-recalibration-design.md):
-    #: - noter 900:纯笔记端到端实测稳态 610-670s(含内审重试),600 帽 4/4 任务超线;
-    #: - searcher 420:常规检索 max 130s,但新颖性大批量检索实测 1/4 撞 300s 帽;
-    #: - reviewer 300:全文审阅类稳态 ≈185-278s,180 帽 5/7 任务撞线;
-    #: - researcher 1800:完整链路实测 1202s 被截断,估算 1300-1500s + 余量;
-    #: - qa-agent 180:显式化(此前隐式落 120s 类默认),精读任务留 2 倍余量。
-    #: 撞帽复测触发点:任一 agent 再撞新帽即需重新评估该值,而非继续调大。
-    #: YAML 顶层 agent_timeouts 可覆盖;dict 无环境变量形态。
-    agent_timeouts: dict[str, int] = field(default_factory=lambda: {"noter": 900, "searcher": 420, "reviewer": 300, "researcher": 1800, "qa-agent": 180})
 
     #: MCP server 接入配置（config.yaml 顶层 mcp_servers；仅 YAML，无环境变量形态）
     mcp_servers: dict[str, "McpServerConfig"] = field(default_factory=dict)
@@ -307,25 +531,29 @@ class PaperFlowConfig:
         config = cls()
         config._load_yaml(config_path)  # 第一步：YAML 文件（优先级最低）
         config._load_env()               # 第二步：环境变量（覆盖 YAML 值）
-        # 留空继承：intent_encoder ← embedding、query_rewrite ← llm。
+        # 留空继承：intent.encoder ← rag.embedding、rag.query_rewrite ← llm。
         # 必须在 YAML/env 全部加载后做——否则 env 覆盖会被继承值抢先顶掉。
-        config.intent_encoder.base_url = config.intent_encoder.base_url or config.embedding.base_url
-        config.intent_encoder.api_key = config.intent_encoder.api_key or config.embedding.api_key
-        config.query_rewrite.base_url = config.query_rewrite.base_url or config.llm.base_url
-        config.query_rewrite.api_key = config.query_rewrite.api_key or config.llm.api_key
+        enc = config.intent.encoder
+        emb = config.rag.embedding
+        enc.base_url = enc.base_url or emb.base_url
+        enc.api_key = enc.api_key or emb.api_key
+        qr = config.rag.query_rewrite
+        qr.base_url = qr.base_url or config.llm.base_url
+        qr.api_key = qr.api_key or config.llm.api_key
         # workspace 绝对化:相对 workspace(默认 "data")派生的根会被工作区校验二次拼接
         # 成 data/data/... 双前缀,把正确绝对路径也误拦。绝对化后所有派生根一致绝对、
         # [目录] 提示也变绝对。只在此生产入口处理——测试直接构造的值不受影响。
-        config.workspace = str(Path(config.workspace).expanduser().resolve())
+        config.runtime.workspace = str(
+            Path(config.runtime.workspace).expanduser().resolve())
         return config
 
     def _load_yaml(self, config_path: str | None) -> None:
         """
         从可选的 config.yaml 读取配置并覆盖默认值。
 
-        YAML 顶层键 ``llm`` 映射到 ``LLMConfig`` 字段，
-        其余键（如 ``workspace``）映射到 ``PaperFlowConfig`` 自身字段。
-        不存在的文件静默跳过；未知键通过 ``hasattr`` 守卫忽略。
+        顶层键与 dataclass 字段同名（``llm`` / ``runtime`` / ``rag`` …），
+        经通用递归合并 ``_merge`` 下行，任意深度；不存在的文件静默跳过，
+        未知键忽略。``mcp_servers`` 需校验+转换，单独分支。
         """
         path = Path(config_path or "config.yaml")
         if not path.exists():
@@ -333,105 +561,39 @@ class PaperFlowConfig:
 
         with open(path) as f:
             data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            return
 
-        # 嵌套处理 llm/vision/embedding/intent_encoder/query_rewrite 子配置：逐个字段检查，避免类型不匹配
-        for sub in ("llm", "vision", "embedding", "intent_encoder", "query_rewrite"):
-            if sub in data:
-                for key, val in data[sub].items():
-                    if hasattr(getattr(self, sub), key):
-                        setattr(getattr(self, sub), key, val)
-
-        # 顶层配置字段(含语料库 / RAG 键,均可通过 config.yaml 顶层覆盖默认值)
-        for key in ("workspace", "agents_dir", "max_risk",
-                    "note_dir", "pdf_dir", "research_dir",
-                    "citations_bib_path",
-                    "grobid_endpoint", "milvus_uri", "milvus_collection",
-                    "agent_timeouts", "sleeptime_enable", "sleeptime_agent_frequency",
-                    "resume_replay", "resume_replay_limit"):
-            if key in data:
-                setattr(self, key, data[key])
-
-        # 兼容旧配置：`rag_query_rewrite_model` 是 query 改写只有模型名可配时代的
-        # 顶层平铺键，现已收进 query_rewrite.model 三元组（spec §6）。保留此映射
-        # 是为了不破坏既有 config.yaml——旧写法仍按原语义生效，无需用户改配置。
-        # 显式 query_rewrite.model 优先（上面嵌套循环已写入），env 覆盖仍在其后。
-        if "rag_query_rewrite_model" in data and not self.query_rewrite.model:
-            self.query_rewrite.model = data["rag_query_rewrite_model"]
-
-        # MCP servers：嵌套结构需校验+转换，单独分支（不在上方白名单循环里）
+        # MCP servers：嵌套结构需校验+转换，单独处理（不参与通用合并）
         if "mcp_servers" in data:
             self.mcp_servers = parse_mcp_servers(data["mcp_servers"])
+            data = {k: v for k, v in data.items() if k != "mcp_servers"}
+
+        _merge(self, data)
 
     def _load_env(self) -> None:
         """
         从环境变量读取配置并覆盖 YAML / 默认值。
 
-        支持的环境变量::
-
-            PAPERFLOW_API_KEY       → llm.api_key
-            PAPERFLOW_BASE_URL      → llm.base_url
-            PAPERFLOW_MODEL         → llm.model
-            PAPERFLOW_LLM_TIMEOUT_CONNECT → llm.timeout_connect
-            PAPERFLOW_LLM_TIMEOUT_READ    → llm.timeout_read
-            PAPERFLOW_LLM_MAX_RETRIES     → llm.max_retries
-            PAPERFLOW_WORKSPACE     → workspace
-            PAPERFLOW_AGENTS_DIR    → agents_dir
-            PAPERFLOW_MAX_RISK      → max_risk
-            PAPERFLOW_NOTE_DIR → note_dir
-            PAPERFLOW_PDF_DIR  → pdf_dir
-            PAPERFLOW_RESEARCH_DIR → research_dir
-            PAPERFLOW_CITATIONS_BIB_PATH → citations_bib_path
-            PAPERFLOW_GROBID_ENDPOINT → grobid_endpoint
-            PAPERFLOW_RAG_QUERY_REWRITE_MODEL → query_rewrite.model
-            PAPERFLOW_VISION_BASE_URL → vision.base_url
-            PAPERFLOW_VISION_API_KEY  → vision.api_key
-            PAPERFLOW_VISION_MODEL    → vision.model
-            PAPERFLOW_SLEEPTIME_ENABLE    → sleeptime_enable（"true"/"false"）
-            PAPERFLOW_SLEEPTIME_FREQUENCY → sleeptime_agent_frequency
-            PAPERFLOW_RESUME_REPLAY       → resume_replay（"true"/"false"）
-            PAPERFLOW_RESUME_REPLAY_LIMIT → resume_replay_limit（0 = 整窗）
+        env 名 = ``PAPERFLOW_`` + 配置路径（``.`` 换 ``_``）大写，如
+        ``PAPERFLOW_LLM_API_KEY`` / ``PAPERFLOW_RAG_STORAGE_URI`` /
+        ``PAPERFLOW_INTENT_ROUTER_ALPHA``。自由 dict/list 字段
+        （``agents.timeouts``、``mcp_servers``）不派生 env。
         """
-        # 映射表：环境变量名 → (父对象名, 属性名)
-        # parent 为 "llm"/"vision"/"query_rewrite" 表示写入 self.<parent>.<attr>，
-        # None 表示写入 self.<attr>
-        env_map = {
-            "PAPERFLOW_API_KEY": ("llm", "api_key"),
-            "PAPERFLOW_BASE_URL": ("llm", "base_url"),
-            "PAPERFLOW_MODEL": ("llm", "model"),
-            "PAPERFLOW_LLM_TIMEOUT_CONNECT": ("llm", "timeout_connect"),
-            "PAPERFLOW_LLM_TIMEOUT_READ": ("llm", "timeout_read"),
-            "PAPERFLOW_LLM_MAX_RETRIES": ("llm", "max_retries"),
-            "PAPERFLOW_VISION_BASE_URL": ("vision", "base_url"),
-            "PAPERFLOW_VISION_API_KEY": ("vision", "api_key"),
-            "PAPERFLOW_VISION_MODEL": ("vision", "model"),
-            "PAPERFLOW_WORKSPACE": (None, "workspace"),
-            "PAPERFLOW_AGENTS_DIR": (None, "agents_dir"),
-            "PAPERFLOW_MAX_RISK": (None, "max_risk"),
-            "PAPERFLOW_NOTE_DIR": (None, "note_dir"),
-            "PAPERFLOW_PDF_DIR": (None, "pdf_dir"),
-            "PAPERFLOW_RESEARCH_DIR": (None, "research_dir"),
-            "PAPERFLOW_CITATIONS_BIB_PATH": (None, "citations_bib_path"),
-            "PAPERFLOW_GROBID_ENDPOINT": (None, "grobid_endpoint"),
-            "PAPERFLOW_MILVUS_URI": (None, "milvus_uri"),
-            "PAPERFLOW_MILVUS_COLLECTION": (None, "milvus_collection"),
-            "PAPERFLOW_RAG_QUERY_REWRITE_MODEL": ("query_rewrite", "model"),
-            "PAPERFLOW_SLEEPTIME_ENABLE": (None, "sleeptime_enable"),
-            "PAPERFLOW_SLEEPTIME_FREQUENCY": (None, "sleeptime_agent_frequency"),
-            "PAPERFLOW_RESUME_REPLAY": (None, "resume_replay"),
-            "PAPERFLOW_RESUME_REPLAY_LIMIT": (None, "resume_replay_limit"),
-        }
+        _apply_env(self, ())
 
-        for env_var, (parent, attr) in env_map.items():
-            val = os.getenv(env_var)
-            if val:
-                obj = getattr(self, parent) if parent in ("llm", "vision", "query_rewrite") else self
-                # 环境变量恒为字符串：按目标字段当前类型做布尔/整数转换，
-                # 否则 bool 字段收到 "false" 会被当真值、int 字段收到 "10" 仍是字符串
-                current = getattr(obj, attr)
-                if isinstance(current, bool):
-                    val = val.lower() in ("1", "true", "yes")
-                elif isinstance(current, int):
-                    val = int(val)
-                elif isinstance(current, float):
-                    val = float(val)
-                setattr(obj, attr, val)
+
+def _apply_env(node, prefix: tuple[str, ...]) -> None:
+    """按路径约定递归派生 env 并覆盖：仅标量字段消费 env，dict/list 跳过。"""
+    for f in fields(node):
+        cur = getattr(node, f.name)
+        path = prefix + (f.name,)
+        if is_dataclass(cur) and not isinstance(cur, type):
+            _apply_env(cur, path)
+            continue
+        if isinstance(cur, (dict, list)):
+            continue  # YAML-only 自由集合
+        env_name = "PAPERFLOW_" + "_".join(p.upper() for p in path)
+        val = os.getenv(env_name)
+        if val:
+            setattr(node, f.name, _coerce(cur, val))
