@@ -9,14 +9,14 @@
 """
 import re
 
+from paperflow.core.intent.constants import SHORT_REPLY_MAX_CHARS
 from paperflow.core.intent.schemas.intent import INTENT_LABELS_ZH, IntentType
 
 from paperflow.core.intent.routing.option_reply import OPTION_REPLY_RE
 
 #: 短回复里的首个整数（用于「选2」「我要第 3 个」等非纯编号形态）。
-#: 长度上限防长句里的年份/图号被误当选项号——确认回复天然是短语。
+#: 长度上限（SHORT_REPLY_MAX_CHARS）防长句里的年份/图号被误当选项号——确认回复天然是短语。
 _NUMBER_RE = re.compile(r"[0-9０-９]+")
-_SHORT_REPLY = 12
 
 
 def format_intent_options(options: list[IntentType]) -> str:
@@ -58,7 +58,7 @@ def match_option_choice(reply: str, options: list[IntentType]) -> IntentType | N
         return options[n - 1] if 1 <= n <= len(options) else None
 
     # 2. 短回复里的首个整数（全角转半角后解析）
-    if len(text) <= _SHORT_REPLY:
+    if len(text) <= SHORT_REPLY_MAX_CHARS:
         normalized = re.sub(r"[０-９]", lambda m: chr(ord(m.group()) - 0xFEE0), text)
         if m := _NUMBER_RE.search(normalized):
             n = int(m.group())

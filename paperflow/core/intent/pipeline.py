@@ -22,38 +22,17 @@
 """
 from pydantic import BaseModel
 
+from paperflow.core.intent.constants import (
+    CLARIFY_FLOOR_DELTA, CLARIFY_MARGIN, ROUTER_STEPS_EPSILON,
+)
 from paperflow.core.intent.schemas.intent import (
-    INTENT_LABELS_ZH, INTENT_META,
+    INTENT_LABELS_ZH, INTENT_META, MAX_STEPS,
     IntentOutput, IntentType, IntentStep, IntentionResult,
 )
 from paperflow.core.intent.routing.entities import extract_entities
 from paperflow.core.intent.routing.confirm import format_intent_options
 from paperflow.core.intent.routing.followup import detect_followup
 from paperflow.core.intent.routing.option_reply import is_option_reply
-
-#: 复合拆分步数上限。一句话里能合理安排的动作就两三个，超出基本是模型在硬凑；
-#: IntentionResult._steps_guard 的 schema 层护栏用的是同一个数，两处改要一起改。
-MAX_STEPS = 3
-
-#: 多标签拆分的「独立自信」余量：一个候选意图的分数要超过（自身标定阈值 +
-#: 本余量）才有资格被拆进 steps，仅仅压着阈值线过线不算数。为什么需要它：
-#: 路由阈值是「多低就接受这个意图」的下界，第二高分哪怕只比线高一点也会过线，
-#: 但那种擦线命中往往是同一句话顺带蹭到的（搭车命中），拆进 steps 就会造成
-#: 误派发。分数是稠密/稀疏两路融合的未归一化值（截断后落在 [0,1]，不是概率），
-#: 0.05 是保守初值；标定方法：在复合句评测集上扫这个值，取 steps 精确率×召回率
-#: 最高的点。另见 run() 第 4 级注释——阈值未标定的路由根本不参与拆分。
-ROUTER_STEPS_EPSILON = 0.05
-
-#: 「贴线」澄清判据的容差：业务候选里分数最高的那个，若分数低于（自身标定阈值
-#: + 本容差），视为不够自信——无论是刚好压线通过还是差一点没过，都说明路由器
-#: 其实没认准，此时该问用户一句，而不是硬选一个意图往下走。与上面的余量同分
-#: 数量纲，标定方法相同。
-CLARIFY_FLOOR_DELTA = 0.05
-
-#: 「竞争」澄清判据的分差线：分数最高的两个业务候选意图分差小于此值时，说明
-#: 两个意图都有可能、路由器无法取舍（比如「这本书讲什么」到底算问答还是精读
-#: 分析），与其赌一个，不如让用户二选一。
-CLARIFY_MARGIN = 0.05
 
 
 def _is_business(name: str) -> bool:
@@ -439,7 +418,7 @@ class IntentPipeline:
         else:
             parts.extend([
                 "steps 仅当输入包含 ≥2 个相互独立、分属不同意图的业务动作时才填：每个 "
-                "step 是一个业务意图名（可派发类），按执行顺序排列，最多 3 步，且 "
+                f"step 是一个业务意图名（可派发类），按执行顺序排列，最多 {MAX_STEPS} 步，且 "
                 "steps[0] 必须等于 intent_type；单一动作或拿不准时必须留空（宁可不拆）。"
                 "拆分时 intent_type 取第一步。",
                 "clarification 可选，留空串表示不需要：只在输入缺决定性信息、无法在意图间取舍时才填，"

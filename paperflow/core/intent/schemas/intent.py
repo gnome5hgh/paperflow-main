@@ -94,6 +94,17 @@ INTENT_LABELS_ZH: dict[IntentType, str] = {
 }
 
 
+#: 复合拆分步数上限（唯一定义点，契约层）。
+#: - 值：3。
+#: - 含义与单位：IntentionResult.steps 允许的最大长度，也用于多标签拆分截断（步数，整数）。
+#: - 改它的后果：改变多标签拆分与 steps 护栏口径，需重跑 steps/澄清标定评测；
+#:   _steps_guard 与两处提示词文案（下方 Field description、pipeline._build_llm_prompt）
+#:   均与本常量同源插值。
+#: - 是否进 YAML：否（结构契约常量）。
+#: 定在 schemas 而非 constants.py：pipeline 依赖 schemas，放 constants 会成循环导入。
+MAX_STEPS = 3
+
+
 class IntentStep(str, Enum):
     """产出阶段枚举——让审计/监控能看出意图由哪一级产出。"""
 
@@ -183,7 +194,7 @@ class IntentionResult(BaseModel):
     #: 判断「何时拆」的唯一依据（同 clarification 的教训——缺了它 steps 永远为空，
     #: 见 2026-09-30 澄清修复）。填写条件：仅当输入包含 ≥2 个相互独立、分属不同
     #: 意图的业务动作；每个 step 必须是单业务意图（dispatch_allowed=True），按执行
-    #: 顺序排列，最多 3 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时
+    #: 顺序排列，最多 MAX_STEPS 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时
     #: 必须留空（宁缺勿滥——steps 非空会放行 spawn 门禁，误拆即高权限口子）。
     #: 注意：# 注释不产生 pydantic description（评审 Critical 实证）——触发契约
     #: 必须走下面的 Field(description=...) 才能进 LLM 提示词，这里仅留出处索引。
@@ -192,7 +203,7 @@ class IntentionResult(BaseModel):
         description=(
             "复合意图的有序拆分，仅在输入包含 ≥2 个相互独立、分属不同意图的业务动作时填写；"
             "每个 step 必须是单业务意图（dispatch_allowed=True 的枚举值），按执行顺序排列，"
-            "最多 3 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时必须留空"
+            f"最多 {MAX_STEPS} 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时必须留空"
             "（宁缺勿滥——steps 非空会放行 spawn 门禁，误拆即高权限口子）。"
         ),
     )
@@ -202,7 +213,7 @@ class IntentionResult(BaseModel):
         """steps 合法性护栏 + steps 与 clarification 互斥（代码级防御）。
 
         steps 里的每一项都会被 spawn 门禁当作可派发意图放行，所以这里必须在
-        schema 层拦住三类非法拆分：超过 3 步（LLM 硬凑的长链）、混入非派发意图
+        schema 层拦住三类非法拆分：超过 MAX_STEPS 步（LLM 硬凑的长链）、混入非派发意图
         （LLM 把闲聊/帮助也拆进去，等于给不派发的意图开派发口子）、首步与主意图
         不一致（主意图是 spawn 门禁和 INTENT 块的第一参考，错位会让两者打架）。
         违规不做半截修正，整体置空；也不抛校验错误——解析失败的兜底路径
@@ -213,7 +224,7 @@ class IntentionResult(BaseModel):
         """
         if self.steps:
             business = {t for t, (_, allowed) in INTENT_META.items() if allowed}
-            if (len(self.steps) > 3
+            if (len(self.steps) > MAX_STEPS
                     or any(s not in business for s in self.steps)
                     or self.steps[0] != self.intent_type):
                 object.__setattr__(self, "steps", [])
