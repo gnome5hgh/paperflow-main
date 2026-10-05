@@ -8,9 +8,9 @@
     3. 环境变量（最高优先级，按 ``PAPERFLOW_`` + 配置路径大写派生）
 
 配置结构与 config.yaml 同构（spec 2026-10-05-constants-and-config-reorg §4/§6）：
-``runtime`` / ``corpus`` / ``intent{encoder, router}`` / ``rag{embedding, retriever,
-query_rewrite, chunker, indexer, storage, grobid, tools}`` / ``memory`` / ``session`` /
-``agents{timeouts}``，外加保留的顶层 ``llm`` / ``vision`` / ``mcp_servers``。
+``runtime`` / ``corpus`` / ``intent{encoder, router}`` / ``rag{embedding, rerank,
+retriever, query_rewrite, chunker, indexer, storage, grobid, tools}`` / ``memory`` /
+``session`` / ``agents{timeouts}``，外加保留的顶层 ``llm`` / ``vision`` / ``mcp_servers``。
 
 env 名约定：字段路径以 ``_`` 连接并大写，前缀 ``PAPERFLOW_``。例如
 ``rag.storage.uri`` → ``PAPERFLOW_RAG_STORAGE_URI``，
@@ -217,21 +217,37 @@ class IntentConfig:
 
 @dataclass
 class EmbeddingConfig:
-    """RAG 检索栈云端嵌入 + 精排配置（spec 2026-10-05-embedding-cloud-startup §6）。
+    """RAG 检索栈云端嵌入配置（spec 2026-10-05-embedding-cloud-startup §6）。
 
     云端 only——本地 sentence-transformers 已退役，api_key 缺失不阻塞启动，
     由调用方按降级语义处理（路由退稀疏、检索跳稠密路）。
 
     batch_size/timeout/max_retries 默认值来自 core.llm.constants（CloudEmbedder
-    传输参数；改它们不改变向量结果，无需重建索引）。
+    传输参数；改它们不改变向量结果，无需重建索引）。精排连接已拆到 rag.rerank
+    （spec 2026-10-05b），本段只负责嵌入。
     """
     base_url: str = "https://api.siliconflow.cn/v1"
     api_key: str = ""
     embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
-    rerank_model: str = "Qwen/Qwen3-Reranker-0.6B"
     batch_size: int = field(default_factory=lambda: _llm_constants().EMBED_BATCH_SIZE)
     timeout: float = field(default_factory=lambda: _llm_constants().EMBED_TIMEOUT)
     max_retries: int = field(default_factory=lambda: _llm_constants().EMBED_MAX_RETRIES)
+
+
+@dataclass
+class RerankConfig:
+    """精排模型独立连接配置（spec 2026-10-05b §2）——与 embedding 的传输参数解耦。
+
+    base_url/api_key 留空 = 继承 rag.embedding 同名字段，from_env 阶段解析完毕，
+    装配侧拿到的是已合并值（增量继承语义与 intent.encoder 一致）。model 默认
+    Qwen/Qwen3-Reranker-0.6B；timeout/max_retries 默认来自 core.llm.constants
+    的 RERANK_* （与 embedding 的 EMBED_* 解耦，改精排超时不再牵动嵌入）。
+    """
+    base_url: str = ""
+    api_key: str = ""
+    model: str = "Qwen/Qwen3-Reranker-0.6B"
+    timeout: float = field(default_factory=lambda: _llm_constants().RERANK_TIMEOUT)
+    max_retries: int = field(default_factory=lambda: _llm_constants().RERANK_MAX_RETRIES)
 
 
 @dataclass
@@ -320,6 +336,7 @@ class RagConfig:
     """RAG 检索栈配置（按子模块分区，与 config.yaml ``rag:`` 段同构）。"""
 
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    rerank: RerankConfig = field(default_factory=RerankConfig)
     retriever: RetrieverConfig = field(default_factory=RetrieverConfig)
     query_rewrite: QueryRewriteConfig = field(default_factory=QueryRewriteConfig)
     chunker: ChunkerConfig = field(default_factory=ChunkerConfig)
@@ -550,6 +567,10 @@ class PaperFlowConfig:
         emb = config.rag.embedding
         enc.base_url = enc.base_url or emb.base_url
         enc.api_key = enc.api_key or emb.api_key
+        # rag.rerank 留空逐项继承 rag.embedding（端点/key），与上面同一阶段。
+        rr = config.rag.rerank
+        rr.base_url = rr.base_url or emb.base_url
+        rr.api_key = rr.api_key or emb.api_key
         qr = config.rag.query_rewrite
         qr.base_url = qr.base_url or config.llm.base_url
         qr.api_key = qr.api_key or config.llm.api_key

@@ -90,11 +90,11 @@ class RAGService:
             with self.lock:
                 if self._reranker is None:
                     from paperflow.core.llm.rerank import CloudReranker
-                    emb = self.config.rag.embedding
-                    self._reranker = CloudReranker(emb.base_url, emb.api_key,
-                                                   emb.rerank_model,
-                                                   timeout=emb.timeout,
-                                                   max_retries=emb.max_retries)
+                    rr = self.config.rag.rerank
+                    self._reranker = CloudReranker(rr.base_url, rr.api_key,
+                                                   rr.model,
+                                                   timeout=rr.timeout,
+                                                   max_retries=rr.max_retries)
         return self._reranker
 
     def _ensure_vector_store(self):
