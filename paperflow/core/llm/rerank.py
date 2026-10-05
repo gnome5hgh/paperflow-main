@@ -6,13 +6,14 @@
 一致：按相关度降序的文档下标列表（长度 ≤ top_k），调用方零适配。
 """
 import time
+from typing import Protocol
 
 import httpx
 
 from paperflow.core.security.text import sanitize_surrogates
 
 
-class Reranker:
+class Reranker(Protocol):
     """精排协议：query + 候选文档 → 按相关度降序的下标列表。"""
 
     def __call__(self, query: str, docs: list[str], top_k: int) -> list[int]:
@@ -54,6 +55,18 @@ class CloudReranker:
                 results = r.json()["results"]
                 ranked = sorted(results, key=lambda x: x["relevance_score"], reverse=True)
                 return [x["index"] for x in ranked[:top_k] if 0 <= x["index"] < len(docs)]
+            except httpx.HTTPStatusError as e:
+                last_err = e
+                # 与 embedding.py 对齐：4xx 不可恢复（408/429 例外）立即失败，
+                # 不空耗退避；5xx 仍重试。
+                if e.response.status_code < 500 and e.response.status_code not in (408, 429):
+                    break
+                if attempt < self._max_retries:
+                    time.sleep(0.5 * (2 ** attempt))
+            except httpx.LocalProtocolError as e:
+                last_err = e
+                # 客户端请求构造错误（非法 header 等）重试无意义
+                break
             except (httpx.HTTPError, KeyError, ValueError) as e:
                 last_err = e
                 if attempt < self._max_retries:

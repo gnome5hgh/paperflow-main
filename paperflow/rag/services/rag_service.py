@@ -248,9 +248,10 @@ class RAGService:
     def get_rewriter(self):
         """惰性创建并返回 query 改写器（RAG 包内首个 LLM 调用点）。
 
-        模型取 rag_query_rewrite_model，留空回退主模型（dataclasses.replace
-        只换 model 字段，base_url/api_key/超时沿用主配置）。LLMClient 对空
-        api_key fail-fast——调用方（RagRetrieveTool）catch 后降级原 query。
+        连接参数取 config.query_rewrite 三元组，以主 LLM 为基底逐项覆盖：
+        base_url/api_key 留空（from_env 已继承主 LLM，此处再兜底）沿用主配置，
+        model 留空沿用主模型（历史默认行为）。LLMClient 对空 api_key fail-fast
+        ——调用方（RagRetrieveTool）catch 后降级原 query。
 
         Returns:
             QueryRewriter: 改写器实例（进程内缓存）。
@@ -260,10 +261,16 @@ class RAGService:
 
             from paperflow.core.llm.client import LLMClient
             from paperflow.rag.services.query_rewriter import QueryRewriter
-            llm_cfg = self.config.llm
-            rewrite_model = getattr(self.config, "rag_query_rewrite_model", "")
-            if rewrite_model:
-                llm_cfg = replace(llm_cfg, model=rewrite_model)
+            # 以主 LLM 配置为基底，query_rewrite 三元组逐项覆盖（空值回退主配置）。
+            # 直接构造 config 的调用方（测试/嵌入宿主）未必经过 from_env 的继承回填，
+            # 故此处对空值再兜底一次。
+            qr = self.config.query_rewrite
+            llm_cfg = replace(
+                self.config.llm,
+                base_url=qr.base_url or self.config.llm.base_url,
+                api_key=qr.api_key or self.config.llm.api_key,
+                model=qr.model or self.config.llm.model,
+            )
             self._rewriter = QueryRewriter(LLMClient(llm_cfg))
         return self._rewriter
 

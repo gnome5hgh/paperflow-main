@@ -7,6 +7,7 @@ routes.yaml 的 1684 条 utterance 是静态知识资产，向量内容只取决
 HybridRouter 现算后回写。
 """
 import hashlib
+import os
 import tempfile
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import numpy as np
 _KEY_FIELD = "cache_key"
 _MODEL_FIELD = "model"
 _DENSE_FIELD = "dense"
+_DIM_FIELD = "dim"
 
 
 def cache_key(model_name: str, dim: int, utterances: list[str]) -> str:
@@ -30,14 +32,19 @@ def cache_key(model_name: str, dim: int, utterances: list[str]) -> str:
 
 
 def load_cached_dense(path: Path, key: str) -> np.ndarray | None:
-    """读缓存；文件缺失/损坏/键不符一律 None（调用方走现算，绝不抛）。"""
+    """读缓存；文件缺失/损坏/键不符/dim 与矩阵不一致一律 None（调用方走现算，绝不抛）。"""
     if not Path(path).is_file():
         return None
     try:
         with np.load(path, allow_pickle=False) as data:
             if str(data[_KEY_FIELD]) != key:
                 return None
-            return np.asarray(data[_DENSE_FIELD], dtype=np.float32)
+            dense = np.asarray(data[_DENSE_FIELD], dtype=np.float32)
+            # 显式 dim 字段必须与矩阵第二维一致（spec §4）——不一致说明文件被
+            # 篡改/字段错位，宁可失效重算也不把形状可疑的向量灌进索引。
+            if int(data[_DIM_FIELD]) != dense.shape[1]:
+                return None
+            return dense
     except Exception:
         return None
 
@@ -47,12 +54,16 @@ def save_cached_dense(path: Path, key: str, model_name: str, dense: np.ndarray) 
     缓存是纯加速层，写不进大不了下次重算。"""
     import logging
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    dense = np.asarray(dense, dtype=np.float32)
     try:
+        # mkdir 一并纳入 try：安装根只读时创建目录会抛，缓存写失败只应告警，
+        # 不得让保存动作把启动打断（与本函数 docstring 的语义一致）。
+        os.makedirs(path.parent, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp",
                                          delete=False) as tmp:
             np.savez(tmp, **{_KEY_FIELD: key, _MODEL_FIELD: model_name,
-                             _DENSE_FIELD: np.asarray(dense, dtype=np.float32)})
+                             _DIM_FIELD: int(dense.shape[1]),
+                             _DENSE_FIELD: dense})
             tmp_name = tmp.name
         Path(tmp_name).replace(path)
     except Exception as e:

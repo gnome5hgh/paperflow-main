@@ -358,6 +358,13 @@ class PaperFlowConfig:
             if key in data:
                 setattr(self, key, data[key])
 
+        # 兼容旧配置：`rag_query_rewrite_model` 是 query 改写只有模型名可配时代的
+        # 顶层平铺键，现已收进 query_rewrite.model 三元组（spec §6）。保留此映射
+        # 是为了不破坏既有 config.yaml——旧写法仍按原语义生效，无需用户改配置。
+        # 显式 query_rewrite.model 优先（上面嵌套循环已写入），env 覆盖仍在其后。
+        if "rag_query_rewrite_model" in data and not self.query_rewrite.model:
+            self.query_rewrite.model = data["rag_query_rewrite_model"]
+
         # MCP servers：嵌套结构需校验+转换，单独分支（不在上方白名单循环里）
         if "mcp_servers" in data:
             self.mcp_servers = parse_mcp_servers(data["mcp_servers"])
@@ -393,7 +400,8 @@ class PaperFlowConfig:
             PAPERFLOW_RESUME_REPLAY_LIMIT → resume_replay_limit（0 = 整窗）
         """
         # 映射表：环境变量名 → (父对象名, 属性名)
-        # parent 为 "llm"/"vision" 表示写入 self.<parent>.<attr>，None 表示写入 self.<attr>
+        # parent 为 "llm"/"vision"/"query_rewrite" 表示写入 self.<parent>.<attr>，
+        # None 表示写入 self.<attr>
         env_map = {
             "PAPERFLOW_API_KEY": ("llm", "api_key"),
             "PAPERFLOW_BASE_URL": ("llm", "base_url"),

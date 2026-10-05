@@ -9,6 +9,7 @@
 """
 import logging
 import time
+from typing import Protocol
 
 import httpx
 import numpy as np
@@ -24,7 +25,7 @@ _EMBED_DIMS = {
 }
 
 
-class Embedder:
+class Embedder(Protocol):
     """稠密编码协议：文本批次 → L2 归一化向量矩阵。
 
     与原 rag 协议逐字一致——调用方（索引器/路由器/检索器）无需感知实现更换。
@@ -72,6 +73,16 @@ class CloudEmbedder:
                 self._dim = int(self([_PROBE_TEXT]).shape[1])
         return self._dim
 
+    @property
+    def dim_static(self) -> int | None:
+        """**不发网络**的维度：静态映射命中返回值，未登记模型返回 None。
+
+        调用方（路由器降级路径/缓存键）在断网时不能触发 dim 探测请求——探测
+        会抛异常并中断启动。此属性只读静态表，未登记即 None，由调用方决定
+        是降级为零向量还是给出清晰错误。
+        """
+        return _EMBED_DIMS.get(self.model_name)
+
     def __call__(self, texts: list[str]) -> np.ndarray:
         if not texts:
             return np.zeros((0, self.dim))
@@ -100,6 +111,12 @@ class CloudEmbedder:
                                                 response=r)
                 r.raise_for_status()
                 data = sorted(r.json()["data"], key=lambda d: d["index"])
+                # 条数校验：服务端静默丢条会让返回矩阵行数与输入错位，
+                # 下游 chunk 与向量一一对应即被破坏（召回张冠李戴）——视为
+                # 可重试失败。ValueError 落入下方通用重试分支。
+                if len(data) != len(batch):
+                    raise ValueError(
+                        f"云端嵌入返回条数 {len(data)} != 批次大小 {len(batch)}")
                 return np.array([d["embedding"] for d in data], dtype=np.float32)
             except httpx.HTTPStatusError as e:
                 last_err = e

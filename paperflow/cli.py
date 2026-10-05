@@ -523,6 +523,12 @@ def main(argv: list[str] | None = None) -> int | None:
         encoder=intent_encoder,
         routes=load_routes(), alpha=0.5,
         vector_cache_path=str(_install_root / "data" / "intents" / "routes_vectors.npz"))
+    # spec §5：启动期意图路由降级必须可见（黄字），不能只写 logger。缓存命中
+    # 时 add() 不走编码、dense_degraded 仍为 False——此时路由是全功能的，无告警。
+    if router.dense_degraded:
+        _msg = ("意图路由已降级为纯 BM25/稀疏：云端稠密编码不可用。"
+                "网络恢复后自动回到混合路由，无需重启。")
+        (console.print(_msg, style="yellow") if console else print(_msg))
     pipeline = IntentPipeline(router=router, structured=structured)
 
     conversation = ConversationState()
