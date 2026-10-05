@@ -15,14 +15,25 @@ from typing import Any, Sequence
 
 from pydantic import BaseModel, Field
 
-from paperflow.rag.constants import (
-    HISTORY_MESSAGE_CHARS,
-    HISTORY_MESSAGES,
-    MAX_QUERIES,
-    MAX_QUERY_CHARS,
-    REWRITE_MAX_RETRIES,
-    REWRITE_NUM,
-)
+#: 改写要求生成的 rewrites 条数（条）：发给 LLM 的 prompt 中要求的变体数；
+#: 生成侧实际席位由 MAX_QUERIES-1 截断。改它改变改写 prompt 与查询集规模，
+#: 影响召回率与检索延迟，需重评。
+REWRITE_NUM = 3
+
+#: 最终查询集封顶（条，含原 query）：生成侧最多占 MAX_QUERIES-1 席，最后 1 席
+#: 恒定留给原 query 作召回兜底。改它改变查询集规模与检索开销，需重评。
+MAX_QUERIES = 4
+
+#: 单条查询字符上限（字符）：改写输出逐项过滤时超过视为 LLM 输出异常并丢弃
+#: （Haystack 式逐项过滤）。改它改变合法查询的接收边界。
+MAX_QUERY_CHARS = 200
+
+#: 改写结构化输出的解析失败重试次数（次）：0 = 不重试，失败即降级为 [原 query]，
+#: 单次检索的失败延迟上限 = 1 次 LLM 调用（spec §6 与主流对齐）。
+REWRITE_MAX_RETRIES = 0
+
+#: 单条历史消息截断长度（字符）：拼进改写 prompt 时每条消息保留的字符数。
+HISTORY_MESSAGE_CHARS = 300
 
 logger = logging.getLogger(__name__)
 
@@ -133,11 +144,12 @@ def _run_sync(coro):
 class QueryRewriter:
     """检索查询改写器：一次结构化 LLM 调用产出 standalone + rewrites，失败降级原 query。"""
 
-    def __init__(self, llm, history_limit: int | None = None):
+    def __init__(self, llm, history_limit: int):
         from paperflow.core.llm.structured import StructuredOutput, StructuredOutputConfig
-        # history_limit：拼进改写 prompt 的最近历史条数，默认 rag.constants.HISTORY_MESSAGES；
-        # RAGService.get_rewriter 传 rag.query_rewrite.history_messages（改 YAML 即生效）。
-        self._history_limit = HISTORY_MESSAGES if history_limit is None else history_limit
+        # history_limit：拼进改写 prompt 的最近历史条数，生产值
+        # rag.query_rewrite.history_messages（唯一声明点 config.py）由
+        # RAGService.get_rewriter 注入。
+        self._history_limit = history_limit
         # REWRITE_MAX_RETRIES：解析失败零重试（spec §6 与主流对齐），失败延迟上限 = 1 次调用
         self._so = StructuredOutput(
             llm, StructuredOutputConfig(max_retries=REWRITE_MAX_RETRIES))

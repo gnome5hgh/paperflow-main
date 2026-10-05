@@ -3,8 +3,8 @@
 全局配置模块，提供 LLM 连接参数和项目运行时配置。
 
 配置加载优先级（从低到高）：
-    1. dataclass 默认值（代码中硬编码；部分默认值惰性引用模块 constants.py）
-    2. config.yaml（可选，文件不存在则跳过）
+    1. dataclass 默认值（本文件是所有可调参数值的**唯一声明点**——改默认值只改这里）
+    2. config.yaml（可选，文件不存在则跳过；纯覆盖文件，不重复声明默认值）
     3. 环境变量（最高优先级，按 ``PAPERFLOW_`` + 配置路径大写派生）
 
 配置结构与 config.yaml 同构（spec 2026-10-05-constants-and-config-reorg §4/§6）：
@@ -41,26 +41,9 @@ def _default_compaction():
 
 
 # ── constants.py 的惰性访问器 ────────────────────────────────────────────────
-# YAML 字段的默认值必须引用模块 constants.py（单一真相源），但顶层
-# ``from paperflow.rag.constants import X`` 会先执行 ``paperflow/rag/__init__.py``，
-# 而该包聚合 rag_service → ``from paperflow.config import PaperFlowConfig``，
-# 构成 config→rag→config 的循环（core.llm 同理：client 依赖 LLMConfig）。
-# 故与 _default_compaction 同一手法：把导入推迟到字段工厂求值（首次构造）时。
-
-
-def _intent_constants():
-    from paperflow.core.intent import constants
-    return constants
-
-
-def _llm_constants():
-    from paperflow.core.llm import constants
-    return constants
-
-
-def _rag_constants():
-    from paperflow.rag import constants
-    return constants
+# 已退役（2026-10-06）：可调参数默认值曾引用各模块 constants.py，为绕开
+# config→rag→config 循环导入需惰性访问器。默认值改在本文件字面量声明后，
+# constants.py 只剩结构契约（正则/词表/schema/修订号），不再被本文件引用。
 
 
 @dataclass
@@ -187,22 +170,30 @@ class IntentEncoderConfig:
     """意图路由独立稠密编码器（与 RAG 解耦，为换编码器实验留口）。
 
     base_url/api_key 留空 = 继承 rag.embedding 同名字段，from_env 阶段解析完毕，
-    装配侧拿到的是已合并值。
+    装配侧拿到的是已合并值。传输参数（batch_size/timeout/max_retries）与
+    rag.embedding 同形同默认——独立实例，互不共享。
     """
     base_url: str = ""
     api_key: str = ""
     model: str = "Qwen/Qwen3-Embedding-0.6B"
+    #: 单批嵌入请求的文本条数（条）
+    batch_size: int = 32
+    #: 嵌入 HTTP 读超时（秒）
+    timeout: float = 60.0
+    #: 可恢复错误（连接错误/超时/5xx）的重试次数（次）
+    max_retries: int = 2
 
 
 @dataclass
 class RouterConfig:
-    """混合路由器装配参数（默认值来自 core.intent.constants）。"""
+    """混合路由器装配参数。alpha/top_k 是标定产物，默认值在本文件单点声明
+    （标定脚本 scripts/intent/calibration/apply_calibration.py 会就地改写）。"""
 
-    #: 稠密分支权重 alpha（稀疏路权重 1-alpha）。默认来自 ROUTER_ALPHA=0.5。
-    alpha: float = field(default_factory=lambda: _intent_constants().ROUTER_ALPHA)
+    #: 稠密分支权重 alpha（稀疏路权重 1-alpha）。2026-10-05 标定值。
+    alpha: float = 0.15
 
-    #: 路由器每次查询检索的 utterances 条数。默认来自 ROUTER_TOP_K=5。
-    top_k: int = field(default_factory=lambda: _intent_constants().ROUTER_TOP_K)
+    #: 路由器每次查询检索的 utterances 条数（条）。2026-10-05 标定值。
+    top_k: int = 3
 
 
 @dataclass
@@ -222,16 +213,19 @@ class EmbeddingConfig:
     云端 only——本地 sentence-transformers 已退役，api_key 缺失不阻塞启动，
     由调用方按降级语义处理（路由退稀疏、检索跳稠密路）。
 
-    batch_size/timeout/max_retries 默认值来自 core.llm.constants（CloudEmbedder
-    传输参数；改它们不改变向量结果，无需重建索引）。精排连接已拆到 rag.rerank
-    （spec 2026-10-05b），本段只负责嵌入。
+    batch_size/timeout/max_retries 是 CloudEmbedder 传输参数（改它们不改变
+    向量结果，无需重建索引）。精排连接已拆到 rag.rerank（spec 2026-10-05b），
+    本段只负责嵌入。
     """
     base_url: str = "https://api.siliconflow.cn/v1"
     api_key: str = ""
     embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
-    batch_size: int = field(default_factory=lambda: _llm_constants().EMBED_BATCH_SIZE)
-    timeout: float = field(default_factory=lambda: _llm_constants().EMBED_TIMEOUT)
-    max_retries: int = field(default_factory=lambda: _llm_constants().EMBED_MAX_RETRIES)
+    #: 单批嵌入请求的文本条数（条）
+    batch_size: int = 32
+    #: 嵌入 HTTP 读超时（秒）
+    timeout: float = 60.0
+    #: 可恢复错误（连接错误/超时/5xx）的重试次数（次）
+    max_retries: int = 2
 
 
 @dataclass
@@ -239,31 +233,33 @@ class RerankConfig:
     """精排模型独立连接配置（spec 2026-10-05b §2）——与 embedding 的传输参数解耦。
 
     base_url/api_key 留空 = 继承 rag.embedding 同名字段，from_env 阶段解析完毕，
-    装配侧拿到的是已合并值（增量继承语义与 intent.encoder 一致）。model 默认
-    Qwen/Qwen3-Reranker-0.6B；timeout/max_retries 默认来自 core.llm.constants
-    的 RERANK_* （与 embedding 的 EMBED_* 解耦，改精排超时不再牵动嵌入）。
+    装配侧拿到的是已合并值（增量继承语义与 intent.encoder 一致）。
+    timeout/max_retries 与 embedding 的同名字段解耦，改精排超时不牵动嵌入。
     """
     base_url: str = ""
     api_key: str = ""
     model: str = "Qwen/Qwen3-Reranker-0.6B"
-    timeout: float = field(default_factory=lambda: _llm_constants().RERANK_TIMEOUT)
-    max_retries: int = field(default_factory=lambda: _llm_constants().RERANK_MAX_RETRIES)
+    #: 精排 HTTP 读超时（秒）
+    timeout: float = 60.0
+    #: 可恢复错误的重试次数（次）
+    max_retries: int = 2
 
 
 @dataclass
 class RetrieverConfig:
-    """混合检索参数（默认值来自 rag.constants；改动需重评检索质量）。"""
+    """混合检索参数（改动需重评检索质量；标定记录见 scripts/rag/calibration/）。"""
 
-    #: 默认返回块数。默认来自 DEFAULT_TOP_K=5。
-    top_k: int = field(default_factory=lambda: _rag_constants().DEFAULT_TOP_K)
-    #: BM25 粗召回数。默认来自 BM25_TOPK=30。
-    bm25_topk: int = field(default_factory=lambda: _rag_constants().BM25_TOPK)
-    #: 向量粗召回数。默认来自 VECTOR_TOPK=30。
-    vector_topk: int = field(default_factory=lambda: _rag_constants().VECTOR_TOPK)
-    #: 重排候选池下限。默认来自 RERANK_CANDIDATES=24。
-    rerank_candidates: int = field(default_factory=lambda: _rag_constants().RERANK_CANDIDATES)
-    #: RRF 融合常数 k。默认来自 RRF_K=60。
-    rrf_k: int = field(default_factory=lambda: _rag_constants().RRF_K)
+    #: 默认返回块数（条）。
+    top_k: int = 5
+    #: BM25 粗召回数（条）。
+    bm25_topk: int = 30
+    #: 向量粗召回数（条）。
+    vector_topk: int = 30
+    #: 重排候选池下限（条）；实际池大小 = max(top_k * 2, 本值)，倍率是
+    #: rag.constants.RERANK_CANDIDATE_MULTIPLIER（结构常量，不可配）。
+    rerank_candidates: int = 24
+    #: RRF 融合常数 k（无量纲；2026-10-05 标定，证据 scripts/rag/calibration/results/rrf_k_frozen.json）。
+    rrf_k: int = 30
 
 
 @dataclass
@@ -271,30 +267,30 @@ class QueryRewriteConfig:
     """query 改写模型完整三元组（此前只有模型名可配，端点/key 恒继承主 LLM）。
 
     字段留空逐项继承 llm 同名字段；model 留空 = 沿用主模型（历史行为）。
-    history_messages 默认来自 rag.constants.HISTORY_MESSAGES=6。
     """
     base_url: str = ""
     api_key: str = ""
     model: str = ""
-    history_messages: int = field(default_factory=lambda: _rag_constants().HISTORY_MESSAGES)
+    #: 喂给改写（condense）的最近对话消息条数（条）。
+    history_messages: int = 6
 
 
 @dataclass
 class ChunkerConfig:
-    """切块参数（默认值来自 rag.constants；改动改变切块结果 → 触发全量重索引）。"""
+    """切块参数（改动改变切块结果 → 配方哈希自动触发全量重索引）。"""
 
-    #: 每块最大 token 数。默认来自 CHUNK_MAX_TOKENS=512。
-    max_tokens: int = field(default_factory=lambda: _rag_constants().CHUNK_MAX_TOKENS)
-    #: 相邻块重叠 token 数。默认来自 CHUNK_OVERLAP_TOKENS=64。
-    overlap_tokens: int = field(default_factory=lambda: _rag_constants().CHUNK_OVERLAP_TOKENS)
+    #: 每块最大 token 数（token，按 core.tokenization 近似计数）。
+    max_tokens: int = 512
+    #: 相邻块重叠 token 数（token），约为块长的 1/8。
+    overlap_tokens: int = 64
 
 
 @dataclass
 class IndexerConfig:
     """索引器参数。"""
 
-    #: 表格块文本截断上限。默认来自 TABLE_TEXT_LIMIT=8000。
-    table_text_limit: int = field(default_factory=lambda: _rag_constants().TABLE_TEXT_LIMIT)
+    #: 表格块文本截断上限（字符；Milvus text 字段 65535 的防御性截断）。
+    table_text_limit: int = 8000
 
 
 @dataclass
@@ -308,8 +304,8 @@ class StorageConfig:
     #: Milvus 集合名（单一集合，对应迁移前的向量库 collection）
     collection: str = "paperflow"
 
-    #: all_documents 分页遍历每页行数。默认来自 MILVUS_BATCH_SIZE=1000。
-    batch_size: int = field(default_factory=lambda: _rag_constants().MILVUS_BATCH_SIZE)
+    #: all_documents 分页遍历每页行数（行；规避单次 query 16384 行上限）。
+    batch_size: int = 1000
 
 
 @dataclass
@@ -319,16 +315,16 @@ class GrobidConfig:
     #: GROBID 服务地址——RAG PDF 解析与 TitleExtractor 标题提取共用同一端点
     endpoint: str = "http://localhost:8070"
 
-    #: 请求超时（秒）。默认来自 GROBID_TIMEOUT=60.0。
-    timeout: float = field(default_factory=lambda: _rag_constants().GROBID_TIMEOUT)
+    #: 请求超时（秒），覆盖健康检查与全文解析请求。
+    timeout: float = 60.0
 
 
 @dataclass
 class RagToolsConfig:
     """RAG 工具输出参数。"""
 
-    #: 单条命中正文摘录上限。默认来自 EXCERPT_CHARS=400。
-    excerpt_chars: int = field(default_factory=lambda: _rag_constants().EXCERPT_CHARS)
+    #: 单条命中正文摘录上限（字符）。
+    excerpt_chars: int = 400
 
 
 @dataclass

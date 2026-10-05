@@ -111,7 +111,7 @@ routes:
   - 选项二
   - 那就第 7 个
   - 麻烦选12
-  score_threshold: 0.0
+  score_threshold: 0.0565657
 - name: search_paper
   utterances:
   - 下载最新论文
@@ -383,7 +383,7 @@ routes:
   - 限定在近两年且开源
   - 限定近三年
   - 顶会优先
-  score_threshold: 0.0
+  score_threshold: 0.0888889
 - name: generate_note
   utterances:
   - 把这篇论文整理成笔记
@@ -514,7 +514,7 @@ routes:
   - 这篇 paper 的重点帮我记录一下
   - 阅读完这篇 paper，帮我输出一份 summary note
   - 阅读这篇文献并生成摘要笔记
-  score_threshold: 0.0
+  score_threshold: 0.617511
 - name: research_discovery
   utterances:
   - 帮我找一个研究方向
@@ -638,7 +638,7 @@ routes:
   - 这个领域下一步该往哪儿走，帮我分析一下
   - 这些综述文章能衍生出哪些值得做的课题？
   - 针对CRISPR基因编辑有什么新颖的研究课题推荐
-  score_threshold: 0.0
+  score_threshold: 0.491211
 - name: ask_question
   utterances:
   - circRNA 的机制是什么
@@ -782,7 +782,7 @@ routes:
   - 这篇论文想解决什么问题
   - 这篇论文的结论是什么
   - 这篇论文的创新点在哪里
-  score_threshold: 0.0
+  score_threshold: 0.137374
 - name: manage_memory
   utterances:
   - 我读过哪些论文
@@ -917,7 +917,7 @@ routes:
   - 重置我的上下文记忆
   - 重置我的论文推荐历史
   - 重置整个记忆系统
-  score_threshold: 0.0
+  score_threshold: 0.428283
 - name: set_research_topic
   utterances:
   - 我的课题是做circRNA关联预测
@@ -1146,7 +1146,7 @@ routes:
   - 这个先放一放，转去搞CV
   - 这个课题先放一放，看看时序预测
   - 这个领域不研究了
-  score_threshold: 0.0
+  score_threshold: 0.558263
 - name: analyze_paper
   utterances:
   - 这篇论文的方法有什么缺陷
@@ -1257,7 +1257,7 @@ routes:
   - 这篇论文的讨论部分有哪些不足？请分析。
   - 这篇论文的论证逻辑有没有明显漏洞？
   - 这篇论文的贡献与不足分别体现在哪里
-  score_threshold: 0.0
+  score_threshold: 0.712854
 - name: chitchat
   utterances:
   - 你好啊
@@ -1375,7 +1375,7 @@ routes:
   - 该休息啦，做个好梦
   - 随便扯点啥都行
   - 麻烦你了
-  score_threshold: 0.0
+  score_threshold: 0.479062
 - name: out_of_scope
   utterances:
   - 帮我订个外卖
@@ -1492,7 +1492,7 @@ routes:
   - 能帮我做个 Excel 表格吗
   - 能帮我翻译一下这段英文吗？
   - 能帮我规划一下周末旅行路线吗？
-  score_threshold: 0.0
+  score_threshold: 0.250505
 - name: help
   utterances:
   - 你能干什么
@@ -1603,7 +1603,7 @@ routes:
   - 这个助手能做些啥
   - 这个助手都能做哪些事情？
   - 这个助手都能干些什么
-  score_threshold: 0.0
+  score_threshold: 0.663112
 - name: feedback
   utterances:
   - 这个回答不对
@@ -1718,4 +1718,4 @@ routes:
   - 这篇内容质量很差
   - 这篇分析不够好
   - 这篇总结写得很差。
-  score_threshold: 0.0
+  score_threshold: 0.557576

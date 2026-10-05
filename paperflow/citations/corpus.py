@@ -57,7 +57,9 @@ class CorpusIndex:
         if self._title_extractor is None:
             from paperflow.core.memory.services.title_extractor import TitleExtractor
             from paperflow.rag.parsers.grobid_client import GrobidClient
-            self._title_extractor = TitleExtractor(grobid=GrobidClient(self.config.rag.grobid.endpoint))
+            self._title_extractor = TitleExtractor(grobid=GrobidClient(
+                self.config.rag.grobid.endpoint,
+                timeout=self.config.rag.grobid.timeout))
         return self._title_extractor
 
     @staticmethod

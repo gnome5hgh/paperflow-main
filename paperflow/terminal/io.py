@@ -392,9 +392,9 @@ def make_input_io(config) -> InputIO:
                  否则返回 FallbackIO 实例（用于管道/CI/测试）。
 
     Note:
-        TTY 环境下历史文件固定命名为 repl_history.txt，存放在 workspace 目录中。
+        TTY 环境下历史文件固定命名为 repl_history.txt，存放在 workspace 的 session/ 目录中。
     """
     if sys.stdin.isatty():
         # 主输入历史文件放在 workspace 下，跨会话保留
-        return PromptToolkitIO(str(Path(config.runtime.workspace) / "repl_history.txt"))
+        return PromptToolkitIO(str(Path(config.runtime.workspace) / "session" / "repl_history.txt"))
     return FallbackIO()

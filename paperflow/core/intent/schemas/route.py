@@ -7,7 +7,7 @@
 用 dataclass 而非 pydantic BaseModel 实现：路由层只做匹配判定，
 不需要 pydantic 的校验/序列化能力。字段只保留静态路由所需的
 「意图名 + 示例句集合 + 专属阈值」——意图路由完全由
-data/intents/routes.yaml 的静态配置驱动，不需要动态函数 schema /
+data/intent/routes.yaml 的静态配置驱动，不需要动态函数 schema /
 LLM / 元数据等运行时字段。
 """
 

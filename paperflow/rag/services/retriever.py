@@ -4,13 +4,17 @@
 """
 import logging
 
-from paperflow.rag.constants import (
-    RERANK_CANDIDATE_MULTIPLIER,
-    VALID_SOURCES,
-)
 from paperflow.rag.parsers.chunker import Chunk
 
 logger = logging.getLogger(__name__)
+
+#: 重排候选池随 top_k 放大的倍率（无量纲）：实际池大小为
+#: ``max(top_k * 本值, config.rag.retriever.rerank_candidates)``，保证大 top_k
+#: 时池子同步放大。改它改变大 top_k 场景的精排候选面与开销，需重评检索质量。
+RERANK_CANDIDATE_MULTIPLIER = 2
+
+#: source 过滤的合法取值；超出按不过滤处理（工具层已有 enum 约束，此处防御）。
+VALID_SOURCES = (None, "note", "pdf")
 
 
 #: query 侧任务指令（Qwen3-Embedding 官方格式 Instruct: {task}\nQuery: {query}，
@@ -70,11 +74,10 @@ class Retriever:
         if source not in VALID_SOURCES:
             source = None
 
-        # 检索阈值读配置（rag.retriever.*）：改 YAML 即生效，模块常量只作
-        # dataclass 字段默认值来源。候选池倍率仍用常量（与 RERANK_CANDIDATES 同口径）。
+        # 检索阈值读配置（rag.retriever.*）：值的唯一声明点在 config.py。
         rcfg = self.service.config.rag.retriever
-        # rrf_k 现在是用户可配旋钮，无下界保证：排名从 0 起，k=0 时分母为 0
-        # 直接 ZeroDivisionError。这里钳到 >=1 兜底（默认 RRF_K 不受影响）。
+        # rrf_k 是用户可配旋钮，无下界保证：排名从 0 起，k=0 时分母为 0
+        # 直接 ZeroDivisionError。这里钳到 >=1 兜底。
         rrf_k = max(1, rcfg.rrf_k)
 
         embedder = self.service._ensure_embedder()

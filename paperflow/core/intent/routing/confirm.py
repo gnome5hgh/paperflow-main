@@ -9,10 +9,15 @@
 """
 import re
 
-from paperflow.core.intent.constants import SHORT_REPLY_MAX_CHARS
 from paperflow.core.intent.schemas.intent import INTENT_LABELS_ZH, IntentType
 
 from paperflow.core.intent.routing.option_reply import OPTION_REPLY_RE
+
+#: 「短回复」长度上限（字符数）：match_option_choice 只对不超过此长度的回复做
+#: 「回复里的首个整数」宽松解析（如「选2」「我要第 3 个」）；更长文本里的整数
+#: 可能是年份/图号，不当作选项号。改它改变澄清回复的解析边界，需重跑澄清
+#: 相关测试/评测口径。标定脚本 apply_calibration.py 就地改写本值。
+SHORT_REPLY_MAX_CHARS = 12
 
 #: 短回复里的首个整数（用于「选2」「我要第 3 个」等非纯编号形态）。
 #: 长度上限（SHORT_REPLY_MAX_CHARS）防长句里的年份/图号被误当选项号——确认回复天然是短语。

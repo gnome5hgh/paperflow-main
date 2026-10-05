@@ -245,8 +245,8 @@ def _result_summary(result) -> dict | str | None:
 class AuditMiddleware(SecurityMiddleware):
     """审计中间件：把工具调用与审批/LLM 事件追加写入当日 JSONL 文件。"""
 
-    def __init__(self, audit_dir: str = "data/audit"):
-        """指定审计日志目录；默认落在工作区 data/audit 下。
+    def __init__(self, audit_dir: str = "data/security/audit"):
+        """指定审计日志目录；默认落在工作区 data/security/audit 下。
 
         初始化时建好线程写锁——子 agent 的工具调用可能在不同线程并发写入，
         后面每次追加写都在锁内完成。

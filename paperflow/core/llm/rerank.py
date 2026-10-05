@@ -10,11 +10,7 @@ from typing import Protocol
 
 import httpx
 
-from paperflow.core.llm.constants import (
-    RERANK_MAX_RETRIES,
-    RERANK_TIMEOUT,
-    RETRY_BACKOFF_BASE,
-)
+from paperflow.core.llm.embedding import RETRY_BACKOFF_BASE
 from paperflow.core.security.text import sanitize_surrogates
 
 
@@ -33,8 +29,15 @@ class CloudReranker:
     """
 
     def __init__(self, base_url: str, api_key: str, model: str, *,
-                 max_retries: int = RERANK_MAX_RETRIES, timeout: float = RERANK_TIMEOUT,
+                 max_retries: int, timeout: float,
                  transport: httpx.BaseTransport | None = None):
+        """生产值来自 ``rag.rerank.*``（唯一声明点 config.py，RagService 注入）。
+
+        Args:
+            max_retries: 连接错误/超时/5xx（及 408/429）的重试次数（次），
+                与嵌入侧语义对齐；4xx 立即失败不重试。
+            timeout: httpx.Client 读超时（秒）。
+        """
         self.model_name = model
         self._max_retries = max_retries
         kwargs = {"base_url": base_url.rstrip("/"), "timeout": timeout,

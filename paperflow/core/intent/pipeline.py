@@ -22,9 +22,6 @@
 """
 from pydantic import BaseModel
 
-from paperflow.core.intent.constants import (
-    CLARIFY_FLOOR_DELTA, CLARIFY_MARGIN, ROUTER_STEPS_EPSILON,
-)
 from paperflow.core.intent.schemas.intent import (
     INTENT_LABELS_ZH, INTENT_META, MAX_STEPS,
     IntentOutput, IntentType, IntentStep, IntentionResult,
@@ -33,6 +30,34 @@ from paperflow.core.intent.routing.entities import extract_entities
 from paperflow.core.intent.routing.confirm import format_intent_options
 from paperflow.core.intent.routing.followup import detect_followup
 from paperflow.core.intent.routing.option_reply import is_option_reply
+
+# ── 路由 / 澄清判据（本文件消费；标定脚本 apply_calibration.py 就地改写） ────
+
+#: 多标签拆分的「独立自信」余量。
+#: - 值：0.02。
+#: - 含义与单位：候选意图的融合分数须超过「自身标定阈值 + 本余量」才有资格拆进
+#:   steps；仅仅压着阈值线过线不算数。分数为稠密/稀疏两路融合的未归一化值
+#:   （截断后落 [0,1]，不是概率），本值与之同量纲。
+#: - 改它的后果：必须重跑 steps/澄清标定评测（在复合句评测集上扫该值，取 steps
+#:   精确率×召回率最高点）；直接改变多标签拆分口径与评测指标。
+ROUTER_STEPS_EPSILON = 0.02
+
+#: 「贴线」澄清判据的容差。
+#: - 值：0.05。
+#: - 含义与单位：业务候选里分数最高者，若分数低于「自身标定阈值 + 本容差」视为
+#:   不够自信（刚好压线通过或差一点没过都算），转入强制澄清轮。与 ROUTER_STEPS_EPSILON
+#:   同量纲，无量纲比值。
+#: - 改它的后果：改变澄清触发口径，需在复合句/歧义句评测集上重标定；影响
+#:   澄清率与路由指标评测口径。
+CLARIFY_FLOOR_DELTA = 0.05
+
+#: 「竞争」澄清判据的分差线。
+#: - 值：0.05。
+#: - 含义与单位：分数最高的两个业务候选意图分差小于此值时，认为两个都有可能、
+#:   路由器无法取舍（如「这本书讲什么」落在问答与精读分析之间），让用户二选一。
+#:   与上述两值同量纲。
+#: - 改它的后果：改变澄清触发口径，需重标定；影响澄清率与评测指标。
+CLARIFY_MARGIN = 0.05
 
 
 def _is_business(name: str) -> bool:

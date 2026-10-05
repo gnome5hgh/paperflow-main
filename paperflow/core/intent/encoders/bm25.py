@@ -27,9 +27,27 @@ from functools import partial
 import jieba
 import numpy as np
 
-from paperflow.core.intent.constants import (
-    BM25_B, BM25_IDF_SMOOTHING, BM25_K1,
-)
+# ── BM25 稀疏编码超参（本文件消费；标定脚本 apply_calibration.py 就地改写） ───
+
+#: BM25 词频饱和度参数 k1。
+#: - 值：6。
+#: - 含义与单位：控制 TF 饱和（词出现 10 次不比 5 次重要一倍）；无量纲正实数。
+#: - 改它的后果：改变稀疏打分，需重跑路由阈值 fit 标定与评测。
+BM25_K1 = 6
+
+#: BM25 文档长度归一化参数 b。
+#: - 值：0。
+#: - 含义与单位：控制文档长度归一化强度；无量纲，取值 [0,1]。注意
+#:   encode_documents 的分母刻意保留 b² 形式（既有行为，见模块 docstring）。
+#: - 改它的后果：改变稀疏打分，需重跑路由阈值 fit 标定与评测。
+BM25_B = 0
+
+#: BM25 query 编码的 IDF 平滑量。
+#: - 值：0.25。
+#: - 含义与单位：query 编码时对 df>0 加此值，避免零除与 log(0)（标准 BM25 的
+#:   df+0.5 平滑）；无量纲。
+#: - 改它的后果：改变 IDF 权重进而改变稀疏打分与排序，需重跑路由阈值 fit 标定与评测。
+BM25_IDF_SMOOTHING = 0.25
 
 # 抑制 jieba 启动噪音（"Building prefix dict..." / "Loading model from cache..." /
 # "Prefix dict has been built successfully."）——CLI 启动不该刷屏。jieba 首次
@@ -82,7 +100,7 @@ class JiebaTokenizer:
 
 
 class BM25Encoder:
-    """BM25 编码器：参数取 core.intent.constants.BM25_K1 / BM25_B，产出 {token_id: 权重} 稀疏向量。
+    """BM25 编码器：参数取本模块 BM25_K1 / BM25_B，产出 {token_id: 权重} 稀疏向量。
 
     query 编码 = IDF（文档频率倒数取对数后行归一化），doc 编码 = TF 归一化，
     两者点积 = BM25 分数。fit 在意图示例句语料上训练归一化参数；
@@ -95,8 +113,8 @@ class BM25Encoder:
 
         Args:
             tokenizer: 分词器实例，若为 None 则新建默认 JiebaTokenizer。
-            k1: BM25 超参数，控制词频饱和度；默认 core.intent.constants.BM25_K1。
-            b: BM25 超参数，控制文档长度归一化；默认 core.intent.constants.BM25_B。
+            k1: BM25 超参数，控制词频饱和度；默认本模块 BM25_K1。
+            b: BM25 超参数，控制文档长度归一化；默认本模块 BM25_B。
         """
         self.tokenizer = tokenizer or JiebaTokenizer()
         self.k1 = k1

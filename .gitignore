@@ -20,10 +20,11 @@ env/
 .DS_Store
 Thumbs.db
 
-# Runtime data (except .gitkeep)
+# Runtime data：按模块分目录（spec 2026-10-05-data-layout-by-module），
+# 仅静态知识资产目录反选入库；依赖服务数据卷归 data/infra/（已被 data/* 覆盖）
 data/*
 !data/.gitkeep
-!data/intents/
+!data/intent/
 !data/templates/
 
 # Documentation (not version controlled)
@@ -57,4 +58,4 @@ config.yaml
 
 # 路由语料向量缓存（运行时产物）
 # 注：gitignore 模式不支持行尾内联注释（`#` 后的内容会并入模式导致失配），故注释独立成行
-data/intents/routes_vectors.npz
+data/intent/routes_vectors.npz
