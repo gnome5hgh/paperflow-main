@@ -8,25 +8,32 @@ import logging
 
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.rag.services.rag_service import get_rag_service
-from paperflow.tools.rag.runtime_context import get_rag_context
+from paperflow.tools.memory.runtime_context import get_memory_context
 
 logger = logging.getLogger(__name__)
 
-#: 喂给 condense 改写的历史上限（与 QueryRewriter._HISTORY_MESSAGES 同口径的兜底；
-#: provider 侧已截，此处再防一次 provider 返回超长）
+#: 尾部截断唯一守门点（2026-10-05 起 CLI provider 层已退役）：角色过滤、空内容
+#: 剔除与截断都在 _recent_history 本体；QueryRewriter._clean_history 仍留防御
 _HISTORY_LIMIT = 6
 
 
 def _recent_history() -> list:
-    """取最近对话历史（改写 condense 用）；未绑定上下文或 provider 异常一律返回 []。
+    """取最近对话历史（condense 改写输入）：memory 系统的 in-context 窗口投影。
 
-    provider 抛异常视为无历史而非检索失败——历史读取永远不该打断检索。
+    经 memory 工具运行时上下文取 message_manager + agent_id，读该 agent 的
+    in-context 消息（与模型所见一致，含压缩摘要），只留 user/assistant 且
+    内容非空的尾部 _HISTORY_LIMIT 条。上下文未绑定/manager 缺失/读取异常
+    一律返回 []——历史读取永远不打断检索（spec §6 降级铁律）。
     """
-    ctx = get_rag_context()
-    if ctx is None or ctx.history_provider is None:
+    ctx = get_memory_context()
+    if ctx is None or getattr(ctx, "message_manager", None) is None:
         return []
     try:
-        return list(ctx.history_provider() or [])[-_HISTORY_LIMIT:]
+        msgs = ctx.message_manager.get_in_context_messages(ctx.agent_id)
+        return [m for m in msgs
+                if getattr(m, "role", None) in ("user", "assistant")
+                and (getattr(m, "content", None) or "").strip()
+                ][-_HISTORY_LIMIT:]
     except Exception:
         logger.warning("读取对话历史失败，本次检索跳过 condense 改写", exc_info=True)
         return []
