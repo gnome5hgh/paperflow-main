@@ -35,8 +35,8 @@ class RAGService:
         self.lock = threading.RLock()
 
         # ---- 惰性加载的组件槽位 ----
-        self._embedder = None          # 稠密向量编码器 (SbertEmbedder)
-        self._reranker = None          # 精排模型 (SbertReranker)
+        self._embedder = None          # 稠密向量编码器 (CloudEmbedder)
+        self._reranker = None          # 精排模型 (CloudReranker)
         self._grobid = None            # GROBID 客户端 (GrobidClient)
         self._pymupdf_parser = None    # PyMuPDF 备用解析器
         self._grobid_available = None  # 缓存 GROBID 可用性探测结果 (bool | None)
@@ -61,33 +61,32 @@ class RAGService:
         """惰性获取编码器：首次访问时构造并缓存。
 
         Returns:
-            SbertEmbedder: 编码器实例。
+            CloudEmbedder: 云端编码器实例（构造不碰网络，失败在调用时暴露）。
         """
         # 双重检查加锁：先检查实例变量是否为空，为空则获取锁后再次检查，
         # 确保并发下只有一个线程执行构造，其余线程复用已构造的实例。
         if self._embedder is None:
             with self.lock:
                 if self._embedder is None:
-                    from paperflow.rag.encoders.embedder import SbertEmbedder, resolve_model_dir
-                    # 模型路径本地优先（工作区 models 目录），否则改用官方模型名
-                    self._embedder = SbertEmbedder(resolve_model_dir(
-                        self.config.workspace, self.config.embed_model))
+                    from paperflow.core.llm.embedding import CloudEmbedder
+                    self._embedder = CloudEmbedder(self.config.embedding.base_url,
+                                                   self.config.embedding.api_key,
+                                                   self.config.embedding.embed_model)
         return self._embedder
 
     def _ensure_reranker(self):
         """惰性获取重排模型：首次访问时构造并缓存。
 
         Returns:
-            SbertReranker: 重排器实例。
+            CloudReranker: 云端重排器实例（构造不碰网络，失败在调用时暴露）。
         """
         if self._reranker is None:
             with self.lock:
                 if self._reranker is None:
-                    from paperflow.rag.encoders.reranker import SbertReranker
-                    from paperflow.rag.encoders.embedder import resolve_model_dir
-                    # 模型路径本地优先（工作区 models 目录），否则改用官方模型名
-                    self._reranker = SbertReranker(resolve_model_dir(
-                        self.config.workspace, self.config.rerank_model))
+                    from paperflow.core.llm.rerank import CloudReranker
+                    self._reranker = CloudReranker(self.config.embedding.base_url,
+                                                   self.config.embedding.api_key,
+                                                   self.config.embedding.rerank_model)
         return self._reranker
 
     def _ensure_vector_store(self):

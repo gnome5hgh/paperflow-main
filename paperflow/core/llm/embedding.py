@@ -45,7 +45,7 @@ class CloudEmbedder:
 
     重试语义与主 LLM 客户端对齐：连接错误/5xx 指数退避重试 max_retries 次，
     耗尽抛 RuntimeError("云端嵌入不可用: …")。L2 归一化在客户端做——与
-    SbertEmbedder(normalize_embeddings=True) 输出语义一致，下游余弦相似度
+    退役前的本地编码器（normalize_embeddings=True）输出语义一致，下游余弦相似度
     与既有 Milvus 向量可比。
     """
 
@@ -75,7 +75,7 @@ class CloudEmbedder:
     def __call__(self, texts: list[str]) -> np.ndarray:
         if not texts:
             return np.zeros((0, self.dim))
-        # surrogate 字符会炸远端 tokenizer（本地版同款教训，见原 SbertEmbedder）
+        # surrogate 字符会炸远端 tokenizer（本地版同款教训）
         texts = [sanitize_surrogates(t) for t in texts]
         out = [self._embed_batch(texts[i:i + self._batch_size])
                for i in range(0, len(texts), self._batch_size)]

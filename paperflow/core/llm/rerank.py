@@ -2,7 +2,7 @@
 """精排：Reranker 协议与云端实现（硅基流动 /v1/rerank，Jina/Cohere 风格）。
 
 协议原在 rag/encoders/reranker.py，随本地 CrossEncoder 退役上收至此
-（spec 2026-10-05-embedding-cloud-startup §3）。返回值契约与原 SbertReranker
+（spec 2026-10-05-embedding-cloud-startup §3）。返回值契约与退役前的本地实现
 一致：按相关度降序的文档下标列表（长度 ≤ top_k），调用方零适配。
 """
 import time

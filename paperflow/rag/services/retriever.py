@@ -2,7 +2,11 @@
 
 索引为空时返回空结果。对外检索工具 RagRetrieveTool 在 `paperflow/tools/rag/rag_retrieve.py`。
 """
+import logging
+
 from paperflow.rag.parsers.chunker import Chunk
+
+logger = logging.getLogger(__name__)
 
 
 # ---- 混合检索参数配置 ----
@@ -66,9 +70,14 @@ class Retriever:
             source = None
 
         embedder = self.service._ensure_embedder()
-        # 每条 query 各拼指令前缀（Qwen3 官方格式），一次批量编码
-        qvecs = embedder([f"Instruct: {_QUERY_INSTRUCTION}\nQuery: {q}"
-                          for q in cleaned])
+        # 稠密路软降级（spec §5）：云端 embed 失败该次查询退 BM25 独路，
+        # 不抛给用户——检索可用性优先于召回完整性，警告进日志。
+        try:
+            qvecs = embedder([f"Instruct: {_QUERY_INSTRUCTION}\nQuery: {q}"
+                              for q in cleaned])
+        except Exception as e:
+            logger.warning("RAG 查询编码失败，本次退化为纯 BM25 检索：%s", e)
+            qvecs = None
 
         vs = self.service._ensure_vector_store()
         bm25 = self.service._ensure_bm25()
@@ -92,11 +101,12 @@ class Retriever:
         scores: dict[str, float] = {}
         id2doc: dict[str, tuple] = {}
 
-        # 向量路：每条 query 一个编码向量，各取 top30
-        for qvec in qvecs:
-            for rank, hit in enumerate(vs.query(qvec, _VECTOR_TOPK, expr=expr)):
-                scores[hit[0]] = scores.get(hit[0], 0.0) + 1.0 / (_RRF_K + rank)
-                id2doc[hit[0]] = hit
+        # 向量路：每条 query 一个编码向量，各取 top30（编码失败时整路跳过）
+        if qvecs is not None:
+            for qvec in qvecs:
+                for rank, hit in enumerate(vs.query(qvec, _VECTOR_TOPK, expr=expr)):
+                    scores[hit[0]] = scores.get(hit[0], 0.0) + 1.0 / (_RRF_K + rank)
+                    id2doc[hit[0]] = hit
 
         # BM25 路：每条 query 各查一次 top30；档案回查合并成一次
         #（不同 query 的命中高度重叠，先收集 union 再一次 fetch_by_ids，避免重复回库）
@@ -130,7 +140,12 @@ class Retriever:
                         source=id2doc[i][3], heading="", chunk_index=0)
                   for i in present]
 
-        # 精排：cross-encoder 用主查询（standalone，指代消解后最完整的表述）打分
+        # 精排：cross-encoder 用主查询（standalone）打分；失败跳过精排，
+        # 按 RRF 初检顺序输出（spec §5 降级语义）
         reranker = self.service._ensure_reranker()
-        order = reranker(primary, docs, top_k)
+        try:
+            order = reranker(primary, docs, top_k)
+        except Exception as e:
+            logger.warning("RAG 精排失败，按初检排序输出：%s", e)
+            order = list(range(min(top_k, len(chunks))))
         return [chunks[i] for i in order if i < len(chunks)]
