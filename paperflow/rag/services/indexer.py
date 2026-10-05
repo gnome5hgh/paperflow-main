@@ -18,6 +18,13 @@
 下次启动放弃旧状态、全量重扫重嵌——否则旧配方的块会因文件 mtime 未变而永远
 残留（如解析器改为全文档遍历表格/图注后，已索引文档不会重解析，媒体块静默缺失）。
 纯算法逻辑改动无法被参数枚举，改 ``RECIPE_LOGIC_REVISION`` 手动 +1 兜底。
+
+状态文件另带一个旁挂的 ``parsers`` 映射（``{绝对路径: "grobid"|"pymupdf"}``，
+仅 PDF 有键），记录每篇 PDF 本次实际使用的解析器——纯诊断，**不参与**上述
+版本门控（spec §7 边界 4：GROBID 服务抖动若触发全量重扫代价过高）。它用于
+识别「GROBID 降级期间被索引、恢复后因 mtime 未变而永不刷新」的 PDF。``docs``
+的取值形状保持 ``{绝对路径: mtime 浮点数}`` 不变——外部增量评测脚本按数值
+比对 mtime，改成对象会静默破坏其增量跳过能力。
 """
 import hashlib
 import json
@@ -82,6 +89,7 @@ class RagIndexer:
     - 自动清理已被删除的文档的索引数据。
     - 维护索引状态文件（index_state.json，带配方哈希版本），保证跨进程的增量一致性；
       配方哈希不符时放弃旧状态走全量重扫（切块参数/逻辑升级后的自愈机制）。
+      状态文件另带旁挂的 `parsers` 诊断映射（PDF 实际解析器），不参与门控。
     """
 
     def __init__(self, service):
@@ -93,9 +101,15 @@ class RagIndexer:
         self.service = service
         # 状态文件：记录已索引文档的绝对路径 → 最后修改时间（浮点数时间戳）
         self._state_path = Path(service.config.runtime.workspace) / "index_state.json"
-        # 配方哈希：决定产出块的配置输入指纹，作为状态文件的 version。配置改动即
-        # 指纹变化 → 下次 index_all 全量重扫（消灭「改了切块参数却不重索引」）。
-        self._recipe = _recipe_hash(service.config)
+
+    @property
+    def _recipe(self) -> str:
+        """当前配置的配方指纹——现算不缓存。
+
+        原为 __init__ 快照，构造后 config 被改会得到陈旧指纹、使状态版本比对
+        失效；指纹只是 5 个标量的 sha256，现算成本可忽略。
+        """
+        return _recipe_hash(self.service.config)
 
     # ---------- 路径/状态工具 ----------
     def _rel_path(self, path: str) -> str | None:
@@ -153,16 +167,21 @@ class RagIndexer:
         # 文件已不存在，回退到笔记目录（仅用于状态重建，实际删除操作会后续清理）
         return str(Path(self.service.config.corpus.note_dir) / rel)
 
-    def _read_state(self) -> tuple[object, dict] | None:
-        """读原始状态文件，返回 (版本号, docs)。
+    def _read_state(self) -> tuple[object, dict, dict] | None:
+        """读原始状态文件，返回 (版本号, docs, parsers)。
 
         返回值不做版本判断——版本门控由调用方决定（增量更新要求同版本，
         index_all 遇到不符版本则全量重扫）。版本号即配方哈希（字符串）；
         旧格式裸 dict 按版本 0 处理。
 
+        ``parsers`` 是旁挂的**诊断**映射（{绝对路径: "grobid"|"pymupdf"}，
+        仅 PDF 有键），记录每篇 PDF 本次实际使用的解析器，**不参与任何失效
+        判断**（spec §7 边界 4：GROBID 降级不纳入配方哈希）。老状态文件缺该
+        键、或为裸 dict 旧格式时，一律返回 ``{}``——不触发重扫。
+
         Returns:
-            tuple[object, dict] | None: (version, {绝对路径: mtime})；
-            文件不存在或JSON 非法返回 None。
+            tuple[object, dict, dict] | None: (version, {绝对路径: mtime}, {绝对路径: 解析器 id})；
+            文件不存在或 JSON 非法返回 None。
         """
         if not self._state_path.exists():
             return None
@@ -172,20 +191,41 @@ class RagIndexer:
             # JSON 损坏等同于状态缺失：调用方走全量重扫，绝不让坏文件炸掉索引
             return None
         if isinstance(raw, dict) and isinstance(raw.get("docs"), dict):
-            return raw.get("version", 0), dict(raw["docs"])
-        # 旧格式（裸 {abs_path: mtime}）按版本 0 处理
-        return 0, dict(raw) if isinstance(raw, dict) else {}
+            parsers = raw.get("parsers")
+            return (raw.get("version", 0), dict(raw["docs"]),
+                    dict(parsers) if isinstance(parsers, dict) else {})
+        # 旧格式（裸 {abs_path: mtime}）按版本 0 处理，无解析器诊断信息
+        return 0, dict(raw) if isinstance(raw, dict) else {}, {}
 
-    def _save_state(self, state: dict) -> None:
+    def _save_state(self, state: dict, parsers: dict | None = None) -> None:
         """把状态按当前配方哈希格式写入（自动创建父目录）。
 
         Args:
             state: {绝对路径: mtime} 映射；版本号（配方哈希）由本方法统一补上，
-                   调用方只管 docs 内容。
+                   调用方只管 docs 内容。**取值形状必须是 float**——外部增量
+                   评测脚本（run_eval.py）按数值比对 mtime，改成对象会使其永远
+                   判定「已变更」而静默丢失增量能力。
+            parsers: 旁挂诊断映射 {绝对路径: 解析器 id}，仅 PDF 有键；缺省空。
+                     始终写入 ``parsers`` 键（空即 ``{}``），纯诊断、不参与失效判断。
         """
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         self._state_path.write_text(
-            json.dumps({"version": self._recipe, "docs": state}))
+            json.dumps({"version": self._recipe, "docs": state,
+                        "parsers": parsers or {}}))
+
+    def _parser_id(self, path: Path) -> str | None:
+        """返回该文档实际使用的解析器 id（诊断用，仅 PDF 有值）。
+
+        Markdown 不走 PDF 解析器 → ``None``；PDF 则按 ``grobid_available()``
+        给出 ``"grobid"`` 或 ``"pymupdf"``（可用性已缓存，逐文件调用无额外探测）。
+
+        记录用途：识别「GROBID 降级期间被索引、恢复后因 mtime 未变而永不刷新」
+        的 PDF（其块缺表格/图注块）。本字段纯诊断，不参与状态失效判断
+        （spec §7 边界 4：GROBID 抖动纳入指纹会引发大量重扫，故不纳入）。
+        """
+        if path.suffix.lower() != ".pdf":
+            return None
+        return "grobid" if self.service.grobid_available() else "pymupdf"
 
     # ---------- 文档解析 → 分块 ----------
     def _parse_file(self, path: Path) -> _FileContent:
@@ -333,6 +373,10 @@ class RagIndexer:
         记录，是删除清理的依据），此时覆盖写单篇状态会抹掉这份依据（半更新），
         让下次全量重扫的清理环节失效。
 
+        状态文件同时更新旁挂的 `parsers` 诊断映射：记录本篇实际使用的解析器
+        （PDF → "grobid"/"pymupdf"，Markdown 不入表）。该字段纯诊断，不参与
+        上面的版本门控。
+
         Args:
             path: 文档的绝对路径（或相对路径，会被解析）。
         """
@@ -385,8 +429,16 @@ class RagIndexer:
         raw = self._read_state()
         if raw is None or raw[0] == self._recipe:
             docs = raw[1] if raw else {}
-            docs[str(p.resolve())] = mtime
-            self._save_state(docs)
+            parsers = raw[2] if raw else {}
+            key = str(p.resolve())
+            docs[key] = mtime
+            # 旁挂诊断：记录本篇实际解析器；Markdown（None）不在 parsers 里出现。
+            pid = self._parser_id(p)
+            if pid is None:
+                parsers.pop(key, None)
+            else:
+                parsers[key] = pid
+            self._save_state(docs, parsers)
 
     def index_all(self) -> None:
         """全量增量扫描：只重索引新增或变更的文档，并清理已删除的文档。
@@ -412,6 +464,11 @@ class RagIndexer:
 
         增量索引策略：
         - 对于变更的文档，直接调用 `index_document`（内部会先删后建），保证每个文档的一致性。
+
+        解析器诊断字段：
+        - 状态文件另带旁挂的 `parsers` 映射（{绝对路径: 解析器 id}，仅 PDF），
+          记录每篇 PDF 本次实际使用的解析器。纯诊断，**不参与版本门控**；
+          未变更文档保留原记录、已删除文档随 `seen` 扫描自动剪掉。
         """
         store = self.service._ensure_vector_store()
         raw = self._read_state()
@@ -420,14 +477,16 @@ class RagIndexer:
             # 状态缺失或配方哈希不符（参数/逻辑升级后的首次运行）：放弃旧状态，
             # 全量重扫重嵌。不能从向量库元数据恢复——库内块无法确认由当前配方
             # 产出，恢复会让旧配方块因 mtime 未变而永久残留。
-            state = {}
+            state, parsers = {}, {}
         else:
-            state = raw[1]
-            # 同版本下保留原有两兜底：向量库被清空 → 状态作废；状态空 → 从元数据恢复
+            state, parsers = raw[1], raw[2]
+            # 同版本下保留原有两兜底：向量库被清空 → 状态作废；状态空 → 从元数据恢复。
+            # 两兜底里 parsers 一并置空——旧解析器记录对应的块已不可信/无从得知。
             if store.count() == 0 and state:
-                state = {}
+                state, parsers = {}, {}
             elif not state and store.count() > 0:
                 state = self._derive_state_from_store(store)
+                parsers = {}
 
         # 2. 从向量库的全部文档整体重建 BM25（因为 BM25 是内存索引，进程重启后为空）。
         self.service._ensure_bm25().rebuild(
@@ -437,6 +496,7 @@ class RagIndexer:
         roots = [Path(self.service.config.corpus.note_dir),
                  Path(self.service.config.corpus.pdf_dir)]
         new_state: dict = {}
+        new_parsers: dict = {}
         changed: list[Path] = []
         seen: set[Path] = set()
 
@@ -449,12 +509,23 @@ class RagIndexer:
                 if not p.is_file() or p.suffix.lower() not in (".md", ".pdf"):
                     continue
                 seen.add(p.resolve())
+                key = str(p.resolve())
 
                 # 4. 对比状态文件中的修改时间，筛选出变更的文件。
                 mtime = p.stat().st_mtime
-                if state.get(str(p.resolve())) != mtime:
+                if state.get(key) != mtime:
                     changed.append(p)
-                new_state[str(p.resolve())] = mtime
+                    # 变更文档：记录本次实际解析器（Markdown 为 None，不出现）。
+                    pid = self._parser_id(p)
+                    if pid is not None:
+                        new_parsers[key] = pid
+                else:
+                    # 未变更文档：沿用原诊断记录（老状态无记录则为空）。
+                    prev_pid = parsers.get(key)
+                    if prev_pid is not None:
+                        new_parsers[key] = prev_pid
+                new_state[key] = mtime
+        # new_parsers 只由本次 seen 的文件构建 → 已删除文档的解析器记录自动剪掉。
 
         # 5. 从状态中找出已删除的文件（状态里有记录但本次扫描没见到的）。
         removed = [k for k in state if k not in {str(s) for s in seen}]
@@ -478,5 +549,5 @@ class RagIndexer:
         for p in changed:
             self.index_document(str(p))
 
-        # 8. 保存新的状态文件（_save_state 自动带当前配方哈希）。
-        self._save_state(new_state)
+        # 8. 保存新的状态文件（_save_state 自动带当前配方哈希；parsers 旁挂诊断）。
+        self._save_state(new_state, new_parsers)
