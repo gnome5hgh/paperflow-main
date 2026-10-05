@@ -31,8 +31,14 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from paperflow.rag.constants import CHUNK_ID_LEN, RECIPE_LOGIC_REVISION
-from paperflow.rag.parsers.chunker import Chunk, context_prefix
+from paperflow.rag.parsers.chunker import CHUNK_ID_LEN, Chunk, context_prefix
+
+#: 配方哈希的逻辑版本号：切块/解析「算法逻辑」修订号（非参数）。参数
+#: （``rag.chunker.*``、``rag.indexer.table_text_limit``、embed_model）自动进
+#: ``_recipe_hash`` 指纹；算法逻辑改动（如 ``_pack_sentences`` 改写、章节/媒体块
+#: 产出规则变更）无法被参数枚举，只能手动 +1 → 下次 ``index_all`` 全量重扫重嵌。
+#: 仅当切块/解析逻辑改动、产出块集合可能变化时才改，不要为参数调整而动它。
+RECIPE_LOGIC_REVISION = 1
 
 
 def _recipe_hash(cfg) -> str:

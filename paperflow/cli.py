@@ -45,7 +45,6 @@ from paperflow.tools.memory import set_memory_context, MemoryToolsContext
 from paperflow.core.memory.services.title_extractor import TitleExtractor
 from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.sleeptime import Sleeptime
-from paperflow.core.intent.constants import ROUTER_ALPHA
 from paperflow.core.intent.pipeline import IntentPipeline
 from paperflow.core.intent.routing.router import HybridRouter
 from paperflow.core.llm.embedding import CloudEmbedder
@@ -430,7 +429,10 @@ def main(argv: list[str] | None = None) -> int | None:
     # 仅为兼容既有签名。
     intent_encoder = CloudEmbedder(config.intent.encoder.base_url,
                                    config.intent.encoder.api_key,
-                                   config.intent.encoder.model)
+                                   config.intent.encoder.model,
+                                   batch_size=config.intent.encoder.batch_size,
+                                   timeout=config.intent.encoder.timeout,
+                                   max_retries=config.intent.encoder.max_retries)
     message_manager = MessageManager(db, embedder=intent_encoder)
     agent_manager = AgentManager(db, block_manager, message_manager)
 
@@ -507,12 +509,14 @@ def main(argv: list[str] | None = None) -> int | None:
     # 意图管线:真实混合路由器 + LLM 兜底。意图编码器为云端实例(intent_encoder
     # 段,与 RAG 的编码器互不共享);各意图阈值已由标定脚本写回 routes.yaml——
     # 这里只读已标定阈值,不做训练或阈值搜索。alpha 是稠密/稀疏信号的融合权重,
-    # 与标定脚本保持一致。
+    # 与标定脚本保持一致;alpha/top_k 生产值读 config.intent.router(唯一声明点
+    # config.py,标定脚本 apply_calibration 就地改写)。
     # 路由向量缓存锚安装根（与 routes.yaml 同锚，语料源自那里，不随 workspace
     # 重定向）。命中即零网络启动；未命中现算回写；断网降级零向量见 _encode_dense。
     router = HybridRouter(
         encoder=intent_encoder,
-        routes=load_routes(), alpha=ROUTER_ALPHA,
+        routes=load_routes(), alpha=config.intent.router.alpha,
+        top_k=config.intent.router.top_k,
         vector_cache_path=str(VECTOR_CACHE_PATH))
     # spec §5：启动期意图路由降级必须可见（黄字），不能只写 logger。缓存命中
     # 时 add() 不走编码、dense_degraded 仍为 False——此时路由是全功能的，无告警。

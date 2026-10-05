@@ -9,22 +9,22 @@
 """
 from pymilvus import DataType, MilvusClient
 
-from paperflow.rag.constants import MILVUS_BATCH_SIZE
 from paperflow.rag.parsers.chunker import Chunk
 
 
 class VectorStore:
     """向量库的读写封装：写入/覆盖块、按向量检索、按路径删除、读取全部块。"""
 
-    def __init__(self, uri: str, dim: int, collection_name: str = "paperflow",
-                 batch_size: int = MILVUS_BATCH_SIZE):
+    def __init__(self, uri: str, dim: int, collection_name: str, batch_size: int):
         """打开（必要时创建）指定 uri 的向量库集合。
+
+        生产值来自 ``rag.storage.*``（唯一声明点 config.py，RagService 注入）。
 
         Args:
             uri: Milvus 连接地址。本地文件路径 → Milvus Lite（内嵌）；
                  ``http://host:port`` → Milvus Standalone/分布式。
             dim: 向量维度，必须与写入的 embedding 维度一致（建集合时定死）。
-            collection_name: 集合名，默认 ``paperflow``。
+            collection_name: 集合名。
             batch_size: all_documents 分页遍历的每页行数（测试可传小值验证跨页）。
         """
         self._client = MilvusClient(uri=uri)

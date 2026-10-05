@@ -13,7 +13,7 @@ HybridLocalIndex（记分员：裸相似度）→ 本类（判定：分数 → �
   ④ 聚合   _score_routes：top_k 候选按路由名分组取均值
   ⑤ 裁决   _pass_routes：过阈值（路由专属优先，否则全局）→ RouteChoice；全不过 → None，交由管线走 LLM 兜底
 
-alpha 语义：稀疏抓关键词精确匹配（说什么词命中什么意图）、稠密兜同义改写（换措辞也能命中）——类签名默认 0.3 偏重稀疏（历史遗留字面量，生产永不生效），CLI 生产装配传 core.intent.constants.ROUTER_ALPHA（两路均权）。
+alpha 语义：稀疏抓关键词精确匹配（说什么词命中什么意图）、稠密兜同义改写（换措辞也能命中）——alpha 为稠密路权重，生产值由 CLI 装配传 config.intent.router.alpha（唯一声明点 config.py），fit 只调阈值、不调 alpha。
 fit()/scores() 是裁判的附属工具：前者随机搜索训练每路由阈值，后者给 LLM兜底提供近失候选。
 
 只做静态意图路由：本地内存索引、同步调用，一次查询返回单个 RouteChoice
@@ -24,10 +24,6 @@ import random
 
 import numpy as np
 
-from paperflow.core.intent.constants import (
-    FIT_BATCH_SIZE, FIT_MAX_ITER, FIT_NUM_CANDIDATES, FIT_SEARCH_RANGE,
-    ROUTER_TOP_K,
-)
 from paperflow.core.intent.schemas.route import Route, RouteChoice
 from paperflow.core.intent.encoders.bm25 import BM25Encoder
 from paperflow.core.intent.encoders.index import HybridLocalIndex
@@ -36,21 +32,52 @@ from paperflow.core.intent.routing.vector_cache import (
 
 logger = logging.getLogger(__name__)
 
+# ── fit 随机搜索超参（本文件 fit()/evaluate 消费；标定脚本可扫描） ───────────
+
+#: fit/evaluate 的批编码大小。
+#: - 值：500。
+#: - 含义与单位：每批送入编码器的样本条数，避免内存过载（条）。
+#: - 改它的后果：仅影响内存与耗时，不改变打分结果、无需重标定。
+FIT_BATCH_SIZE = 500
+
+#: fit 随机搜索的迭代次数。
+#: - 值：500。
+#: - 含义与单位：每轮为每个路由在当前阈值附近随机采样新阈值并评估准确率，
+#:   迭代次数（轮）。
+#: - 改它的后果：改变阈值搜索结果，需重跑 fit 标定（routes.yaml 阈值随之为新产物）。
+FIT_MAX_ITER = 500
+
+#: fit 阈值随机搜索的采样半径。
+#: - 值：0.8。
+#: - 含义与单位：每个路由在 [当前阈值 - 0.8, 当前阈值 + 0.8] 内采样新阈值，
+#:   截断至 [0,1]；与分数同量纲。
+#: - 改它的后果：改变阈值搜索范围与最终标定产物，需重跑 fit。
+FIT_SEARCH_RANGE = 0.8
+
+#: fit 阈值随机搜索的候选点数。
+#: - 值：100。
+#: - 含义与单位：每次采样时对搜索区间做 100 等分后随机取一点（点）。
+#: - 改它的后果：改变阈值搜索粒度与最终标定产物，需重跑 fit。
+FIT_NUM_CANDIDATES = 100
+
 
 class HybridRouter:
     """混合路由器：稠密与稀疏按 alpha 凸组合打分、按路由阈值裁决。
 
-    alpha 的类签名默认是 0.3（历史遗留字面量，稀疏权重 1-alpha）；生产值由 CLI
-    装配传 core.intent.constants.ROUTER_ALPHA，fit 只调阈值、不调 alpha。
+    alpha 为稠密路权重（稀疏权重 1-alpha）；生产值由 CLI 装配传
+    config.intent.router.alpha（唯一声明点 config.py），fit 只调阈值、不调 alpha。
     打分完全确定（无随机性）——路由未命中时，管线会把本路由器的近失候选分数
     注入 LLM 兜底 prompt，让 LLM 在路由先验上确认或改判，而非盲猜。"""
 
-    def __init__(self, encoder, sparse_encoder: BM25Encoder | None = None,
+    def __init__(self, encoder, top_k: int, alpha: float,
+                 sparse_encoder: BM25Encoder | None = None,
                  routes: list[Route] | None = None,
                  index: HybridLocalIndex | None = None,
-                 top_k: int = ROUTER_TOP_K, alpha: float = 0.3,
                  vector_cache_path: str | None = None):
         """初始化混合路由器。
+
+        top_k/alpha 生产值来自 ``intent.router.*``（唯一声明点 config.py），
+        由装配侧注入；标定/测试脚本显式传实验值。
 
         Args:
             encoder: 稠密编码器（实现 __call__ 返回向量列表）。
@@ -346,8 +373,8 @@ class HybridRouter:
             batch_size: int = FIT_BATCH_SIZE, max_iter: int = FIT_MAX_ITER) -> None:
         """在给定样本上训练路由阈值：迭代 max_iter 次阈值随机搜索，保留最佳准确率。
 
-        每轮对每个路由的当前阈值在 ±core.intent.constants.FIT_SEARCH_RANGE 范围内
-        core.intent.constants.FIT_NUM_CANDIDATES 等分随机采样一个新阈值，
+        每轮对每个路由的当前阈值在 ±FIT_SEARCH_RANGE 范围内
+        FIT_NUM_CANDIDATES 等分随机采样一个新阈值，
         用样本评估准确率，最终写回准确率最高的一组阈值（阈值是每路由独立的，
         见 load_eval 对硬负样本占比的要求）。
 

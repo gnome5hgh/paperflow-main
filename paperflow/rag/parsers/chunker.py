@@ -9,11 +9,11 @@ import re
 from dataclasses import dataclass
 
 from paperflow.core.tokenization import get_token_encoder
-from paperflow.rag.constants import (
-    CHUNK_ID_LEN,
-    CHUNK_MAX_TOKENS,
-    CHUNK_OVERLAP_TOKENS,
-)
+
+#: 块 id 的哈希前缀长度（字符）：块 id 取 ``sha1(相对路径:序号)`` 十六进制串的
+#: 前 N 个字符。结构契约——改它所有块 id 变化，必须全量重建索引，否则旧块残留、
+#: 新块 id 对不上（indexer 的「先删后建」依赖 id 稳定，与 chunker 共用同一规则）。
+CHUNK_ID_LEN = 16
 
 #: 需丢弃的引用段标题前缀（中英文）。匹配这些标题的章节内容不进入检索块，
 #: 因为参考文献列表对语义检索价值较低，且包含大量外部文献信息可能干扰检索。
@@ -56,15 +56,15 @@ class AcademicChunker:
     ``core.tokenization.TOKEN_ENCODING``（与 core.memory 压缩共用）近似即可，不必精确。
     """
 
-    def __init__(self, max_tokens: int = CHUNK_MAX_TOKENS,
-                 overlap_tokens: int = CHUNK_OVERLAP_TOKENS):
+    def __init__(self, max_tokens: int, overlap_tokens: int):
         """配置分块参数并准备 token 计数器。
 
+        生产值来自 ``config.rag.chunker.*``（唯一声明点 config.py，RagService
+        装配注入；改默认值触发配方哈希全量重索引）。
+
         Args:
-            max_tokens: 每个块的最大 token 数。默认 512 留有余量，
-                        避免接近模型输入上限 512 时被截断。
+            max_tokens: 每个块的最大 token 数。
             overlap_tokens: 相邻块之间的重叠 token 数，用于保持跨块语义连贯。
-                            默认 64 个 token，约为块长的 1/8。
         """
         self.max_tokens = max_tokens
         self.overlap_tokens = overlap_tokens

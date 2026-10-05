@@ -14,12 +14,6 @@ from typing import Protocol
 import httpx
 import numpy as np
 
-from paperflow.core.llm.constants import (
-    EMBED_BATCH_SIZE,
-    EMBED_MAX_RETRIES,
-    EMBED_TIMEOUT,
-    RETRY_BACKOFF_BASE,
-)
 from paperflow.core.security.text import sanitize_surrogates
 
 logger = logging.getLogger(__name__)
@@ -47,6 +41,12 @@ class Embedder(Protocol):
         ...
 
 
+#: 指数退避基数（秒）：第 attempt 次重试前 ``sleep(RETRY_BACKOFF_BASE * 2 ** attempt)``。
+#: 重试算法契约——embedding 与 rerank 共用（rerank 自本模块导入），改它改变
+#: 重试等待时长与最坏延迟，不影响结果。
+RETRY_BACKOFF_BASE = 0.5
+
+
 class CloudEmbedder:
     """OpenAI 兼容 /v1/embeddings 云端编码器（默认端点：硅基流动）。
 
@@ -57,9 +57,17 @@ class CloudEmbedder:
     """
 
     def __init__(self, base_url: str, api_key: str, model: str, *,
-                 batch_size: int = EMBED_BATCH_SIZE, max_retries: int = EMBED_MAX_RETRIES,
-                 timeout: float = EMBED_TIMEOUT,
+                 batch_size: int, max_retries: int, timeout: float,
                  transport: httpx.BaseTransport | None = None):
+        """生产值来自 ``rag.embedding.*`` / ``intent.encoder.*``（唯一声明点
+        config.py，装配侧注入）；batch_size/timeout/max_retries 不改变向量结果。
+
+        Args:
+            batch_size: 单批 ``/v1/embeddings`` 请求送入的文本条数（条），大批量按此切片。
+            max_retries: 连接错误/超时/5xx（及 408/429）的重试次数（次）；
+                4xx 与客户端构造错误立即失败不重试。
+            timeout: httpx.Client 读超时（秒）。
+        """
         self.model_name = model
         self._batch_size = batch_size
         self._max_retries = max_retries
