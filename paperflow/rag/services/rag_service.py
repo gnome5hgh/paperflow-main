@@ -89,8 +89,12 @@ class RAGService:
             with self.lock:
                 if self._reranker is None:
                     from paperflow.core.llm.rerank import CloudReranker
+                    # 直接构造 config 的调用方（测试/嵌入宿主）未必经过 from_env 的继承回填，
+                    # 故此处对空的端点/key 再兜底继承 embedding 一次。
                     rr = self.config.rag.rerank
-                    self._reranker = CloudReranker(rr.base_url, rr.api_key,
+                    emb = self.config.rag.embedding
+                    self._reranker = CloudReranker(rr.base_url or emb.base_url,
+                                                   rr.api_key or emb.api_key,
                                                    rr.model,
                                                    timeout=rr.timeout,
                                                    max_retries=rr.max_retries)
