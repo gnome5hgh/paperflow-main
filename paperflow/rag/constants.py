@@ -64,8 +64,8 @@ RERANK_CANDIDATE_MULTIPLIER = 2
 #: - 值：5。
 #: - 含义与单位：``Retriever.retrieve`` 与工具 ``execute`` 未显式传 top_k 时的返回
 #:   块数（条）。
-#: - 改它的后果：改变所有默认调用的返回条数与上下文长度；spec §8 要求工具 schema 的
-#:   ``"default"`` 断言测试锁住本值。
+#: - 改它的后果：改变所有默认调用的返回条数与上下文长度；工具 schema 不再
+#:   advertise 该值（模型省略 top_k 即落到 rag.retriever.top_k 配置）。
 #: - 是否进 YAML：否；PR B 将作为 ``rag.retriever.top_k`` 的默认值来源。
 DEFAULT_TOP_K = 5
 

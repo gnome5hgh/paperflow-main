@@ -31,10 +31,10 @@ _SYSTEM_PROMPT = (
     "输出用于知识库检索的查询集合。"
 )
 
-_REQUIREMENTS = """
+_REQUIREMENTS = f"""
 【要求】
 1. standalone_query：把当前问题改写为自包含的检索查询——消解指代、补全省略，不依赖上文也能看懂；保持与当前问题相同的主要语言。
-2. rewrites：给出 3 条与 standalone_query 语义等价但措辞不同的检索查询，覆盖同义替换、关键词化、中英术语互补等角度；每条独立可检索，不要加解释。
+2. rewrites：给出 {REWRITE_NUM} 条与 standalone_query 语义等价但措辞不同的检索查询，覆盖同义替换、关键词化、中英术语互补等角度；每条独立可检索，不要加解释。
 3. 查询贴合学术语料（论文正文、读书笔记）的措辞，不要口语化表达。
 """
 
@@ -43,7 +43,8 @@ class RewriteOutput(BaseModel):
     """改写 LLM 的结构化输出 schema（同时经 _schema_to_prompt 展开成输出模板）。"""
 
     standalone_query: str = Field(description="消解指代后的自包含检索查询，保持原问题主语言")
-    rewrites: list[str] = Field(description="3 条语义等价但措辞不同的检索查询")
+    rewrites: list[str] = Field(
+        description=f"{REWRITE_NUM} 条语义等价但措辞不同的检索查询")
 
 
 @dataclass
@@ -92,8 +93,12 @@ def _finalize(original: str, out: RewriteOutput) -> list[str]:
 
 
 def _clean_history(history: Sequence | None, limit: int) -> list:
-    """只留带 user/assistant 角色且有内容的消息，截最近 limit 条。"""
-    if not history:
+    """只留带 user/assistant 角色且有内容的消息，截最近 limit 条。
+
+    limit <= 0 视为不喂历史（0 的语义是「不喂」），返回 []——否则
+    ``[-limit:]`` 在 limit=0 时返回整段历史，语义恰好相反。
+    """
+    if not history or limit <= 0:
         return []
     kept = [m for m in history
             if getattr(m, "role", None) in ("user", "assistant")

@@ -67,6 +67,9 @@ class Retriever:
         # 检索阈值读配置（rag.retriever.*）：改 YAML 即生效，模块常量只作
         # dataclass 字段默认值来源。候选池倍率仍用常量（与 RERANK_CANDIDATES 同口径）。
         rcfg = self.service.config.rag.retriever
+        # rrf_k 现在是用户可配旋钮，无下界保证：排名从 0 起，k=0 时分母为 0
+        # 直接 ZeroDivisionError。这里钳到 >=1 兜底（默认 60 不受影响）。
+        rrf_k = max(1, rcfg.rrf_k)
 
         embedder = self.service._ensure_embedder()
         # 稠密路软降级（spec §5）：云端 embed 失败该次查询退 BM25 独路，
@@ -104,7 +107,7 @@ class Retriever:
         if qvecs is not None:
             for qvec in qvecs:
                 for rank, hit in enumerate(vs.query(qvec, rcfg.vector_topk, expr=expr)):
-                    scores[hit[0]] = scores.get(hit[0], 0.0) + 1.0 / (rcfg.rrf_k + rank)
+                    scores[hit[0]] = scores.get(hit[0], 0.0) + 1.0 / (rrf_k + rank)
                     id2doc[hit[0]] = hit
 
         # BM25 路：每条 query 各查一次 rcfg.bm25_topk；档案回查合并成一次
@@ -121,7 +124,7 @@ class Retriever:
         bm25_docs = {d[0]: d for d in vs.fetch_by_ids(list(all_bm25_ids))}
         for hits in bm25_ranked:
             for rank, doc_id in enumerate(hits):
-                scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rcfg.rrf_k + rank)
+                scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rrf_k + rank)
                 if doc_id in bm25_docs:
                     id2doc[doc_id] = bm25_docs[doc_id]
 

@@ -7,7 +7,6 @@ query），再持锁检索。检索与融合算法本身在 `rag/services/retrie
 import logging
 
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.constants import DEFAULT_TOP_K
 from paperflow.rag.services.rag_service import get_rag_service
 from paperflow.tools.memory.runtime_context import get_memory_context
 
@@ -27,6 +26,10 @@ def _recent_history(limit: int) -> list:
     if ctx is None or getattr(ctx, "message_manager", None) is None:
         return []
     try:
+        # limit <= 0 一律不喂历史（0 的语义是「不喂」，负值同样视为 0）；
+        # 否则 [-0:] 会返回整段历史，与「不喂」恰好相反。
+        if limit <= 0:
+            return []
         msgs = ctx.message_manager.get_in_context_messages(ctx.agent_id)
         return [m for m in msgs
                 if getattr(m, "role", None) in ("user", "assistant")
@@ -58,8 +61,8 @@ class RagRetrieveTool(Tool):
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "检索问题"},
-            "top_k": {"type": "integer", "description": "返回块数",
-                      "default": DEFAULT_TOP_K},
+            "top_k": {"type": "integer",
+                      "description": "返回块数；缺省时由配置 rag.retriever.top_k 决定"},
             "source": {"type": "string", "enum": ["note", "pdf"],
                        "description": "限定来源：note=读书笔记，pdf=论文原文；缺省不限"},
         },
@@ -82,8 +85,8 @@ class RagRetrieveTool(Tool):
 
         Args:
             query: 检索查询。
-            top_k: 返回块数；None 时取 rag.retriever.top_k（schema default 是给
-                   模型看的提示，运行期以配置为准）。
+            top_k: 返回块数；None 时取 rag.retriever.top_k（schema 不再给
+                   default，模型省略该参数即落到配置值）。
             source: 限定来源——"note" 只搜笔记，"pdf" 只搜论文；None 不过滤。
 
         Returns:
