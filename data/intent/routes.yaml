@@ -638,6 +638,16 @@ routes:
   - 这个领域下一步该往哪儿走，帮我分析一下
   - 这些综述文章能衍生出哪些值得做的课题？
   - 针对CRISPR基因编辑有什么新颖的研究课题推荐
+  - 帮我调研一下这个方向还有哪些空白
+  - 根据我读过的论文推荐几个可行的选题
+  - 这个领域还有什么值得深挖的问题
+  - 帮我盘点一下我没接触过的潜在研究方向
+  - 我的笔记里能挖出什么新题目
+  - 帮我比较几个候选研究方向的可行性
+  - 现在这个热点方向还有什么机会可以做
+  - 帮我找找我的文献里还没人做过的组合
+  - Are there any open problems in my reading list worth pursuing?
+  - What emerging directions can you suggest from my notes?
   score_threshold: 0.491211
 - name: ask_question
   utterances:
@@ -1146,6 +1156,18 @@ routes:
   - 这个先放一放，转去搞CV
   - 这个课题先放一放，看看时序预测
   - 这个领域不研究了
+  - 我的研究主题定为知识图谱补全
+  - 把我的研究方向设为可解释人工智能
+  - 我的课题就定为大模型幻觉缓解
+  - 我的研究主题换成长文本摘要
+  - 研究方向：联邦学习下的隐私保护
+  - 我的选题是蛋白质结构预测
+  - 这学期我的研究主题就定强化学习了
+  - 我的主攻课题是多智能体协作
+  - 我要做的题目是基于检索增强的问答系统
+  - 研究主题更新为图神经网络的可解释性
+  - "I've decided my research topic: retrieval-augmented generation"
+  - My research focus for this year is graph contrastive learning
   score_threshold: 0.558263
 - name: analyze_paper
   utterances:
@@ -1492,6 +1514,20 @@ routes:
   - 能帮我做个 Excel 表格吗
   - 能帮我翻译一下这段英文吗？
   - 能帮我规划一下周末旅行路线吗？
+  - 什么是凯恩斯主义经济学
+  - 给我讲讲罗马帝国的兴衰
+  - 为什么海水是咸的
+  - 帮我看看这份购物小票有没有算错
+  - 帮我分析一下我的睡眠数据
+  - 总结一下今天的足球比赛
+  - 帮我写一份活动策划书
+  - 帮我写个辞职信
+  - 帮我推荐几部科幻电影
+  - 帮我查一下明天限行的尾号
+  - Can you explain how bitcoin mining works?
+  - Help me plan a birthday party
+  - What's a good recipe for lasagna?
+  - Summarize this week's NBA games for me
   score_threshold: 0.250505
 - name: help
   utterances:
