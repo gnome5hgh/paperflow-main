@@ -5,13 +5,9 @@
 import logging
 
 from paperflow.rag.constants import (
-    BM25_TOPK,
     DEFAULT_TOP_K,
-    RERANK_CANDIDATES,
     RERANK_CANDIDATE_MULTIPLIER,
-    RRF_K,
     VALID_SOURCES,
-    VECTOR_TOPK,
 )
 from paperflow.rag.parsers.chunker import Chunk
 
@@ -68,6 +64,10 @@ class Retriever:
         if source not in VALID_SOURCES:
             source = None
 
+        # 检索阈值读配置（rag.retriever.*）：改 YAML 即生效，模块常量只作
+        # dataclass 字段默认值来源。候选池倍率仍用常量（与 RERANK_CANDIDATES 同口径）。
+        rcfg = self.service.config.rag.retriever
+
         embedder = self.service._ensure_embedder()
         # 稠密路软降级（spec §5）：云端 embed 失败该次查询退 BM25 独路，
         # 不抛给用户——检索可用性优先于召回完整性，警告进日志。
@@ -100,18 +100,18 @@ class Retriever:
         scores: dict[str, float] = {}
         id2doc: dict[str, tuple] = {}
 
-        # 向量路：每条 query 一个编码向量，各取 top30（编码失败时整路跳过）
+        # 向量路：每条 query 一个编码向量，各取 rcfg.vector_topk（编码失败时整路跳过）
         if qvecs is not None:
             for qvec in qvecs:
-                for rank, hit in enumerate(vs.query(qvec, VECTOR_TOPK, expr=expr)):
-                    scores[hit[0]] = scores.get(hit[0], 0.0) + 1.0 / (RRF_K + rank)
+                for rank, hit in enumerate(vs.query(qvec, rcfg.vector_topk, expr=expr)):
+                    scores[hit[0]] = scores.get(hit[0], 0.0) + 1.0 / (rcfg.rrf_k + rank)
                     id2doc[hit[0]] = hit
 
-        # BM25 路：每条 query 各查一次 top30；档案回查合并成一次
+        # BM25 路：每条 query 各查一次 rcfg.bm25_topk；档案回查合并成一次
         #（不同 query 的命中高度重叠，先收集 union 再一次 fetch_by_ids，避免重复回库）
         bm25_ranked: list[list[str]] = []
         for q in cleaned:
-            hits = bm25.query(q, BM25_TOPK) if not bm25.is_empty() else []
+            hits = bm25.query(q, rcfg.bm25_topk) if not bm25.is_empty() else []
             if source:
                 # BM25 路无原生过滤，取回元数据后按 source 筛
                 docs = {d[0]: d for d in vs.fetch_by_ids(hits)}
@@ -121,7 +121,7 @@ class Retriever:
         bm25_docs = {d[0]: d for d in vs.fetch_by_ids(list(all_bm25_ids))}
         for hits in bm25_ranked:
             for rank, doc_id in enumerate(hits):
-                scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (RRF_K + rank)
+                scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rcfg.rrf_k + rank)
                 if doc_id in bm25_docs:
                     id2doc[doc_id] = bm25_docs[doc_id]
 
@@ -130,7 +130,7 @@ class Retriever:
             return []
 
         # ---- 候选池与精排（与单 query 版一致，宽召回窄输出）----
-        candidates = max(top_k * RERANK_CANDIDATE_MULTIPLIER, RERANK_CANDIDATES)
+        candidates = max(top_k * RERANK_CANDIDATE_MULTIPLIER, rcfg.rerank_candidates)
         ranked_ids = sorted(scores, key=scores.get, reverse=True)[:candidates]
         present = [i for i in ranked_ids if i in id2doc]
         docs = [id2doc[i][1] for i in present]

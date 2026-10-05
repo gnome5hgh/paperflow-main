@@ -91,14 +91,14 @@ def _finalize(original: str, out: RewriteOutput) -> list[str]:
     return generated or [original or ""]
 
 
-def _clean_history(history: Sequence | None) -> list:
-    """只留带 user/assistant 角色且有内容的消息，截最近 HISTORY_MESSAGES 条。"""
+def _clean_history(history: Sequence | None, limit: int) -> list:
+    """只留带 user/assistant 角色且有内容的消息，截最近 limit 条。"""
     if not history:
         return []
     kept = [m for m in history
             if getattr(m, "role", None) in ("user", "assistant")
             and (getattr(m, "content", None) or "").strip()]
-    return kept[-HISTORY_MESSAGES:]
+    return kept[-limit:]
 
 
 def _build_prompt(query: str, history: list) -> str:
@@ -128,8 +128,11 @@ def _run_sync(coro):
 class QueryRewriter:
     """检索查询改写器：一次结构化 LLM 调用产出 standalone + rewrites，失败降级原 query。"""
 
-    def __init__(self, llm):
+    def __init__(self, llm, history_limit: int | None = None):
         from paperflow.core.llm.structured import StructuredOutput, StructuredOutputConfig
+        # history_limit：拼进改写 prompt 的最近历史条数，默认 HISTORY_MESSAGES=6；
+        # RAGService.get_rewriter 传 rag.query_rewrite.history_messages（改 YAML 即生效）。
+        self._history_limit = HISTORY_MESSAGES if history_limit is None else history_limit
         # REWRITE_MAX_RETRIES=0：解析失败零重试（spec §6 与主流对齐），失败延迟上限 = 1 次调用
         self._so = StructuredOutput(
             llm, StructuredOutputConfig(max_retries=REWRITE_MAX_RETRIES))
@@ -138,7 +141,8 @@ class QueryRewriter:
         """改写 query，返回最终查询集。任何异常降级为 [原query]（degraded=True）。"""
         try:
             out = _run_sync(self._so.extract(
-                _build_prompt(query, _clean_history(history)), RewriteOutput))
+                _build_prompt(query, _clean_history(history, self._history_limit)),
+                RewriteOutput))
             queries = _finalize(query, out)
             if not queries or queries == [""]:
                 raise ValueError("改写输出整理后为空")

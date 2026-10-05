@@ -12,7 +12,8 @@ L2 常量。core/llm 的传输常量（batch/timeout/retries/backoff）放
 
 不搬的 L3 结构契约：正则/词表（``_REFERENCE_HEADS``、``_SENT_SPLIT_RE``、``_TEI_NS``）、
 prompt 文本（``_QUERY_INSTRUCTION``）、Milvus schema 长度 / HNSW 参数（需重建集合，
-不在本 PR 范围）、``indexer._STATE_VERSION``（Task 7 用配方哈希取代）。
+不在本 PR 范围）。原 ``indexer._STATE_VERSION`` 已在 Task 7 由配方哈希
+（``indexer._recipe_hash``，输入含本文件的 ``RECIPE_LOGIC_REVISION``）取代。
 """
 
 # ── 混合检索（services/retriever.py 消费） ───────────────────────────────────
@@ -112,6 +113,16 @@ TOKEN_ENCODING = "cl100k_base"
 #: - 是否进 YAML：否；PR B 将作为 ``rag.indexer.table_text_limit`` 的默认值来源。
 TABLE_TEXT_LIMIT = 8000
 
+#: 配方哈希的逻辑版本号（切块/解析「逻辑」修订号，非参数）。
+#: - 值：1。
+#: - 含义与单位：``indexer._recipe_hash`` 的输入之一。参数（chunker 的 max/overlap、
+#:   table_text_limit、embed_model）自动进指纹；切块/解析的**算法逻辑**（如
+#:   ``_pack_sentences`` 改写、章节/媒体块产出规则变更）无法被参数枚举，只能手动 +1。
+#: - 改它的后果：配方哈希变 → 下次 ``index_all`` 放弃旧状态、全量重扫重嵌（预期的一次性
+#:   重索引）。仅当切块/解析逻辑改动、产出块集合可能变化时才 +1，不要为参数调整而改。
+#: - 是否进 YAML：否（L2 结构常量；属失效机制本身的版本号）。
+RECIPE_LOGIC_REVISION = 1
+
 # ── 查询改写（services/query_rewriter.py 消费） ──────────────────────────────
 
 #: 改写要求生成的 rewrites 条数。
@@ -156,8 +167,9 @@ HISTORY_MESSAGE_CHARS = 300
 #: 最近对话历史条数。
 #: - 值：6。
 #: - 含义与单位：喂给查询改写（condense）的最近消息条数（条，user/assistant 各算一条）。
-#:   单点真相源：``query_rewriter._clean_history`` 与 ``tools/rag/rag_retrieve._recent_history``
-#:   共用本值（原 ``_HISTORY_MESSAGES`` 与 ``_HISTORY_LIMIT`` 的合并）。
+#:   原 ``_HISTORY_MESSAGES`` 与 ``_HISTORY_LIMIT`` 的合并；Task 7 起运行期经
+#:   ``rag.query_rewrite.history_messages`` 配置传入 ``QueryRewriter`` 与
+#:   ``tools/rag/rag_retrieve._recent_history``（本值退居该 YAML 字段的默认值来源）。
 #: - 改它的后果：改变改写输入上下文长度与检索延迟，影响指代消解质量。
 #: - 是否进 YAML：否；PR B 将作为 ``rag.query_rewrite.history_messages`` 的默认值来源。
 HISTORY_MESSAGES = 6

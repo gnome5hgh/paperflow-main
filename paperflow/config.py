@@ -437,6 +437,16 @@ def parse_mcp_servers(raw: dict | None) -> dict[str, McpServerConfig]:
 
 # ── 通用合并原语 ────────────────────────────────────────────────────────────
 
+def _is_scalar(val) -> bool:
+    """标量判定：str/int/float/bool/None——只有这些才允许 YAML/env 覆写。
+
+    非 dataclass、非 dict/list 的自定义对象（如 ``compaction`` 的
+    ``CompactionSettings`` 普通类实例）没有通用覆写语义：把 YAML/env 值直接
+    setattr 成裸 dict/str 会静默破坏其行为，必须跳过（Task 4 评审 carry-over）。
+    """
+    return val is None or isinstance(val, (str, int, float, bool))
+
+
 def _coerce(current, val):
     """把标量 val 转成与 current 同类的类型（env 恒字符串 / YAML 可能写错类型）。
 
@@ -460,6 +470,7 @@ def _merge(node, raw) -> None:
     - 字段当前值是 dataclass → 递归（要求 raw 为 dict，否则跳过）；
     - 自由 dict/list 字段 → 整体赋值；
     - 标量 → 按目标字段当前类型转换（``_coerce``）；
+    - 其余自定义对象（``compaction``）→ 跳过（见 ``_is_scalar``）；
     - raw 里的未知键被忽略（沿用现有 hasattr 守卫精神，运行期不因陌生键崩）。
     """
     if not isinstance(raw, dict):
@@ -473,8 +484,10 @@ def _merge(node, raw) -> None:
             _merge(cur, val)
         elif isinstance(cur, (dict, list)):
             setattr(node, f.name, val)
-        else:
+        elif _is_scalar(cur):
             setattr(node, f.name, _coerce(cur, val))
+        # else：非 dataclass 非集合非标量的自定义对象（compaction）跳过覆写，
+        #       不得把 YAML 值 setattr 成裸 dict/str。
 
 
 @dataclass
@@ -593,6 +606,8 @@ def _apply_env(node, prefix: tuple[str, ...]) -> None:
             continue
         if isinstance(cur, (dict, list)):
             continue  # YAML-only 自由集合
+        if not _is_scalar(cur):
+            continue  # 非标量自定义对象（compaction）不派生 env、不覆写
         env_name = "PAPERFLOW_" + "_".join(p.upper() for p in path)
         val = os.getenv(env_name)
         if val:

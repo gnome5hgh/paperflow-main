@@ -486,8 +486,10 @@ def main(argv: list[str] | None = None) -> int | None:
         agent_id=session_id,
         block_manager=block_manager,
         message_manager=message_manager,
-        title_extractor=TitleExtractor(grobid=GrobidClient(config.rag.grobid.endpoint),
-                                       llm=structured),
+        title_extractor=TitleExtractor(
+            grobid=GrobidClient(config.rag.grobid.endpoint,
+                                timeout=config.rag.grobid.timeout),
+            llm=structured),
     ))
 
     # 安全管道：四中间件（经验记忆中间件已移除——工具调用经验不再注入 prompt，

@@ -48,8 +48,10 @@ class RAGService:
         self._retriever = None         # 检索器视图 (Retriever)
         self._rewriter = None          # 改写器 (QueryRewriter)
 
-        # 纯逻辑组件，无副作用，直接构造
-        self.chunker = AcademicChunker()
+        # 纯逻辑组件，无副作用，直接构造。切块参数读配置（rag.chunker.*），
+        # 配方哈希据此失效——改 YAML 即触发全量重索引。
+        self.chunker = AcademicChunker(config.rag.chunker.max_tokens,
+                                       config.rag.chunker.overlap_tokens)
 
         # GROBID 解析结果缓存：键为 (绝对路径, 修改时间戳, 文件大小)，
         # 值是对应的 ParsedDoc。进程内缓存避免同一 PDF 被反复解析。
@@ -70,9 +72,12 @@ class RAGService:
             with self.lock:
                 if self._embedder is None:
                     from paperflow.core.llm.embedding import CloudEmbedder
-                    self._embedder = CloudEmbedder(self.config.rag.embedding.base_url,
-                                                   self.config.rag.embedding.api_key,
-                                                   self.config.rag.embedding.embed_model)
+                    emb = self.config.rag.embedding
+                    self._embedder = CloudEmbedder(emb.base_url, emb.api_key,
+                                                   emb.embed_model,
+                                                   batch_size=emb.batch_size,
+                                                   timeout=emb.timeout,
+                                                   max_retries=emb.max_retries)
         return self._embedder
 
     def _ensure_reranker(self):
@@ -85,9 +90,11 @@ class RAGService:
             with self.lock:
                 if self._reranker is None:
                     from paperflow.core.llm.rerank import CloudReranker
-                    self._reranker = CloudReranker(self.config.rag.embedding.base_url,
-                                                   self.config.rag.embedding.api_key,
-                                                   self.config.rag.embedding.rerank_model)
+                    emb = self.config.rag.embedding
+                    self._reranker = CloudReranker(emb.base_url, emb.api_key,
+                                                   emb.rerank_model,
+                                                   timeout=emb.timeout,
+                                                   max_retries=emb.max_retries)
         return self._reranker
 
     def _ensure_vector_store(self):
@@ -112,6 +119,7 @@ class RAGService:
                         self._vector_store = VectorStore(
                             self.config.rag.storage.uri, dim,
                             collection_name=self.config.rag.storage.collection,
+                            batch_size=self.config.rag.storage.batch_size,
                         )
                     except Exception as e:
                         raise RuntimeError(
@@ -165,7 +173,8 @@ class RAGService:
             with self.lock:
                 if self._grobid_available is None:
                     from paperflow.rag.parsers.grobid_client import GrobidClient
-                    self._grobid = GrobidClient(self.config.rag.grobid.endpoint)
+                    gb = self.config.rag.grobid
+                    self._grobid = GrobidClient(gb.endpoint, timeout=gb.timeout)
                     self._grobid_available = self._grobid.available()
         return self._grobid_available
 
@@ -272,7 +281,9 @@ class RAGService:
                 api_key=qr.api_key or self.config.llm.api_key,
                 model=qr.model or self.config.llm.model,
             )
-            self._rewriter = QueryRewriter(LLMClient(llm_cfg))
+            self._rewriter = QueryRewriter(
+                LLMClient(llm_cfg),
+                history_limit=self.config.rag.query_rewrite.history_messages)
         return self._rewriter
 
     # ---------- 对外便捷入口（索引/检索持同一把锁） ----------
