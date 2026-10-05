@@ -12,24 +12,50 @@
 由本模块转成独立块接在章节块之后——GROBID 解析出的表格式数据（如基准
 评测数字）在章节正文中不出现，不独立成块就永远检索不到。
 
-状态版本门控：切块或解析逻辑变化、导致产出块的集合不再相同时递增
-_STATE_VERSION。状态文件版本不符时放弃旧状态、全量重扫重嵌——否则旧配方
-切出的块会因文件 mtime 未变而永远残留（如解析器改为全文档遍历表格/图注后，
-已索引文档不会重解析，媒体块静默缺失）。
+状态版本门控：状态文件记录「配方哈希」（见 ``_recipe_hash``）而非手写版本号。
+所有决定「产出哪些块」的配置输入（切块 max/overlap、表格截断上限、embed_model）
+连同 ``RECIPE_LOGIC_REVISION`` 一起做 sha256；YAML 里改任一参数即指纹变化 →
+下次启动放弃旧状态、全量重扫重嵌——否则旧配方的块会因文件 mtime 未变而永远
+残留（如解析器改为全文档遍历表格/图注后，已索引文档不会重解析，媒体块静默缺失）。
+纯算法逻辑改动无法被参数枚举，改 ``RECIPE_LOGIC_REVISION`` 手动 +1 兜底。
 """
 import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from paperflow.rag.constants import CHUNK_ID_LEN, RECIPE_LOGIC_REVISION
 from paperflow.rag.parsers.chunker import Chunk, context_prefix
 
-#: 索引状态版本号：切块或解析逻辑变化、导致产出块集合变化时递增。加载到低版本
-#: 状态时放弃旧状态、全量重扫重嵌，否则旧配方的块会因 mtime 未变而永远残留。
-_STATE_VERSION = 3
 
-#: 表格块文本上限（字符）：Milvus text 字段上限 65535，超长表格截断防御
-_TABLE_TEXT_LIMIT = 8000
+def _recipe_hash(cfg) -> str:
+    """把「决定产出哪些块」的配置输入散列成状态版本指纹（spec §7）。
+
+    输入四要素：
+    - ``RECIPE_LOGIC_REVISION``：切块/解析算法逻辑的手动修订号（参数枚举不到的改动兜底）；
+    - ``rag.chunker.max_tokens`` / ``overlap_tokens``：切块窗口参数；
+    - ``rag.indexer.table_text_limit``：表格块截断上限（改变表格块内容）；
+    - ``rag.embedding.embed_model``：换模型（即便同维）旧向量也必须失效，否则新旧
+      向量混在同一 Milvus 集合、检索质量静默下降。
+
+    ``sort_keys=True`` 保证同输入稳定；``ensure_ascii=False`` 让中文模型名可读
+    （不影响哈希值）。GROBID 降级不纳入指纹（spec §7 边界 4：服务抖动若触发全量
+    重扫代价过高，作为已知折中）。
+
+    Args:
+        cfg: PaperFlowConfig 实例。
+
+    Returns:
+        str: 64 位十六进制 sha256 指纹。
+    """
+    payload = json.dumps({
+        "logic": RECIPE_LOGIC_REVISION,
+        "chunk_max_tokens": cfg.rag.chunker.max_tokens,
+        "chunk_overlap_tokens": cfg.rag.chunker.overlap_tokens,
+        "table_text_limit": cfg.rag.indexer.table_text_limit,
+        "embed_model": cfg.rag.embedding.embed_model,
+    }, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 @dataclass
@@ -54,8 +80,8 @@ class RagIndexer:
     - 将工作区内的 Markdown 笔记和 PDF 切块、编码后写入向量库和 BM25。
     - 通过修改时间戳判断文档是否变更，只增量更新有变化的文档。
     - 自动清理已被删除的文档的索引数据。
-    - 维护索引状态文件（index_state.json，带版本号），保证跨进程的增量一致性；
-      版本不符时放弃旧状态走全量重扫（切块逻辑升级后的自愈机制）。
+    - 维护索引状态文件（index_state.json，带配方哈希版本），保证跨进程的增量一致性；
+      配方哈希不符时放弃旧状态走全量重扫（切块参数/逻辑升级后的自愈机制）。
     """
 
     def __init__(self, service):
@@ -66,7 +92,10 @@ class RagIndexer:
         """
         self.service = service
         # 状态文件：记录已索引文档的绝对路径 → 最后修改时间（浮点数时间戳）
-        self._state_path = Path(service.config.workspace) / "index_state.json"
+        self._state_path = Path(service.config.runtime.workspace) / "index_state.json"
+        # 配方哈希：决定产出块的配置输入指纹，作为状态文件的 version。配置改动即
+        # 指纹变化 → 下次 index_all 全量重扫（消灭「改了切块参数却不重索引」）。
+        self._recipe = _recipe_hash(service.config)
 
     # ---------- 路径/状态工具 ----------
     def _rel_path(self, path: str) -> str | None:
@@ -92,8 +121,8 @@ class RagIndexer:
         """
         abs_path = Path(path).resolve()
         # 依次尝试在笔记目录和 PDF 目录下计算相对路径
-        for root in (Path(self.service.config.note_dir).resolve(),
-                     Path(self.service.config.pdf_dir).resolve()):
+        for root in (Path(self.service.config.corpus.note_dir).resolve(),
+                     Path(self.service.config.corpus.pdf_dir).resolve()):
             try:
                 return str(abs_path.relative_to(root))
             except ValueError:
@@ -116,22 +145,23 @@ class RagIndexer:
         Returns:
             str: 解析后的绝对路径字符串。
         """
-        for root in (Path(self.service.config.note_dir),
-                     Path(self.service.config.pdf_dir)):
+        for root in (Path(self.service.config.corpus.note_dir),
+                     Path(self.service.config.corpus.pdf_dir)):
             cand = Path(root) / rel
             if cand.exists():
                 return str(cand.resolve())
         # 文件已不存在，回退到笔记目录（仅用于状态重建，实际删除操作会后续清理）
-        return str(Path(self.service.config.note_dir) / rel)
+        return str(Path(self.service.config.corpus.note_dir) / rel)
 
-    def _read_state(self) -> tuple[int, dict] | None:
+    def _read_state(self) -> tuple[object, dict] | None:
         """读原始状态文件，返回 (版本号, docs)。
 
         返回值不做版本判断——版本门控由调用方决定（增量更新要求同版本，
-        index_all 遇到不符版本则全量重扫）。
+        index_all 遇到不符版本则全量重扫）。版本号即配方哈希（字符串）；
+        旧格式裸 dict 按版本 0 处理。
 
         Returns:
-            tuple[int, dict] | None: (版本号, {绝对路径: mtime})；
+            tuple[object, dict] | None: (version, {绝对路径: mtime})；
             文件不存在或JSON 非法返回 None。
         """
         if not self._state_path.exists():
@@ -142,20 +172,20 @@ class RagIndexer:
             # JSON 损坏等同于状态缺失：调用方走全量重扫，绝不让坏文件炸掉索引
             return None
         if isinstance(raw, dict) and isinstance(raw.get("docs"), dict):
-            return int(raw.get("version", 0)), dict(raw["docs"])
+            return raw.get("version", 0), dict(raw["docs"])
         # 旧格式（裸 {abs_path: mtime}）按版本 0 处理
         return 0, dict(raw) if isinstance(raw, dict) else {}
 
     def _save_state(self, state: dict) -> None:
-        """把状态按当前版本格式写入（自动创建父目录）。
+        """把状态按当前配方哈希格式写入（自动创建父目录）。
 
         Args:
-            state: {绝对路径: mtime} 映射；版本号由本方法统一补上，
+            state: {绝对路径: mtime} 映射；版本号（配方哈希）由本方法统一补上，
                    调用方只管 docs 内容。
         """
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         self._state_path.write_text(
-            json.dumps({"version": _STATE_VERSION, "docs": state}))
+            json.dumps({"version": self._recipe, "docs": state}))
 
     # ---------- 文档解析 → 分块 ----------
     def _parse_file(self, path: Path) -> _FileContent:
@@ -209,7 +239,8 @@ class RagIndexer:
         常在表格里，而表格并不出现在章节正文中，不独立成块就检索不到。
 
         GROBID 的表格文本是单元格拼接，先折叠连续空白压掉换行噪声；空白项
-        不产生块；超长表格截断到 _TABLE_TEXT_LIMIT。前缀规则与章节块一致
+        不产生块；超长表格截断到 rag.indexer.table_text_limit（改 YAML 即生效，
+        并由配方哈希触发全量重扫）。前缀规则与章节块一致
         （{title} > [表格]/[图注]），id 沿用 sha1(rel:index) 幂等方案、序号顺延。
 
         Args:
@@ -233,7 +264,7 @@ class RagIndexer:
                 return
 
             # ③ 表格与图注块 id 与章节块 id 的生成是同一套规则
-            chunk_id = hashlib.sha1(f"{rel}:{idx}".encode()).hexdigest()[:16]
+            chunk_id = hashlib.sha1(f"{rel}:{idx}".encode()).hexdigest()[:CHUNK_ID_LEN]
 
             # ④ 表格与图注块前缀规则也与章节块一致
             chunks.append(Chunk(
@@ -242,8 +273,9 @@ class RagIndexer:
             ))
             idx += 1
 
+        table_text_limit = self.service.config.rag.indexer.table_text_limit
         for table in parsed.tables:
-            _add("[表格]", table[:_TABLE_TEXT_LIMIT])
+            _add("[表格]", table[:table_text_limit])
         for caption in parsed.figures:
             _add("[图注]", caption)
         return chunks
@@ -296,8 +328,8 @@ class RagIndexer:
         - 若文档切块后为空（如全空白或只有参考文献），删除旧块后不写入新块，状态文件不更新。
         - 若文档内容未变（修改时间未变），外部调用方应避免调用本方法（但本方法本身不检查）。
 
-        状态版本门控：仅当状态文件缺失或已是当前版本时才写入状态。版本不符
-        说明存在旧格式状态、待 index_all 全量重扫（旧状态里还留着其他文档的
+        状态版本门控：仅当状态文件缺失或配方哈希与当前一致时才写入状态。配方
+        不符说明存在旧配方状态、待 index_all 全量重扫（旧状态里还留着其他文档的
         记录，是删除清理的依据），此时覆盖写单篇状态会抹掉这份依据（半更新），
         让下次全量重扫的清理环节失效。
 
@@ -351,7 +383,7 @@ class RagIndexer:
         #    不符时旧状态是 index_all 删除清理的依据，覆盖写会造成半更新
         #    （详见 docstring 的状态版本门控说明）。
         raw = self._read_state()
-        if raw is None or raw[0] == _STATE_VERSION:
+        if raw is None or raw[0] == self._recipe:
             docs = raw[1] if raw else {}
             docs[str(p.resolve())] = mtime
             self._save_state(docs)
@@ -362,10 +394,10 @@ class RagIndexer:
         这是 `index_document` 的批量版本，适用于启动时或定时任务。
 
         状态版本门控：
-        - 状态文件缺失、JSON 损坏或版本号与 _STATE_VERSION 不符（切块逻辑
+        - 状态文件缺失、JSON 损坏或配方哈希与当前不符（切块参数/逻辑
           升级后的首次运行）→ 放弃旧状态，全量重扫重嵌。
-        - 不从向量库元数据恢复旧版本状态：库内块无法确认由当前版本的切块
-          逻辑产出，恢复会让旧配方块因 mtime 未变而永久残留。
+        - 不从向量库元数据恢复不符配方的状态：库内块无法确认由当前配方
+          产出，恢复会让旧配方块因 mtime 未变而永久残留。
 
         一致性兜底机制（仅同版本状态下生效，保留原有两兜底）：
         - 若向量库为空但状态文件非空 → 状态文件过期（可能手动清空过向量库），清空状态。
@@ -384,10 +416,10 @@ class RagIndexer:
         store = self.service._ensure_vector_store()
         raw = self._read_state()
 
-        if raw is None or raw[0] != _STATE_VERSION:
-            # 状态缺失或版本不符（含切块逻辑升级后的首次运行）：放弃旧状态，
-            # 全量重扫重嵌。不能从向量库元数据恢复——库内块无法确认由当前版本
-            # 的切块逻辑产出，恢复会让旧配方块因 mtime 未变而永久残留。
+        if raw is None or raw[0] != self._recipe:
+            # 状态缺失或配方哈希不符（参数/逻辑升级后的首次运行）：放弃旧状态，
+            # 全量重扫重嵌。不能从向量库元数据恢复——库内块无法确认由当前配方
+            # 产出，恢复会让旧配方块因 mtime 未变而永久残留。
             state = {}
         else:
             state = raw[1]
@@ -402,8 +434,8 @@ class RagIndexer:
             [(d[0], d[1]) for d in store.all_documents()])
 
         # 收集待索引文档：扫描两个知识库根目录，按修改时间比对找出变更项。
-        roots = [Path(self.service.config.note_dir),
-                 Path(self.service.config.pdf_dir)]
+        roots = [Path(self.service.config.corpus.note_dir),
+                 Path(self.service.config.corpus.pdf_dir)]
         new_state: dict = {}
         changed: list[Path] = []
         seen: set[Path] = set()
@@ -446,5 +478,5 @@ class RagIndexer:
         for p in changed:
             self.index_document(str(p))
 
-        # 8. 保存新的状态文件（_save_state 自动带当前版本号）。
+        # 8. 保存新的状态文件（_save_state 自动带当前配方哈希）。
         self._save_state(new_state)

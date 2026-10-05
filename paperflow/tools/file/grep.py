@@ -46,14 +46,14 @@ class GrepTool(Tool):
         if path:
             p = Path(path)
         else:
-            default_root = getattr(cfg, "note_dir", "") if cfg is not None else ""
+            default_root = cfg.corpus.note_dir if cfg is not None else ""
             if not default_root:
                 return ToolResult(text="未传 path 且语料库笔记根未配置——请显式传 path 绝对路径")
             p = Path(default_root)
         files = [p] if p.is_file() else [
             f for f in p.rglob("*")
             if f.suffix.lower() in _TEXT_SUFFIXES
-            and (cfg is None or not is_denied_path(f.resolve(), cfg.workspace))
+            and (cfg is None or not is_denied_path(f.resolve(), cfg.runtime.workspace))
         ]
         results: list[str] = []
         for f in files:

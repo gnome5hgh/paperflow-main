@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from paperflow.rag.constants import GROBID_TIMEOUT
+
 #: TEI 命名空间（GROBID 返回的 XML 使用该命名空间）
 _TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
 
@@ -40,7 +42,7 @@ class GrobidClient:
     本客户端封装了与 GROBID REST API 的交互，包括健康检查、标题提取和全文解析。
     """
 
-    def __init__(self, url: str = "http://127.0.0.1:8070", transport=None, timeout: float = 60.0):
+    def __init__(self, url: str = "http://127.0.0.1:8070", transport=None, timeout: float = GROBID_TIMEOUT):
         """配置服务地址并创建 HTTP 客户端。
 
         Args:

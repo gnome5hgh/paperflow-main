@@ -34,7 +34,7 @@ class CorpusIndex:
         self._rag_service = rag_service
         self._title_extractor = title_extractor
         self._lock = threading.RLock()
-        self._cache_path = Path(config.workspace) / "citations" / "corpus_titles.json"
+        self._cache_path = Path(config.runtime.workspace) / "citations" / "corpus_titles.json"
         self._records: dict[str, dict] = {}   # norm_title -> 论文记录
         self._mtime: dict[str, int] = {}      # path -> mtime_ns（增量判据）
 
@@ -57,7 +57,7 @@ class CorpusIndex:
         if self._title_extractor is None:
             from paperflow.core.memory.services.title_extractor import TitleExtractor
             from paperflow.rag.parsers.grobid_client import GrobidClient
-            self._title_extractor = TitleExtractor(grobid=GrobidClient(self.config.grobid_endpoint))
+            self._title_extractor = TitleExtractor(grobid=GrobidClient(self.config.rag.grobid.endpoint))
         return self._title_extractor
 
     @staticmethod
@@ -72,8 +72,8 @@ class CorpusIndex:
         with self._lock:
             # 1. 分别遍历笔记目录（*.md）与 PDF 目录（*.pdf），收集当前所有文件的绝对路径与 mtime。
             current: dict[str, int] = {}
-            for root, pattern, kind in ((self.config.note_dir, "*.md", "note"),
-                                        (self.config.pdf_dir, "*.pdf", "pdf")):
+            for root, pattern, kind in ((self.config.corpus.note_dir, "*.md", "note"),
+                                        (self.config.corpus.pdf_dir, "*.pdf", "pdf")):
                 if not root:
                     continue
 

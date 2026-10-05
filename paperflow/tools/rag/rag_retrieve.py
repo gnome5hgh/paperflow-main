@@ -12,28 +12,29 @@ from paperflow.tools.memory.runtime_context import get_memory_context
 
 logger = logging.getLogger(__name__)
 
-#: 尾部截断唯一守门点（2026-10-05 起 CLI provider 层已退役）：角色过滤、空内容
-#: 剔除与截断都在 _recent_history 本体；QueryRewriter._clean_history 仍留防御
-_HISTORY_LIMIT = 6
 
-
-def _recent_history() -> list:
+def _recent_history(limit: int) -> list:
     """取最近对话历史（condense 改写输入）：memory 系统的 in-context 窗口投影。
 
     经 memory 工具运行时上下文取 message_manager + agent_id，读该 agent 的
     in-context 消息（与模型所见一致，含压缩摘要），只留 user/assistant 且
-    内容非空的尾部 _HISTORY_LIMIT 条。上下文未绑定/manager 缺失/读取异常
-    一律返回 []——历史读取永远不打断检索（spec §6 降级铁律）。
+    内容非空的尾部 limit 条（limit 由调用方从 rag.query_rewrite.history_messages
+    传入，改 YAML 即生效）。上下文未绑定/manager 缺失/读取异常一律返回 []——
+    历史读取永远不打断检索（spec §6 降级铁律）。
     """
     ctx = get_memory_context()
     if ctx is None or getattr(ctx, "message_manager", None) is None:
         return []
     try:
+        # limit <= 0 一律不喂历史（0 的语义是「不喂」，负值同样视为 0）；
+        # 否则 [-0:] 会返回整段历史，与「不喂」恰好相反。
+        if limit <= 0:
+            return []
         msgs = ctx.message_manager.get_in_context_messages(ctx.agent_id)
         return [m for m in msgs
                 if getattr(m, "role", None) in ("user", "assistant")
                 and (getattr(m, "content", None) or "").strip()
-                ][-_HISTORY_LIMIT:]
+                ][-limit:]
     except Exception:
         logger.warning("读取对话历史失败，本次检索跳过 condense 改写", exc_info=True)
         return []
@@ -60,7 +61,8 @@ class RagRetrieveTool(Tool):
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "检索问题"},
-            "top_k": {"type": "integer", "description": "返回块数", "default": 5},
+            "top_k": {"type": "integer",
+                      "description": "返回块数；缺省时由配置 rag.retriever.top_k 决定"},
             "source": {"type": "string", "enum": ["note", "pdf"],
                        "description": "限定来源：note=读书笔记，pdf=论文原文；缺省不限"},
         },
@@ -73,14 +75,18 @@ class RagRetrieveTool(Tool):
         super().__init__()
         self._service = None # 可被测试注入，否则在 execute 中取全局单例
 
-    def execute(self, query: str, top_k: int = 5, source: str | None = None) -> ToolResult:
-        """执行检索并返回格式化结果：每条命中列出来源、路径与正文摘录（前 400 字）。
+    def execute(self, query: str, top_k: int | None = None,
+                source: str | None = None) -> ToolResult:
+        """执行检索并返回格式化结果：每条命中列出来源、路径与正文摘录（前 N 字）。
 
         带标题前缀的块其摘录首行即「论文标题 > 章节标题」，供上层直接引用节号。
+        摘录上限、默认 top_k、历史条数全部读配置（rag.tools.excerpt_chars /
+        rag.retriever.top_k / rag.query_rewrite.history_messages），改 YAML 即生效。
 
         Args:
             query: 检索查询。
-            top_k: 返回块数。
+            top_k: 返回块数；None 时取 rag.retriever.top_k（schema 不再给
+                   default，模型省略该参数即落到配置值）。
             source: 限定来源——"note" 只搜笔记，"pdf" 只搜论文；None 不过滤。
 
         Returns:
@@ -88,6 +94,8 @@ class RagRetrieveTool(Tool):
         """
         # 1. 获取 RAGService 单例（若已注入则使用注入的实例）。
         svc = self._service or get_rag_service()
+        if top_k is None:
+            top_k = svc.config.rag.retriever.top_k
 
         # 1.5 锁外改写（spec 2026-10-04 §5.3）：LLM 调用慢且不碰共享检索状态，
         # 不能占着 svc.lock 阻塞索引/其他检索；任何失败降级为 [原query]。
@@ -95,7 +103,9 @@ class RagRetrieveTool(Tool):
         rewriter = getattr(svc, "get_rewriter", None)
         if rewriter is not None:
             try:
-                queries = rewriter().rewrite(query, _recent_history()).queries
+                history = _recent_history(
+                    svc.config.rag.query_rewrite.history_messages)
+                queries = rewriter().rewrite(query, history).queries
             except Exception as e:
                 logger.warning("query 改写失败，降级为原始 query 检索：%s", e)
 
@@ -118,8 +128,9 @@ class RagRetrieveTool(Tool):
         if not chunks:
             return ToolResult(text="检索无命中（索引可能为空，可先写几篇笔记）")
 
-        # 4. 否则，每条命中格式化为 `- [来源:路径] 正文摘录前400字` 的列表。
-        # 摘录上限 400 字符：带前缀的块首行即「论文标题 > 章节标题」，需要足够
-        # 窗口才能让上层同时拿到节号与可用的正文上下文。
-        lines = [f"- [{c.source}:{c.path}] {c.text[:400]}" for c in chunks]
+        # 4. 否则，每条命中格式化为 `- [来源:路径] 正文摘录前 N 字` 的列表。
+        # 摘录上限读 rag.tools.excerpt_chars：带前缀的块首行即「论文标题 > 章节标题」，
+        # 需要足够窗口才能让上层同时拿到节号与可用的正文上下文。
+        excerpt_chars = svc.config.rag.tools.excerpt_chars
+        lines = [f"- [{c.source}:{c.path}] {c.text[:excerpt_chars]}" for c in chunks]
         return ToolResult(text="检索到以下相关段落：\n" + "\n".join(lines))

@@ -14,6 +14,12 @@ from typing import Protocol
 import httpx
 import numpy as np
 
+from paperflow.core.llm.constants import (
+    EMBED_BATCH_SIZE,
+    EMBED_MAX_RETRIES,
+    EMBED_TIMEOUT,
+    RETRY_BACKOFF_BASE,
+)
 from paperflow.core.security.text import sanitize_surrogates
 
 logger = logging.getLogger(__name__)
@@ -51,8 +57,8 @@ class CloudEmbedder:
     """
 
     def __init__(self, base_url: str, api_key: str, model: str, *,
-                 batch_size: int = 32, max_retries: int = 2,
-                 timeout: float = 60.0,
+                 batch_size: int = EMBED_BATCH_SIZE, max_retries: int = EMBED_MAX_RETRIES,
+                 timeout: float = EMBED_TIMEOUT,
                  transport: httpx.BaseTransport | None = None):
         self.model_name = model
         self._batch_size = batch_size
@@ -124,7 +130,7 @@ class CloudEmbedder:
                 if e.response.status_code < 500 and e.response.status_code not in (408, 429):
                     break
                 if attempt < self._max_retries:
-                    time.sleep(0.5 * (2 ** attempt))
+                    time.sleep(RETRY_BACKOFF_BASE * (2 ** attempt))
             except httpx.LocalProtocolError as e:
                 last_err = e
                 # 客户端请求构造错误（非法 header 等）重试无意义
@@ -132,7 +138,7 @@ class CloudEmbedder:
             except (httpx.HTTPError, KeyError, ValueError) as e:
                 last_err = e
                 if attempt < self._max_retries:
-                    time.sleep(0.5 * (2 ** attempt))
+                    time.sleep(RETRY_BACKOFF_BASE * (2 ** attempt))
         raise RuntimeError(f"云端嵌入不可用（{self.model_name}）：{last_err}") from last_err
 
 

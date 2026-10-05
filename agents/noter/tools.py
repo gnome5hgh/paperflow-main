@@ -34,7 +34,7 @@ _cm = CitationManager(PaperFlowConfig.from_env())
 # ——config 在 import 时构造(每进程静态、无副作用,对齐 make_tools 惯例)。
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
     ReadPdfTool, ReadFileTool, WriteFileTool, EditFileTool,
-    SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agent_timeouts),
+    SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts),
     GlobTool, GrepTool, AskUserQuestionTool,
     HistoryAppendTool, UnreadListRemoveTool,
     LookupCitationTool(_cm), AddCitationTool(_cm),

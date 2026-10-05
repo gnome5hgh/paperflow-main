@@ -24,6 +24,10 @@ import random
 
 import numpy as np
 
+from paperflow.core.intent.constants import (
+    FIT_BATCH_SIZE, FIT_MAX_ITER, FIT_NUM_CANDIDATES, FIT_SEARCH_RANGE,
+    ROUTER_TOP_K,
+)
 from paperflow.core.intent.schemas.route import Route, RouteChoice
 from paperflow.core.intent.encoders.bm25 import BM25Encoder
 from paperflow.core.intent.encoders.index import HybridLocalIndex
@@ -43,7 +47,7 @@ class HybridRouter:
     def __init__(self, encoder, sparse_encoder: BM25Encoder | None = None,
                  routes: list[Route] | None = None,
                  index: HybridLocalIndex | None = None,
-                 top_k: int = 5, alpha: float = 0.3,
+                 top_k: int = ROUTER_TOP_K, alpha: float = 0.3,
                  vector_cache_path: str | None = None):
         """初始化混合路由器。
 
@@ -338,7 +342,7 @@ class HybridRouter:
                 r.score_threshold = route_thresholds[r.name]
 
     def fit(self, X: list[str], y: list[str],
-            batch_size: int = 500, max_iter: int = 500) -> None:
+            batch_size: int = FIT_BATCH_SIZE, max_iter: int = FIT_MAX_ITER) -> None:
         """在给定样本上训练路由阈值：迭代 max_iter 次阈值随机搜索，保留最佳准确率。
 
         每轮对每个路由的当前阈值在 ±0.8 范围内 100 等分随机采样一个新阈值，
@@ -358,7 +362,7 @@ class HybridRouter:
         best_acc = self._vec_evaluate(Xq_d, Xq_s, y)
         best_thresholds = self.get_thresholds()
         for _ in range(max_iter):
-            thresholds = self._threshold_random_search(search_range=0.8)
+            thresholds = self._threshold_random_search(search_range=FIT_SEARCH_RANGE)
             self._update_thresholds(thresholds)
             acc = self._vec_evaluate(Xq_d, Xq_s, y)
             if acc > best_acc:
@@ -378,11 +382,11 @@ class HybridRouter:
         result = {}
         for route, threshold in self.get_thresholds().items():
             values = np.linspace(max(threshold - search_range, 0.0),
-                                 min(threshold + search_range, 1.0), num=100)
+                                 min(threshold + search_range, 1.0), num=FIT_NUM_CANDIDATES)
             result[route] = float(random.choice(values))
         return result
 
-    def evaluate(self, X: list[str], y: list[str], batch_size: int = 500) -> float:
+    def evaluate(self, X: list[str], y: list[str], batch_size: int = FIT_BATCH_SIZE) -> float:
         """在给定样本上评估路由准确率（判定结果与真值标签一致的比例）。
 
         Args:

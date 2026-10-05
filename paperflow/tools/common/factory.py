@@ -15,13 +15,13 @@ from paperflow.tools.file.write_file import WriteFileTool
 def _root_map(config: PaperFlowConfig) -> dict[str, str]:
     """语义根名 → 绝对路径(语料库目录为外部绝对路径,memory 随 workspace)。"""
     return {
-        "note": config.note_dir,
-        "pdf": config.pdf_dir,
-        "research": config.research_dir or str(Path(config.workspace) / "research"),
-        "memory": str(Path(config.workspace) / "memory"),
+        "note": config.corpus.note_dir,
+        "pdf": config.corpus.pdf_dir,
+        "research": config.corpus.research_dir or str(Path(config.runtime.workspace) / "research"),
+        "memory": str(Path(config.runtime.workspace) / "memory"),
         # 模板与 scratch 统一从 workspace 派生基准(FormatCheckTool 默认同此基准,骨架仅降级)
-        "templates": str(Path(config.workspace) / "templates"),
-        "scratch": str(Path(config.workspace) / "tmp"),
+        "templates": str(Path(config.runtime.workspace) / "templates"),
+        "scratch": str(Path(config.runtime.workspace) / "tmp"),
     }
 
 

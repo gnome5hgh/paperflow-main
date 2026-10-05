@@ -1,0 +1,145 @@
+# paperFlow 配置模板 —— 复制为 config.yaml 使用（config.yaml 被 gitignore，不会提交）
+#   cp config.example.yaml config.yaml
+# 加载顺序：dataclass 默认值 ← config.yaml ← PAPERFLOW_* 环境变量（后者最高）
+# env 名 = PAPERFLOW_ + 配置路径大写（rag.storage.uri → PAPERFLOW_RAG_STORAGE_URI，
+# intent.router.alpha → PAPERFLOW_INTENT_ROUTER_ALPHA）；agents.timeouts 与 mcp_servers
+# 是自由 dict，仅 YAML 可配。未列出的字段走代码默认值，删除任意条目即回落默认。
+# 模板中的所有 api_key 一律留空，需自行填入。
+
+llm:
+  base_url: https://api.deepseek.com/v1
+  api_key: ""                 # 必填：env 可用 PAPERFLOW_LLM_API_KEY 覆盖
+  model: deepseek-v4-flash
+  # 单次响应输出上限：上限过小会把长笔记草稿/大参数 write_file 静默截断
+  max_tokens: 393216
+  # 采样温度 0.0 = 确定性输出（工具调用场景）
+  temperature: 0.0
+  # HTTP 连接超时（秒）；读超时含流式 chunk 间隔——长输出单次可跑数分钟，勿调小
+  timeout_connect: 10.0
+  timeout_read: 300.0
+  # 传输层自动重试次数（连接错误/5xx，SDK 原生）
+  max_retries: 2
+  # 上下文窗口（token）：压缩阈值取半窗口，正常对话永不压缩
+  context_window: 1000000
+
+# 视觉模型（多模态图表分析）——与文本 LLM 同端点/key；换其他 OpenAI 兼容端点（如 GLM-4V）改这里
+vision:
+  base_url: https://api.deepseek.com/v1
+  api_key: ""                 # 留空不崩启动，图表分析调用时降级
+  model: deepseek-v4-flash-vision-exp
+  max_tokens: 2048
+  timeout_connect: 10.0
+  timeout_read: 120.0
+  max_retries: 2
+  temperature: 0.0
+  context_window: 32768
+
+# 运行时基础设施
+runtime:
+  # 工作区根目录（记忆库/审计/技能等派生目录的锚点；相对路径按 cwd 绝对化）
+  workspace: data
+  # agents 插件目录（supervisor 子代理定义；不存在时回退安装根）
+  agents_dir: agents
+  # 安全中间件最高放行风险级（low|medium|high）
+  max_risk: medium
+
+# 语料库与产物路径（个人绝对路径，文件类工具的数据源；请按本机实际填写）
+corpus:
+  note_dir: ""                # 论文笔记根目录
+  pdf_dir: ""                 # PDF 根目录
+  # 留空 = 各自的默认派生行为（research 回退 workspace/research，bib 回退 workspace/citations）
+  research_dir: ""
+  citations_bib_path: ""
+
+# 意图识别：独立编码器 + 混合路由器
+intent:
+  # 留空继承 rag.embedding（换模型需重标路由阈值）
+  encoder:
+    base_url: ""
+    api_key: ""
+    model: Qwen/Qwen3-Embedding-0.6B
+  # alpha 稠密权重 / top_k 召回条数（默认来自 core.intent.constants）
+  router:
+    alpha: 0.5
+    top_k: 5
+
+# RAG 检索栈（云端稠密编码 + 精排 + 混合检索）
+rag:
+  # api_key 留空时路由退化为纯 BM25、检索降级
+  embedding:
+    base_url: https://api.siliconflow.cn/v1
+    api_key: ""               # 必填才能启用稠密检索/嵌入
+    embed_model: Qwen/Qwen3-Embedding-0.6B
+    rerank_model: Qwen/Qwen3-Reranker-0.6B
+    batch_size: 32
+    timeout: 60.0
+    max_retries: 2
+  # 混合检索参数（默认来自 rag.constants）
+  retriever:
+    top_k: 5
+    bm25_topk: 30
+    vector_topk: 30
+    rerank_candidates: 24
+    rrf_k: 60
+  # query 改写三元组（留空逐项继承主 LLM）
+  query_rewrite:
+    base_url: ""
+    api_key: ""
+    model: ""
+    history_messages: 6
+  # 切块参数（改动触发配方哈希全量重索引）
+  chunker:
+    max_tokens: 512
+    overlap_tokens: 64
+  indexer:
+    table_text_limit: 8000
+  # Milvus 向量库（本机 Docker Standalone 默认即可）
+  storage:
+    uri: http://localhost:19530
+    collection: paperflow
+    batch_size: 1000
+  grobid:
+    endpoint: http://127.0.0.1:8070
+    timeout: 60.0
+  tools:
+    excerpt_chars: 400
+
+# Sleeptime 后台记忆整合：开关与触发频率（每 N 条消息）
+memory:
+  sleeptime_enable: true
+  sleeptime_agent_frequency: 50
+
+# --resume 屏上历史回放：开关与条数上限（0 = 回放整个 in-context 窗口）
+session:
+  resume_replay: true
+  resume_replay_limit: 0
+
+# 子代理超时（秒，仅 YAML）；撞帽即需重估该值而非继续调大
+agents:
+  timeouts:
+    noter: 900
+    searcher: 420
+    reviewer: 300
+    researcher: 1800
+    qa-agent: 180
+
+# MCP server 接入（工具前缀 mcp__paper-search__*；详见 docs/learning/11-MCP客户端.md）
+mcp_servers:
+  paper-search:
+    transport: stdio
+    command: uvx
+    # 固定 git rev：uvx 对未固定 rev 每次启动都做远端 Git fetch（实测 7-12s，启动大头）；
+    # 固定后 uv 直接用缓存 checkout（实测 0.4s）。升级 server 时手动改这个 SHA
+    # （取新值：git ls-remote https://github.com/openags/paper-search-mcp HEAD）
+    args: ["--from", "git+https://github.com/openags/paper-search-mcp@cab1b5cc276a0cd004a0044003926a6440088049", "--with", "mcp<2", "paper-search-mcp"]
+    # git main（未发版）已给全部 73 工具显式注解（search/read=readOnlyHint:true，download=false+destructive）
+    # --with mcp<2：server 依赖尚未兼容 mcp 2.x（FastMCP 改名）；上游发版后可简化
+    agents: [searcher]           # 挂给哪些 agent
+    # connect_timeout: 30        # uvx 冷启动慢，默认 30s
+    # call_timeout: 120
+    # disabled_tools: [search_ieee]
+    # allowed_tools: null        # null=不限制；列表=白名单
+    # write_tools: []            # 写类工具（下载等）默认禁用；按需显式开启
+    write_tools: [download_with_fallback, download_semantic, read_arxiv_paper, read_pubmed_paper]
+    env:
+      PAPER_SEARCH_MCP_UNPAYWALL_EMAIL: ""   # 按需填入 Unpaywall 请求邮箱

@@ -10,6 +10,11 @@ from typing import Protocol
 
 import httpx
 
+from paperflow.core.llm.constants import (
+    RERANK_MAX_RETRIES,
+    RERANK_TIMEOUT,
+    RETRY_BACKOFF_BASE,
+)
 from paperflow.core.security.text import sanitize_surrogates
 
 
@@ -28,7 +33,7 @@ class CloudReranker:
     """
 
     def __init__(self, base_url: str, api_key: str, model: str, *,
-                 max_retries: int = 2, timeout: float = 60.0,
+                 max_retries: int = RERANK_MAX_RETRIES, timeout: float = RERANK_TIMEOUT,
                  transport: httpx.BaseTransport | None = None):
         self.model_name = model
         self._max_retries = max_retries
@@ -62,7 +67,7 @@ class CloudReranker:
                 if e.response.status_code < 500 and e.response.status_code not in (408, 429):
                     break
                 if attempt < self._max_retries:
-                    time.sleep(0.5 * (2 ** attempt))
+                    time.sleep(RETRY_BACKOFF_BASE * (2 ** attempt))
             except httpx.LocalProtocolError as e:
                 last_err = e
                 # 客户端请求构造错误（非法 header 等）重试无意义
@@ -70,5 +75,5 @@ class CloudReranker:
             except (httpx.HTTPError, KeyError, ValueError) as e:
                 last_err = e
                 if attempt < self._max_retries:
-                    time.sleep(0.5 * (2 ** attempt))
+                    time.sleep(RETRY_BACKOFF_BASE * (2 ** attempt))
         raise RuntimeError(f"云端精排不可用（{self.model_name}）：{last_err}") from last_err

@@ -93,8 +93,8 @@ class LLMClient:
         #: SDK 错误——此处提前 fail-fast,给出可行动的配置指引。
         if not config.api_key:
             raise RuntimeError(
-                "LLM API key 未配置：请在 .env 文件设置 PAPERFLOW_API_KEY（参考 .env.example），"
-                "或设置环境变量 PAPERFLOW_API_KEY，或在 config.yaml 的 llm.api_key 提供"
+                "LLM API key 未配置：请设置环境变量 PAPERFLOW_LLM_API_KEY"
+                "（或在 .env 文件设置同名变量），或在 config.yaml 的 llm.api_key 提供"
             )
         #: OpenAI SDK 客户端实例（底层 httpx 连接池，线程安全）。
         #: 显式超时（真实使用测试 P3-1）：SDK 默认 read 600s，一次 HTTP 挂死曾让

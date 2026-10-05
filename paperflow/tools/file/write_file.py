@@ -86,7 +86,7 @@ class WriteFileTool(Tool):
             return ToolResult(text=str(e))
         # filename+dir 模式组合出的路径不经中间件，黑名单在此兜底（防 .env 等敏感名落盘）
         cfg = getattr(self, "_config", None)
-        if cfg is not None and is_denied_path(p, cfg.workspace):
+        if cfg is not None and is_denied_path(p, cfg.runtime.workspace):
             return ToolResult(text=f"敏感路径受保护，拒绝写入: {p}")
         atomic_write(p, content)
         note = ""

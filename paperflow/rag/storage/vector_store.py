@@ -9,6 +9,7 @@
 """
 from pymilvus import DataType, MilvusClient
 
+from paperflow.rag.constants import MILVUS_BATCH_SIZE
 from paperflow.rag.parsers.chunker import Chunk
 
 
@@ -16,7 +17,7 @@ class VectorStore:
     """向量库的读写封装：写入/覆盖块、按向量检索、按路径删除、读取全部块。"""
 
     def __init__(self, uri: str, dim: int, collection_name: str = "paperflow",
-                 batch_size: int = 1000):
+                 batch_size: int = MILVUS_BATCH_SIZE):
         """打开（必要时创建）指定 uri 的向量库集合。
 
         Args:

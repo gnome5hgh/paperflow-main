@@ -45,11 +45,12 @@ from paperflow.tools.memory import set_memory_context, MemoryToolsContext
 from paperflow.core.memory.services.title_extractor import TitleExtractor
 from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.sleeptime import Sleeptime
+from paperflow.core.intent.constants import ROUTER_ALPHA
 from paperflow.core.intent.pipeline import IntentPipeline
 from paperflow.core.intent.routing.router import HybridRouter
 from paperflow.core.llm.embedding import CloudEmbedder
 from paperflow.rag.parsers.grobid_client import GrobidClient
-from paperflow.core.intent.routing.route_loader import load_routes
+from paperflow.core.intent.routing.route_loader import VECTOR_CACHE_PATH, load_routes
 from paperflow.terminal.io import make_input_io
 from paperflow.terminal.render import make_renderer
 from paperflow.terminal.repl import (
@@ -193,8 +194,8 @@ def _ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
         return []
 
     endpoints = [
-        ("Milvus", *_host_port(config.milvus_uri)),
-        ("GROBID", *_host_port(config.grobid_endpoint)),
+        ("Milvus", *_host_port(config.rag.storage.uri)),
+        ("GROBID", *_host_port(config.rag.grobid.endpoint)),
     ]
     if all(_port_open(h, p) for _, h, p in endpoints):
         return _probe_app_layer(endpoints)      # 端口在 → 应用层语义健康再确认
@@ -331,7 +332,7 @@ def main(argv: list[str] | None = None) -> int | None:
         from paperflow.core.skills import (
             install_skill, list_skills_command, uninstall_skill)
         config = PaperFlowConfig.from_env()
-        workspace = Path(config.workspace)
+        workspace = Path(config.runtime.workspace)
         builtin_skills_dir = Path(__file__).resolve().parents[1] / "skills"
         if args.skill_action == "install":
             return install_skill(args.source, workspace,
@@ -362,8 +363,8 @@ def main(argv: list[str] | None = None) -> int | None:
         (console.print(w, style="yellow") if console else print(w))
     # api_key 缺失提示（spec §5）：CloudEmbedder 构造不校验 api_key——此处只提示
     # 不阻断，降级路径由 router/retriever 各自消化。
-    if not config.embedding.api_key or not config.intent_encoder.api_key:
-        _msg = ("未配置云端嵌入 api_key（config.yaml embedding / intent_encoder 段）："
+    if not config.rag.embedding.api_key or not config.intent.encoder.api_key:
+        _msg = ("未配置云端嵌入 api_key（config.yaml rag.embedding / intent.encoder 段）："
                 "意图路由退化为纯 BM25，RAG 检索无稠密路与精排。"
                 "注册 siliconflow.cn 获取（含实名认证）。")
         (console.print(_msg, style="yellow") if console else print(_msg))
@@ -375,7 +376,7 @@ def main(argv: list[str] | None = None) -> int | None:
         sys.exit(1)
     # agents 插件目录：配置路径不存在时回退安装根（从非仓库目录启动也能找到插件；
     # 与 _find_compose_dir 的「cwd 优先、安装根回退」同一模式）
-    agents_dir = (config.agents_dir if Path(config.agents_dir).is_dir()
+    agents_dir = (config.runtime.agents_dir if Path(config.runtime.agents_dir).is_dir()
                   else str(Path(__file__).resolve().parents[1] / "agents"))
     registry = AgentRegistry(agents_dir)
 
@@ -386,7 +387,7 @@ def main(argv: list[str] | None = None) -> int | None:
     builtin_skills_dir = Path(__file__).resolve().parents[1] / "skills"
     skill_registry = SkillRegistry(
         builtin_dir=str(builtin_skills_dir) if builtin_skills_dir.is_dir() else None,
-        workspace_dir=str(Path(config.workspace) / "skills"),
+        workspace_dir=str(Path(config.runtime.workspace) / "skills"),
     )
     for _agent_type in registry.list_agents():
         _cfg = registry.get_config(_agent_type)
@@ -418,18 +419,18 @@ def main(argv: list[str] | None = None) -> int | None:
     # AgentManager.create_agent 的 agent_id 与 Agent.session_id 必须一致——
     # 记忆工具（SQL 按 agent_id 键控）与 Sleeptime 都挂在它下面，三者对不上
     # 会各自读到空数据。
-    memory_dir = Path(config.workspace) / "memory"
+    memory_dir = Path(config.runtime.workspace) / "memory"
     db = MemoryDB(memory_dir / "memory.db")
     block_manager = GitEnabledBlockManager(db, memfs_dir=memory_dir)
     block_manager.migrate_legacy_labels()   # 旧 human/persona label 一次性迁移为 profile/assistant（幂等）
     block_manager.ensure_default_blocks()   # 首启播种默认 profile/assistant 核心记忆块
     # 意图路由独立编码器（云端）：与 RAG 的编码器（rag_service 内部按
-    # config.embedding 构造）互不共享——两段配置、两个实例，换模型互不影响。
+    # config.rag.embedding 构造）互不共享——两段配置、两个实例，换模型互不影响。
     # MessageManager 的 embedder 参数当前未被使用（检索为纯 SQL），注入同实例
     # 仅为兼容既有签名。
-    intent_encoder = CloudEmbedder(config.intent_encoder.base_url,
-                                   config.intent_encoder.api_key,
-                                   config.intent_encoder.model)
+    intent_encoder = CloudEmbedder(config.intent.encoder.base_url,
+                                   config.intent.encoder.api_key,
+                                   config.intent.encoder.model)
     message_manager = MessageManager(db, embedder=intent_encoder)
     agent_manager = AgentManager(db, block_manager, message_manager)
 
@@ -469,36 +470,38 @@ def main(argv: list[str] | None = None) -> int | None:
     # 必须在此处（message_manager.agent_manager 回填之后）构建：否则
     # get_in_context_messages 读不到窗口，会降级成全量查询、与模型所见不一致。
     resume_replay = None
-    if args.resume is not None and config.resume_replay:
+    if args.resume is not None and config.session.resume_replay:
         resume_replay = build_resume_replay(
-            message_manager, session_id, limit=config.resume_replay_limit,
+            message_manager, session_id, limit=config.session.resume_replay_limit,
             created_at=(str(agent_state.created_at)[:16]
                         if agent_state.created_at else None))
 
     structured = StructuredOutput(llm)
 
     # extract_title 工具的标题提取器注入记忆工具运行时上下文（LLM 层走
-    # StructuredOutput 真实接线）。GROBID 层用 config.grobid_endpoint 装配：
+    # StructuredOutput 真实接线）。GROBID 层用 config.rag.grobid.endpoint 装配：
     # extract_title 走本地 REST header 接口，不可达或解析失败时返回 None，
     # 自动落到 LLM 层兜底。
     set_memory_context(MemoryToolsContext(
         agent_id=session_id,
         block_manager=block_manager,
         message_manager=message_manager,
-        title_extractor=TitleExtractor(grobid=GrobidClient(config.grobid_endpoint),
-                                       llm=structured),
+        title_extractor=TitleExtractor(
+            grobid=GrobidClient(config.rag.grobid.endpoint,
+                                timeout=config.rag.grobid.timeout),
+            llm=structured),
     ))
 
     # 安全管道：四中间件（经验记忆中间件已移除——工具调用经验不再注入 prompt，
     # 改由 Sleeptime 后台整合进核心记忆块）。
     middlewares = [
         # 审计目录从 workspace 派生（真实会话复验发现：默认 cwd 相对导致
-        # PAPERFLOW_WORKSPACE 重定向时审计仍写进仓库 data/audit，与真实会话混写；
+        # PAPERFLOW_RUNTIME_WORKSPACE 重定向时审计仍写进仓库 data/audit，与真实会话混写；
         # 且 cwd 下的 data/audit 在 WorkspacePolicy 的 ws/audit 保护约定之外）
-        AuditMiddleware(audit_dir=str(Path(config.workspace) / "audit")),
-        WorkspacePolicyMiddleware(workspace=config.workspace),
+        AuditMiddleware(audit_dir=str(Path(config.runtime.workspace) / "audit")),
+        WorkspacePolicyMiddleware(workspace=config.runtime.workspace),
         SecurityScanMiddleware(),
-        PolicyEngineMiddleware(max_risk=config.max_risk),
+        PolicyEngineMiddleware(max_risk=config.runtime.max_risk),
     ]
 
     # 意图管线:真实混合路由器 + LLM 兜底。意图编码器为云端实例(intent_encoder
@@ -507,11 +510,10 @@ def main(argv: list[str] | None = None) -> int | None:
     # 与标定脚本保持一致。
     # 路由向量缓存锚安装根（与 routes.yaml 同锚，语料源自那里，不随 workspace
     # 重定向）。命中即零网络启动；未命中现算回写；断网降级零向量见 _encode_dense。
-    _install_root = Path(__file__).resolve().parents[1]
     router = HybridRouter(
         encoder=intent_encoder,
-        routes=load_routes(), alpha=0.5,
-        vector_cache_path=str(_install_root / "data" / "intents" / "routes_vectors.npz"))
+        routes=load_routes(), alpha=ROUTER_ALPHA,
+        vector_cache_path=str(VECTOR_CACHE_PATH))
     # spec §5：启动期意图路由降级必须可见（黄字），不能只写 logger。缓存命中
     # 时 add() 不走编码、dense_degraded 仍为 False——此时路由是全功能的，无告警。
     if router.dense_degraded:
@@ -545,8 +547,8 @@ def main(argv: list[str] | None = None) -> int | None:
     )
     sleeptime = Sleeptime(
         agent_state, block_manager, message_manager,
-        structured, enable=config.sleeptime_enable,
-        frequency=config.sleeptime_agent_frequency)
+        structured, enable=config.memory.sleeptime_enable,
+        frequency=config.memory.sleeptime_agent_frequency)
 
     try:
         asyncio.run(_repl(supervisor, conversation,

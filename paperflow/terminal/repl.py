@@ -237,7 +237,7 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
     # 三者必须按此序打——回放若在横幅之前渲染，历史会印到横幅上方，用户上翻看到的
     # 顺序即颠倒（故回放数据由 cli 传入、在此处渲染，而不是在装配层直接打印）。
     cfg = config or PaperFlowConfig.from_env()
-    renderer.print(_render_banner(cfg.llm.model, _shorten_path(cfg.workspace)))
+    renderer.print(_render_banner(cfg.llm.model, _shorten_path(cfg.runtime.workspace)))
     renderer.print("\n  Tip: Type a research task to begin, or /exit to quit")
     if resume_hint:
         renderer.print(f"  {resume_hint}", style="dim")

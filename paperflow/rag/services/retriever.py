@@ -4,32 +4,21 @@
 """
 import logging
 
+from paperflow.rag.constants import (
+    DEFAULT_TOP_K,
+    RERANK_CANDIDATE_MULTIPLIER,
+    VALID_SOURCES,
+)
 from paperflow.rag.parsers.chunker import Chunk
 
 logger = logging.getLogger(__name__)
 
-
-# ---- 混合检索参数配置 ----
-# 两路各取 30 个粗候选，保证召回率
-# RRF 融合常数 k=60，值越大排名间的分数差异越平滑
-_RRF_K = 60
-_BM25_TOPK = 30
-_VECTOR_TOPK = 30
-#: 重排候选池下限：RRF 融合后取 max(2×top_k, 此值) 个候选交给重排模型。
-#: 宽召回窄输出（BAAI 官方教程召回 100 → 精排 3）；池子越大重排越慢越费 token，
-#: 真命中截损越小。与上面三个常量同层——检索算法内部参数，不进全局配置
-#: （2026-10-05 由 config.rag_rerank_candidates 收敛至此：无任何评测/运行路径
-#: 覆盖过它，读取点还带同值兜底，配置项属孤儿旋钮）。
-_RERANK_CANDIDATES = 24
 
 #: query 侧任务指令（Qwen3-Embedding 官方格式 Instruct: {task}\nQuery: {query}，
 #: 只加 query 侧、文档侧不加，官方称可提升 1–5%）。
 # 文档编码在索引器完成，不受影响；意图路由复用同一 embedder，也走各自调用、无此前缀。
 _QUERY_INSTRUCTION = ("Given an academic research query, retrieve relevant "
                       "passages from papers and reading notes")
-
-#: source 过滤的合法取值；超出按不过滤处理（工具层已有 enum 约束，此处防御）
-_VALID_SOURCES = (None, "note", "pdf")
 
 
 class Retriever:
@@ -47,7 +36,7 @@ class Retriever:
         # 成对执行维护，无需再重建。
         self._bm25_synced = False
 
-    def retrieve(self, queries, top_k: int = 5,
+    def retrieve(self, queries, top_k: int = DEFAULT_TOP_K,
                  source: str | None = None) -> list[Chunk]:
         """对查询集执行检索：每条 query 独立跑双路，全部排名进同一 RRF 池融合。
 
@@ -72,8 +61,15 @@ class Retriever:
         cleaned = [q.strip() for q in queries if q and q.strip()] or [""]
         primary = cleaned[0]
 
-        if source not in _VALID_SOURCES:
+        if source not in VALID_SOURCES:
             source = None
+
+        # 检索阈值读配置（rag.retriever.*）：改 YAML 即生效，模块常量只作
+        # dataclass 字段默认值来源。候选池倍率仍用常量（与 RERANK_CANDIDATES 同口径）。
+        rcfg = self.service.config.rag.retriever
+        # rrf_k 现在是用户可配旋钮，无下界保证：排名从 0 起，k=0 时分母为 0
+        # 直接 ZeroDivisionError。这里钳到 >=1 兜底（默认 60 不受影响）。
+        rrf_k = max(1, rcfg.rrf_k)
 
         embedder = self.service._ensure_embedder()
         # 稠密路软降级（spec §5）：云端 embed 失败该次查询退 BM25 独路，
@@ -107,18 +103,18 @@ class Retriever:
         scores: dict[str, float] = {}
         id2doc: dict[str, tuple] = {}
 
-        # 向量路：每条 query 一个编码向量，各取 top30（编码失败时整路跳过）
+        # 向量路：每条 query 一个编码向量，各取 rcfg.vector_topk（编码失败时整路跳过）
         if qvecs is not None:
             for qvec in qvecs:
-                for rank, hit in enumerate(vs.query(qvec, _VECTOR_TOPK, expr=expr)):
-                    scores[hit[0]] = scores.get(hit[0], 0.0) + 1.0 / (_RRF_K + rank)
+                for rank, hit in enumerate(vs.query(qvec, rcfg.vector_topk, expr=expr)):
+                    scores[hit[0]] = scores.get(hit[0], 0.0) + 1.0 / (rrf_k + rank)
                     id2doc[hit[0]] = hit
 
-        # BM25 路：每条 query 各查一次 top30；档案回查合并成一次
+        # BM25 路：每条 query 各查一次 rcfg.bm25_topk；档案回查合并成一次
         #（不同 query 的命中高度重叠，先收集 union 再一次 fetch_by_ids，避免重复回库）
         bm25_ranked: list[list[str]] = []
         for q in cleaned:
-            hits = bm25.query(q, _BM25_TOPK) if not bm25.is_empty() else []
+            hits = bm25.query(q, rcfg.bm25_topk) if not bm25.is_empty() else []
             if source:
                 # BM25 路无原生过滤，取回元数据后按 source 筛
                 docs = {d[0]: d for d in vs.fetch_by_ids(hits)}
@@ -128,7 +124,7 @@ class Retriever:
         bm25_docs = {d[0]: d for d in vs.fetch_by_ids(list(all_bm25_ids))}
         for hits in bm25_ranked:
             for rank, doc_id in enumerate(hits):
-                scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (_RRF_K + rank)
+                scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rrf_k + rank)
                 if doc_id in bm25_docs:
                     id2doc[doc_id] = bm25_docs[doc_id]
 
@@ -137,7 +133,7 @@ class Retriever:
             return []
 
         # ---- 候选池与精排（与单 query 版一致，宽召回窄输出）----
-        candidates = max(top_k * 2, _RERANK_CANDIDATES)
+        candidates = max(top_k * RERANK_CANDIDATE_MULTIPLIER, rcfg.rerank_candidates)
         ranked_ids = sorted(scores, key=scores.get, reverse=True)[:candidates]
         present = [i for i in ranked_ids if i in id2doc]
         docs = [id2doc[i][1] for i in present]

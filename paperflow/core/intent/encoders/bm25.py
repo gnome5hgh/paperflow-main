@@ -27,6 +27,10 @@ from functools import partial
 import jieba
 import numpy as np
 
+from paperflow.core.intent.constants import (
+    BM25_B, BM25_IDF_SMOOTHING, BM25_K1,
+)
+
 # 抑制 jieba 启动噪音（"Building prefix dict..." / "Loading model from cache..." /
 # "Prefix dict has been built successfully."）——CLI 启动不该刷屏。jieba 首次
 # lcut 时初始化词典，INFO 级日志默认打到 stderr；setLogLevel 只需设置一次。
@@ -86,7 +90,7 @@ class BM25Encoder:
     """
 
     def __init__(self, tokenizer: JiebaTokenizer | None = None,
-                 k1: float = 1.5, b: float = 0.75):
+                 k1: float = BM25_K1, b: float = BM25_B):
         """初始化 BM25 编码器。
 
         Args:
@@ -174,8 +178,8 @@ class BM25Encoder:
         # tokenize 并提取命中词的文档频率
         ids = self.tokenizer.tokenize(queries)
         df = self._df(ids)
-        # 平滑处理：对 df>0 加 0.5，避免零除和 log(0)
-        df = df + np.where(df > 0, 0.5, 0)
+        # 平滑处理：对 df>0 加 BM25_IDF_SMOOTHING，避免零除和 log(0)
+        df = df + np.where(df > 0, BM25_IDF_SMOOTHING, 0)
         # 计算 IDF：log((N+1)/df)，df=0 处保持 0
         idf = np.divide(self.corpus_size + 1, df,
                         out=np.zeros_like(df), where=df != 0)
