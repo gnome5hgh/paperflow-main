@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 _RRF_K = 60
 _BM25_TOPK = 30
 _VECTOR_TOPK = 30
+#: 重排候选池下限：RRF 融合后取 max(2×top_k, 此值) 个候选交给重排模型。
+#: 宽召回窄输出（BAAI 官方教程召回 100 → 精排 3）；池子越大重排越慢越费 token，
+#: 真命中截损越小。与上面三个常量同层——检索算法内部参数，不进全局配置
+#: （2026-10-05 由 config.rag_rerank_candidates 收敛至此：无任何评测/运行路径
+#: 覆盖过它，读取点还带同值兜底，配置项属孤儿旋钮）。
+_RERANK_CANDIDATES = 24
 
 #: query 侧任务指令（Qwen3-Embedding 官方格式 Instruct: {task}\nQuery: {query}，
 #: 只加 query 侧、文档侧不加，官方称可提升 1–5%）。
@@ -131,8 +137,7 @@ class Retriever:
             return []
 
         # ---- 候选池与精排（与单 query 版一致，宽召回窄输出）----
-        candidates = max(top_k * 2,
-                         int(getattr(self.service.config, "rag_rerank_candidates", 24)))
+        candidates = max(top_k * 2, _RERANK_CANDIDATES)
         ranked_ids = sorted(scores, key=scores.get, reverse=True)[:candidates]
         present = [i for i in ranked_ids if i in id2doc]
         docs = [id2doc[i][1] for i in present]
