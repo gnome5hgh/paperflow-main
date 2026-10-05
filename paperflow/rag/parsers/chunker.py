@@ -8,13 +8,11 @@ import hashlib
 import re
 from dataclasses import dataclass
 
-import tiktoken
-
+from paperflow.core.tokenization import get_token_encoder
 from paperflow.rag.constants import (
     CHUNK_ID_LEN,
     CHUNK_MAX_TOKENS,
     CHUNK_OVERLAP_TOKENS,
-    TOKEN_ENCODING,
 )
 
 #: 需丢弃的引用段标题前缀（中英文）。匹配这些标题的章节内容不进入检索块，
@@ -54,7 +52,8 @@ class AcademicChunker:
     """两级切分：先按章节切，超长章节再按 token 数二次切分并带重叠。
 
     嵌入模型（Qwen3-Embedding-0.6B 支持 32K 上下文）对分块长度没有硬约束，max_tokens=512 是检索粒度的选择：块太大召回噪声多、太小语义碎片化；
-    overlap 让相邻块重叠一部分，重叠让跨块语义连贯。token 计数用 cl100k_base 近似即可，不必精确。
+    overlap 让相邻块重叠一部分，重叠让跨块语义连贯。token 计数用
+    ``core.tokenization.TOKEN_ENCODING``（与 core.memory 压缩共用）近似即可，不必精确。
     """
 
     def __init__(self, max_tokens: int = CHUNK_MAX_TOKENS,
@@ -69,8 +68,9 @@ class AcademicChunker:
         """
         self.max_tokens = max_tokens
         self.overlap_tokens = overlap_tokens
-        # cl100k_base：GPT-4 系列的 tokenizer，这里只需近似计数，不必精确
-        self._enc = tiktoken.get_encoding(TOKEN_ENCODING)
+        # 编码器口径单点共享（core.tokenization/get_token_encoder），与
+        # core.memory 压缩共用；只需近似计数，不必精确。
+        self._enc = get_token_encoder()
 
     def _is_reference(self, heading: str) -> bool:
         """判断章节标题是否为参考文献类标题（中英文）。此类内容不进入检索块。

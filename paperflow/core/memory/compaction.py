@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from paperflow.core.llm import Message as WireMessage
+from paperflow.core.tokenization import get_token_encoder
 
 __all__ = ["CompactionSettings", "SummarySchema", "should_compress", "run_compaction"]
 
@@ -78,23 +79,6 @@ class CompactionSettings:
         return model_window // 2
 
 
-# tiktoken 编码器单例（避免重复加载 BPE 文件）
-_enc = None
-
-
-def _get_encoder():
-    """tiktoken 编码器模块级单例——多 Agent 实例/逐消息估算不重复加载 BPE 文件。
-
-    Returns:
-        tiktoken.Encoding 实例（cl100k_base 编码器）。
-    """
-    global _enc
-    if _enc is None:
-        import tiktoken
-        _enc = tiktoken.get_encoding("cl100k_base")
-    return _enc
-
-
 def _estimate_tokens(messages: list[WireMessage]) -> int:
     """粗估消息 token 总量：每条内容 token 数 + 4 的协议开销常数。
 
@@ -105,7 +89,8 @@ def _estimate_tokens(messages: list[WireMessage]) -> int:
         估算的总 token 数（整数）。
     """
     total = 0
-    enc = _get_encoder()
+    # 编码器单点在 core.tokenization（与 rag 切块共用同一口径）。
+    enc = get_token_encoder()
     for m in messages:
         total += len(enc.encode(m.content or "")) + 4
     return total
