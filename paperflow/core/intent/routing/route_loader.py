@@ -106,7 +106,7 @@ def save_thresholds(path: Path, routes: list[Route]) -> None:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
 
 
-def load_eval(path: Path = Path("data/intent/eval.yaml")) -> list[tuple[str, str, bool]]:
+def load_eval(path: Path) -> list[tuple[str, str, bool]]:
     """eval.yaml → [(query, intent_label, is_hard)]。
 
     独立评估样本集。is_hard 标记 query 为与其他意图近形的硬负样本：
@@ -115,7 +115,11 @@ def load_eval(path: Path = Path("data/intent/eval.yaml")) -> list[tuple[str, str
     是"自己给自己打分"的漏洞。
 
     Args:
-        path: eval.yaml 文件路径，默认为 data/intent/eval.yaml。
+        path: 题集文件路径（**必填**）。题集是实验资产，归各自实验目录所有
+            （scripts/intent/calibration/goldens/{source,audited}/，将来的
+            scripts/intent/eval/goldens/ 等），不放在随仓库发布的
+            data/intent/——那里只留生产知识库 routes.yaml。故本函数不设默认路径，
+            调用方显式传入。
 
     Returns:
         列表，每个元素为三元组 (query文本, 意图标签, 是否为硬负样本布尔值)。
