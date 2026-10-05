@@ -13,7 +13,7 @@ HybridLocalIndex（记分员：裸相似度）→ 本类（判定：分数 → �
   ④ 聚合   _score_routes：top_k 候选按路由名分组取均值
   ⑤ 裁决   _pass_routes：过阈值（路由专属优先，否则全局）→ RouteChoice；全不过 → None，交由管线走 LLM 兜底
 
-alpha 语义：稀疏抓关键词精确匹配（说什么词命中什么意图）、稠密兜同义改写（换措辞也能命中）——类默认 0.3 偏重稀疏，CLI 生产装配传 0.5（两路均权）。
+alpha 语义：稀疏抓关键词精确匹配（说什么词命中什么意图）、稠密兜同义改写（换措辞也能命中）——类签名默认 0.3 偏重稀疏（历史遗留字面量，生产永不生效），CLI 生产装配传 core.intent.constants.ROUTER_ALPHA（两路均权）。
 fit()/scores() 是裁判的附属工具：前者随机搜索训练每路由阈值，后者给 LLM兜底提供近失候选。
 
 只做静态意图路由：本地内存索引、同步调用，一次查询返回单个 RouteChoice
@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 class HybridRouter:
     """混合路由器：稠密与稀疏按 alpha 凸组合打分、按路由阈值裁决。
 
-    alpha=0.3 为默认稠密权重（稀疏权重为 1-alpha）；fit 只调阈值，不调 alpha。
+    alpha 的类签名默认是 0.3（历史遗留字面量，稀疏权重 1-alpha）；生产值由 CLI
+    装配传 core.intent.constants.ROUTER_ALPHA，fit 只调阈值、不调 alpha。
     打分完全确定（无随机性）——路由未命中时，管线会把本路由器的近失候选分数
     注入 LLM 兜底 prompt，让 LLM 在路由先验上确认或改判，而非盲猜。"""
 
@@ -345,7 +346,8 @@ class HybridRouter:
             batch_size: int = FIT_BATCH_SIZE, max_iter: int = FIT_MAX_ITER) -> None:
         """在给定样本上训练路由阈值：迭代 max_iter 次阈值随机搜索，保留最佳准确率。
 
-        每轮对每个路由的当前阈值在 ±0.8 范围内 100 等分随机采样一个新阈值，
+        每轮对每个路由的当前阈值在 ±core.intent.constants.FIT_SEARCH_RANGE 范围内
+        core.intent.constants.FIT_NUM_CANDIDATES 等分随机采样一个新阈值，
         用样本评估准确率，最终写回准确率最高的一组阈值（阈值是每路由独立的，
         见 load_eval 对硬负样本占比的要求）。
 
@@ -371,7 +373,7 @@ class HybridRouter:
         self._update_thresholds(best_thresholds)
 
     def _threshold_random_search(self, search_range: float) -> dict[str, float]:
-        """对每个路由在当前阈值附近 ±search_range 范围内 100 等分随机采样一个新阈值。
+        """对每个路由在当前阈值附近 ±search_range 范围内按 FIT_NUM_CANDIDATES 等分随机采样一个新阈值。
 
         Args:
             search_range: 采样半径（绝对值），阈值截断至 [0.0, 1.0]。

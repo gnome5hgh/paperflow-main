@@ -135,10 +135,10 @@ class QueryRewriter:
 
     def __init__(self, llm, history_limit: int | None = None):
         from paperflow.core.llm.structured import StructuredOutput, StructuredOutputConfig
-        # history_limit：拼进改写 prompt 的最近历史条数，默认 HISTORY_MESSAGES=6；
+        # history_limit：拼进改写 prompt 的最近历史条数，默认 rag.constants.HISTORY_MESSAGES；
         # RAGService.get_rewriter 传 rag.query_rewrite.history_messages（改 YAML 即生效）。
         self._history_limit = HISTORY_MESSAGES if history_limit is None else history_limit
-        # REWRITE_MAX_RETRIES=0：解析失败零重试（spec §6 与主流对齐），失败延迟上限 = 1 次调用
+        # REWRITE_MAX_RETRIES：解析失败零重试（spec §6 与主流对齐），失败延迟上限 = 1 次调用
         self._so = StructuredOutput(
             llm, StructuredOutputConfig(max_retries=REWRITE_MAX_RETRIES))
 

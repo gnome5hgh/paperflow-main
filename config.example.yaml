@@ -70,8 +70,13 @@ rag:
     base_url: https://api.siliconflow.cn/v1
     api_key: ""               # 必填才能启用稠密检索/嵌入
     embed_model: Qwen/Qwen3-Embedding-0.6B
-    rerank_model: Qwen/Qwen3-Reranker-0.6B
     batch_size: 32
+    timeout: 60.0
+    max_retries: 2
+  # 精排模型独立连接；base_url/api_key 留空 = 继承 rag.embedding
+  # timeout/max_retries 默认来自 core.llm.constants（与 embedding 解耦）
+  rerank:
+    model: Qwen/Qwen3-Reranker-0.6B
     timeout: 60.0
     max_retries: 2
   # 混合检索参数（默认来自 rag.constants）

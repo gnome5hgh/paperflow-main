@@ -5,7 +5,6 @@
 import logging
 
 from paperflow.rag.constants import (
-    DEFAULT_TOP_K,
     RERANK_CANDIDATE_MULTIPLIER,
     VALID_SOURCES,
 )
@@ -36,13 +35,15 @@ class Retriever:
         # 成对执行维护，无需再重建。
         self._bm25_synced = False
 
-    def retrieve(self, queries, top_k: int = DEFAULT_TOP_K,
+    def retrieve(self, queries, top_k: int | None = None,
                  source: str | None = None) -> list[Chunk]:
         """对查询集执行检索：每条 query 独立跑双路，全部排名进同一 RRF 池融合。
 
         Args:
             queries: 查询集（str 视为单条）——queries[0] 为主查询（reranker
                      用它打分）；其余为改写变体，词面不同、语义等价。
+            top_k: 返回块数；None 时取配置 ``rag.retriever.top_k``（默认值单点在
+                   config，不再用模块常量字面量）。
             source: 限定来源——"note" 只搜笔记，"pdf" 只搜论文；None 不过滤。
                     非法值按 None 处理（防御性）。
 
@@ -61,6 +62,11 @@ class Retriever:
         cleaned = [q.strip() for q in queries if q and q.strip()] or [""]
         primary = cleaned[0]
 
+        # top_k 默认值单点在配置（rag.retriever.top_k）；None 时才解析，
+        # 显式传入的值（含 0 等边界）原样使用。
+        if top_k is None:
+            top_k = self.service.config.rag.retriever.top_k
+
         if source not in VALID_SOURCES:
             source = None
 
@@ -68,7 +74,7 @@ class Retriever:
         # dataclass 字段默认值来源。候选池倍率仍用常量（与 RERANK_CANDIDATES 同口径）。
         rcfg = self.service.config.rag.retriever
         # rrf_k 现在是用户可配旋钮，无下界保证：排名从 0 起，k=0 时分母为 0
-        # 直接 ZeroDivisionError。这里钳到 >=1 兜底（默认 60 不受影响）。
+        # 直接 ZeroDivisionError。这里钳到 >=1 兜底（默认 RRF_K 不受影响）。
         rrf_k = max(1, rcfg.rrf_k)
 
         embedder = self.service._ensure_embedder()

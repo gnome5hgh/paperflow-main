@@ -82,7 +82,7 @@ class JiebaTokenizer:
 
 
 class BM25Encoder:
-    """BM25 编码器：k1=1.5, b=0.75，产出 {token_id: 权重} 稀疏向量。
+    """BM25 编码器：参数取 core.intent.constants.BM25_K1 / BM25_B，产出 {token_id: 权重} 稀疏向量。
 
     query 编码 = IDF（文档频率倒数取对数后行归一化），doc 编码 = TF 归一化，
     两者点积 = BM25 分数。fit 在意图示例句语料上训练归一化参数；
@@ -95,8 +95,8 @@ class BM25Encoder:
 
         Args:
             tokenizer: 分词器实例，若为 None 则新建默认 JiebaTokenizer。
-            k1: BM25 超参数，控制词频饱和度，默认 1.5。
-            b: BM25 超参数，控制文档长度归一化，默认 0.75。
+            k1: BM25 超参数，控制词频饱和度；默认 core.intent.constants.BM25_K1。
+            b: BM25 超参数，控制文档长度归一化；默认 core.intent.constants.BM25_B。
         """
         self.tokenizer = tokenizer or JiebaTokenizer()
         self.k1 = k1

@@ -8,7 +8,6 @@
 import threading
 
 from paperflow.config import PaperFlowConfig
-from paperflow.rag.constants import DEFAULT_TOP_K
 from paperflow.rag.parsers.chunker import AcademicChunker
 from paperflow.rag.parsers.grobid_client import ParsedDoc
 
@@ -90,11 +89,15 @@ class RAGService:
             with self.lock:
                 if self._reranker is None:
                     from paperflow.core.llm.rerank import CloudReranker
+                    # 直接构造 config 的调用方（测试/嵌入宿主）未必经过 from_env 的继承回填，
+                    # 故此处对空的端点/key 再兜底继承 embedding 一次。
+                    rr = self.config.rag.rerank
                     emb = self.config.rag.embedding
-                    self._reranker = CloudReranker(emb.base_url, emb.api_key,
-                                                   emb.rerank_model,
-                                                   timeout=emb.timeout,
-                                                   max_retries=emb.max_retries)
+                    self._reranker = CloudReranker(rr.base_url or emb.base_url,
+                                                   rr.api_key or emb.api_key,
+                                                   rr.model,
+                                                   timeout=rr.timeout,
+                                                   max_retries=rr.max_retries)
         return self._reranker
 
     def _ensure_vector_store(self):
@@ -307,16 +310,19 @@ class RAGService:
         with self.lock:
             self.get_indexer().index_all()
 
-    def retrieve(self, query: str, top_k: int = DEFAULT_TOP_K):
+    def retrieve(self, query: str, top_k: int | None = None):
         """检索入口（持锁），返回按相关度排序的块列表。
 
         Args:
             query: 检索查询文本。
-            top_k: 需要返回的结果块数。
+            top_k: 需要返回的结果块数；None 时取配置 ``rag.retriever.top_k``
+                （默认值单点在 config，不再用模块常量字面量）。
 
         Returns:
             list[Chunk]: 按相关度降序排列的 Chunk 对象列表。
         """
+        if top_k is None:
+            top_k = self.config.rag.retriever.top_k
         with self.lock:
             return self.get_retriever().retrieve(query, top_k)
 

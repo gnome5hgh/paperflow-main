@@ -73,7 +73,8 @@ DEFAULT_TOP_K = 5
 
 #: 每个检索块的最大 token 数。
 #: - 值：512。
-#: - 含义与单位：AcademicChunker 二次切分的块预算（token，cl100k_base 近似计数）。
+#: - 含义与单位：AcademicChunker 二次切分的块预算（token，按
+#:   ``core.tokenization.TOKEN_ENCODING`` 近似计数）。
 #:   嵌入模型支持 32K 上下文，512 是检索粒度的选择：太大召回噪声多、太小语义碎片化。
 #: - 改它的后果：改变切块结果 → 必须重建索引（PR B 的配方哈希会保护）；影响检索粒度，
 #:   需重评召回质量。
@@ -96,14 +97,6 @@ CHUNK_OVERLAP_TOKENS = 64
 #:   （「先删后建」依赖 id 稳定）。
 #: - 是否进 YAML：否（属结构契约量级，改动等价于一次全量重建）。
 CHUNK_ID_LEN = 16
-
-#: tiktoken 编码器名。
-#: - 值："cl100k_base"。
-#: - 含义与单位：切块 token 计数所用编码器（GPT-4 系列）；这里只需近似计数，不必精确。
-#: - 改它的后果：token 计数口径变化 → 切块边界变化 → 必须重建索引。
-#: - 是否进 YAML：否（L2 结构常量）。
-#: 注：core/memory/compaction.py 另有独立同值定义，不在本任务范围。
-TOKEN_ENCODING = "cl100k_base"
 
 #: 表格块文本截断上限。
 #: - 值：8000。
