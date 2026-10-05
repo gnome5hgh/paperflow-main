@@ -20,10 +20,19 @@ from paperflow.core.intent.schemas.intent import IntentType
 _REMOVED_VALUES = {"switch_topic", "refine_query"}
 
 
+#: 仓库安装根（本文件位于 paperflow/core/intent/routing/，向上四级即仓库根）。
+#: 随仓库发布的知识资产恒锚此处，不随 PAPERFLOW_WORKSPACE 重定向。
+_INSTALL_ROOT = Path(__file__).resolve().parents[4]
+
 #: 仓库安装根下的 routes.yaml（默认路径不可用时回退：从非仓库目录启动、
 #: 或 cwd 相对路径不存在时——routes.yaml 是随仓库发布的知识资产，恒锚仓库根，
 #: 不随 PAPERFLOW_WORKSPACE 重定向）
-_INSTALL_ROOT_ROUTES = Path(__file__).resolve().parents[4] / "data" / "intents" / "routes.yaml"
+_INSTALL_ROOT_ROUTES = _INSTALL_ROOT / "data" / "intents" / "routes.yaml"
+
+#: 路由向量缓存（HybridRouter 的 vector_cache_path）。语料源自安装根下的
+#: data/intents，故与 routes.yaml 同锚安装根——不随 workspace 重定向；
+#: 命中即零网络启动，未命中现算回写。
+VECTOR_CACHE_PATH = _INSTALL_ROOT / "data" / "intents" / "routes_vectors.npz"
 
 
 def load_routes(path: Path | None = None) -> list[Route]:

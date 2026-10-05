@@ -45,11 +45,12 @@ from paperflow.tools.memory import set_memory_context, MemoryToolsContext
 from paperflow.core.memory.services.title_extractor import TitleExtractor
 from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.sleeptime import Sleeptime
+from paperflow.core.intent.constants import ROUTER_ALPHA
 from paperflow.core.intent.pipeline import IntentPipeline
 from paperflow.core.intent.routing.router import HybridRouter
 from paperflow.core.llm.embedding import CloudEmbedder
 from paperflow.rag.parsers.grobid_client import GrobidClient
-from paperflow.core.intent.routing.route_loader import load_routes
+from paperflow.core.intent.routing.route_loader import VECTOR_CACHE_PATH, load_routes
 from paperflow.terminal.io import make_input_io
 from paperflow.terminal.render import make_renderer
 from paperflow.terminal.repl import (
@@ -507,11 +508,10 @@ def main(argv: list[str] | None = None) -> int | None:
     # 与标定脚本保持一致。
     # 路由向量缓存锚安装根（与 routes.yaml 同锚，语料源自那里，不随 workspace
     # 重定向）。命中即零网络启动；未命中现算回写；断网降级零向量见 _encode_dense。
-    _install_root = Path(__file__).resolve().parents[1]
     router = HybridRouter(
         encoder=intent_encoder,
-        routes=load_routes(), alpha=0.5,
-        vector_cache_path=str(_install_root / "data" / "intents" / "routes_vectors.npz"))
+        routes=load_routes(), alpha=ROUTER_ALPHA,
+        vector_cache_path=str(VECTOR_CACHE_PATH))
     # spec §5：启动期意图路由降级必须可见（黄字），不能只写 logger。缓存命中
     # 时 add() 不走编码、dense_degraded 仍为 False——此时路由是全功能的，无告警。
     if router.dense_degraded:
