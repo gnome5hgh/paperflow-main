@@ -7,14 +7,11 @@ query），再持锁检索。检索与融合算法本身在 `rag/services/retrie
 import logging
 
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.rag.constants import DEFAULT_TOP_K, EXCERPT_CHARS, HISTORY_MESSAGES
 from paperflow.rag.services.rag_service import get_rag_service
 from paperflow.tools.memory.runtime_context import get_memory_context
 
 logger = logging.getLogger(__name__)
-
-#: 尾部截断唯一守门点（2026-10-05 起 CLI provider 层已退役）：角色过滤、空内容
-#: 剔除与截断都在 _recent_history 本体；QueryRewriter._clean_history 仍留防御
-_HISTORY_LIMIT = 6
 
 
 def _recent_history() -> list:
@@ -22,7 +19,7 @@ def _recent_history() -> list:
 
     经 memory 工具运行时上下文取 message_manager + agent_id，读该 agent 的
     in-context 消息（与模型所见一致，含压缩摘要），只留 user/assistant 且
-    内容非空的尾部 _HISTORY_LIMIT 条。上下文未绑定/manager 缺失/读取异常
+    内容非空的尾部 HISTORY_MESSAGES 条。上下文未绑定/manager 缺失/读取异常
     一律返回 []——历史读取永远不打断检索（spec §6 降级铁律）。
     """
     ctx = get_memory_context()
@@ -33,7 +30,7 @@ def _recent_history() -> list:
         return [m for m in msgs
                 if getattr(m, "role", None) in ("user", "assistant")
                 and (getattr(m, "content", None) or "").strip()
-                ][-_HISTORY_LIMIT:]
+                ][-HISTORY_MESSAGES:]
     except Exception:
         logger.warning("读取对话历史失败，本次检索跳过 condense 改写", exc_info=True)
         return []
@@ -60,7 +57,8 @@ class RagRetrieveTool(Tool):
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "检索问题"},
-            "top_k": {"type": "integer", "description": "返回块数", "default": 5},
+            "top_k": {"type": "integer", "description": "返回块数",
+                      "default": DEFAULT_TOP_K},
             "source": {"type": "string", "enum": ["note", "pdf"],
                        "description": "限定来源：note=读书笔记，pdf=论文原文；缺省不限"},
         },
@@ -73,8 +71,9 @@ class RagRetrieveTool(Tool):
         super().__init__()
         self._service = None # 可被测试注入，否则在 execute 中取全局单例
 
-    def execute(self, query: str, top_k: int = 5, source: str | None = None) -> ToolResult:
-        """执行检索并返回格式化结果：每条命中列出来源、路径与正文摘录（前 400 字）。
+    def execute(self, query: str, top_k: int = DEFAULT_TOP_K,
+                source: str | None = None) -> ToolResult:
+        """执行检索并返回格式化结果：每条命中列出来源、路径与正文摘录（前 EXCERPT_CHARS 字）。
 
         带标题前缀的块其摘录首行即「论文标题 > 章节标题」，供上层直接引用节号。
 
@@ -118,8 +117,8 @@ class RagRetrieveTool(Tool):
         if not chunks:
             return ToolResult(text="检索无命中（索引可能为空，可先写几篇笔记）")
 
-        # 4. 否则，每条命中格式化为 `- [来源:路径] 正文摘录前400字` 的列表。
-        # 摘录上限 400 字符：带前缀的块首行即「论文标题 > 章节标题」，需要足够
+        # 4. 否则，每条命中格式化为 `- [来源:路径] 正文摘录前 EXCERPT_CHARS 字` 的列表。
+        # 摘录上限 EXCERPT_CHARS 字符：带前缀的块首行即「论文标题 > 章节标题」，需要足够
         # 窗口才能让上层同时拿到节号与可用的正文上下文。
-        lines = [f"- [{c.source}:{c.path}] {c.text[:400]}" for c in chunks]
+        lines = [f"- [{c.source}:{c.path}] {c.text[:EXCERPT_CHARS]}" for c in chunks]
         return ToolResult(text="检索到以下相关段落：\n" + "\n".join(lines))

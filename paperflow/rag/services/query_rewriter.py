@@ -15,16 +15,16 @@ from typing import Any, Sequence
 
 from pydantic import BaseModel, Field
 
-logger = logging.getLogger(__name__)
+from paperflow.rag.constants import (
+    HISTORY_MESSAGE_CHARS,
+    HISTORY_MESSAGES,
+    MAX_QUERIES,
+    MAX_QUERY_CHARS,
+    REWRITE_MAX_RETRIES,
+    REWRITE_NUM,
+)
 
-#: rewrites 要求数；生成侧（standalone+rewrites）截 3 席、原 query 恒占第 4 席，总封顶 4
-_REWRITE_NUM = 3
-#: 喂给改写的对话历史上限（user/assistant 各算一条；provider 侧已截，此处防御）
-_HISTORY_MESSAGES = 6
-#: 单条查询超此长度视为 LLM 输出异常，丢弃（Haystack 式逐项过滤）
-_MAX_QUERY_CHARS = 200
-#: 最终查询集封顶（含原 query）
-_MAX_QUERIES = 4
+logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "你是学术问答系统的检索查询改写器。根据对话历史（若有）与当前问题，"
@@ -67,7 +67,7 @@ def _finalize(original: str, out: RewriteOutput) -> list[str]:
         if not isinstance(item, str):
             return
         text = item.strip()
-        if not text or len(text) > _MAX_QUERY_CHARS:
+        if not text or len(text) > MAX_QUERY_CHARS:
             return
         key = text.casefold()
         if key in seen:
@@ -76,12 +76,12 @@ def _finalize(original: str, out: RewriteOutput) -> list[str]:
         generated.append(text)
 
     add(out.standalone_query)
-    # 先全量过滤再截席位：非法项不得占坑——若先截 _REWRITE_NUM 条再过滤，
+    # 先全量过滤再截席位：非法项不得占坑——若先截 REWRITE_NUM 条再过滤，
     # 前 3 条全非法时会把排在后面的合法项挤出查询集
     for r in list(out.rewrites or []):
         add(r)
-    # 生成侧最多占 _MAX_QUERIES-1 席，最后 1 席留给原 query（召回兜底，必在）
-    generated = generated[:_MAX_QUERIES - 1]
+    # 生成侧最多占 MAX_QUERIES-1 席，最后 1 席留给原 query（召回兜底，必在）
+    generated = generated[:MAX_QUERIES - 1]
     # 截席可能裁掉已登记项：用保留项重建 seen，否则与被裁项同文的原 query
     # 会被兜底去重误丢，违背「原 query 必在」
     seen = {q.casefold() for q in generated}
@@ -92,13 +92,13 @@ def _finalize(original: str, out: RewriteOutput) -> list[str]:
 
 
 def _clean_history(history: Sequence | None) -> list:
-    """只留带 user/assistant 角色且有内容的消息，截最近 _HISTORY_MESSAGES 条。"""
+    """只留带 user/assistant 角色且有内容的消息，截最近 HISTORY_MESSAGES 条。"""
     if not history:
         return []
     kept = [m for m in history
             if getattr(m, "role", None) in ("user", "assistant")
             and (getattr(m, "content", None) or "").strip()]
-    return kept[-_HISTORY_MESSAGES:]
+    return kept[-HISTORY_MESSAGES:]
 
 
 def _build_prompt(query: str, history: list) -> str:
@@ -107,7 +107,7 @@ def _build_prompt(query: str, history: list) -> str:
         lines.append("【对话历史】（仅用于理解指代与省略，不要检索其中的内容）")
         for m in history:
             role = "用户" if m.role == "user" else "助手"
-            lines.append(f"{role}: {(m.content or '')[:300]}")
+            lines.append(f"{role}: {(m.content or '')[:HISTORY_MESSAGE_CHARS]}")
         lines.append("")
     lines.append(f"【当前问题】{query}")
     lines.append(_REQUIREMENTS)
@@ -130,8 +130,9 @@ class QueryRewriter:
 
     def __init__(self, llm):
         from paperflow.core.llm.structured import StructuredOutput, StructuredOutputConfig
-        # max_retries=0：解析失败零重试（spec §6 与主流对齐），失败延迟上限 = 1 次调用
-        self._so = StructuredOutput(llm, StructuredOutputConfig(max_retries=0))
+        # REWRITE_MAX_RETRIES=0：解析失败零重试（spec §6 与主流对齐），失败延迟上限 = 1 次调用
+        self._so = StructuredOutput(
+            llm, StructuredOutputConfig(max_retries=REWRITE_MAX_RETRIES))
 
     def rewrite(self, query: str, history: Sequence | None = None) -> RewriteResult:
         """改写 query，返回最终查询集。任何异常降级为 [原query]（degraded=True）。"""

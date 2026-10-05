@@ -22,14 +22,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from paperflow.rag.constants import CHUNK_ID_LEN, TABLE_TEXT_LIMIT
 from paperflow.rag.parsers.chunker import Chunk, context_prefix
 
 #: 索引状态版本号：切块或解析逻辑变化、导致产出块集合变化时递增。加载到低版本
 #: 状态时放弃旧状态、全量重扫重嵌，否则旧配方的块会因 mtime 未变而永远残留。
 _STATE_VERSION = 3
-
-#: 表格块文本上限（字符）：Milvus text 字段上限 65535，超长表格截断防御
-_TABLE_TEXT_LIMIT = 8000
 
 
 @dataclass
@@ -209,7 +207,7 @@ class RagIndexer:
         常在表格里，而表格并不出现在章节正文中，不独立成块就检索不到。
 
         GROBID 的表格文本是单元格拼接，先折叠连续空白压掉换行噪声；空白项
-        不产生块；超长表格截断到 _TABLE_TEXT_LIMIT。前缀规则与章节块一致
+        不产生块；超长表格截断到 TABLE_TEXT_LIMIT。前缀规则与章节块一致
         （{title} > [表格]/[图注]），id 沿用 sha1(rel:index) 幂等方案、序号顺延。
 
         Args:
@@ -233,7 +231,7 @@ class RagIndexer:
                 return
 
             # ③ 表格与图注块 id 与章节块 id 的生成是同一套规则
-            chunk_id = hashlib.sha1(f"{rel}:{idx}".encode()).hexdigest()[:16]
+            chunk_id = hashlib.sha1(f"{rel}:{idx}".encode()).hexdigest()[:CHUNK_ID_LEN]
 
             # ④ 表格与图注块前缀规则也与章节块一致
             chunks.append(Chunk(
@@ -243,7 +241,7 @@ class RagIndexer:
             idx += 1
 
         for table in parsed.tables:
-            _add("[表格]", table[:_TABLE_TEXT_LIMIT])
+            _add("[表格]", table[:TABLE_TEXT_LIMIT])
         for caption in parsed.figures:
             _add("[图注]", caption)
         return chunks

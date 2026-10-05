@@ -10,6 +10,13 @@ from dataclasses import dataclass
 
 import tiktoken
 
+from paperflow.rag.constants import (
+    CHUNK_ID_LEN,
+    CHUNK_MAX_TOKENS,
+    CHUNK_OVERLAP_TOKENS,
+    TOKEN_ENCODING,
+)
+
 #: 需丢弃的引用段标题前缀（中英文）。匹配这些标题的章节内容不进入检索块，
 #: 因为参考文献列表对语义检索价值较低，且包含大量外部文献信息可能干扰检索。
 _REFERENCE_HEADS = ("references", "参考文献", "bibliography")
@@ -50,7 +57,8 @@ class AcademicChunker:
     overlap 让相邻块重叠一部分，重叠让跨块语义连贯。token 计数用 cl100k_base 近似即可，不必精确。
     """
 
-    def __init__(self, max_tokens: int = 512, overlap_tokens: int = 64):
+    def __init__(self, max_tokens: int = CHUNK_MAX_TOKENS,
+                 overlap_tokens: int = CHUNK_OVERLAP_TOKENS):
         """配置分块参数并准备 token 计数器。
 
         Args:
@@ -62,7 +70,7 @@ class AcademicChunker:
         self.max_tokens = max_tokens
         self.overlap_tokens = overlap_tokens
         # cl100k_base：GPT-4 系列的 tokenizer，这里只需近似计数，不必精确
-        self._enc = tiktoken.get_encoding("cl100k_base")
+        self._enc = tiktoken.get_encoding(TOKEN_ENCODING)
 
     def _is_reference(self, heading: str) -> bool:
         """判断章节标题是否为参考文献类标题（中英文）。此类内容不进入检索块。
@@ -240,7 +248,7 @@ class AcademicChunker:
             # split_doc 逐章节调 _split_long，每得到一个窗口片段就拼上「标题>章节」前缀、哈希出 块 id
             for part in self._split_long(text):
                 # 5. 为每个片段生成一个 Chunk 对象，其中 id 由 `sha1(rel_path + 全局序号)[:16]` 生成。
-                chunk_id = hashlib.sha1(f"{rel_path}:{idx}".encode()).hexdigest()[:16]
+                chunk_id = hashlib.sha1(f"{rel_path}:{idx}".encode()).hexdigest()[:CHUNK_ID_LEN]
                 chunks.append(Chunk(
                     id=chunk_id, text=context_prefix(title, heading, part),
                     path=rel_path, source=source, heading=heading, chunk_index=idx,
