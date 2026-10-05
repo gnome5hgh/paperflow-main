@@ -8,7 +8,6 @@
 import threading
 
 from paperflow.config import PaperFlowConfig
-from paperflow.rag.constants import DEFAULT_TOP_K
 from paperflow.rag.parsers.chunker import AcademicChunker
 from paperflow.rag.parsers.grobid_client import ParsedDoc
 
@@ -307,16 +306,19 @@ class RAGService:
         with self.lock:
             self.get_indexer().index_all()
 
-    def retrieve(self, query: str, top_k: int = DEFAULT_TOP_K):
+    def retrieve(self, query: str, top_k: int | None = None):
         """检索入口（持锁），返回按相关度排序的块列表。
 
         Args:
             query: 检索查询文本。
-            top_k: 需要返回的结果块数。
+            top_k: 需要返回的结果块数；None 时取配置 ``rag.retriever.top_k``
+                （默认值单点在 config，不再用模块常量字面量）。
 
         Returns:
             list[Chunk]: 按相关度降序排列的 Chunk 对象列表。
         """
+        if top_k is None:
+            top_k = self.config.rag.retriever.top_k
         with self.lock:
             return self.get_retriever().retrieve(query, top_k)
 
