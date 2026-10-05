@@ -35,8 +35,8 @@ class RAGService:
         self.lock = threading.RLock()
 
         # ---- 惰性加载的组件槽位 ----
-        self._embedder = None          # 稠密向量编码器 (SbertEmbedder)
-        self._reranker = None          # 精排模型 (SbertReranker)
+        self._embedder = None          # 稠密向量编码器 (CloudEmbedder)
+        self._reranker = None          # 精排模型 (CloudReranker)
         self._grobid = None            # GROBID 客户端 (GrobidClient)
         self._pymupdf_parser = None    # PyMuPDF 备用解析器
         self._grobid_available = None  # 缓存 GROBID 可用性探测结果 (bool | None)
@@ -61,33 +61,32 @@ class RAGService:
         """惰性获取编码器：首次访问时构造并缓存。
 
         Returns:
-            SbertEmbedder: 编码器实例。
+            CloudEmbedder: 云端编码器实例（构造不碰网络，失败在调用时暴露）。
         """
         # 双重检查加锁：先检查实例变量是否为空，为空则获取锁后再次检查，
         # 确保并发下只有一个线程执行构造，其余线程复用已构造的实例。
         if self._embedder is None:
             with self.lock:
                 if self._embedder is None:
-                    from paperflow.rag.encoders.embedder import SbertEmbedder, resolve_model_dir
-                    # 模型路径本地优先（工作区 models 目录），否则改用官方模型名
-                    self._embedder = SbertEmbedder(resolve_model_dir(
-                        self.config.workspace, self.config.embed_model))
+                    from paperflow.core.llm.embedding import CloudEmbedder
+                    self._embedder = CloudEmbedder(self.config.embedding.base_url,
+                                                   self.config.embedding.api_key,
+                                                   self.config.embedding.embed_model)
         return self._embedder
 
     def _ensure_reranker(self):
         """惰性获取重排模型：首次访问时构造并缓存。
 
         Returns:
-            SbertReranker: 重排器实例。
+            CloudReranker: 云端重排器实例（构造不碰网络，失败在调用时暴露）。
         """
         if self._reranker is None:
             with self.lock:
                 if self._reranker is None:
-                    from paperflow.rag.encoders.reranker import SbertReranker
-                    from paperflow.rag.encoders.embedder import resolve_model_dir
-                    # 模型路径本地优先（工作区 models 目录），否则改用官方模型名
-                    self._reranker = SbertReranker(resolve_model_dir(
-                        self.config.workspace, self.config.rerank_model))
+                    from paperflow.core.llm.rerank import CloudReranker
+                    self._reranker = CloudReranker(self.config.embedding.base_url,
+                                                   self.config.embedding.api_key,
+                                                   self.config.embedding.rerank_model)
         return self._reranker
 
     def _ensure_vector_store(self):
@@ -249,9 +248,10 @@ class RAGService:
     def get_rewriter(self):
         """惰性创建并返回 query 改写器（RAG 包内首个 LLM 调用点）。
 
-        模型取 rag_query_rewrite_model，留空回退主模型（dataclasses.replace
-        只换 model 字段，base_url/api_key/超时沿用主配置）。LLMClient 对空
-        api_key fail-fast——调用方（RagRetrieveTool）catch 后降级原 query。
+        连接参数取 config.query_rewrite 三元组，以主 LLM 为基底逐项覆盖：
+        base_url/api_key 留空（from_env 已继承主 LLM，此处再兜底）沿用主配置，
+        model 留空沿用主模型（历史默认行为）。LLMClient 对空 api_key fail-fast
+        ——调用方（RagRetrieveTool）catch 后降级原 query。
 
         Returns:
             QueryRewriter: 改写器实例（进程内缓存）。
@@ -261,10 +261,16 @@ class RAGService:
 
             from paperflow.core.llm.client import LLMClient
             from paperflow.rag.services.query_rewriter import QueryRewriter
-            llm_cfg = self.config.llm
-            rewrite_model = getattr(self.config, "rag_query_rewrite_model", "")
-            if rewrite_model:
-                llm_cfg = replace(llm_cfg, model=rewrite_model)
+            # 以主 LLM 配置为基底，query_rewrite 三元组逐项覆盖（空值回退主配置）。
+            # 直接构造 config 的调用方（测试/嵌入宿主）未必经过 from_env 的继承回填，
+            # 故此处对空值再兜底一次。
+            qr = self.config.query_rewrite
+            llm_cfg = replace(
+                self.config.llm,
+                base_url=qr.base_url or self.config.llm.base_url,
+                api_key=qr.api_key or self.config.llm.api_key,
+                model=qr.model or self.config.llm.model,
+            )
             self._rewriter = QueryRewriter(LLMClient(llm_cfg))
         return self._rewriter
 

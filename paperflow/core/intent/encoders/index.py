@@ -82,9 +82,22 @@ class HybridLocalIndex:
         # 计算稠密余弦相似度（向量化计算）
         index_norm = norm(self.index, axis=1)
         xq_d_norm = norm(vector)
+
+        # 零范数特判（两侧）：denom = index_norm * xq_d_norm 为 0 的行直接除会得到
+        # 0/0 = nan，并经 total_sim = sim_d + sim_s 毒化稀疏分——nan + sim_s 仍为
+        # nan，score >= threshold 恒 False，该行彻底失联。
+        #   · 查询侧（xq_d_norm=0）：断网降级时 router._encode_dense 退回全零查询
+        #     向量——零向量与任何向量的余弦相似度就是 0；
+        #   · 文档侧（index_norm=0）：降级期 add() 入库的零向量行（断网冷启动、
+        #     缓存未命中）——网络恢复后（spec §5：恢复即自动回全功能，无需重启）
+        #     这些行与真实稠密行共存于同一索引，同样不得毒化稀疏分。
+        # 两者的 dot 本身就是 0，把分母安全替换为 1 后 sim_d 自然为全 0，
+        # 判定回落到纯稀疏信号（spec §5 的"降级为可用纯 BM25"）。
+        denom = index_norm * xq_d_norm
+        safe_denom = np.where(denom == 0, 1.0, denom)
         # 点积：self.index 是 (n, dim)，vector 是 (dim,)，dot 得 (n,)
-        # 除以 (index_norm * xq_d_norm) 得到余弦相似度
-        sim_d = np.squeeze(np.dot(self.index, vector.T)) / (index_norm * xq_d_norm)
+        # 除以 safe_denom 得到余弦相似度（零范数行恒为 0，绝不出现 nan）
+        sim_d = np.squeeze(np.dot(self.index, vector.T)) / safe_denom
 
         # 计算稀疏点积（逐 doc 遍历 query 的 token）
         sim_s = np.array(self._sparse_index_dot_product(sparse_vector))

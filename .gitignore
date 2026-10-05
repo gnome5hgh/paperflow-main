@@ -54,3 +54,7 @@ docs/
 .env
 .env.local
 config.yaml
+
+# 路由语料向量缓存（运行时产物）
+# 注：gitignore 模式不支持行尾内联注释（`#` 后的内容会并入模式导致失配），故注释独立成行
+data/intents/routes_vectors.npz

@@ -47,7 +47,7 @@ from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.sleeptime import Sleeptime
 from paperflow.core.intent.pipeline import IntentPipeline
 from paperflow.core.intent.routing.router import HybridRouter
-from paperflow.rag.encoders.embedder import SbertEmbedder, resolve_model_dir
+from paperflow.core.llm.embedding import CloudEmbedder
 from paperflow.rag.parsers.grobid_client import GrobidClient
 from paperflow.core.intent.routing.route_loader import load_routes
 from paperflow.terminal.io import make_input_io
@@ -55,38 +55,6 @@ from paperflow.terminal.render import make_renderer
 from paperflow.terminal.repl import (
     _repl, _make_print_fn, _make_confirm_callback, _make_ask_callback)
 from paperflow.terminal.resume import build_resume_replay
-
-#: 模块级 embedder 单例：千问嵌入模型首次调用才加载（sentence-transformers 导入数秒），
-#: 进程内只加载一次。RAG/意图管线/记忆服务共享同一实例——各自 new 一个会让同一
-#: 模型权重被反复加载，启动变慢且占内存。
-_embedder: "SbertEmbedder | None" = None
-
-
-def _rag_embedder(config: PaperFlowConfig) -> "SbertEmbedder":
-    """
-    懒加载共享的千问嵌入模型单例。
-
-    用途：
-        - 意图管线的稠密路由（HybridRouter）
-        - MessageManager 的可选 embedder 参数（该类检索为纯 SQL LIKE，当前未使用）
-    所有组件共享同一实例，避免重复加载模型权重（首次加载需数秒，且占用内存）。
-
-    Args:
-        config: 全局配置，包含 workspace 和 embed_model 名称。
-
-    Returns:
-        SbertEmbedder: 共享的嵌入模型实例。
-
-    Notes:
-        - 模型路径优先本地：resolve_model_dir 在 workspace/models/<name> 查找，
-          若不存在则回退 HuggingFace 缓存。
-        - 该函数在进程生命周期内只加载一次。
-    """
-    global _embedder
-    if _embedder is None:
-        _embedder = SbertEmbedder(
-            model_name=resolve_model_dir(config.workspace, config.embed_model))
-    return _embedder
 
 
 # ── 启动预检（bootstrap）─────────────────────────────────────────────────────
@@ -310,7 +278,7 @@ def main(argv: list[str] | None = None) -> int | None:
         1. 终端 IO 和渲染器（输入/输出适配）。
         2. 会话 ID（用于记忆服务键控；--resume 时复用已落盘会话）。
         3. 记忆服务层：DB → BlockManager → MessageManager → AgentManager。
-        4. 嵌入模型（单例）注入 MessageManager。
+        4. 意图编码器（云端实例）注入 MessageManager。
         5. AgentManager 回填到 MessageManager（用于读取 AgentState）。
         6. 创建 AgentState 和结构化输出。
         7. 设置记忆工具上下文（包括标题提取器）。
@@ -392,6 +360,13 @@ def main(argv: list[str] | None = None) -> int | None:
         notify=(lambda msg: console.print(msg, style="dim")) if console else None)
     for w in service_warnings:
         (console.print(w, style="yellow") if console else print(w))
+    # api_key 缺失提示（spec §5）：CloudEmbedder 构造不校验 api_key——此处只提示
+    # 不阻断，降级路径由 router/retriever 各自消化。
+    if not config.embedding.api_key or not config.intent_encoder.api_key:
+        _msg = ("未配置云端嵌入 api_key（config.yaml embedding / intent_encoder 段）："
+                "意图路由退化为纯 BM25，RAG 检索无稠密路与精排。"
+                "注册 siliconflow.cn 获取（含实名认证）。")
+        (console.print(_msg, style="yellow") if console else print(_msg))
     try:
         llm = LLMClient(config.llm)
     except RuntimeError as e:
@@ -448,8 +423,14 @@ def main(argv: list[str] | None = None) -> int | None:
     block_manager = GitEnabledBlockManager(db, memfs_dir=memory_dir)
     block_manager.migrate_legacy_labels()   # 旧 human/persona label 一次性迁移为 profile/assistant（幂等）
     block_manager.ensure_default_blocks()   # 首启播种默认 profile/assistant 核心记忆块
-    embedder = _rag_embedder(config)
-    message_manager = MessageManager(db, embedder=embedder)
+    # 意图路由独立编码器（云端）：与 RAG 的编码器（rag_service 内部按
+    # config.embedding 构造）互不共享——两段配置、两个实例，换模型互不影响。
+    # MessageManager 的 embedder 参数当前未被使用（检索为纯 SQL），注入同实例
+    # 仅为兼容既有签名。
+    intent_encoder = CloudEmbedder(config.intent_encoder.base_url,
+                                   config.intent_encoder.api_key,
+                                   config.intent_encoder.model)
+    message_manager = MessageManager(db, embedder=intent_encoder)
     agent_manager = AgentManager(db, block_manager, message_manager)
 
     resume_hint: str | None = None
@@ -531,14 +512,23 @@ def main(argv: list[str] | None = None) -> int | None:
         PolicyEngineMiddleware(max_risk=config.max_risk),
     ]
 
-    # 意图管线:真实混合路由器 + LLM 兜底。千问 0.6B 小模型经 _rag_embedder 共享单例
-    # (首次加载需几秒,与记忆服务同模型同实例,不重复加载);各意图阈值已由标定脚本
-    # 写回 routes.yaml——这里只读已标定阈值,不做训练或阈值搜索。alpha 是稠密/稀疏
-    # 信号的融合权重,与标定脚本保持一致。模型路径本地优先
-    # (resolve_model_dir:data/models/<name>,否则回退 HF 名)。
+    # 意图管线:真实混合路由器 + LLM 兜底。意图编码器为云端实例(intent_encoder
+    # 段,与 RAG 的编码器互不共享);各意图阈值已由标定脚本写回 routes.yaml——
+    # 这里只读已标定阈值,不做训练或阈值搜索。alpha 是稠密/稀疏信号的融合权重,
+    # 与标定脚本保持一致。
+    # 路由向量缓存锚安装根（与 routes.yaml 同锚，语料源自那里，不随 workspace
+    # 重定向）。命中即零网络启动；未命中现算回写；断网降级零向量见 _encode_dense。
+    _install_root = Path(__file__).resolve().parents[1]
     router = HybridRouter(
-        encoder=embedder,
-        routes=load_routes(), alpha=0.5)
+        encoder=intent_encoder,
+        routes=load_routes(), alpha=0.5,
+        vector_cache_path=str(_install_root / "data" / "intents" / "routes_vectors.npz"))
+    # spec §5：启动期意图路由降级必须可见（黄字），不能只写 logger。缓存命中
+    # 时 add() 不走编码、dense_degraded 仍为 False——此时路由是全功能的，无告警。
+    if router.dense_degraded:
+        _msg = ("意图路由已降级为纯 BM25/稀疏：云端稠密编码不可用。"
+                "网络恢复后自动回到混合路由，无需重启。")
+        (console.print(_msg, style="yellow") if console else print(_msg))
     pipeline = IntentPipeline(router=router, structured=structured)
 
     conversation = ConversationState()

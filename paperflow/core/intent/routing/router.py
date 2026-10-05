@@ -19,6 +19,7 @@ fit()/scores() 是裁判的附属工具：前者随机搜索训练每路由阈�
 只做静态意图路由：本地内存索引、同步调用，一次查询返回单个 RouteChoice
 （命中返回路由名与融合分数；未命中返回 None，交由管线走 LLM 兜底）。
 """
+import logging
 import random
 
 import numpy as np
@@ -26,6 +27,10 @@ import numpy as np
 from paperflow.core.intent.schemas.route import Route, RouteChoice
 from paperflow.core.intent.encoders.bm25 import BM25Encoder
 from paperflow.core.intent.encoders.index import HybridLocalIndex
+from paperflow.core.intent.routing.vector_cache import (
+    cache_key, load_cached_dense, save_cached_dense)
+
+logger = logging.getLogger(__name__)
 
 
 class HybridRouter:
@@ -38,7 +43,8 @@ class HybridRouter:
     def __init__(self, encoder, sparse_encoder: BM25Encoder | None = None,
                  routes: list[Route] | None = None,
                  index: HybridLocalIndex | None = None,
-                 top_k: int = 5, alpha: float = 0.3):
+                 top_k: int = 5, alpha: float = 0.3,
+                 vector_cache_path: str | None = None):
         """初始化混合路由器。
 
         Args:
@@ -48,6 +54,8 @@ class HybridRouter:
             index: 双路索引实例，若未提供则新建。
             top_k: 检索召回时取 top_k 条候选语料（用于路由聚合）。
             alpha: 稠密分支的权重，稀疏分支权重为 (1 - alpha)。
+            vector_cache_path: 路由语料稠密向量 npz 缓存路径；命中则跳过
+                编码（零网络启动），未命中现算后回写。None 保持原行为。
         """
         self.encoder = encoder
         self.sparse_encoder = sparse_encoder or BM25Encoder()
@@ -56,8 +64,62 @@ class HybridRouter:
         self.top_k = top_k
         self.alpha = alpha
         self.score_threshold: float | None = None # 全局路由通过阈值（可被路由自身覆盖）
+        self.vector_cache_path = vector_cache_path
+        self._dense_degraded = False   # 稠密降级只告警一次
         if routes:
             self.add(routes)
+
+    @property
+    def dense_degraded(self) -> bool:
+        """稠密路是否已降级（只读；启动期 cli 据此打印黄字告警）。"""
+        return self._dense_degraded
+
+    def _static_dim(self) -> int | None:
+        """编码器的**不发网络**维度（CloudEmbedder.dim_static）；未登记模型 None。
+
+        测试替身（如 _DeadEncoder）无此属性时返回 None——其 dim 属性可能是
+        纯静态的，但约定上降级路径只信 dim_static，避免任何潜在探测请求。
+        """
+        return getattr(self.encoder, "dim_static", None)
+
+    def _cache_dim(self) -> int | None:
+        """缓存键所需维度：静态映射优先（不发网络）；未登记模型才探测，失败返 None。
+
+        未登记模型 + 断网时探测会抛——捕获后返回 None 让调用方跳过缓存，
+        而不是让 add() 在 cache_key 处中断启动（spec §5 启动永不因网络失败）。
+        """
+        static = self._static_dim()
+        if static is not None:
+            return static
+        try:
+            return self.encoder.dim
+        except Exception:
+            return None
+
+    def _encode_dense(self, texts: list[str]) -> np.ndarray:
+        """稠密编码 + 失败降级：云端不可达时退零向量（sim_d=0 → 纯稀疏判定）。
+
+        降级是一次性告警而非每次刷屏——网络恢复后下次调用自然回到稠密路
+        （每次调用都是独立 HTTP 请求，无熔断状态）。
+
+        降级必须拿得到**不发网络**的静态维度（dim_static）才能凑出形状一致的
+        零向量行。未登记模型断网时拿不到——不再静默退化为错误形状，而是抛出
+        带清晰信息的错误（启动中断只有一个明确原因，而非掩盖成别处的怪异失败）。
+        """
+        try:
+            return np.array(self.encoder(texts))
+        except Exception as e:
+            static_dim = self._static_dim()
+            if static_dim is None:
+                raise RuntimeError(
+                    f"意图稠密编码不可用，且模型 "
+                    f"{getattr(self.encoder, 'model_name', '?')!r} 未登记静态维度，"
+                    f"无法降级为零向量：{e}") from e
+            if not self._dense_degraded:
+                self._dense_degraded = True
+                logger.warning("意图稠密编码不可用（%s），降级为纯 BM25 稀疏路由；"
+                               "网络恢复后自动回到混合路由", e)
+            return np.zeros((len(texts), static_dim))
 
     def add(self, routes) -> None:
         """加入一批路由并编码入索引。
@@ -80,7 +142,26 @@ class HybridRouter:
 
         # ② 编码入索引：只用本次新增，与新增 route 名一一对应（维度匹配）
         new_utterances = [u for r in routes for u in r.utterances]
-        dense_emb = np.array(self.encoder(new_utterances))
+        dense_emb = None
+        key = None
+        if self.vector_cache_path:
+            # 缓存键用本次新增语料（缓存条目与被编码批次严格一一对应）——
+            # 生产装配是单次 add(全部路由)，此处即全量语料；若未来出现多次
+            # add，第二次的键(新语料)与第一次不同，各存各的、互不污染。
+            # 维度走 _cache_dim：静态映射优先，绝不在启动期因网络拉取维度而中断。
+            _dim = self._cache_dim()
+            if _dim is not None:
+                key = cache_key(getattr(self.encoder, "model_name", ""),
+                                _dim, new_utterances)
+                dense_emb = load_cached_dense(self.vector_cache_path, key)
+            # _dim 为 None（未登记模型且探测失败）：跳过缓存读写，直接现算——
+            # 现算失败会由 _encode_dense 给出清晰错误（而非此处探测抛裸异常）。
+        if dense_emb is None:
+            dense_emb = self._encode_dense(new_utterances)
+            # 仅真实编码成功才回写——降级零向量入缓存会把"断网"固化
+            if self.vector_cache_path and key is not None and not self._dense_degraded:
+                save_cached_dense(self.vector_cache_path, key,
+                                  getattr(self.encoder, "model_name", ""), dense_emb)
         sparse_emb = self.sparse_encoder.encode_documents(new_utterances)
         dense_scaled, sparse_scaled = self._convex_scaling(dense_emb, sparse_emb)
         self.index.add(
@@ -125,7 +206,7 @@ class HybridRouter:
 
             # 在线编码并缩放
             dense_s, sparse_s = self._convex_scaling(
-                np.array(self.encoder([text])),
+                self._encode_dense([text]),
                 self.sparse_encoder([text]),
             )
             vector = dense_s[0]
@@ -170,7 +251,7 @@ class HybridRouter:
         """
         # 在线编码并缩放
         dense_s, sparse_s = self._convex_scaling(
-            np.array(self.encoder([query])),
+            self._encode_dense([query]),
             self.sparse_encoder([query]),
         )
 

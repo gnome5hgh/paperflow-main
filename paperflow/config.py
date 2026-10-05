@@ -112,6 +112,42 @@ class VisionLLMConfig:
     context_window: int = 32768
 
 
+@dataclass
+class EmbeddingConfig:
+    """RAG 检索栈云端嵌入 + 精排配置（spec 2026-10-05-embedding-cloud-startup §6）。
+
+    云端 only——本地 sentence-transformers 已退役，api_key 缺失不阻塞启动，
+    由调用方按降级语义处理（路由退稀疏、检索跳稠密路）。
+    """
+    base_url: str = "https://api.siliconflow.cn/v1"
+    api_key: str = ""
+    embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    rerank_model: str = "Qwen/Qwen3-Reranker-0.6B"
+
+
+@dataclass
+class IntentEncoderConfig:
+    """意图路由独立稠密编码器（与 RAG 解耦，为换编码器实验留口）。
+
+    base_url/api_key 留空 = 继承 embedding 同名字段，from_env 阶段解析完毕，
+    装配侧拿到的是已合并值。
+    """
+    base_url: str = ""
+    api_key: str = ""
+    model: str = "Qwen/Qwen3-Embedding-0.6B"
+
+
+@dataclass
+class QueryRewriteConfig:
+    """query 改写模型完整三元组（此前只有模型名可配，端点/key 恒继承主 LLM）。
+
+    字段留空逐项继承 llm 同名字段；model 留空 = 沿用主模型（历史行为）。
+    """
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+
+
 _SERVER_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
@@ -236,25 +272,12 @@ class PaperFlowConfig:
     #: Milvus 集合名（单一集合，对应迁移前的向量库 collection）
     milvus_collection: str = "paperflow"
 
-    #: 嵌入模型（Qwen3-Embedding-0.6B，1024 维；维度从模型读取不硬编码）。
-    #: 实际加载路径由 resolve_model_dir 解析：`<workspace>/models/<name>/` 存在则用本地
-    #:（HF 权威权重存 data/models/，gitignored），否则回退此 HF 名（首次使用自动下载）。
-    embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
-
-    #: 重排模型（Cross-encoder，需 sentence-transformers>=5.4 原生包装）
-    rerank_model: str = "Qwen/Qwen3-Reranker-0.6B"
-
-    #: 重排候选池大小：RRF 融合后取 max(2×top_k, 此值) 个候选交给重排模型。
-    #: 业界惯例宽召回窄输出（BAAI 官方教程召回 100 → 精排 3）；本地 CPU
-    #: cross-encoder 下不宜过大，默认 24。可经 config.yaml 顶层
-    #: rag_rerank_candidates 或 PAPERFLOW_RAG_RERANK_CANDIDATES 覆盖。
-    rag_rerank_candidates: int = 24
-
-    #: query 改写用模型（spec docs/superpowers/specs/2026-10-04-rag-query-rewrite-design.md）：
-    #: 改写是轻量任务，留空回退 llm.model 主模型；换轻量模型经此覆盖，不改代码。
-    #: 可经 config.yaml 顶层 rag_query_rewrite_model 或
-    #: PAPERFLOW_RAG_QUERY_REWRITE_MODEL 覆盖。
-    rag_query_rewrite_model: str = ""
+    #: RAG 云端嵌入 + 精排（spec 2026-10-05）
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    #: 意图路由独立编码器（留空项在 from_env 尾部回填 embedding 值）
+    intent_encoder: IntentEncoderConfig = field(default_factory=IntentEncoderConfig)
+    #: query 改写模型（留空项在 from_env 尾部回填 llm 值）
+    query_rewrite: QueryRewriteConfig = field(default_factory=QueryRewriteConfig)
 
     #: 子 agent 超时覆盖表(按 agent 类型→秒数)。默认 120s 对完整流程太短,各值由
     #: audit 历史数据校准(2026-09-05,45 次 spawn 实测 + research_discovery 链路分解,
@@ -284,6 +307,12 @@ class PaperFlowConfig:
         config = cls()
         config._load_yaml(config_path)  # 第一步：YAML 文件（优先级最低）
         config._load_env()               # 第二步：环境变量（覆盖 YAML 值）
+        # 留空继承：intent_encoder ← embedding、query_rewrite ← llm。
+        # 必须在 YAML/env 全部加载后做——否则 env 覆盖会被继承值抢先顶掉。
+        config.intent_encoder.base_url = config.intent_encoder.base_url or config.embedding.base_url
+        config.intent_encoder.api_key = config.intent_encoder.api_key or config.embedding.api_key
+        config.query_rewrite.base_url = config.query_rewrite.base_url or config.llm.base_url
+        config.query_rewrite.api_key = config.query_rewrite.api_key or config.llm.api_key
         # workspace 绝对化:相对 workspace(默认 "data")派生的根会被工作区校验二次拼接
         # 成 data/data/... 双前缀,把正确绝对路径也误拦。绝对化后所有派生根一致绝对、
         # [目录] 提示也变绝对。只在此生产入口处理——测试直接构造的值不受影响。
@@ -305,8 +334,8 @@ class PaperFlowConfig:
         with open(path) as f:
             data = yaml.safe_load(f) or {}
 
-        # 嵌套处理 llm/vision 子配置：逐个字段检查，避免类型不匹配
-        for sub in ("llm", "vision"):
+        # 嵌套处理 llm/vision/embedding/intent_encoder/query_rewrite 子配置：逐个字段检查，避免类型不匹配
+        for sub in ("llm", "vision", "embedding", "intent_encoder", "query_rewrite"):
             if sub in data:
                 for key, val in data[sub].items():
                     if hasattr(getattr(self, sub), key):
@@ -317,11 +346,17 @@ class PaperFlowConfig:
                     "note_dir", "pdf_dir", "research_dir",
                     "citations_bib_path",
                     "grobid_endpoint", "milvus_uri", "milvus_collection",
-                    "embed_model", "rerank_model", "rag_rerank_candidates",
-                    "rag_query_rewrite_model",
-                    "agent_timeouts", "sleeptime_enable", "sleeptime_agent_frequency"):
+                    "agent_timeouts", "sleeptime_enable", "sleeptime_agent_frequency",
+                    "resume_replay", "resume_replay_limit"):
             if key in data:
                 setattr(self, key, data[key])
+
+        # 兼容旧配置：`rag_query_rewrite_model` 是 query 改写只有模型名可配时代的
+        # 顶层平铺键，现已收进 query_rewrite.model 三元组（spec §6）。保留此映射
+        # 是为了不破坏既有 config.yaml——旧写法仍按原语义生效，无需用户改配置。
+        # 显式 query_rewrite.model 优先（上面嵌套循环已写入），env 覆盖仍在其后。
+        if "rag_query_rewrite_model" in data and not self.query_rewrite.model:
+            self.query_rewrite.model = data["rag_query_rewrite_model"]
 
         # MCP servers：嵌套结构需校验+转换，单独分支（不在上方白名单循环里）
         if "mcp_servers" in data:
@@ -347,10 +382,7 @@ class PaperFlowConfig:
             PAPERFLOW_RESEARCH_DIR → research_dir
             PAPERFLOW_CITATIONS_BIB_PATH → citations_bib_path
             PAPERFLOW_GROBID_ENDPOINT → grobid_endpoint
-            PAPERFLOW_EMBED_MODEL    → embed_model
-            PAPERFLOW_RERANK_MODEL   → rerank_model
-            PAPERFLOW_RAG_RERANK_CANDIDATES → rag_rerank_candidates
-            PAPERFLOW_RAG_QUERY_REWRITE_MODEL → rag_query_rewrite_model
+            PAPERFLOW_RAG_QUERY_REWRITE_MODEL → query_rewrite.model
             PAPERFLOW_VISION_BASE_URL → vision.base_url
             PAPERFLOW_VISION_API_KEY  → vision.api_key
             PAPERFLOW_VISION_MODEL    → vision.model
@@ -360,7 +392,8 @@ class PaperFlowConfig:
             PAPERFLOW_RESUME_REPLAY_LIMIT → resume_replay_limit（0 = 整窗）
         """
         # 映射表：环境变量名 → (父对象名, 属性名)
-        # parent 为 "llm"/"vision" 表示写入 self.<parent>.<attr>，None 表示写入 self.<attr>
+        # parent 为 "llm"/"vision"/"query_rewrite" 表示写入 self.<parent>.<attr>，
+        # None 表示写入 self.<attr>
         env_map = {
             "PAPERFLOW_API_KEY": ("llm", "api_key"),
             "PAPERFLOW_BASE_URL": ("llm", "base_url"),
@@ -381,10 +414,7 @@ class PaperFlowConfig:
             "PAPERFLOW_GROBID_ENDPOINT": (None, "grobid_endpoint"),
             "PAPERFLOW_MILVUS_URI": (None, "milvus_uri"),
             "PAPERFLOW_MILVUS_COLLECTION": (None, "milvus_collection"),
-            "PAPERFLOW_EMBED_MODEL": (None, "embed_model"),
-            "PAPERFLOW_RERANK_MODEL": (None, "rerank_model"),
-            "PAPERFLOW_RAG_RERANK_CANDIDATES": (None, "rag_rerank_candidates"),
-            "PAPERFLOW_RAG_QUERY_REWRITE_MODEL": (None, "rag_query_rewrite_model"),
+            "PAPERFLOW_RAG_QUERY_REWRITE_MODEL": ("query_rewrite", "model"),
             "PAPERFLOW_SLEEPTIME_ENABLE": (None, "sleeptime_enable"),
             "PAPERFLOW_SLEEPTIME_FREQUENCY": (None, "sleeptime_agent_frequency"),
             "PAPERFLOW_RESUME_REPLAY": (None, "resume_replay"),
@@ -394,7 +424,7 @@ class PaperFlowConfig:
         for env_var, (parent, attr) in env_map.items():
             val = os.getenv(env_var)
             if val:
-                obj = getattr(self, parent) if parent in ("llm", "vision") else self
+                obj = getattr(self, parent) if parent in ("llm", "vision", "query_rewrite") else self
                 # 环境变量恒为字符串：按目标字段当前类型做布尔/整数转换，
                 # 否则 bool 字段收到 "false" 会被当真值、int 字段收到 "10" 仍是字符串
                 current = getattr(obj, attr)
