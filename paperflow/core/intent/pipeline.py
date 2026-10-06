@@ -42,19 +42,16 @@ from paperflow.core.intent.routing.option_reply import is_option_reply
 #:   精确率×召回率最高点）；直接改变多标签拆分口径与评测指标。
 ROUTER_STEPS_EPSILON = 0.02
 
-#: 拆分第二意图的「放松门」系数（两段式拆分，2026-10-06 可用性测评引入）。
-#: - 值：0.8。
-#: - 背景：主管道按 top_k=3 截断打分，可用性测评估计 88 条复合句里 72 条的第二
-#:   意图根本不进 top-3（哨兵分）——完整阈值门把绝大多数真复合句漏拆（split
-#:   召回 0.23）。两段式拆分：主判仍用 top_k 截断分（阈值口径不变，单意图零回归），
-#:   第二意图改在全量重扫（ROUTER_STEPS_RESCAN_K）的分数上用「τ×自身阈值 + ε」
-#:   的放松门。τ∈[0.3,0.8] 平台区，取 0.8（split F1 0.35→0.66，ε=0.02）。
+#: 拆分分支重扫的路由条数：第二意图候选来自「全类打分 + 独立阈值裁决」。
+#: - 值：12（= 全部路由，无截断）。
+#: - 背景（2026-10-06 可用性测评）：主管道 top_k=3 截断让 88 条复合句里 72 条的
+#:   第二意图拿哨兵分（根本不进候选），完整阈值门漏拆 82%。业界多意图检测的
+#:   标准形态是对全部意图类独立打分、逐类过各自阈值（JointBERT MultiATIS 变体
+#:   的 sigmoid+per-class threshold；多标签 binary relevance）——本系统的对应物
+#:   就是拆分分支全量重扫后按「自身阈值 + ε」独立裁决。主判仍用 top_k 截断分
+#:   （阈值口径不变，单意图零回归）；重扫仅多一次内存打分，代价可忽略。
 #: - 改它的后果：改变多标签拆分口径，须重跑 scripts/intent/eval（S3）与
 #:   calibration stage5 判据评测。
-ROUTER_STEPS_GATE_SCALE = 0.8
-
-#: 拆分分支重扫的路由条数：突破主管道 top_k 截断，让低频第二意图进入候选。
-#: 内存索引全量只有 12 条路由，取 12 = 无截断；仅拆分分支多打一次分，代价可忽略。
 ROUTER_STEPS_RESCAN_K = 12
 
 #: 「贴线」澄清判据的容差。
@@ -259,11 +256,9 @@ class IntentPipeline:
                 #    0.0 的线，整句会被拆得面目全非（实测未标定状态下任意复合句的
                 #    第二高分都在 0.86 以上）。所以标定之前路由层不拆分，行为与
                 #    旧版单标签完全一致；fit 写回真实阈值后拆分才自然激活。
-                # ② 分数超过「放松门 = ROUTER_STEPS_GATE_SCALE×自身阈值 +
-                #    ROUTER_STEPS_EPSILON」：候选来自全量重扫（见 rescored）——
-                #    主管道 top_k 截断会让低频第二意图拿哨兵分，完整阈值门实测
-                #    漏拆 82%（72/88），放松门在重扫分数上把 split F1 从 0.35
-                #    拉到 0.66（scripts/intent/eval 2026-10-06 基线 vs 优化）。
+                # ② 分数超过「自身阈值 + ROUTER_STEPS_EPSILON」——与主意图同一条
+                #    规则，独立裁决在重扫分数上（业界多标签惯例：全类打分 + 逐类
+                #    阈值，无第二名的特殊放宽；见 ROUTER_STEPS_RESCAN_K 注释）。
                 # ③ 是可派发的业务意图：闲聊、帮助这类系统意图永远不该出现在steps 里——它们不派发，拆进去只会让 spawn 门禁拒掉整条链。
                 steps_names = [top_name]
                 rescored = self.router.scores(routing_text(query, entities),
@@ -276,8 +271,7 @@ class IntentPipeline:
                     threshold = self._effective_threshold(name)
                     if threshold is None or threshold <= 0.0:
                         continue
-                    if score >= (ROUTER_STEPS_GATE_SCALE * threshold
-                                 + ROUTER_STEPS_EPSILON):
+                    if score >= threshold + ROUTER_STEPS_EPSILON:
                         steps_names.append(name)
                 if len(steps_names) >= 2:
                     # 至少两个业务意图都「认准了」→ 这是一句复合请求，直接在路由层
