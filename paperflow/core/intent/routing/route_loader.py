@@ -75,7 +75,8 @@ def load_routes(path: Path | None = None) -> list[Route]:
         if not r.get("utterances"):
             raise ValueError(f"route '{r['name']}' 的 utterances 为空")
         routes.append(Route(name=r["name"], utterances=r["utterances"],
-                            score_threshold=r.get("score_threshold") # 可选字段，缺失则为 None
+                            score_threshold=r.get("score_threshold"), # 可选字段，缺失则为 None
+                            steps_threshold=r.get("steps_threshold"), # 可选字段，缺失回落 score_threshold
                             )
                       )
     return routes
@@ -98,6 +99,8 @@ def save_thresholds(path: Path, routes: list[Route]) -> None:
         # 仅当阈值非 None 时才写入，保持文件整洁且加载时与默认行为一致
         if r.score_threshold is not None:
             entry["score_threshold"] = r.score_threshold
+        if r.steps_threshold is not None:
+            entry["steps_threshold"] = r.steps_threshold
         data["routes"].append(entry)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)

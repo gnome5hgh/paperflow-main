@@ -173,6 +173,20 @@ class IntentOutput(BaseModel):
         return self
 
 
+class ArbitrationChoice(BaseModel):
+    """边界仲裁的 LLM 输出契约：在两个贴近的业务候选中二选一。
+
+    与 IntentionResult（兜底全解析）不同，仲裁只回答「二选一」——候选集由
+    管线按路由分差圈定，模型只在候选内表态；越出候选的选择由管线作废回落。
+    """
+
+    #: 两个候选中更符合用户意图的那个（枚举值原样输出）
+    intent_type: IntentType
+
+    #: 对这个选择的把握 [0,1]
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
 class IntentionResult(BaseModel):
     """LLM 兜底阶段的结构化输出契约。
 
