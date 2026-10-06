@@ -9,14 +9,12 @@ from paperflow.core.intent.schemas.route import Route
 from paperflow.core.intent.schemas.intent import IntentType
 
 
-#: 2026-10-01 枚举收敛（spec 2026-10-01-intent-taxonomy-and-steps-design §3）过渡期
-#: 已移除值：switch_topic 并入 set_research_topic、refine_query 并入 search_paper。
-#: 数据 yaml（routes/eval）的重标迁移属 Task 3/4——在此之前加载侧对这两个旧值
-#: **过滤并告警**而非报错：过滤掉的旧路由不可能再被路由器选中，其 query 落到近邻
-#: 意图或 LLM 兜底（正是合并后的预期行为）；若照旧放行，pipeline 的
-#: IntentType(choice.name) 会在旧路由胜出时崩溃。Task 3/4 重标落地后手动删除
-#: 此表（显式 set 不会自己清空），过滤分支随之成为死防御（保留，防历史备份/
-#: 分支数据回流）。
+#: 枚举收敛时已移除的旧值：switch_topic 并入 set_research_topic、
+#: refine_query 并入 search_paper。加载侧对这两个旧值**过滤并告警**而非报错：
+#: 过滤掉的旧路由不可能再被路由器选中，其 query 落到近邻意图或 LLM 兜底（正是
+#: 合并后的预期行为）；若照旧放行，pipeline 的 IntentType(choice.name) 会在旧
+#: 路由胜出时崩溃。保留此表是防御历史备份/分支数据回流—— routes/eval 数据里
+#: 不应再出现这两个值，此表变成死防御后可手动删除。
 _REMOVED_VALUES = {"switch_topic", "refine_query"}
 
 
@@ -68,8 +66,7 @@ def load_routes(path: Path | None = None) -> list[Route]:
         if r["name"] not in valid_names:
             if r["name"] in _REMOVED_VALUES:
                 warnings.warn(
-                    f"route '{r['name']}' 已于 2026-10-01 枚举收敛中移除"
-                    f"（数据重标属 Task 3/4），本次加载过滤该路由",
+                    f"route '{r['name']}' 已在枚举收敛中移除，本次加载过滤该路由",
                     stacklevel=2)
                 continue
             raise ValueError(f"route 名不在 IntentType 中: {r['name']}")
@@ -115,11 +112,9 @@ def load_eval(path: Path) -> list[tuple[str, str, bool]]:
     是"自己给自己打分"的漏洞。
 
     Args:
-        path: 题集文件路径（**必填**）。题集是实验资产，归各自实验目录所有
-            （scripts/intent/calibration/goldens/{source,audited}/，将来的
-            scripts/intent/eval/goldens/ 等），不放在随仓库发布的
-            data/intent/——那里只留生产知识库 routes.yaml。故本函数不设默认路径，
-            调用方显式传入。
+        path: 题集文件路径（**必填**）。题集是实验资产，归各自实验目录所有，
+            不放在 data/intent/——那里只留生产知识库 routes.yaml。故本函数
+            不设默认路径，调用方显式传入，防止误读生产知识库当题集。
 
     Returns:
         列表，每个元素为三元组 (query文本, 意图标签, 是否为硬负样本布尔值)。
@@ -140,8 +135,7 @@ def load_eval(path: Path) -> list[tuple[str, str, bool]]:
         if e["intent"] not in valid_names:
             if e["intent"] in _REMOVED_VALUES:
                 warnings.warn(
-                    f"eval 意图 '{e['intent']}' 已于 2026-10-01 枚举收敛中移除"
-                    f"（数据重标属 Task 3/4），本次加载过滤该样本",
+                    f"eval 意图 '{e['intent']}' 已在枚举收敛中移除，本次加载过滤该样本",
                     stacklevel=2)
                 continue
             raise ValueError(f"eval 意图标签不在 IntentType 中: {e['intent']}")

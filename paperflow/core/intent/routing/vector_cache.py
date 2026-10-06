@@ -1,5 +1,5 @@
 # paperflow/core/intent/routing/vector_cache.py
-"""路由语料稠密向量落盘缓存——启动 20s 重编码的解药（spec 2026-10-05 §4）。
+"""路由语料稠密向量落盘缓存——消除每次启动对静态语料的重编码。
 
 routes.yaml 的 1684 条 utterance 是静态知识资产，向量内容只取决于
 （模型, 维度, 语料），每次启动重算纯属浪费。缓存键 = sha256(模型 + 维度 +
@@ -40,7 +40,7 @@ def load_cached_dense(path: Path, key: str) -> np.ndarray | None:
             if str(data[_KEY_FIELD]) != key:
                 return None
             dense = np.asarray(data[_DENSE_FIELD], dtype=np.float32)
-            # 显式 dim 字段必须与矩阵第二维一致（spec §4）——不一致说明文件被
+            # 显式 dim 字段必须与矩阵第二维一致——不一致说明文件被
             # 篡改/字段错位，宁可失效重算也不把形状可疑的向量灌进索引。
             if int(data[_DIM_FIELD]) != dense.shape[1]:
                 return None

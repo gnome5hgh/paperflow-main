@@ -89,10 +89,10 @@ class HybridLocalIndex:
         #   · 查询侧（xq_d_norm=0）：断网降级时 router._encode_dense 退回全零查询
         #     向量——零向量与任何向量的余弦相似度就是 0；
         #   · 文档侧（index_norm=0）：降级期 add() 入库的零向量行（断网冷启动、
-        #     缓存未命中）——网络恢复后（spec §5：恢复即自动回全功能，无需重启）
+        #     缓存未命中）——网络恢复后这些行即恢复全功能，无需重启，
         #     这些行与真实稠密行共存于同一索引，同样不得毒化稀疏分。
         # 两者的 dot 本身就是 0，把分母安全替换为 1 后 sim_d 自然为全 0，
-        # 判定回落到纯稀疏信号（spec §5 的"降级为可用纯 BM25"）。
+        # 判定回落到纯稀疏信号（断网降级为可用的纯 BM25 模式）。
         denom = index_norm * xq_d_norm
         safe_denom = np.where(denom == 0, 1.0, denom)
         # 点积：self.index 是 (n, dim)，vector 是 (dim,)，dot 得 (n,)

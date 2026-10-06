@@ -32,7 +32,7 @@ from paperflow.core.intent.routing.vector_cache import (
 
 logger = logging.getLogger(__name__)
 
-# ── fit 随机搜索超参（本文件 fit()/evaluate 消费；标定脚本可扫描） ───────────
+# ── fit 随机搜索超参（本文件 fit()/evaluate 消费） ─────────────────────────
 
 #: fit/evaluate 的批编码大小。
 #: - 值：500。
@@ -44,20 +44,20 @@ FIT_BATCH_SIZE = 500
 #: - 值：500。
 #: - 含义与单位：每轮为每个路由在当前阈值附近随机采样新阈值并评估准确率，
 #:   迭代次数（轮）。
-#: - 改它的后果：改变阈值搜索结果，需重跑 fit 标定（routes.yaml 阈值随之为新产物）。
+#: - 改它的后果：改变阈值搜索结果，需重跑 fit（routes.yaml 阈值随之为新产物）。
 FIT_MAX_ITER = 500
 
 #: fit 阈值随机搜索的采样半径。
 #: - 值：0.8。
 #: - 含义与单位：每个路由在 [当前阈值 - 0.8, 当前阈值 + 0.8] 内采样新阈值，
 #:   截断至 [0,1]；与分数同量纲。
-#: - 改它的后果：改变阈值搜索范围与最终标定产物，需重跑 fit。
+#: - 改它的后果：改变阈值搜索范围，需重跑 fit。
 FIT_SEARCH_RANGE = 0.8
 
 #: fit 阈值随机搜索的候选点数。
 #: - 值：100。
 #: - 含义与单位：每次采样时对搜索区间做 100 等分后随机取一点（点）。
-#: - 改它的后果：改变阈值搜索粒度与最终标定产物，需重跑 fit。
+#: - 改它的后果：改变阈值搜索粒度，需重跑 fit。
 FIT_NUM_CANDIDATES = 100
 
 
@@ -77,7 +77,7 @@ class HybridRouter:
         """初始化混合路由器。
 
         top_k/alpha 生产值来自 ``intent.router.*``（唯一声明点 config.py），
-        由装配侧注入；标定/测试脚本显式传实验值。
+        由装配侧注入；测试代码可显式传其他值。
 
         Args:
             encoder: 稠密编码器（实现 __call__ 返回向量列表）。
@@ -118,7 +118,7 @@ class HybridRouter:
         """缓存键所需维度：静态映射优先（不发网络）；未登记模型才探测，失败返 None。
 
         未登记模型 + 断网时探测会抛——捕获后返回 None 让调用方跳过缓存，
-        而不是让 add() 在 cache_key 处中断启动（spec §5 启动永不因网络失败）。
+        而不是让 add() 在 cache_key 处中断启动（启动永不因网络失败）。
         """
         static = self._static_dim()
         if static is not None:
@@ -375,8 +375,7 @@ class HybridRouter:
 
         每轮对每个路由的当前阈值在 ±FIT_SEARCH_RANGE 范围内
         FIT_NUM_CANDIDATES 等分随机采样一个新阈值，
-        用样本评估准确率，最终写回准确率最高的一组阈值（阈值是每路由独立的，
-        见 load_eval 对硬负样本占比的要求）。
+        用样本评估准确率，最终写回准确率最高的一组阈值（阈值是每路由独立的）。
 
         Args:
             X: 查询文本列表。

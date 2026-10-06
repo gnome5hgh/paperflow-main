@@ -27,9 +27,8 @@ class IntentType(str, Enum):
 
     枚举 = 契约 = 当前实现集——不允许"枚举允许但系统无处理路径"的悬空值。
     13 值按三类组织（category 见 INTENT_META），类别是消费分组不是路由层级。
-    2026-10-01 收敛：switch_topic 并入 set_research_topic、refine_query 并入
-    search_paper（spec 2026-10-01-intent-taxonomy-and-steps-design §3）——
-    两者与近邻意图的边界是对话史信号，路由器原理上不可学（实测 0.29/0.391），
+    历史收敛：switch_topic 并入 set_research_topic、refine_query 并入
+    search_paper——两者与近邻意图的边界是对话史信号，路由器原理上不可学，
     且派发行为与保留值完全一致。
     """
 
@@ -97,7 +96,7 @@ INTENT_LABELS_ZH: dict[IntentType, str] = {
 #: 复合拆分步数上限（唯一定义点，契约层）。
 #: - 值：3。
 #: - 含义与单位：IntentionResult.steps 允许的最大长度，也用于多标签拆分截断（步数，整数）。
-#: - 改它的后果：改变多标签拆分与 steps 护栏口径，需重跑 steps/澄清标定评测；
+#: - 改它的后果：改变多标签拆分与 steps 护栏口径；
 #:   _steps_guard 与两处提示词文案（下方 Field description、pipeline._build_llm_prompt）
 #:   均与本常量同源插值。
 #: - 是否进 YAML：否（结构契约常量）。
@@ -115,7 +114,7 @@ class IntentStep(str, Enum):
     LLM = "llm"                            # LLM 兜底阶段
     USER = "user"                          # 用户确认阶段——澄清回路的用户选择代码级落地
                                            # （管线澄清编号选择 / ask_user 带 intent_options），
-                                           # 不经路由器复判（2026-10-04 澄清统一）
+                                           # 不经路由器复判（同一句话复判只会复现同一误判）
 
 
 class IntentOutput(BaseModel):
@@ -191,12 +190,12 @@ class IntentionResult(BaseModel):
     query_rewrite: str = ""
 
     #: 复合意图的有序拆分。description 会经 StructuredOutput 展开进提示词，是模型
-    #: 判断「何时拆」的唯一依据（同 clarification 的教训——缺了它 steps 永远为空，
-    #: 见 2026-09-30 澄清修复）。填写条件：仅当输入包含 ≥2 个相互独立、分属不同
+    #: 判断「何时拆」的唯一依据（同 clarification 的教训——缺了它 steps 永远为空）。
+    #: 填写条件：仅当输入包含 ≥2 个相互独立、分属不同
     #: 意图的业务动作；每个 step 必须是单业务意图（dispatch_allowed=True），按执行
     #: 顺序排列，最多 MAX_STEPS 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时
     #: 必须留空（宁缺勿滥——steps 非空会放行 spawn 门禁，误拆即高权限口子）。
-    #: 注意：# 注释不产生 pydantic description（评审 Critical 实证）——触发契约
+    #: 注意：# 注释不会进入 pydantic description——触发契约
     #: 必须走下面的 Field(description=...) 才能进 LLM 提示词，这里仅留出处索引。
     steps: list["IntentType"] = Field(
         default=[],

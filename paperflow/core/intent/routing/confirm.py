@@ -1,11 +1,10 @@
 # paperflow/core/intent/routing/confirm.py
 """意图确认原语——「用户从候选里选定意图」的格式化与解析。
 
-澄清统一的落点（2026-10-04）：两条澄清通道（管线澄清 / agent 的 ask_user_question）
-共用本模块——问题文本末尾由代码追加编号选项（format_intent_options），用户回复由
-代码解析回意图（match_option_choice），命中即代码级写会话意图、不经路由器复判
-（同一句话复判只会复现同一误判——路径污染死锁的机理）。未命中一律回退保守路径，
-绝不猜测。
+两条澄清通道（管线澄清 / agent 的 ask_user_question）共用本模块——问题文本末尾
+由代码追加编号选项（format_intent_options），用户回复由代码解析回意图
+（match_option_choice），命中即代码级写会话意图、不经路由器复判（同一句话复判
+只会复现同一误判——路径污染死锁的机理）。未命中一律回退保守路径，绝不猜测。
 """
 import re
 
@@ -15,8 +14,7 @@ from paperflow.core.intent.routing.option_reply import OPTION_REPLY_RE
 
 #: 「短回复」长度上限（字符数）：match_option_choice 只对不超过此长度的回复做
 #: 「回复里的首个整数」宽松解析（如「选2」「我要第 3 个」）；更长文本里的整数
-#: 可能是年份/图号，不当作选项号。改它改变澄清回复的解析边界，需重跑澄清
-#: 相关测试/评测口径。标定脚本 apply_calibration.py 就地改写本值。
+#: 可能是年份/图号，不当作选项号。改它改变澄清回复的解析边界。
 SHORT_REPLY_MAX_CHARS = 12
 
 #: 短回复里的首个整数（用于「选2」「我要第 3 个」等非纯编号形态）。
