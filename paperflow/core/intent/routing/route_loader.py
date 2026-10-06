@@ -109,15 +109,13 @@ def save_thresholds(path: Path, routes: list[Route]) -> None:
 def load_eval(path: Path) -> list[tuple[str, str, bool]]:
     """eval.yaml → [(query, intent_label, is_hard)]。
 
-    独立评估样本集。is_hard 标记 query 为与其他意图近形的硬负样本：
-    约束要求每个新增意图的 held-out 中硬负样本占比 ≥30%（既有意图可低于
-    该值，整体占比约 32%）——否则 per-intent 阈值对混淆样本毫无约束力，
-    是"自己给自己打分"的漏洞。
+    独立评估样本集。is_hard 标记 query 为与其他意图近形的硬负样本——
+    这类样本是 per-intent 阈值最容易混淆的对象，是否达标由打分方自行约束，
+    加载层只做标签合法性校验、不过滤。
 
     Args:
-        path: 题集文件路径（**必填**）。题集是实验资产，归各自实验目录所有，
-            不放在 data/intent/——那里只留生产知识库 routes.yaml。故本函数
-            不设默认路径，调用方显式传入，防止误读生产知识库当题集。
+        path: 题集文件路径（**必填**，不设默认值）。题集与生产知识库
+            routes.yaml 是两类文件——不设默认路径，防止误把生产知识库当题集读。
 
     Returns:
         列表，每个元素为三元组 (query文本, 意图标签, 是否为硬负样本布尔值)。

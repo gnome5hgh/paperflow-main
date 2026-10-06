@@ -159,9 +159,13 @@ class IntentOutput(BaseModel):
         """清洗未配对的 surrogate 字符（PDF 提取 / LLM 兜底输出可能携带）。
 
         若不清洗，后续 model_dump_json 会抛 PydanticSerializationError
-        （实测输入如 '将上面内容总结为笔记' 可能触发 '\\udce5' 报错）。
+        （输入含 '\\udce5' 这类未配对代理项时触发）。
         与 security.text 的信任边界清洗思路一致：这是跨管线消费的契约类型，
-        在构造时兜住脏文本，上游调用方无需逐个清洗。"""
+        在构造时兜住脏文本，上游调用方无需逐个清洗。
+
+        Returns:
+            清洗后的自身实例（model_validator 契约）。
+        """
         self.rewritten_query = sanitize_surrogates(self.rewritten_query)
         if self.clarification:
             self.clarification = sanitize_surrogates(self.clarification)
@@ -234,6 +238,9 @@ class IntentionResult(BaseModel):
         互斥：steps 非空说明输入已被拆解执行，无需再澄清；两者同时产出属模型
         违命，clarification 让位。两字段的「要不要」上游管线均已用代码判据决定，
         这里是最后一条防线。
+
+        Returns:
+            校验后的自身实例（model_validator 契约）。
         """
         if self.steps:
             business = {t for t, (_, allowed) in INTENT_META.items() if allowed}

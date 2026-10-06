@@ -1,5 +1,5 @@
 # paperflow/rag/services/query_rewriter.py
-"""QueryRewriter：检索前对 query 做一次 LLM 改写（condense + multi-query，spec 2026-10-04）。
+"""QueryRewriter：检索前对 query 做一次 LLM 改写（condense + multi-query）。
 
 condense（结合对话历史消指代、自包含化）与 multi-query 扩写合并为**恰好一次**
 结构化 LLM 调用——检索路径同步持锁，少一次调用就少一份延迟。任何失败降级为
@@ -16,7 +16,7 @@ from typing import Any, Sequence
 from pydantic import BaseModel, Field
 
 #: 改写结构化输出的解析失败重试次数（次）：0 = 不重试，失败即降级为 [原 query]，
-#: 单次检索的失败延迟上限 = 1 次 LLM 调用（spec §6 与主流对齐）。
+#: 单次检索的失败延迟上限 = 1 次 LLM 调用，与业界主流做法一致。
 REWRITE_MAX_RETRIES = 0
 
 #: 单条历史消息截断长度（字符）：拼进改写 prompt 时每条消息保留的字符数。
@@ -30,7 +30,14 @@ _SYSTEM_PROMPT = (
 )
 
 def _build_requirements(rewrite_num: int) -> str:
-    """按 rewrite_num 生成改写要求段（条数写进 prompt，模型据此控制输出规模）。"""
+    """按 rewrite_num 生成改写要求段（条数写进 prompt，模型据此控制输出规模）。
+
+    Args:
+        rewrite_num: 要求模型给出的改写变体条数。
+
+    Returns:
+        拼进 prompt 的【要求】段文本。
+    """
     return f"""
 【要求】
 1. standalone_query：把当前问题改写为自包含的检索查询——消解指代、补全省略，不依赖上文也能看懂；保持与当前问题相同的主要语言。
@@ -40,7 +47,14 @@ def _build_requirements(rewrite_num: int) -> str:
 
 
 def _make_output_schema(rewrite_num: int) -> type[BaseModel]:
-    """按 rewrite_num 生成结构化输出 schema（字段描述写明条数，与 prompt 对齐）。"""
+    """按 rewrite_num 生成结构化输出 schema（字段描述写明条数，与 prompt 对齐）。
+
+    Args:
+        rewrite_num: rewrites 字段的期望条数，写进字段描述。
+
+    Returns:
+        结构化输出模型类。
+    """
 
     class RewriteOutput(BaseModel):
         """改写 LLM 的结构化输出 schema。"""
@@ -67,11 +81,26 @@ class RewriteResult:
 def _finalize(original: str, out: RewriteOutput, *, max_query_chars: int,
               max_queries: int) -> list[str]:
     """把 LLM 输出整理成最终查询集：逐项过滤 → 大小写归一去重 → 生成侧截
-    ``max_queries - 1`` → 原 query 兜底。"""
+    ``max_queries - 1`` → 原 query 兜底。
+
+    Args:
+        original: 用户原始 query（去空白后兜底进查询集）。
+        out: 改写 LLM 的结构化输出。
+        max_query_chars: 单条查询的字符上限，超限丢弃。
+        max_queries: 最终查询集封顶条数（含原 query）。
+
+    Returns:
+        整理后的查询列表，永不为空（至少含原 query）。
+    """
     seen: set[str] = set()
     generated: list[str] = []
 
     def add(item: Any) -> None:
+        """过滤并登记一条候选查询。
+
+        Args:
+            item: LLM 输出中的单条候选（应为字符串，其余类型静默丢弃）。
+        """
         if not isinstance(item, str):
             return
         text = item.strip()
@@ -104,6 +133,13 @@ def _clean_history(history: Sequence | None, limit: int) -> list:
 
     limit <= 0 视为不喂历史（0 的语义是「不喂」），返回 []——否则
     ``[-limit:]`` 在 limit=0 时返回整段历史，语义恰好相反。
+
+    Args:
+        history: 对话历史消息序列（含 role/content 属性）。
+        limit: 保留的最近条数上限。
+
+    Returns:
+        过滤并截断后的消息列表，输入无效时为空列表。
     """
     if not history or limit <= 0:
         return []
@@ -114,6 +150,16 @@ def _clean_history(history: Sequence | None, limit: int) -> list:
 
 
 def _build_prompt(query: str, history: list, requirements: str) -> str:
+    """拼改写 prompt：对话历史段 + 当前问题 + 要求段。
+
+    Args:
+        query: 用户当前问题。
+        history: 已过滤的历史消息列表（可为空）。
+        requirements: 改写要求段文本。
+
+    Returns:
+        完整 prompt 字符串。
+    """
     lines: list[str] = []
     if history:
         lines.append("【对话历史】（仅用于理解指代与省略，不要检索其中的内容）")
@@ -128,7 +174,14 @@ def _build_prompt(query: str, history: list, requirements: str) -> str:
 
 def _run_sync(coro):
     """把协程跑成同步：普通线程用 asyncio.run；已在事件循环内（异步宿主调用）
-    时丢到工作线程执行——不能在运行中的 loop 里再 asyncio.run（嵌套 loop 崩溃）。"""
+    时丢到工作线程执行——不能在运行中的 loop 里再 asyncio.run（嵌套 loop 崩溃）。
+
+    Args:
+        coro: 要同步执行的协程对象。
+
+    Returns:
+        协程的返回值。
+    """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -157,12 +210,20 @@ class QueryRewriter:
         self._max_query_chars = max_query_chars
         self._requirements = _build_requirements(rewrite_num)
         self._schema = _make_output_schema(rewrite_num)
-        # REWRITE_MAX_RETRIES：解析失败零重试（spec §6 与主流对齐），失败延迟上限 = 1 次调用
+        # REWRITE_MAX_RETRIES：解析失败零重试，失败延迟上限 = 1 次调用
         self._so = StructuredOutput(
             llm, StructuredOutputConfig(max_retries=REWRITE_MAX_RETRIES))
 
     def rewrite(self, query: str, history: Sequence | None = None) -> RewriteResult:
-        """改写 query，返回最终查询集。任何异常降级为 [原query]（degraded=True）。"""
+        """改写 query，返回最终查询集。任何异常降级为 [原query]（degraded=True）。
+
+        Args:
+            query: 用户当前问题。
+            history: 对话历史消息序列，用于消解指代（可为 None）。
+
+        Returns:
+            改写结果；LLM 失败时为 [原query] 的降级结果。
+        """
         try:
             out = _run_sync(self._so.extract(
                 _build_prompt(query, _clean_history(history, self._history_limit),

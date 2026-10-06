@@ -185,7 +185,15 @@ class GrobidClient:
                          title=title, biblio=biblio)
 
     def _extract_header(self, root):
-        """从 TEI header 提取主标题与书目元数据，任一层缺失返回空值不抛错。"""
+        """从 TEI header 提取主标题与书目元数据，任一层缺失返回空值不抛错。
+
+        Args:
+            root: GROBID 返回的 TEI XML 根节点。
+
+        Returns:
+            (主标题文本, 书目元数据 dict)，键含 authors/journal/year/volume/
+            number/pages（按可提取情况填充）；header 缺失时为 ("", {})。
+        """
         header = root.find("tei:teiHeader", _TEI_NS)
         if header is None:
             return "", {}

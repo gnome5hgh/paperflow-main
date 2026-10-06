@@ -32,7 +32,11 @@ class Retriever:
     """
 
     def __init__(self, service):
-        """绑定门面服务：底层组件（向量库/BM25/编码器/重排器）都经 service 惰性获取。"""
+        """绑定门面服务：底层组件（向量库/BM25/编码器/重排器）都经 service 惰性获取。
+
+        Args:
+            service: RAGService 门面实例，提供配置与各底层组件的惰性获取。
+        """
         self.service = service
         # BM25 进程级同步标记：BM25 是内存投影，进程重启即空，首次查询前必须
         # 从向量库整体重建一次才能与向量路对齐；此后增删改由索引器与向量库
@@ -59,6 +63,9 @@ class Retriever:
         - BM25 索引为空 → 只用向量检索；两路均为空 → 返回空列表。
         - 空查询集/全空串 → 归一为 [""]（与空索引组合时返回空列表，不炸）。
         - 重排返回的下标越界 → 安全截断（防御性）。
+
+        Returns:
+            精排后的块列表，最多 top_k 条；无命中时为空列表。
         """
         if isinstance(queries, str):
             queries = [queries]
@@ -81,7 +88,7 @@ class Retriever:
         rrf_k = max(1, rcfg.rrf_k)
 
         embedder = self.service._ensure_embedder()
-        # 稠密路软降级（spec §5）：云端 embed 失败该次查询退 BM25 独路，
+        # 稠密路软降级：云端 embed 失败该次查询退 BM25 独路，
         # 不抛给用户——检索可用性优先于召回完整性，警告进日志。
         try:
             qvecs = embedder([f"Instruct: {_QUERY_INSTRUCTION}\nQuery: {q}"
@@ -151,7 +158,7 @@ class Retriever:
                   for i in present]
 
         # 精排：cross-encoder 用主查询（standalone）打分；失败跳过精排，
-        # 按 RRF 初检顺序输出（spec §5 降级语义）
+        # 按 RRF 初检顺序输出（降级语义）
         reranker = self.service._ensure_reranker()
         try:
             order = reranker(primary, docs, top_k)

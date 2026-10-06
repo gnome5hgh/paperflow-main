@@ -20,7 +20,13 @@ def _recent_history(limit: int) -> list:
     in-context 消息（与模型所见一致，含压缩摘要），只留 user/assistant 且
     内容非空的尾部 limit 条（limit 由调用方从 rag.query_rewrite.history_messages
     传入，改 YAML 即生效）。上下文未绑定/manager 缺失/读取异常一律返回 []——
-    历史读取永远不打断检索（spec §6 降级铁律）。
+    历史读取永远不打断检索（降级铁律）。
+
+    Args:
+        limit: 保留的最近历史条数上限；<= 0 视为不喂历史。
+
+    Returns:
+        user/assistant 角色且内容非空的消息列表（最多 limit 条）；读取不可用时为空列表。
     """
     ctx = get_memory_context()
     if ctx is None or getattr(ctx, "message_manager", None) is None:
@@ -97,7 +103,7 @@ class RagRetrieveTool(Tool):
         if top_k is None:
             top_k = svc.config.rag.retriever.top_k
 
-        # 1.5 锁外改写（spec 2026-10-04 §5.3）：LLM 调用慢且不碰共享检索状态，
+        # 1.5 锁外改写：LLM 调用慢且不碰共享检索状态，
         # 不能占着 svc.lock 阻塞索引/其他检索；任何失败降级为 [原query]。
         queries = [query]
         rewriter = getattr(svc, "get_rewriter", None)
@@ -109,8 +115,8 @@ class RagRetrieveTool(Tool):
             except Exception as e:
                 logger.warning("query 改写失败，降级为原始 query 检索：%s", e)
 
-        # 2. 持锁调用检索器（保证与索引操作的互斥）。Milvus 中途崩溃（真实使用
-        # 测试 P1-4：容器 Exited(1) 静默降级 3.5 小时无人知晓）时异常透传会变成
+        # 2. 持锁调用检索器（保证与索引操作的互斥）。Milvus 中途崩溃（静默降级
+        # 无人知晓）时异常透传会变成
         # 千篇一律的 Tool error——这里捕获并返回固定降级声明，让上层明确知道
         # 「检索结果可能不完整/不可用」而非怀疑工具本身。
         try:

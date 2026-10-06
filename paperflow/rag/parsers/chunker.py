@@ -30,6 +30,14 @@ def context_prefix(title: str, heading: str, body: str) -> str:
     前缀随块文本同时进入 embedding、BM25 与检索展示（Anthropic contextual
     retrieval 的标题路径版：任一块被单独检回时都自带所属论文与章节）。
     标题与章节都缺省时返回原正文（PyMuPDF 回退与无标题笔记兼容）。
+
+    Args:
+        title: 文档标题（可为空串）。
+        heading: 章节标题（可为空串）。
+        body: 块正文文本。
+
+    Returns:
+        拼好前缀的块文本；标题与章节均缺省时为原正文。
     """
     label = " > ".join(x for x in (title.strip(), heading.strip()) if x)
     return f"{label}\n{body}" if label else body
@@ -86,7 +94,14 @@ class AcademicChunker:
         return heading.strip().lower().startswith(_REFERENCE_HEADS)
 
     def _split_sentences(self, text: str) -> list[str]:
-        """按句末标点把文本切成句子列表（过滤纯空白片段）。"""
+        """按句末标点把文本切成句子列表（过滤纯空白片段）。
+
+        Args:
+            text: 待切分的文本。
+
+        Returns:
+            句子列表（保留句末标点，元素非空）。
+        """
         return [p for p in _SENT_SPLIT_RE.split(text) if p and p.strip()]
 
     def _token_window(self, tokens: list[int]) -> list[str]:
@@ -94,6 +109,12 @@ class AcademicChunker:
 
         用于：1、全文超预算但切不出两句（比如一整段没句号）
              2、_pack_sentences——单个句子自己超过整个预算
+
+        Args:
+            tokens: encode 后的 token id 序列。
+
+        Returns:
+            解码回文本的窗口列表，每窗 token 数恰好 max_tokens（末窗除外）。
         """
         stride = max(1, self.max_tokens - self.overlap_tokens)
         return [self._enc.decode(tokens[start:start + self.max_tokens])
@@ -230,8 +251,14 @@ class AcademicChunker:
         """文档级：逐章节遍历，把带章节结构的一篇文档切成 Chunk 列表，跳过参考文献章节。
 
         Args:
+            rel_path: 文档相对路径（进块 id 与元数据）。
+            sections: 章节列表，每项为 (章节标题, 章节正文)。
+            source: 来源类型（"note" | "pdf"），写入块元数据。
             title: 文档标题（PDF=GROBID 主标题，笔记=H1）；与 heading 一起拼成
                    每个窗口的首行前缀，随文本进入 embedding/BM25/展示。
+
+        Returns:
+            Chunk 列表，序号在文档内全局递增；无可用章节时为空列表。
 
         其余语义（幂等 id、先删后建配合）与原实现一致，见类注释。
         """
