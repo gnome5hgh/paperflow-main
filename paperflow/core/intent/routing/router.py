@@ -363,6 +363,27 @@ class HybridRouter:
                          else (self.score_threshold or 0.0))
                 for r in self.routes}
 
+    def get_steps_threshold(self, name: str) -> float | None:
+        """拆分分支生效阈值：steps_threshold 专属优先，否则回落主判阈值链。
+
+        与 get_thresholds 同族的读取面。score_threshold 标定在主管道 top_k
+        截断口径（单意图主判），steps_threshold 标定在全量重扫口径（多标签
+        拆分），两者口径不同不可复用；路由未标定 steps_threshold 时回落
+        score_threshold 链是安全默认（量纲相近、偏保守）。
+
+        注意路由器自身的单意图裁决（_pass_routes）不消费此阈值——它只服务
+        管线的多标签拆分分支；拆分口径的阈值由标定流程单独 fit 后写进
+        routes.yaml 的 steps_threshold 字段。
+        """
+        route = self.get(name)
+        if route is None:
+            return self.score_threshold
+        if route.steps_threshold is not None:
+            return route.steps_threshold
+        if route.score_threshold is not None:
+            return route.score_threshold
+        return self.score_threshold
+
     def _update_thresholds(self, route_thresholds: dict[str, float]) -> None:
         """按名称批量覆写路由的 score_threshold（fit 训练时使用）。"""
         for r in self.routes:
