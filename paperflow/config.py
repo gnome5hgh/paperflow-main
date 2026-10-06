@@ -7,7 +7,7 @@
     2. config.yaml（可选，文件不存在则跳过；纯覆盖文件，不重复声明默认值）
     3. 环境变量（最高优先级，按 ``PAPERFLOW_`` + 配置路径大写派生）
 
-配置结构与 config.yaml 同构（spec 2026-10-05-constants-and-config-reorg §4/§6）：
+配置结构与 config.yaml 同构：
 ``runtime`` / ``corpus`` / ``intent{encoder, router}`` / ``rag{embedding, rerank,
 retriever, query_rewrite, chunker, indexer, storage, grobid, tools}`` / ``memory`` /
 ``session`` / ``agents{timeouts}``，外加保留的顶层 ``llm`` / ``vision`` / ``mcp_servers``。
@@ -38,12 +38,6 @@ def _default_compaction():
     字段默认值走此工厂，把导入推迟到首次构造时，此刻 config 已完整加载。"""
     from paperflow.core.memory.compaction import CompactionSettings
     return CompactionSettings()
-
-
-# ── constants.py 的惰性访问器 ────────────────────────────────────────────────
-# 已退役（2026-10-06）：可调参数默认值曾引用各模块 constants.py，为绕开
-# config→rag→config 循环导入需惰性访问器。默认值改在本文件字面量声明后，
-# constants.py 只剩结构契约（正则/词表/schema/修订号），不再被本文件引用。
 
 
 @dataclass
@@ -186,13 +180,12 @@ class IntentEncoderConfig:
 
 @dataclass
 class RouterConfig:
-    """混合路由器装配参数。alpha/top_k 是标定产物，默认值在本文件单点声明
-    （标定脚本 scripts/intent/calibration/apply_calibration.py 会就地改写）。"""
+    """混合路由器装配参数。"""
 
-    #: 稠密分支权重 alpha（稀疏路权重 1-alpha）。2026-10-05 标定值。
+    #: 稠密分支权重 alpha（稀疏路权重 1-alpha）。
     alpha: float = 0.15
 
-    #: 路由器每次查询检索的 utterances 条数（条）。2026-10-05 标定值。
+    #: 路由器每次查询检索的 utterances 条数（条）。
     top_k: int = 3
 
 
@@ -208,14 +201,13 @@ class IntentConfig:
 
 @dataclass
 class EmbeddingConfig:
-    """RAG 检索栈云端嵌入配置（spec 2026-10-05-embedding-cloud-startup §6）。
+    """RAG 检索栈云端嵌入配置。
 
-    云端 only——本地 sentence-transformers 已退役，api_key 缺失不阻塞启动，
-    由调用方按降级语义处理（路由退稀疏、检索跳稠密路）。
+    仅云端：api_key 缺失不阻塞启动，由调用方按降级语义处理（路由退稀疏、
+    检索跳稠密路）。
 
     batch_size/timeout/max_retries 是 CloudEmbedder 传输参数（改它们不改变
-    向量结果，无需重建索引）。精排连接已拆到 rag.rerank（spec 2026-10-05b），
-    本段只负责嵌入。
+    向量结果，无需重建索引）。精排连接在 rag.rerank，本段只负责嵌入。
     """
     base_url: str = "https://api.siliconflow.cn/v1"
     api_key: str = ""
@@ -230,7 +222,7 @@ class EmbeddingConfig:
 
 @dataclass
 class RerankConfig:
-    """精排模型独立连接配置（spec 2026-10-05b §2）——与 embedding 的传输参数解耦。
+    """精排模型独立连接配置——与 embedding 的传输参数解耦。
 
     base_url/api_key 留空 = 继承 rag.embedding 同名字段，from_env 阶段解析完毕，
     装配侧拿到的是已合并值（增量继承语义与 intent.encoder 一致）。
@@ -247,7 +239,7 @@ class RerankConfig:
 
 @dataclass
 class RetrieverConfig:
-    """混合检索参数（改动需重评检索质量；标定记录见 scripts/rag/calibration/）。"""
+    """混合检索参数（改动需重评检索质量）。"""
 
     #: 默认返回块数（条）。
     top_k: int = 5
@@ -255,29 +247,27 @@ class RetrieverConfig:
     bm25_topk: int = 30
     #: 向量粗召回数（条）。
     vector_topk: int = 30
-    #: 重排候选池下限（条）；实际池大小 = max(top_k * 2, 本值)，倍率是
-    #: rag.constants.RERANK_CANDIDATE_MULTIPLIER（结构常量，不可配）。
+    #: 重排候选池下限（条）；实际池大小 = max(top_k * 2, 本值)。
     rerank_candidates: int = 24
-    #: RRF 融合常数 k（无量纲；2026-10-05 标定，证据 scripts/rag/calibration/results/rrf_k_frozen.json）。
+    #: RRF 融合常数 k（无量纲；越大相邻名次间的分数差越小、融合越平滑）。
     rrf_k: int = 30
 
 
 @dataclass
 class QueryRewriteConfig:
-    """query 改写模型完整三元组（此前只有模型名可配，端点/key 恒继承主 LLM）。
+    """query 改写模型连接与行为参数。
 
-    字段留空逐项继承 llm 同名字段；model 留空 = 沿用主模型（历史行为）。
+    base_url/api_key 留空逐项继承 llm 同名字段；model 留空沿用主模型。
     """
     base_url: str = ""
     api_key: str = ""
     model: str = ""
     #: 喂给改写（condense）的最近对话消息条数（条）。
     history_messages: int = 6
-    #: prompt 要求的改写变体条数（条）：改它改变改写 prompt 与查询集规模，需重评
-    #: （2026-10-05 标定记录 scripts/rag/calibration/results/）。
-    rewrite_num: int = 3
+    #: prompt 要求的改写变体条数（条）：改它改变改写 prompt 与查询集规模，需重评。
+    rewrite_num: int = 1
     #: 最终查询集封顶（条，含原 query）：生成侧最多占 max_queries-1 席，最后 1 席留给原 query。
-    max_queries: int = 4
+    max_queries: int = 2
     #: 单条改写查询的字符上限（字符）：超过视为 LLM 输出异常并丢弃。
     max_query_chars: int = 200
 
@@ -380,15 +370,10 @@ class AgentsConfig:
     """子 agent 配置。
 
     timeouts 是自由 dict（agent 类型 → 秒数），仅 YAML 可配（dict 无自然 env 形态）。
-    默认 120s 对完整流程太短，各值由 audit 历史数据校准（2026-09-05，45 次 spawn
-    实测 + research_discovery 链路分解，见
-    docs/superpowers/specs/2026-09-05-agent-timeout-recalibration-design.md）：
-    - noter 900:纯笔记端到端实测稳态 610-670s(含内审重试),600 帽 4/4 任务超线;
-    - searcher 420:常规检索 max 130s,但新颖性大批量检索实测 1/4 撞 300s 帽;
-    - reviewer 300:全文审阅类稳态 ≈185-278s,180 帽 5/7 任务撞线;
-    - researcher 1800:完整链路实测 1202s 被截断,估算 1300-1500s + 余量;
-    - qa-agent 180:显式化(此前隐式落 120s 类默认),精读任务留 2 倍余量。
-    撞帽复测触发点:任一 agent 再撞新帽即需重新评估该值,而非继续调大。
+    各值按该 agent 完整任务的典型时长留余量设定：noter 覆盖含内审重试的纯笔记
+    端到端，searcher 覆盖大批量新颖性检索，reviewer 覆盖全文审阅，researcher
+    覆盖完整研究链路，qa-agent 覆盖精读问答。某 agent 反复撞帽说明任务时长
+    需要重新评估，而不是继续调大。
     """
 
     timeouts: dict[str, int] = field(
@@ -405,7 +390,7 @@ _SERVER_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 class McpServerConfig:
     """单个 MCP server 的接入配置（config.yaml 顶层 mcp_servers 段；仅 YAML，无环境变量形态）。
 
-    语义见 spec 2026-10-01-mcp-client-design.md §4：过滤顺序 allowed → disabled →
+    过滤顺序 allowed → disabled →
     风险分级；写类工具默认禁用，write_tools 显式开启；uvx 冷启动可能下载包，
     connect_timeout 默认高于业界 5s。
     """
@@ -462,7 +447,7 @@ def _is_scalar(val) -> bool:
 
     非 dataclass、非 dict/list 的自定义对象（如 ``compaction`` 的
     ``CompactionSettings`` 普通类实例）没有通用覆写语义：把 YAML/env 值直接
-    setattr 成裸 dict/str 会静默破坏其行为，必须跳过（Task 4 评审 carry-over）。
+    setattr 成裸 dict/str 会静默破坏其行为，必须跳过。
     """
     return val is None or isinstance(val, (str, int, float, bool))
 
