@@ -273,6 +273,13 @@ class QueryRewriteConfig:
     model: str = ""
     #: 喂给改写（condense）的最近对话消息条数（条）。
     history_messages: int = 6
+    #: prompt 要求的改写变体条数（条）：改它改变改写 prompt 与查询集规模，需重评
+    #: （2026-10-05 标定记录 scripts/rag/calibration/results/）。
+    rewrite_num: int = 3
+    #: 最终查询集封顶（条，含原 query）：生成侧最多占 max_queries-1 席，最后 1 席留给原 query。
+    max_queries: int = 4
+    #: 单条改写查询的字符上限（字符）：超过视为 LLM 输出异常并丢弃。
+    max_query_chars: int = 200
 
 
 @dataclass

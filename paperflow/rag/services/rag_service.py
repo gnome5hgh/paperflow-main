@@ -286,7 +286,10 @@ class RAGService:
             )
             self._rewriter = QueryRewriter(
                 LLMClient(llm_cfg),
-                history_limit=self.config.rag.query_rewrite.history_messages)
+                history_limit=self.config.rag.query_rewrite.history_messages,
+                rewrite_num=self.config.rag.query_rewrite.rewrite_num,
+                max_queries=self.config.rag.query_rewrite.max_queries,
+                max_query_chars=self.config.rag.query_rewrite.max_query_chars)
         return self._rewriter
 
     # ---------- 对外便捷入口（索引/检索持同一把锁） ----------
