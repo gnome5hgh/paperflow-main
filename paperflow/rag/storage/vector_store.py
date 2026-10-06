@@ -115,6 +115,12 @@ class VectorStore:
 
         例如 "C:\\Users\\a.md" → "C:\\\\Users\\a.md"，否则破坏 filter 语法。
         从 delete_doc 抽出，供按值过滤的查询共用。
+
+        Args:
+            value: 待转义的过滤值（路径等字符串）。
+
+        Returns:
+            转义后可安全嵌入过滤表达式的字符串。
         """
         return value.replace("\\", "\\\\").replace('"', '\\"')
 

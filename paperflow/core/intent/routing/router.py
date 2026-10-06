@@ -103,7 +103,11 @@ class HybridRouter:
 
     @property
     def dense_degraded(self) -> bool:
-        """稠密路是否已降级（只读；启动期 cli 据此打印黄字告警）。"""
+        """稠密路是否已降级（只读；启动期 cli 据此打印黄字告警）。
+
+        Returns:
+            True 表示本进程内稠密编码至少失败过一次、已降级为纯稀疏。
+        """
         return self._dense_degraded
 
     def _static_dim(self) -> int | None:
@@ -111,6 +115,9 @@ class HybridRouter:
 
         测试替身（如 _DeadEncoder）无此属性时返回 None——其 dim 属性可能是
         纯静态的，但约定上降级路径只信 dim_static，避免任何潜在探测请求。
+
+        Returns:
+            静态维度；编码器未登记该属性时 None。
         """
         return getattr(self.encoder, "dim_static", None)
 
@@ -119,6 +126,9 @@ class HybridRouter:
 
         未登记模型 + 断网时探测会抛——捕获后返回 None 让调用方跳过缓存，
         而不是让 add() 在 cache_key 处中断启动（启动永不因网络失败）。
+
+        Returns:
+            可用作缓存键的维度；探测失败时 None。
         """
         static = self._static_dim()
         if static is not None:
@@ -137,6 +147,15 @@ class HybridRouter:
         降级必须拿得到**不发网络**的静态维度（dim_static）才能凑出形状一致的
         零向量行。未登记模型断网时拿不到——不再静默退化为错误形状，而是抛出
         带清晰信息的错误（启动中断只有一个明确原因，而非掩盖成别处的怪异失败）。
+
+        Args:
+            texts: 待稠密编码的文本列表。
+
+        Returns:
+            向量矩阵，形状 (len(texts), dim)；降级时为同形状零向量。
+
+        Raises:
+            RuntimeError: 编码失败且模型未登记静态维度、无法降级时。
         """
         try:
             return np.array(self.encoder(texts))
@@ -208,7 +227,15 @@ class HybridRouter:
             dense: np.ndarray,  # (n, dim) 稠密向量批次，每行一条
             sparse: list[dict[int, float]],  # 稀疏向量批次，每项 {token_id: 权重}
     ) -> tuple[np.ndarray, list[dict[int, float]]]:
-        """按 alpha 凸组合缩放：dense × alpha，sparse × (1-alpha)。"""
+        """按 alpha 凸组合缩放：dense × alpha，sparse × (1-alpha)。
+
+        Args:
+            dense: 稠密向量批次 (n, dim)，每行一条。
+            sparse: 稀疏向量批次，每项 {token_id: 权重}。
+
+        Returns:
+            缩放后的 (稠密向量矩阵, 稀疏向量列表)，与输入一一对应。
+        """
         scaled_dense = np.array(dense) * self.alpha
         scaled_sparse = [{k: v * (1 - self.alpha) for k, v in d.items()}
                          for d in sparse]
@@ -354,11 +381,23 @@ class HybridRouter:
         return None
 
     def get(self, name: str) -> Route | None:
-        """按名称查找路由，未找到返回 None。"""
+        """按名称查找路由，未找到返回 None。
+
+        Args:
+            name: 路由名（枚举值）。
+
+        Returns:
+            对应的 Route 对象；不存在时 None。
+        """
         return next((r for r in self.routes if r.name == name), None)
 
     def get_thresholds(self) -> dict[str, float]:
-        """返回每个路由当前生效的阈值（路由自身阈值优先，否则用全局阈值）。"""
+        """返回每个路由当前生效的阈值（路由自身阈值优先，否则用全局阈值）。
+
+        Returns:
+            {路由名: 生效阈值}；整条链未设时以 0.0 占位（与全局 None 的
+            「无门槛恒过」语义对齐）。
+        """
         return {r.name: (r.score_threshold if r.score_threshold is not None
                          else (self.score_threshold or 0.0))
                 for r in self.routes}
@@ -391,7 +430,11 @@ class HybridRouter:
         return self.score_threshold
 
     def _update_thresholds(self, route_thresholds: dict[str, float]) -> None:
-        """按名称批量覆写路由的 score_threshold（fit 训练时使用）。"""
+        """按名称批量覆写路由的 score_threshold（fit 训练时使用）。
+
+        Args:
+            route_thresholds: {路由名: 新阈值}；不在其中的路由保持原值。
+        """
         for r in self.routes:
             if r.name in route_thresholds:
                 r.score_threshold = route_thresholds[r.name]

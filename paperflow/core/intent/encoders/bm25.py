@@ -76,6 +76,9 @@ class JiebaTokenizer:
         """从一批文本构建词表；已冻结（vocab_size > 1）时直接返回，不重建。
 
         首次 fit 后词典即冻结，见类 docstring 的词典冻结语义。
+
+        Args:
+            texts: 训练语料文本列表（从中收集词表）。
         """
         if self.vocab_size > 1:      # 已冻结：首次 fit 后不再重建（token_id 语义稳定）
             return
@@ -86,7 +89,14 @@ class JiebaTokenizer:
                     self.vocab_size += 1
 
     def tokenize(self, texts: list[str]) -> np.ndarray:
-        """分词 → ids，pad 到批内最大长度（返回二维矩阵供 _df 的 mask 索引使用）。"""
+        """分词 → ids，pad 到批内最大长度（返回二维矩阵供 _df 的 mask 索引使用）。
+
+        Args:
+            texts: 待分词的文本列表。
+
+        Returns:
+            token id 矩阵，形状 (n_texts, 批内最大长度)，未登录词记 0、尾部补 0。
+        """
         # 对每个文本做 jieba 切词，查表映射为 id，过滤空词
         id_lists = [[self.vocab.get(w, 0) for w in jieba.lcut(t) if w.strip()]
                     for t in texts]

@@ -136,7 +136,7 @@ class RAGService:
 
         Lite（本地文件 uri）恒可连；Standalone 未启动则 False。结果缓存在
         进程生命周期内——中途容器崩溃不由本方法感知，运行期可观测性由
-        rag_retrieve 工具的固定降级声明保证（真实使用测试 P1-4）。
+        rag_retrieve 工具的固定降级声明保证。
 
         Returns:
             bool: True 表示可连接。

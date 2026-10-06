@@ -127,9 +127,17 @@ class Bm25Index:
         return [ids[i] for i in order[:top_k]]
 
     def is_empty(self) -> bool:
-        """索引中是否还没有任何文档。"""
+        """索引中是否还没有任何文档。
+
+        Returns:
+            True 表示索引为空（ BM25 路不可用，检索退纯向量路）。
+        """
         return len(self._docs) == 0
 
     def count(self) -> int:
-        """索引中的文档数（供测试断言增量幂等，与向量库计数对齐）。"""
+        """索引中的文档数（供测试断言增量幂等，与向量库计数对齐）。
+
+        Returns:
+            已登记的文档条数。
+        """
         return len(self._docs)

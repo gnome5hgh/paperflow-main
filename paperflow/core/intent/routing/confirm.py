@@ -27,6 +27,12 @@ def format_intent_options(options: list[IntentType]) -> str:
 
     编号顺序即 match_option_choice 的解析顺序——两处必须同源（同一个列表按序
     展示、按序解析），调用方不得在展示与解析之间重排。
+
+    Args:
+        options: 候选意图列表（按展示顺序）。
+
+    Returns:
+        「请回复编号选择：1) … / 2) …」形式的编号选项行。
     """
     labels = [INTENT_LABELS_ZH.get(t, t.value) for t in options]
     return "请回复编号选择：" + " / ".join(

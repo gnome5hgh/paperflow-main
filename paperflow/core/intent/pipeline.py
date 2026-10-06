@@ -64,7 +64,14 @@ ROUTER_ARBITRATION_MARGIN = 0.15
 
 
 def _is_business(name: str) -> bool:
-    """路由名是否为可派发业务意图；未知路由名（不在枚举）一律非业务。"""
+    """路由名是否为可派发业务意图；未知路由名（不在枚举）一律非业务。
+
+    Args:
+        name: 路由名（路由层的字符串标签）。
+
+    Returns:
+        True 表示该意图可派发执行（非闲聊/帮助/超范围）。
+    """
     try:
         return INTENT_META[IntentType(name)][1]
     except KeyError:
@@ -73,9 +80,9 @@ def _is_business(name: str) -> bool:
 
 #: 路由前要剥离的实体键——路径类实体。文件名常含论文主题词（如
 #: ".../Link-Prediction-in-Knowledge-Graphs.pdf"），整段进入编码器后，稀疏与稠密
-#: 两路都会被主题词拽向「主题相近」的意图（实测「<知识图谱链接预测的 PDF 路径>
-#: 这篇论文是干什么的」被 set_research_topic 以 0.716 险胜 analyze_paper 0.687——
-#: 动作词「这篇论文是干什么的」单独路由时两路分数都到不了该意图）。意图由用户
+#: 两路都会被主题词拽向「主题相近」的意图（如「<某论文路径> 这篇论文是干什么的」
+#: 会险胜给主题相近的意图，而动作词「这篇论文是干什么的」单独路由时两路分数
+#: 都到不了 analyze_paper 一类意图）。意图由用户
 #: 的动作词决定，路径只是载荷：剥离后再路由，剥离后为空白则回退原文（纯路径
 #: 输入仍可路由）。arxiv_id/doi/figure 短且不含主题词序列，不剥离。
 _ROUTING_STRIP_KEYS = ("pdf_path", "note_path")
@@ -461,6 +468,12 @@ class IntentPipeline:
         """路由生效阈值：路由专属优先，否则全局；全局也未设则 None（无门槛恒过）。
 
         与 router._pass_routes 的阈值选取逻辑保持一致。
+
+        Args:
+            name: 路由名（枚举值）。
+
+        Returns:
+            生效阈值；整条链都未设时返回 None。
         """
         route = self.router.get(name)
         if route is not None and route.score_threshold is not None:
@@ -468,7 +481,15 @@ class IntentPipeline:
         return self.router.score_threshold
 
     def _passes(self, name: str, score: float) -> bool:
-        """单路由阈值裁决：阈值未设恒过，否则 score >= 阈值。"""
+        """单路由阈值裁决：阈值未设恒过，否则 score >= 阈值。
+
+        Args:
+            name: 路由名（枚举值）。
+            score: 该路由的融合分数。
+
+        Returns:
+            True 表示该候选通过主判过滤。
+        """
         threshold = self._effective_threshold(name)
         return True if threshold is None else score >= threshold
 
@@ -517,6 +538,14 @@ class IntentPipeline:
             选择越出候选时返回 None（调用方回落）。
         """
         def label(t: IntentType) -> str:
+            """意图的展示标签：中文短名 + 枚举值（写入仲裁 prompt 的候选行）。
+
+            Args:
+                t: 候选意图枚举值。
+
+            Returns:
+                「中文名(枚举值)」形式的标签字符串。
+            """
             return f"{INTENT_LABELS_ZH.get(t, t.value)}({t.value})"
 
         prompt = (
@@ -540,12 +569,26 @@ class IntentPipeline:
         )
 
     def _clip01(self, score: float) -> float:
-        """融合分数截断到 [0,1]（cosine 可为负、稀疏点积可 >1，非概率）。"""
+        """融合分数截断到 [0,1]（cosine 可为负、稀疏点积可 >1，非概率）。
+
+        Args:
+            score: 融合分数。
+
+        Returns:
+            截断到 [0,1] 区间内的分数。
+        """
         return max(0.0, min(1.0, score))
 
     def _ambiguous(self, scored: list[tuple[str, float]]) -> bool:
-        """判断当前输入是否值得向用户澄清——委托模块级 is_ambiguous（S1/S2 判据
-        与判定表见其 docstring；判定表单测在 tests/intent/test_pipeline.py）。"""
+        """判断当前输入是否值得向用户澄清——委托模块级 is_ambiguous
+        （S1/S2 判据与判定表见其 docstring）。
+
+        Args:
+            scored: 主判分数 [(路由名, 融合分数)]，按分数降序。
+
+        Returns:
+            True 表示该向用户澄清（触发强制澄清轮）。
+        """
         return is_ambiguous(scored, self._effective_threshold)
 
     # ------------------------------------------------------------------
@@ -563,9 +606,9 @@ class IntentPipeline:
 
         - LLM 违命没写 clarification 时，用业务候选前两名合成模板问题（二选一
           问法；只有一个候选就开放式确认）。若连模板都不兜底，判据白算、澄清
-          链路退化成永远不触发的死路径——这正是上一版澄清机制修过的病。
+          链路退化成永远不触发的死路径。
         - intent_type/confidence 照常产出不缺席：澄清是搭在正常识别结果上的
-          附加通道，不改变单标签答案，所以离线评估指标不受澄清轮影响。
+          附加通道，不改变单标签答案。
 
         steps 显式为空：澄清和拆分互斥——都要拆了就不需要问，都要问了就别拆。
 
@@ -574,6 +617,15 @@ class IntentPipeline:
         ——文案权在模型、选项枚举权在代码：散文式提问无法保证可解析，编号行
         保证用户回复经 match_option_choice 确定性解析回意图，落地为
         会话意图（runtime 在 run 内同步问、代码级落地，无跨轮状态）。
+
+        Args:
+            query: 用户原始输入（LLM 生成澄清文案时看原文）。
+            entities: 第 1 级实体提取的产出，透传给结果。
+            prev_intent: 上一轮意图，透传给结果。
+            scored: 主判分数（降序），供 LLM prompt 近失候选与模板合成取前两名。
+
+        Returns:
+            source=LLM、clarification 非空的 IntentOutput（steps 恒为空）。
         """
         candidates = [IntentType(name) for name, score in scored
                       if score > 0 and _is_business(name)][:2]
@@ -593,7 +645,16 @@ class IntentPipeline:
 
     async def _llm_extract(self, query: str, scored: list[tuple[str, float]],
                            force_clarification: bool) -> IntentionResult:
-        """调结构化输出模块做 LLM 兜底，注入路由近失候选（top-k 融合分数）。"""
+        """调结构化输出模块做 LLM 兜底，注入路由近失候选（top-k 融合分数）。
+
+        Args:
+            query: 用户原始输入。
+            scored: 主判分数（降序），作为近失候选写进 prompt。
+            force_clarification: 是否强制澄清轮（切换 prompt 里的 clarification 条款）。
+
+        Returns:
+            LLM 结构化输出的 IntentionResult；调用失败时为 UNCLASSIFIED 兜底值。
+        """
         return await self.structured.extract(
             prompt=self._build_llm_prompt(query, scored,
                                           force_clarification=force_clarification),
@@ -607,7 +668,14 @@ class IntentPipeline:
 
         按业务候选分数取前两名：有两个就二选一地问（「你想让我「A」还是「B」？」），
         只有一个就开放式确认。标签用 INTENT_LABELS_ZH 的中文短名——这个问题会
-        原样打给用户，枚举英文值用户看不懂。"""
+        原样打给用户，枚举英文值用户看不懂。
+
+        Args:
+            scored: 主判分数 [(路由名, 融合分数)]，按分数降序。
+
+        Returns:
+            合成的澄清问题文本（永不为空）。
+        """
         biz = [IntentType(name) for name, score in scored
                if score > 0 and _is_business(name)][:2]
         labels = [INTENT_LABELS_ZH.get(t, t.value) for t in biz]

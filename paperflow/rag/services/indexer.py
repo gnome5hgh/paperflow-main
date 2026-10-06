@@ -21,9 +21,9 @@
 
 状态文件另带一个旁挂的 ``parsers`` 映射（``{绝对路径: "grobid"|"pymupdf"}``，
 仅 PDF 有键），记录每篇 PDF 本次实际使用的解析器——纯诊断，**不参与**上述
-版本门控（spec §7 边界 4：GROBID 服务抖动若触发全量重扫代价过高）。它用于
+版本门控（GROBID 服务抖动若触发全量重扫代价过高，是刻意折中）。它用于
 识别「GROBID 降级期间被索引、恢复后因 mtime 未变而永不刷新」的 PDF。``docs``
-的取值形状保持 ``{绝对路径: mtime 浮点数}`` 不变——外部增量评测脚本按数值
+的取值形状保持 ``{绝对路径: mtime 浮点数}`` 不变——外部消费方按数值
 比对 mtime，改成对象会静默破坏其增量跳过能力。
 """
 import hashlib
@@ -42,7 +42,7 @@ RECIPE_LOGIC_REVISION = 1
 
 
 def _recipe_hash(cfg) -> str:
-    """把「决定产出哪些块」的配置输入散列成状态版本指纹（spec §7）。
+    """把「决定产出哪些块」的配置输入散列成状态版本指纹。
 
     输入四要素：
     - ``RECIPE_LOGIC_REVISION``：切块/解析算法逻辑的手动修订号（参数枚举不到的改动兜底）；
@@ -52,7 +52,7 @@ def _recipe_hash(cfg) -> str:
       向量混在同一 Milvus 集合、检索质量静默下降。
 
     ``sort_keys=True`` 保证同输入稳定；``ensure_ascii=False`` 让中文模型名可读
-    （不影响哈希值）。GROBID 降级不纳入指纹（spec §7 边界 4：服务抖动若触发全量
+    （不影响哈希值）。GROBID 降级不纳入指纹（服务抖动若触发全量
     重扫代价过高，作为已知折中）。
 
     Args:
@@ -114,6 +114,9 @@ class RagIndexer:
 
         原为 __init__ 快照，构造后 config 被改会得到陈旧指纹、使状态版本比对
         失效；指纹只是 5 个标量的 sha256，现算成本可忽略。
+
+        Returns:
+            64 位十六进制 sha256 指纹。
         """
         return _recipe_hash(self.service.config)
 
@@ -182,7 +185,7 @@ class RagIndexer:
 
         ``parsers`` 是旁挂的**诊断**映射（{绝对路径: "grobid"|"pymupdf"}，
         仅 PDF 有键），记录每篇 PDF 本次实际使用的解析器，**不参与任何失效
-        判断**（spec §7 边界 4：GROBID 降级不纳入配方哈希）。老状态文件缺该
+        判断**（GROBID 降级不纳入配方哈希）。老状态文件缺该
         键、或为裸 dict 旧格式时，一律返回 ``{}``——不触发重扫。
 
         Returns:
@@ -208,8 +211,8 @@ class RagIndexer:
 
         Args:
             state: {绝对路径: mtime} 映射；版本号（配方哈希）由本方法统一补上，
-                   调用方只管 docs 内容。**取值形状必须是 float**——外部增量
-                   评测脚本（run_eval.py）按数值比对 mtime，改成对象会使其永远
+                   调用方只管 docs 内容。**取值形状必须是 float**——外部消费方
+                   按数值比对 mtime，改成对象会使其永远
                    判定「已变更」而静默丢失增量能力。
             parsers: 旁挂诊断映射 {绝对路径: 解析器 id}，仅 PDF 有键；缺省空。
                      始终写入 ``parsers`` 键（空即 ``{}``），纯诊断、不参与失效判断。
@@ -227,7 +230,13 @@ class RagIndexer:
 
         记录用途：识别「GROBID 降级期间被索引、恢复后因 mtime 未变而永不刷新」
         的 PDF（其块缺表格/图注块）。本字段纯诊断，不参与状态失效判断
-        （spec §7 边界 4：GROBID 抖动纳入指纹会引发大量重扫，故不纳入）。
+        （GROBID 抖动纳入指纹会引发大量重扫，故不纳入）。
+
+        Args:
+            path: 文档路径。
+
+        Returns:
+            解析器 id（"grobid" | "pymupdf"）；非 PDF 返回 None。
         """
         if path.suffix.lower() != ".pdf":
             return None
@@ -301,6 +310,12 @@ class RagIndexer:
         idx = start_index
 
         def _add(heading: str, text: str) -> None:
+            """折叠空白、跳过空白项后把一个表格/图注块追加进 chunks（序号自增）。
+
+            Args:
+                heading: 块标题（"[表格]" 或 "[图注]"）。
+                text: 表格/图注原始文本。
+            """
             nonlocal idx
             # ① 折叠连续空白：GROBID 表格是单元格拼接，换行/多空格只是噪声，压平后对 BM25 分词更干净
             text = " ".join(text.split())
