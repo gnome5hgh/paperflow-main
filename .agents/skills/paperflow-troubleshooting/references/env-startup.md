@@ -41,3 +41,8 @@
 - **根因**：启动自动探测 Milvus/GROBID，服务未起时会拉起 docker（可能很慢或失败刷屏）。
 - **修法**：`PAPERFLOW_SKIP_BOOTSTRAP=1` 跳过预检；服务失败本就只警告不阻塞（软依赖降级）。
 - **验证**：设变量后启动秒进 REPL，无服务探测输出。
+
+### 改了 `config.yaml` 里的一个字段，程序行为完全没变（无报错、静默不生效）
+- **根因**：2026-10-05 配置模块化（spec 2026-10-05-constants-and-config-reorg）后 `config.yaml` 是纯覆盖文件，加载器 `_merge`（`paperflow/config.py`）对 dataclass 树里不存在的键**静默忽略、不报错**；键名一次性迁移且无兼容层——按旧平铺键名（如 `milvus_uri`，`docs/SERVER.md` 仍这么写）或拼错、放错层级的字段改动等于没改。另注意：优先级 `PAPERFLOW_*` 环境变量 > YAML，且 config 仅启动时 `from_env()` 加载一次，改完必须重启进程。
+- **修法**：键名/层级对照 `config.example.yaml` 与 `paperflow/config.py` 的 dataclass 字段路径改写（旧→新键映射见 spec §4）；重启进程；确认 shell/`.env` 无同名 `PAPERFLOW_*` 变量顶掉 YAML 值。
+- **验证**：`conda run -n paperflow python -c "from paperflow.config import PaperFlowConfig; print(PaperFlowConfig.from_env().<改动字段的路径，如 rag.storage.uri>)"` 输出与 config.yaml 改后的值一致；不一致时按 `tests/core/test_config.py` 的 `_leaf_unknowns` 口径扫 config.yaml 未生效键（未知键列表应只为命中的旧键）。
