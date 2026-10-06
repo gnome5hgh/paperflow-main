@@ -51,23 +51,15 @@ ROUTER_STEPS_EPSILON = 0.02
 #:   （该问不问），调整前须在歧义句题集上重新权衡。
 CLARIFY_FLOOR_DELTA = 0.05
 
-#: 「竞争」澄清判据的分差线。
-#: - 值：0.05。
-#: - 含义与单位：分数最高的两个业务候选意图分差小于此值时，认为两个都有可能、
-#:   路由器无法取舍（如「这本书讲什么」落在问答与精读分析之间），让用户二选一。
-#:   与上述两值同量纲。
-#: - 改它的后果：改变澄清触发口径——调大问得多、调小问得少。
-CLARIFY_MARGIN = 0.05
-
-#: 边界仲裁的触发分差线。
+#: 「分差」判据的共用线：边界仲裁先问 LLM，仲裁不成再由「竞争」澄清问用户。
 #: - 值：0.15。
 #: - 含义与单位：单业务意图过线后，第二名业务候选与第一名的分差小于此值时，
-#:   说明路由器没把两个候选拉开可信差距——把两个候选交给 LLM 结合意图定义
-#:   二选一仲裁一次；仲裁失败（异常/越出候选）回落澄清判据，不打断主流程。
-#:   与融合分数同量纲。经验上正确判定的分差远大于误判的分差，此值取两者
-#:   分布的分离带内。
-#: - 改它的后果：调大 → 更多请求进 LLM 仲裁（边界纠错↑，延迟/成本↑）；
-#:   调小 → 更少仲裁，更多贴近案例直接按路由器判定放行。
+#:   说明路由器没把两个候选拉开可信差距。处置分两级：先交给 LLM 结合意图定义
+#:   二选一仲裁；仲裁失败（异常/越出候选）则转入澄清判据问用户。两边共用同一条
+#:   线——若澄清用小线（如 0.05），分差在带外时仲裁失败会直接硬选第一名，把
+#:   没把握的判定放行。与融合分数同量纲。
+#: - 改它的后果：调大 → 更多请求进仲裁与澄清（边界纠错↑，LLM 成本与打扰↑）；
+#:   调小 → 更少仲裁/澄清，更多贴近案例按路由器判定放行。
 ROUTER_ARBITRATION_MARGIN = 0.15
 
 
@@ -124,9 +116,9 @@ def is_ambiguous(scored: list[tuple[str, float]],
     - S1 贴线：分数最高的业务候选，分数低于（自身标定阈值 + CLARIFY_FLOOR_DELTA）。
       「刚压线通过」和「差一点没过」在这里是同一回事——路由器都没能把它和
       其他意图拉开差距，硬选一个大概率选错。
-    - S2 竞争：分数最高的两个业务候选分差小于 CLARIFY_MARGIN。两个意图都有可能
-      （典型如「这本书讲什么」落在问答和精读分析之间），让用户二选一比赌
-      一个便宜得多。
+    - S2 竞争：分数最高的两个业务候选分差小于 ROUTER_ARBITRATION_MARGIN（与边界
+      仲裁共用同一条分差线，见常量注释）。两个意图都有可能（典型如「这本书讲
+      什么」落在问答和精读分析之间），让用户二选一比赌一个便宜得多。
 
     两条判据都锚定在 fit 标定的阈值上，所以有个共同前提：top1 候选的路由
     阈值必须是标定过的（> 0）。routes.yaml 出厂态阈值全 0.0，那时路由层本来
@@ -145,13 +137,17 @@ def is_ambiguous(scored: list[tuple[str, float]],
     if not biz:
         return False
     top_name, top_score = biz[0]
-    # S1 贴线：阈值未标定时不启用（见 docstring 末段）
+    # 未标定（阈值 None/≤0）→ 判据整体不启用（见 docstring 末段）：S1/S2 都锚定在
+    # 标定阈值上——一条 0.0 的线让「过线候选」毫无含金量，「贴线」与「咬得近」
+    # 随之失去意义，标定前必须退化为旧版单标签行为。
     threshold = threshold_of(top_name)
-    barely_confident = (threshold is not None and threshold > 0.0
-                        and top_score < threshold + CLARIFY_FLOOR_DELTA)
+    if threshold is None or threshold <= 0.0:
+        return False
+    # S1 贴线：最高分业务候选压着自身阈值
+    barely_confident = top_score < threshold + CLARIFY_FLOOR_DELTA
     # S2 竞争：第二名也是业务意图，且和第一名咬得很近
     runner_up_close = (len(biz) >= 2
-                       and (top_score - biz[1][1]) < CLARIFY_MARGIN)
+                       and (top_score - biz[1][1]) < ROUTER_ARBITRATION_MARGIN)
     return bool(barely_confident or runner_up_close)
 
 
