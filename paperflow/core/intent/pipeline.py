@@ -240,16 +240,20 @@ class IntentPipeline:
         passed = [(name, score) for name, score in scored
                   if self._passes(name, score)]
 
+        # 出口1：top_k 的意图都没有通过阈值
         if not passed:
             return await self._resolve_unmatched(query, entities,
                                                  prev_intent, scored)
 
-        top_name, top_score = passed[0]
+        top_name, top_score = passed[0] # 分数最高的意图
+
+        # 出口2:分数最高的意图是闲聊/超范围这类系统意图：直接产出单意图，不澄清也不拆——
+        # 这类输入要么轻回复要么明确拒绝，不存在「在意图间取舍」的问题
         if not _is_business(top_name):
-            # 分数最高的是闲聊/超范围这类系统意图：直接照旧产出，不澄清也不拆——
-            # 这类输入要么轻回复要么明确拒绝，不存在「在意图间取舍」的问题
             return self._router_intent(top_name, top_score, entities,
                                        prev_intent, query)
+
+        # 出口3:分数最高的意图是业务意图，进入业务意图的处理流程
         return await self._resolve_business(top_name, top_score, query,
                                             entities, prev_intent, scored)
 
@@ -316,32 +320,53 @@ class IntentPipeline:
             拆出 ≥2 个意图时返回 source=ROUTER、steps 非空的 IntentOutput
             （intent_type=steps[0]）；否则 None。
         """
+        # 1. 全量重扫打分
+        # 为什么需要第二次打分：主判打分只看最像的前 3 条例句，
+        # 复合句里第二意图的例句往往排不进前 3——它拿到的是哨兵分（-1e9），等于"没被看见"，后面的过线检查对它形同虚设。
+        # 参数 k = 路由数
         rescored = self.router.scores(routing_text(query, entities),
                                       k=len(self.router.get_thresholds()))
+
+        # 2. 收集 steps
+        # steps_names 永远以主意图开头——steps[0] 就是主意图，这是契约
         steps_names = [top_name]
+        # rescored 已按分数降序，所以拆出来的 steps 天然按"自信程度"排序
         for name, score in rescored:
+            # 跳过主意图、非业务意图（chitchat/out_of_scope/help），因为这些意图不派发，拆进去只会让 spawn 门禁拒掉整条链
             if name == top_name or not _is_business(name):
                 continue
+
+            # 上限保护：steps 最多 MAX_STEPS=3 步（含主意图）。够了就别再看
             if len(steps_names) >= MAX_STEPS:
                 break
+
+            # 取这条路由的「拆分专属阈值」
+            # 查询链：steps_threshold（重扫口径单独标定的值）
+            #        → 没标定则回落主判 score_threshold（安全默认）
+            #        → 都没有则 None。
             threshold = self.router.get_steps_threshold(name)
+            # threshold None 或 ≤0 → 这条路由"没标定过"，过线毫无含金量
             if threshold is None or threshold <= 0.0:
                 continue
+
+            # 这条路由的分数超过「自身阈值 + ε」才算通过。
             if score >= threshold + ROUTER_STEPS_EPSILON:
                 steps_names.append(name)
+
+        # 3. 判定经过拆分后 query 是否包含复合意图
+        # 只有 1 个主意图 → query 不是复合意图，返回 None
         if len(steps_names) < 2:
             return None
-        # 至少两个业务意图都「认准了」→ 这是一句复合请求，直接在路由层
-        # 拆开短路返回，不进 LLM 兜底。主意图取第一步（intent_type =
-        # steps[0]），spawn 门禁会按这个 steps 列表建队列，逐个校验
-        # supervisor 的派发顺序。
+
+        # 4. 至少两个业务意图都过线 → query 是一句复合请求，直接在路由层拆开短路返回，不进 LLM 兜底。
+        # 主意图取第一步（intent_type = steps[0]），spawn 门禁会按这个 steps 列表建队列，逐个校验 supervisor 的派发顺序。
         return self._router_intent(top_name, top_score, entities,
                                    prev_intent, query,
                                    steps=[IntentType(n) for n in steps_names])
 
     async def _resolve_business(self, top_name, top_score, query, entities,
                                 prev_intent, scored) -> IntentOutput:
-        """单业务意图的消解瀑布：拆分 → 仲裁 → 澄清 → 快路径。
+        """业务意图的消解瀑布：拆分 → 仲裁 → 澄清 → 快路径。
 
         ① 拆分：复合句在路由层拆开短路（见 _split_steps）；
         ② 仲裁：第二名业务候选咬得很近（分差 < ROUTER_ARBITRATION_MARGIN）
@@ -361,18 +386,32 @@ class IntentPipeline:
             四个出口之一的 IntentOutput（source = ROUTER / LLM，澄清轮 =
             LLM 且 clarification 非空）。
         """
+        # 1. 尝试拆分出多意图
         split = self._split_steps(top_name, top_score, query, entities,
                                   prev_intent)
+
+        # 1.1 query 是复合意图，返回包含 steps 的 IntentOutput
         if split is not None:
             return split
+
+        # 2. 未拆分出多意图，判断前两名业务意图的分数是否很接近
         candidates = self._near_contested(scored)
+
+        # 2.1 前两名业务意图的分数很接近，因此需要让 LLM 从前两名业务意图进行二选一（第一步已经否认了 query 是多意图）
         if candidates is not None:
-            arbitrated = await self._arbitrate(query, entities, candidates)
+            arbitrated = await self._arbitrate(query, entities, candidates) # 仲裁结果
             if arbitrated is not None:
                 return arbitrated
+
+        # 3. query 不含多意图，而且前两名业务意图的分数有差距（路由器对分数最高的意图有把握），
+        # 判断是否需要向用户提出澄清，两条"不自信"信号任一成立即问：
+        #   · S1 贴线：第一名分数 < 自身阈值 + δ——刚压线过，硬选大概率错；
+        #   · S2 竞争：前两名分差 < 0.15——与仲裁共用同一条线，所以走到这里的只有"仲裁失败且两候选咬得极近"的场景（问用户兜住仲裁的失败）。
         if self._ambiguous(scored):
             return await self._clarify_round(query, entities, prev_intent,
                                              scored)
+
+        # 4. 直接产出单意图
         return self._router_intent(top_name, top_score, entities,
                                    prev_intent, query)
 
@@ -394,6 +433,7 @@ class IntentPipeline:
             澄清轮（source=LLM，clarification 非空）或 LLM 常规解析
             （source=LLM，clarification 恒为 None）的 IntentOutput。
         """
+        # 判断是否需要向用户提出澄清
         if self._ambiguous(scored):
             return await self._clarify_round(query, entities, prev_intent,
                                              scored)
@@ -445,10 +485,17 @@ class IntentPipeline:
             触发时返回 [候选A, 候选B]（按分数降序的 IntentType，长度恒 2）；
             候选不足两个或分差 ≥ ROUTER_ARBITRATION_MARGIN 时返回 None。
         """
+        # 1. 从主判分数里筛出"业务候选"
+        # scored 是主判分数（降序），所以 biz 也保持降序——biz[0] 是业务意图里的第一名，biz[1] 是第二名。
         biz = [(name, score) for name, score in scored
                if score > 0 and _is_business(name)]
+
+        # 2. 业务候选不足两个或前两名业务意图分差大于设定的阈值——返回 None：路由器有把握，不需要 LLM 去仲裁
         if len(biz) < 2 or biz[0][1] - biz[1][1] >= ROUTER_ARBITRATION_MARGIN:
             return None
+
+        # 3. 前两名业务意图分差小于设定的阈值——返回按分数降序的两个候选（IntentType 枚举），
+        # 调用方 _arbitrate 会把它们连同意图定义塞进 prompt 让 LLM 二选一。
         return [IntentType(biz[0][0]), IntentType(biz[1][0])]
 
     async def _arbitrate(self, query: str, entities: dict,
