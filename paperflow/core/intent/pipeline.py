@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from paperflow.core.intent.schemas.intent import (
     INTENT_LABELS_ZH, INTENT_META, MAX_STEPS,
-    IntentOutput, IntentType, IntentStep, IntentionResult,
+    ArbitrationChoice, IntentOutput, IntentType, IntentStep, IntentionResult,
 )
 from paperflow.core.intent.routing.entities import extract_entities
 from paperflow.core.intent.routing.confirm import format_intent_options
@@ -58,6 +58,17 @@ CLARIFY_FLOOR_DELTA = 0.05
 #:   与上述两值同量纲。
 #: - 改它的后果：改变澄清触发口径——调大问得多、调小问得少。
 CLARIFY_MARGIN = 0.05
+
+#: 边界仲裁的触发分差线。
+#: - 值：0.15。
+#: - 含义与单位：单业务意图过线后，第二名业务候选与第一名的分差小于此值时，
+#:   说明路由器没把两个候选拉开可信差距——把两个候选交给 LLM 结合意图定义
+#:   二选一仲裁一次；仲裁失败（异常/越出候选）回落澄清判据，不打断主流程。
+#:   与融合分数同量纲。经验上正确判定的分差远大于误判的分差，此值取两者
+#:   分布的分离带内。
+#: - 改它的后果：调大 → 更多请求进 LLM 仲裁（边界纠错↑，延迟/成本↑）；
+#:   调小 → 更少仲裁，更多贴近案例直接按路由器判定放行。
+ROUTER_ARBITRATION_MARGIN = 0.15
 
 
 def _is_business(name: str) -> bool:
@@ -280,8 +291,17 @@ class IntentPipeline:
                         entities=entities, source=IntentStep.ROUTER,
                         prev_intent=prev_intent, rewritten_query=query,
                         steps=[IntentType(n) for n in steps_names])
-                # --- 只有一个业务意图过线：先问一句「要不要向用户澄清」 ---
-                # 路由认准了但认得吃力（分数贴线）或有人和它咬得很近（分差小）时，与其硬选一个意图执行错方向，不如让用户补一句话。
+                # --- 只有一个业务意图过线：先仲裁、再澄清、最后快路径 ---
+                # ① 分差仲裁：第二名业务候选咬得很近（分差 < ROUTER_ARBITRATION_MARGIN）
+                #    时，路由器没把握，让 LLM 结合意图定义二选一；失败回落 ②。
+                # ② 澄清判据：分数贴线（S1）或竞争（S2）时问用户；问不问由代码判据定。
+                # ③ 快路径：又准又稳直接产出单意图——绝大多数输入走这里，零 LLM 调用。
+                candidates = self._near_contested(scored)
+                if candidates is not None:
+                    arbitrated = await self._arbitrate(query, entities,
+                                                       candidates)
+                    if arbitrated is not None:
+                        return arbitrated
                 if self._ambiguous(scored):
                     return await self._clarify_round(
                         query, entities, prev_intent, scored)
@@ -351,6 +371,50 @@ class IntentPipeline:
         """单路由阈值裁决：阈值未设恒过，否则 score >= 阈值。"""
         threshold = self._effective_threshold(name)
         return True if threshold is None else score >= threshold
+
+    def _near_contested(self, scored: list[tuple[str, float]]) -> list[IntentType] | None:
+        """边界仲裁触发判定：top-2 业务候选分差小于仲裁线时返回这两个候选。
+
+        只看业务意图（可派发的才有选错方向的硬代价），且要求第一名过线——
+        本判定只在单业务命中的分支里被调用。分差够大（路由器有把握）返回 None。
+        """
+        biz = [(name, score) for name, score in scored
+               if score > 0 and _is_business(name)]
+        if len(biz) < 2 or biz[0][1] - biz[1][1] >= ROUTER_ARBITRATION_MARGIN:
+            return None
+        return [IntentType(biz[0][0]), IntentType(biz[1][0])]
+
+    async def _arbitrate(self, query: str, entities: dict,
+                         candidates: list[IntentType]) -> IntentOutput | None:
+        """边界仲裁：让 LLM 在两个贴近的业务候选里二选一。
+
+        分工与澄清轮同构——「选谁」由路由分差圈定候选、LLM 在候选内表态，
+        越出候选的选择一律作废；任何失败（异常/非法输出）返回 None，调用方
+        回落到澄清判据或快路径，绝不因仲裁故障打断主流程。intent_type 取
+        LLM 的选择（source=LLM，审计可辨），confidence 用模型自报把握。
+        """
+        def label(t: IntentType) -> str:
+            return f"{INTENT_LABELS_ZH.get(t, t.value)}({t.value})"
+
+        prompt = (
+            "你是意图识别仲裁器。路由器对一个用户请求给出了两个难以取舍的候选意图，"
+            "请你根据用户的话二选一。\n\n"
+            f"用户请求：{query}\n\n"
+            f"候选A：{label(candidates[0])}\n候选B：{label(candidates[1])}\n\n"
+            "只输出 JSON：{\"intent_type\": <候选枚举值>, \"confidence\": <0到1>}"
+        )
+        try:
+            result = await self.structured.extract(prompt, ArbitrationChoice)
+        except Exception:
+            return None
+        if result.intent_type not in candidates:
+            return None
+        return IntentOutput(
+            intent_type=result.intent_type,
+            confidence=self._clip01(result.confidence),
+            entities=entities, source=IntentStep.LLM,
+            rewritten_query=query, steps=[],
+        )
 
     def _clip01(self, score: float) -> float:
         """融合分数截断到 [0,1]（cosine 可为负、稀疏点积可 >1，非概率）。"""
