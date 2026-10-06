@@ -42,18 +42,6 @@ from paperflow.core.intent.routing.option_reply import is_option_reply
 #:   精确率×召回率最高点）；直接改变多标签拆分口径与评测指标。
 ROUTER_STEPS_EPSILON = 0.02
 
-#: 拆分分支重扫的路由条数：第二意图候选来自「全类打分 + 独立阈值裁决」。
-#: - 值：12（= 全部路由，无截断）。
-#: - 背景（2026-10-06 可用性测评）：主管道 top_k=3 截断让 88 条复合句里 72 条的
-#:   第二意图拿哨兵分（根本不进候选），完整阈值门漏拆 82%。业界多意图检测的
-#:   标准形态是对全部意图类独立打分、逐类过各自阈值（JointBERT MultiATIS 变体
-#:   的 sigmoid+per-class threshold；多标签 binary relevance）——本系统的对应物
-#:   就是拆分分支全量重扫后按「自身阈值 + ε」独立裁决。主判仍用 top_k 截断分
-#:   （阈值口径不变，单意图零回归）；重扫仅多一次内存打分，代价可忽略。
-#: - 改它的后果：改变多标签拆分口径，须重跑 scripts/intent/eval（S3）与
-#:   calibration stage5 判据评测。
-ROUTER_STEPS_RESCAN_K = 12
-
 #: 「贴线」澄清判据的容差。
 #: - 值：0.05。
 #: - 含义与单位：业务候选里分数最高者，若分数低于「自身标定阈值 + 本容差」视为
@@ -258,11 +246,20 @@ class IntentPipeline:
                 #    旧版单标签完全一致；fit 写回真实阈值后拆分才自然激活。
                 # ② 分数超过「自身阈值 + ROUTER_STEPS_EPSILON」——与主意图同一条
                 #    规则，独立裁决在重扫分数上（业界多标签惯例：全类打分 + 逐类
-                #    阈值，无第二名的特殊放宽；见 ROUTER_STEPS_RESCAN_K 注释）。
+                #    阈值，无第二名的特殊放宽）。
                 # ③ 是可派发的业务意图：闲聊、帮助这类系统意图永远不该出现在steps 里——它们不派发，拆进去只会让 spawn 门禁拒掉整条链。
+                #
+                # 重扫窗口 = 路由数量（get_thresholds 的键数，随新增意图自动增长，
+                # 不设常量——2026-10-06 评审定）：主管道 top_k=3 截断会让 88 条
+                # 复合句里 72 条的第二意图拿哨兵分（不进候选），完整阈值门漏拆
+                # 82%（scripts/intent/eval 2026-10-06）。注意 scores(k) 的 k 数的
+                # 是例句条数：以路由数为窗口保证每个路由至少一个例句的曝光位。
+                # 若要覆盖「全部例句」（字面全类打分），会改变路由分聚合口径，
+                # 须先重标阈值再切（实测直接切换误拆翻倍，见 eval README）。
                 steps_names = [top_name]
-                rescored = self.router.scores(routing_text(query, entities),
-                                              k=ROUTER_STEPS_RESCAN_K)
+                rescored = self.router.scores(
+                    routing_text(query, entities),
+                    k=len(self.router.get_thresholds()))
                 for name, score in rescored:
                     if name == top_name or not _is_business(name):
                         continue
