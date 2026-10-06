@@ -264,7 +264,7 @@ class IntentPipeline:
                         continue
                     if len(steps_names) >= MAX_STEPS:
                         break
-                    threshold = self._effective_threshold(name)
+                    threshold = self._effective_steps_threshold(name)
                     if threshold is None or threshold <= 0.0:
                         continue
                     if score >= threshold + ROUTER_STEPS_EPSILON:
@@ -334,6 +334,18 @@ class IntentPipeline:
         if route is not None and route.score_threshold is not None:
             return route.score_threshold
         return self.router.score_threshold
+
+    def _effective_steps_threshold(self, name: str) -> float | None:
+        """拆分分支生效阈值：steps_threshold 专属优先，否则回落主判阈值。
+
+        两个阈值作用于不同聚合口径的分数（Route.steps_threshold 注释），主判
+        口径的阈值对重扫口径只是安全默认，不保证最优——拆分口径的阈值由标定
+        流程单独 fit 后写进 routes.yaml 的 steps_threshold 字段。
+        """
+        route = self.router.get(name)
+        if route is not None and route.steps_threshold is not None:
+            return route.steps_threshold
+        return self._effective_threshold(name)
 
     def _passes(self, name: str, score: float) -> bool:
         """单路由阈值裁决：阈值未设恒过，否则 score >= 阈值。"""
