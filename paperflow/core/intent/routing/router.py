@@ -374,6 +374,12 @@ class HybridRouter:
         注意路由器自身的单意图裁决（_pass_routes）不消费此阈值——它只服务
         管线的多标签拆分分支；拆分口径的阈值由标定流程单独 fit 后写进
         routes.yaml 的 steps_threshold 字段。
+
+        Args:
+            name: 路由名（枚举值）。
+
+        Returns:
+            生效的拆分阈值；整条链都未设时返回 None（管线侧视为不拆）。
         """
         route = self.get(name)
         if route is None:

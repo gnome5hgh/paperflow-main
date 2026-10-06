@@ -230,101 +230,177 @@ class IntentPipeline:
             )
 
         # ====== 第4级：混合路由 ======
-        # 这里只调 scores()，不再调 router(query)——两者的打分来自同一份索引、
-        # 同一种「按路由分组取均值再降序」的聚合，但 __call__ 只回一个 argmax 命中，
-        # scores() 把每个路由的分数全数给出，正好够下面三件事共用：
-        # ① 按各自阈值过滤出所有「过线」路由（多标签拆分的原料）；
-        # ② 喂给 _ambiguous() 算「要不要澄清」（它需要看没过线的候选分数）；
-        # ③ 喂给 LLM 兜底当近失候选（原先在第 5 级还要再调一次 scores()，省了）。
-        # 路由输入用剥离路径实体后的文本（routing_text）——评分/拆分/澄清三件事共用这份 stripped 口径；
-        # LLM 兜底仍看原文（模型对路径鲁棒，且改写契约基于原文）。
+        # 打分两次：
+        #   · 主判 scored（k=top_k 截断窗口）——主判过滤、澄清判据、仲裁、
+        #     LLM 兜底近失候选四件事共用；路由输入用剥离路径实体的文本
+        #     （routing_text），LLM 兜底仍看原文（模型对路径鲁棒，且改写
+        #     契约基于原文）。
+        #   · 拆分 rescored（k=路由数全量重扫）——只在业务分支的拆分判定里
+        #     现打，动机与口径见 _split_steps。
         scored = self.router.scores(routing_text(query, entities),
                                     k=self.router.top_k)
 
-        # 多标签过滤：过各自生效阈值（路由专属优先，全局 None = 无门槛恒过，同 __call__）
+        # 主判过滤：过各自生效阈值（路由专属优先，全局 None = 无门槛恒过）
         passed = [(name, score) for name, score in scored
                   if self._passes(name, score)]
 
-        if passed:
-            top_name, top_score = passed[0]
-            if _is_business(top_name):
-                # --- 多意图标签拆分，后续候选意图要同时满足三个条件才能拆进 steps：
-                # ① 它自己这条路由的阈值是 fit 标定过的（> 0）。routes.yaml 出厂时
-                #    阈值全是 0.0，此时「过线」毫无含金量——未标定状态下任何第二
-                #    高分都能过一条 0.0 的线，整句会被拆得面目全非。所以标定之前
-                #    路由层不拆分，行为与旧版单标签完全一致；fit 写回真实阈值后
-                #    拆分才自然激活。
-                # ② 分数超过「自身阈值 + ROUTER_STEPS_EPSILON」——与主意图同一条
-                #    规则，独立裁决在重扫分数上（业界多标签惯例：全类打分 + 逐类
-                #    阈值，无第二名的特殊放宽）。
-                # ③ 是可派发的业务意图：闲聊、帮助这类系统意图永远不该出现在steps 里——它们不派发，拆进去只会让 spawn 门禁拒掉整条链。
-                #
-                # 重扫窗口 = 路由数量（get_thresholds 的键数，随新增意图自动增长，
-                # 不设常量）：主管道 top_k=3 截断只看分数最高的前几条例句，复合句
-                # 里第二意图的例句常常排不进窗口、只能拿哨兵分——它根本没有候选
-                # 资格，过线检查对它形同虚设。注意 scores(k) 的 k 数的是例句条数：
-                # 以路由数为窗口保证每个路由至少一个例句的曝光位。若把窗口放大到
-                # 「全部例句」（字面意义的全类打分），路由分会变成全库均值，聚合
-                # 口径改变、现有阈值随之失配——须先重新标定阈值再切。
-                steps_names = [top_name]
-                rescored = self.router.scores(
-                    routing_text(query, entities),
-                    k=len(self.router.get_thresholds()))
-                for name, score in rescored:
-                    if name == top_name or not _is_business(name):
-                        continue
-                    if len(steps_names) >= MAX_STEPS:
-                        break
-                    threshold = self.router.get_steps_threshold(name)
-                    if threshold is None or threshold <= 0.0:
-                        continue
-                    if score >= threshold + ROUTER_STEPS_EPSILON:
-                        steps_names.append(name)
-                if len(steps_names) >= 2:
-                    # 至少两个业务意图都「认准了」→ 这是一句复合请求，直接在路由层
-                    # 拆开短路返回，不进 LLM 兜底。主意图取第一步（intent_type =
-                    # steps[0]），spawn 门禁会按这个 steps 列表建队列，逐个校验
-                    # supervisor 的派发顺序。
-                    return IntentOutput(
-                        intent_type=IntentType(steps_names[0]),
-                        confidence=self._clip01(top_score),
-                        entities=entities, source=IntentStep.ROUTER,
-                        prev_intent=prev_intent, rewritten_query=query,
-                        steps=[IntentType(n) for n in steps_names])
-                # --- 只有一个业务意图过线：先仲裁、再澄清、最后快路径 ---
-                # ① 分差仲裁：第二名业务候选咬得很近（分差 < ROUTER_ARBITRATION_MARGIN）
-                #    时，路由器没把握，让 LLM 结合意图定义二选一；失败回落 ②。
-                # ② 澄清判据：分数贴线（S1）或竞争（S2）时问用户；问不问由代码判据定。
-                # ③ 快路径：又准又稳直接产出单意图——绝大多数输入走这里，零 LLM 调用。
-                candidates = self._near_contested(scored)
-                if candidates is not None:
-                    arbitrated = await self._arbitrate(query, entities,
-                                                       candidates)
-                    if arbitrated is not None:
-                        return arbitrated
-                if self._ambiguous(scored):
-                    return await self._clarify_round(
-                        query, entities, prev_intent, scored)
-                # 路由认得又准又稳：直接产出单意图，不澄清不拆分——这是绝大多数输入的快路径，一次 LLM 调用都不花
-                return IntentOutput(
-                    intent_type=IntentType(top_name),
-                    confidence=self._clip01(top_score),
-                    entities=entities, source=IntentStep.ROUTER,
-                    prev_intent=prev_intent, rewritten_query=query)
+        if not passed:
+            return await self._resolve_unmatched(query, entities,
+                                                 prev_intent, scored)
+
+        top_name, top_score = passed[0]
+        if not _is_business(top_name):
             # 分数最高的是闲聊/超范围这类系统意图：直接照旧产出，不澄清也不拆——
             # 这类输入要么轻回复要么明确拒绝，不存在「在意图间取舍」的问题
-            return IntentOutput(
-                intent_type=IntentType(top_name),
-                confidence=self._clip01(top_score),
-                entities=entities, source=IntentStep.ROUTER,
-                prev_intent=prev_intent, rewritten_query=query)
+            return self._router_intent(top_name, top_score, entities,
+                                       prev_intent, query)
+        return await self._resolve_business(top_name, top_score, query,
+                                            entities, prev_intent, scored)
 
-        # ====== 路由全未命中：同样先过一遍澄清判据 ======
-        # 未命中不代表没有候选——scored 里还有没过线的「近失」意图。若近失候选里
-        # 有业务意图且分数贴线/互相咬近，说明用户输入处在几个意图的模糊地带，
-        # 值得问一句；否则才真正交给 LLM 兜底盲解析。
+    # ------------------------------------------------------------------
+    # 第 4 级子判定：拆分 / 单业务消解 / 未命中消解
+    # ------------------------------------------------------------------
+
+    def _router_intent(self, name, score, entities, prev_intent, query,
+                       steps=None) -> IntentOutput:
+        """路由层直接产出的意图结果（steps 非空 = 复合句短路）。
+
+        Args:
+            name: 胜出意图的路由名（枚举值）。
+            score: 该意图的融合分数（截断到 [0,1] 后作 confidence）。
+            entities: 第 1 级实体提取的产出，原样透传。
+            prev_intent: 上一轮意图（追问链路审计用）。
+            query: 用户原始输入，原样作为 rewritten_query（路由层不改写）。
+            steps: 复合句拆分的有序意图列表；None/空 = 单意图。
+
+        Returns:
+            source=ROUTER 的 IntentOutput，无澄清。
+        """
+        return IntentOutput(
+            intent_type=IntentType(name),
+            confidence=self._clip01(score),
+            entities=entities, source=IntentStep.ROUTER,
+            prev_intent=prev_intent, rewritten_query=query,
+            steps=steps or [])
+
+    def _split_steps(self, top_name, top_score, query, entities,
+                     prev_intent) -> IntentOutput | None:
+        """多标签拆分：复合句在路由层直接拆出有序 steps 短路返回。
+
+        第二意图候选要同时满足三个条件才能拆进 steps：
+        ① 它自己这条路由的阈值是 fit 标定过的（> 0）。routes.yaml 出厂时
+           阈值全是 0.0，此时「过线」毫无含金量——未标定状态下任何第二
+           高分都能过一条 0.0 的线，整句会被拆得面目全非。所以标定之前
+           路由层不拆分，行为与旧版单标签完全一致；fit 写回真实阈值后
+           拆分才自然激活。
+        ② 分数超过「steps 阈值 + ROUTER_STEPS_EPSILON」——与主意图同一条
+           规则，独立裁决在重扫分数上（业界多标签惯例：全类打分 + 逐类
+           阈值，无第二名的特殊放宽）。
+        ③ 是可派发的业务意图：闲聊、帮助这类系统意图永远不该出现在steps 里——它们不派发，拆进去只会让 spawn 门禁拒掉整条链。
+
+        候选打分用第二次 scores()（k=路由数全量重扫）：主管道 top_k 截断
+        只看分数最高的前几条例句，复合句里第二意图的例句常常排不进窗口、
+        只能拿哨兵分——它根本没有候选资格，过线检查对它形同虚设。注意
+        scores(k) 的 k 数的是例句条数：以路由数为窗口（随新增意图自动增长）
+        保证每个路由至少一个例句的曝光位。若把窗口放大到「全部例句」（字面
+        意义的全类打分），路由分会变成全库均值，聚合口径改变、现有阈值随之
+        失配——须先重新标定阈值再切。
+
+        拆出不足 2 个意图时返回 None，调用方继续单意图消解（仲裁 → 澄清 →
+        快路径）。
+
+        Args:
+            top_name: 主判胜出的业务路由名（steps[0] 的固定起点）。
+            top_score: 主意图的融合分数（透传为结果的 confidence）。
+            query: 用户原始输入（重扫仍用剥离实体后的文本，由本方法内部处理）。
+            entities: 第 1 级实体提取的产出，透传给结果。
+            prev_intent: 上一轮意图，透传给结果。
+
+        Returns:
+            拆出 ≥2 个意图时返回 source=ROUTER、steps 非空的 IntentOutput
+            （intent_type=steps[0]）；否则 None。
+        """
+        rescored = self.router.scores(routing_text(query, entities),
+                                      k=len(self.router.get_thresholds()))
+        steps_names = [top_name]
+        for name, score in rescored:
+            if name == top_name or not _is_business(name):
+                continue
+            if len(steps_names) >= MAX_STEPS:
+                break
+            threshold = self.router.get_steps_threshold(name)
+            if threshold is None or threshold <= 0.0:
+                continue
+            if score >= threshold + ROUTER_STEPS_EPSILON:
+                steps_names.append(name)
+        if len(steps_names) < 2:
+            return None
+        # 至少两个业务意图都「认准了」→ 这是一句复合请求，直接在路由层
+        # 拆开短路返回，不进 LLM 兜底。主意图取第一步（intent_type =
+        # steps[0]），spawn 门禁会按这个 steps 列表建队列，逐个校验
+        # supervisor 的派发顺序。
+        return self._router_intent(top_name, top_score, entities,
+                                   prev_intent, query,
+                                   steps=[IntentType(n) for n in steps_names])
+
+    async def _resolve_business(self, top_name, top_score, query, entities,
+                                prev_intent, scored) -> IntentOutput:
+        """单业务意图的消解瀑布：拆分 → 仲裁 → 澄清 → 快路径。
+
+        ① 拆分：复合句在路由层拆开短路（见 _split_steps）；
+        ② 仲裁：第二名业务候选咬得很近（分差 < ROUTER_ARBITRATION_MARGIN）
+           时，路由器没把握，让 LLM 结合意图定义二选一；失败回落 ③；
+        ③ 澄清：分数贴线（S1）或竞争（S2）时问用户；问不问由代码判据定；
+        ④ 快路径：又准又稳直接产出单意图——绝大多数输入走这里，零 LLM 调用。
+
+        Args:
+            top_name: 主判胜出的业务路由名。
+            top_score: 主意图的融合分数（快路径结果的 confidence）。
+            query: 用户原始输入。
+            entities: 第 1 级实体提取的产出，透传给结果。
+            prev_intent: 上一轮意图，透传给澄清轮与结果。
+            scored: 主判分数（降序），仲裁与澄清判据共用。
+
+        Returns:
+            四个出口之一的 IntentOutput（source = ROUTER / LLM，澄清轮 =
+            LLM 且 clarification 非空）。
+        """
+        split = self._split_steps(top_name, top_score, query, entities,
+                                  prev_intent)
+        if split is not None:
+            return split
+        candidates = self._near_contested(scored)
+        if candidates is not None:
+            arbitrated = await self._arbitrate(query, entities, candidates)
+            if arbitrated is not None:
+                return arbitrated
         if self._ambiguous(scored):
-            return await self._clarify_round(query, entities, prev_intent, scored)
+            return await self._clarify_round(query, entities, prev_intent,
+                                             scored)
+        return self._router_intent(top_name, top_score, entities,
+                                   prev_intent, query)
+
+    async def _resolve_unmatched(self, query, entities, prev_intent,
+                                 scored) -> IntentOutput:
+        """路由全未命中的消解：先过澄清判据，再落 LLM 兜底。
+
+        未命中不代表没有候选——scored 里还有没过线的「近失」意图。若近失
+        候选里有业务意图且分数贴线/互相咬近，说明用户输入处在几个意图的
+        模糊地带，值得问一句；否则才真正交给 LLM 兜底盲解析。
+
+        Args:
+            query: 用户原始输入（LLM 兜底看原文，不看剥离后的路由文本）。
+            entities: 第 1 级实体提取的产出，透传给结果。
+            prev_intent: 上一轮意图，透传给澄清轮与结果。
+            scored: 主判分数（降序），澄清判据与 LLM 近失候选共用。
+
+        Returns:
+            澄清轮（source=LLM，clarification 非空）或 LLM 常规解析
+            （source=LLM，clarification 恒为 None）的 IntentOutput。
+        """
+        if self._ambiguous(scored):
+            return await self._clarify_round(query, entities, prev_intent,
+                                             scored)
 
         # ====== 第5级：LLM 兜底（常规解析） ======
         # 走到这里说明代码判据认为「不需要澄清」。但 LLM 拿到输入后仍可能自作主张产出 clarification——
@@ -365,6 +441,13 @@ class IntentPipeline:
 
         只看业务意图（可派发的才有选错方向的硬代价），且要求第一名过线——
         本判定只在单业务命中的分支里被调用。分差够大（路由器有把握）返回 None。
+
+        Args:
+            scored: 主判分数 [(路由名, 融合分数)]，按分数降序。
+
+        Returns:
+            触发时返回 [候选A, 候选B]（按分数降序的 IntentType，长度恒 2）；
+            候选不足两个或分差 ≥ ROUTER_ARBITRATION_MARGIN 时返回 None。
         """
         biz = [(name, score) for name, score in scored
                if score > 0 and _is_business(name)]
@@ -380,6 +463,15 @@ class IntentPipeline:
         越出候选的选择一律作废；任何失败（异常/非法输出）返回 None，调用方
         回落到澄清判据或快路径，绝不因仲裁故障打断主流程。intent_type 取
         LLM 的选择（source=LLM，审计可辨），confidence 用模型自报把握。
+
+        Args:
+            query: 用户原始输入（放进仲裁 prompt 的「用户请求」栏）。
+            entities: 第 1 级实体提取的产出，透传给结果。
+            candidates: 待仲裁的两个业务候选（_near_contested 的产出）。
+
+        Returns:
+            仲裁成功返回 source=LLM、steps 为空的 IntentOutput；LLM 异常或
+            选择越出候选时返回 None（调用方回落）。
         """
         def label(t: IntentType) -> str:
             return f"{INTENT_LABELS_ZH.get(t, t.value)}({t.value})"
