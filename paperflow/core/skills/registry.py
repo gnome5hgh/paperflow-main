@@ -8,7 +8,7 @@ Skill 是「注入给现有 agent 的领域知识/流程/轻量工具」，无�
 可选 tools.py（Tool 捆绑）与 references/、assets/ 等资源。
 
 扫描路径：单一目录 ``<项目根>/.paperflow/skills/``（git 内置 skill 与
-`paperflow skill install` 落盘的 skill 同处，目录名即 skill 名）。
+`/skill install` 落盘的 skill 同处，目录名即 skill 名）。
 
 安全要点：
 - ``allowed_agents`` 空 = 所有子 agent 可见；supervisor 仅在显式列入时可见

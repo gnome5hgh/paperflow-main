@@ -6,8 +6,9 @@
 ——依赖 core 的类型（Agent/ConversationState）但不组装对象图，对象图仍由
 cli.main 装配后注入；不进包级 __init__ 导出（避免包级导入拖入 core 依赖链）。
 
-每轮:读 stdin → supervisor.run(query) → 打印结果。澄清由 runtime 在 run 内
-同步问用户（2026-10-04 统一），REPL 不再持有跨轮澄清状态。
+每轮:读 stdin → 斜杠命令分发（注册表命中则就地处理）→ supervisor.run(query)
+→ 打印结果。澄清由 runtime 在 run 内同步问用户（2026-10-04 统一），REPL 不再
+持有跨轮澄清状态。
 
 嵌套关系：
 进程
@@ -27,6 +28,8 @@ from pathlib import Path
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.core.intent.conversation_state import ConversationState
+from paperflow.terminal.commands import (
+    CommandContext, CommandRegistry, build_default_registry)
 from paperflow.terminal.diff import compute_diff, truncate_diff
 from paperflow.terminal.errors import translate_error
 from paperflow.terminal.io import InputIO
@@ -201,7 +204,8 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 config: PaperFlowConfig | None = None,
                 resume_hint: str | None = None, confirm_center=None,
                 resume_replay: ResumeReplay | None = None,
-                mcp_manager=None) -> None:
+                mcp_manager=None,
+                registry: CommandRegistry | None = None) -> None:
     """
     REPL 主循环。
 
@@ -232,13 +236,14 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
         resume_replay: --resume 的历史回放载荷（可选）。由 cli 层从同一 in-context
             窗口构建，此处只在横幅之后、首次读输入之前渲染进滚动区——顺序错了
             历史会跑到横幅上方。回放是只读的（见 terminal/resume.py）。
+        registry: 斜杠命令注册表（可选，None 时用 io/renderer/mcp_manager 自建默认表）。
     """
     # 开场输出一律先于读输入：横幅、Tip、以及在 Tip 之下择一出现的 hint / 回放。
     # 三者必须按此序打——回放若在横幅之前渲染，历史会印到横幅上方，用户上翻看到的
     # 顺序即颠倒（故回放数据由 cli 传入、在此处渲染，而不是在装配层直接打印）。
     cfg = config or PaperFlowConfig.from_env()
     renderer.print(_render_banner(cfg.llm.model, _shorten_path(cfg.runtime.workspace)))
-    renderer.print("\n  Tip: Type a research task to begin, or /exit to quit")
+    renderer.print("\n  Tip: Type a research task to begin, or /help for commands")
     if resume_hint:
         renderer.print(f"  {resume_hint}", style="dim")
     if resume_replay is not None:
@@ -264,6 +269,8 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
     from paperflow.terminal.confirm_center import ConfirmCenter
     center = confirm_center or ConfirmCenter(io, renderer)
     center.start()
+    registry = registry or build_default_registry(
+        CommandContext(io=io, renderer=renderer, mcp_manager=mcp_manager))
 
     def _cancel_run():
         # SIGINT handler：只取消当前 run_task，REPL 本身活着（回到输入框，不是退出）。
@@ -302,21 +309,19 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                     break
                 continue
             read_failures = 0
-            # /exit 是唯一的显式退出命令：等价比较，不做前缀或包含匹配——
-            # "exit"、"/quit"、" /exit now" 都命中不了，一律当普通任务走。
-            if raw.strip() == "/exit":
-                break
-            # /mcp：MCP server 状态一览（连接状态/工具数/被隐藏工具及原因），
-            # 为"环境通没通"排查服务（spec §6）。只读渲染，不进意图管线。
-            if raw.strip() == "/mcp":
-                renderer.print(mcp_manager.status_report()
-                               if mcp_manager else "未接入 MCP（config.yaml 顶层 mcp_servers 为空）。")
-                continue
             if not raw.strip():
                 # 纯空白输入（真实使用测试 P3-2）：直接忽略，不进意图管线——
                 # 否则一次完整 LLM 调用后才被兜底拒绝，白烧 token。轻提示一次，
                 # 避免用户以为卡死。
                 renderer.print("（空输入已忽略）", style="dim")
+                continue
+            # 斜杠命令分发。dispatch 进 worker 线程：skill 的交互确认走
+            # prompt_toolkit，绝不能跑在事件循环线程上（与 io.read 的
+            # to_thread 同因）；renderer.print 内部持锁，跨线程安全。
+            outcome = await asyncio.to_thread(registry.dispatch, raw)
+            if outcome.exit:
+                break
+            if outcome.consumed:
                 continue
             # 用户回显（spec §6）：每轮的翻历史锚点
             renderer.print_raw(f"❯ {raw}")
