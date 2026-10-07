@@ -149,6 +149,19 @@ def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
     return None
 
 
+def _record_dispatch(parent: Agent, agent_type: str, status: str) -> None:
+    """把一次派发尝试记入 supervisor 的派发账本（run 状态容器，按 trace 键控）。
+
+    只记 supervisor 自身的派发——子 agent 的内部派发不进这份账本，与每轮派发
+    上限的计数口径一致。被拒/去重的尝试也记（状态 denied/deduped），收尾核对时
+    模型能据此看到「想派但没派成」的事实。parent 非 supervisor 时直接跳过，不给
+    子 agent 的任务留噪声。
+    """
+    if parent.agent_type != "supervisor":
+        return
+    get_run_state(parent._trace_id).spawn_dispatches.append((agent_type, status))
+
+
 #: 并发锁:execute 跑在线程池 worker 里,并行 spawn 会同时读写容器状态——单次
 #: dict.get/set 虽原子,但"检查命中-注册 running"两步必须整体原子,否则两线程同时
 #: 各自派发一次,去重失效。容器自身的锁只保证建容器与清扫原子,与这里的派发序列锁
@@ -376,10 +389,9 @@ class SpawnSubAgentTool(Tool):
                                     "不传 = 子 agent 默认模式"},
             "intent": {"type": "string",
                        "enum": [t.value for t in IntentType],
-                       "description": "本次派发对应的意图 step(可选)。复合任务"
-                                      "(INTENT 块 steps 非空)时必填且须等于当前待派 "
-                                      "step——门禁按队列强制顺序,乱序/跳步会被拒;"
-                                      "单意图任务无需传"},
+                       "description": "本次派发服务的意图（可选）。会话意图被误判时，"
+                                      "显式声明可覆盖判定放行；亦可作为审计标注。"
+                                      "顺序与并行由你自己决定，框架不做限制。"},
         },
         "required": ["agent_type", "task"],
     }
@@ -418,6 +430,10 @@ class SpawnSubAgentTool(Tool):
         """派发前的七道闸，按判定顺序：mode 校验 → 意图派发门禁 → spawn 白名单
         → 同会话同指纹去重 → 审稿预算 → 每轮派发总量上限 → 同路径在途互斥。
 
+        意图只作信号，不强制派发顺序——顺序与并行由 supervisor 自主决定。每条
+        被拒/去重的派发尝试都记入 supervisor 的派发账本（状态 denied/deduped），
+        供收尾核对看到「想派但没派成」的事实。
+
         通过时返回 (任务指纹, 是否含路径)——调用方负责在执行完的 finally 里
         按 has_path 决定 done 缓存或清条目；拒绝时直接返回 denied/去重命中的
         ToolResult。审稿类 mode 的预算计数与注册同锁原子,拒绝路径不触碰注册表。
@@ -426,89 +442,49 @@ class SpawnSubAgentTool(Tool):
         # mode 参数校验：非法值直接拒绝（schema enum 约束 LLM 生成层，
         # 此处兜底防任何漏网之鱼静默错流——拼写错的 mode 注入会让子 agent 走错流程）。
         if mode is not None and mode not in SUB_AGENT_MODES:
+            _record_dispatch(parent, agent_type, "denied")
             result = SubAgentResult(status="denied",
                                     summary=f"未知 mode: {mode}，合法值: {sorted(SUB_AGENT_MODES)}")
             return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-        # 意图派发门禁：按「本轮是否带着复合意图队列」分两种走法。全部是代码级
-        # 确定性检查，不依赖 supervisor 遵循 AGENT.md 提示词。
+        # 意图派发门禁：代码级确定性检查，不依赖 supervisor 遵循 AGENT.md 提示词。
         #
-        # 走法一：复合队列非空（本轮识别出 steps 的复合请求）。队列在 runtime
-        # 装载意图时初始化，队头即当前应该派发的步骤。此时 spawn 必须用 intent
-        # 参数声明「我派的就是队头这个步骤」：漏带声明、声明和队头对不上（跳步/
-        # 乱序）都直接拒绝，拒绝信息里写明当前应派的步骤，supervisor 照着改即可。
-        # 这样「按顺序逐 step 派发」就从 AGENT.md 的强提示变成了门禁的硬约束。
-        # 出队时机：只有放行（注册 running）或去重命中（同任务已在跑/刚跑完可
-        # 复用，视为该步骤已满足）才弹队头；拒绝路径一律不出队——步骤没完成，
-        # 重试还得对上同一个队头。原先「主意图 UNCLASSIFIED 但 steps 非空就放行」
-        # 的例外分支不再需要：复合授权由队列逐步骤承载，声明的步骤仍要过
-        # INTENT_META 的可派发校验（双保险，schema 层的 _steps_guard 是第一道）。
-        #
-        # 走法二：队列空（普通单意图轮次）。维持原门禁——last_intent 是
-        # dispatch_allowed=False 的意图（陈述方向/系统类）就拒绝派发领域 agent；
-        # last_intent 为 None（意图管线失败降级）时放行，不因门禁误伤主流程。
-        #
-        # 防护定位：防的是 supervisor 的行为漂移（跳步、乱序、漏派），不是对抗
-        # 性攻击——intent 是 supervisor 自己声明的，报个假的换不到任何额外权限，
-        # 各条检查照常执行。
-        parent_queue = getattr(parent, "_pending_steps", [])
+        # 声明优先：supervisor 显式声明了 intent 时按声明校验——可派发即放行，
+        # 不可派发明确拒绝。这是会话意图被误判时唯一的申诉通道：用户已在澄清中
+        # 确认真实意图、而 last_intent 要到下一轮才更新，只认 last_intent 会把
+        # 「模型+用户都确认正确」的派发也锁死。安全性与原设计一致——intent 是
+        # 自声明，报假声明换不到任何额外权限，声明什么就按什么校验。
+        # 未声明时看本轮会话意图：last_intent 是 dispatch_allowed=False 的意图
+        # （陈述方向/系统类）就拒绝派发领域 agent；last_intent 为 None（意图管线
+        # 失败降级）时放行，不因门禁误伤主流程。
         declared: IntentType | None = None
         if intent is not None:
             try:
                 declared = IntentType(intent)
             except ValueError:
+                _record_dispatch(parent, agent_type, "denied")
                 result = SubAgentResult(
                     status="denied",
                     summary=f"未知 intent: {intent}，合法值为 IntentType 枚举")
                 return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-        if parent_queue:
-            head = parent_queue[0]
-            if declared is None:
-                result = SubAgentResult(
-                    status="denied",
-                    summary=f"复合任务派发必须带 intent 字段指向当前 step；当前应派: {head.value}")
-                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-            if declared != head:
-                result = SubAgentResult(
-                    status="denied",
-                    summary=f"steps 乱序/跳步：当前应派 {head.value}，收到 {declared.value}")
-                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+        if declared is not None:
             if not INTENT_META[declared][1]:
+                _record_dispatch(parent, agent_type, "denied")
                 result = SubAgentResult(
                     status="denied",
-                    summary=f"step {declared.value} 非可派发意图（steps 护栏应已拦截，此处双保险）")
+                    summary=f"声明的意图 {declared.value} 不可派发领域 agent（仅业务意图可派发）")
                 return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-
-            def _pop_step() -> None:
-                """过闸后弹队头。闭包持有的 parent_queue 就是 runtime 的
-                _pending_steps 列表本体，原地 pop 即完成出队。"""
-                parent_queue.pop(0)
         else:
-            # 声明优先：supervisor 显式声明了 intent 时按声明校验——可派发即放行，
-            # 不可派发明确拒绝。这是会话意图被误判时唯一的申诉通道：用户已在澄清中
-            # 确认真实意图、而 last_intent 要到下一轮才更新，只认 last_intent 会把
-            # 「模型+用户都确认正确」的派发也锁死。安全性与原设计一致——intent 是
-            # 自声明，报假声明换不到任何额外权限，声明什么就按什么校验；门禁防的是
-            # 行为漂移（跳步/乱序/漏派），不是对抗。
-            if declared is not None:
-                if not INTENT_META[declared][1]:
-                    result = SubAgentResult(
-                        status="denied",
-                        summary=f"声明的意图 {declared.value} 不可派发领域 agent（仅业务意图可派发）")
-                    return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-            else:
-                li = parent.last_intent
-                if li is not None and not INTENT_META[li.intent_type][1]:
-                    result = SubAgentResult(status="denied",
-                                            summary=f"当前意图 {li.intent_type.value} 不派发领域 agent")
-                    return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-
-            def _pop_step() -> None:
-                """普通轮次没有复合队列，空操作——与复合分支共用同一调用点。"""
-                pass
+            li = parent.last_intent
+            if li is not None and not INTENT_META[li.intent_type][1]:
+                _record_dispatch(parent, agent_type, "denied")
+                result = SubAgentResult(status="denied",
+                                        summary=f"当前意图 {li.intent_type.value} 不派发领域 agent")
+                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
         # ① spawn 权限运行时校验(_check_spawn_allowed 单点)。
         #    supervisor 硬编码放行;非 supervisor 越界 spawn → denied。
         denied = _check_spawn_allowed(parent, agent_type)
         if denied is not None:
+            _record_dispatch(parent, agent_type, "denied")
             result = SubAgentResult(status="denied", summary=denied)
             return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
@@ -530,16 +506,14 @@ class SpawnSubAgentTool(Tool):
             hit = reg.get(fp)
             now = time.monotonic()
             if hit and hit["state"] == "running":
-                # 去重命中：同指纹任务正在跑。对复合队列而言这等价于该步骤已经
-                # 有人在做——视为满足，弹队头；否则 supervisor 等它跑完后重试
-                # 会被队头卡死
-                _pop_step()
+                # 去重命中：同指纹任务正在跑，提示等待。记账为 deduped——
+                # 收尾核对据此看出「这一路想派但被去重早退了」。
+                _record_dispatch(parent, agent_type, "deduped")
                 return ToolResult(text="同任务正在执行中，请等待其结果（已去重，勿重复派发）")
             if hit and hit["state"] == "done" and not has_path \
                     and now - hit["started_at"] < _SPAWN_REUSE_WINDOW_S:
-                # done 缓存复用：同任务刚做完、结果直接给你。同理视为该步骤已
-                # 满足，弹队头
-                _pop_step()
+                # done 缓存复用：同任务刚做完、结果直接给你。同样记 deduped。
+                _record_dispatch(parent, agent_type, "deduped")
                 return hit["result"]
             # ③ 审稿预算门:审稿类 mode 在注册 running 前计数检查——超限拒绝(不注册,
             #    不污染去重注册表);去重命中早退不计数。置于注册前是 _admit 的既有
@@ -551,6 +525,7 @@ class SpawnSubAgentTool(Tool):
                 bkey = (parent._instance_id, mode)
                 used = rs.review_counts.get(bkey, 0)
                 if used >= _REVIEW_SPAWN_BUDGET:
+                    _record_dispatch(parent, agent_type, "denied")
                     denied_result = SubAgentResult(
                         status="denied",
                         summary=_REVIEW_BUDGET_DENIED_NOTE.format(budget=_REVIEW_SPAWN_BUDGET))
@@ -565,6 +540,7 @@ class SpawnSubAgentTool(Tool):
                 turn = getattr(parent, "_current_turn", 0)
                 used = rs.turn_spawn_counts.get(turn, 0)
                 if used >= TURN_SPAWN_BUDGET:
+                    _record_dispatch(parent, agent_type, "denied")
                     denied_result = SubAgentResult(
                         status="denied",
                         summary=f"本轮派发已达上限 {TURN_SPAWN_BUDGET}，"
@@ -589,6 +565,7 @@ class SpawnSubAgentTool(Tool):
             occupied = rs.in_flight_paths.get(parent._instance_id, set())
             clash = [p for p in target_paths if p in occupied]
             if clash:
+                _record_dispatch(parent, agent_type, "denied")
                 denied_result = SubAgentResult(
                     status="denied",
                     summary=f"目标路径在途占用，正在被另一个子任务写：{'、'.join(clash)}。"
@@ -598,9 +575,7 @@ class SpawnSubAgentTool(Tool):
             if target_paths:
                 rs.in_flight_paths.setdefault(parent._instance_id, set()).update(target_paths)
             reg[fp] = {"state": "running", "result": None, "started_at": now}
-        # 走到这说明全部检查通过、任务已注册 running：弹复合队列队头（普通轮次
-        # 是空操作）。拒绝路径都在上方提前 return，不会经过这里
-        _pop_step()
+        # 全部检查通过、任务已注册 running（拒绝路径都在上方提前 return）。
         return fp, has_path
 
     async def aexecute(self, agent_type: str, task: str, mode: str | None = None,
@@ -646,6 +621,9 @@ class SpawnSubAgentTool(Tool):
                 child.system_prompt = f"当前模式：{mode}\n{child.system_prompt}"
             # 传解析后的超时:_run_child 用实际生效值(config > 类默认)
             result = await self._run_child(child, agent_type, task)
+            # 派发账本：真实派发完成后按结果状态记账（与早退路径的 denied/deduped
+            # 互补），供收尾核对列出「本轮派了哪些、结果如何」。
+            _record_dispatch(parent, agent_type, result.summary.get("status", ""))
             # 失败升级：仅 supervisor 的派发计数——连续 N 次非 success
             # 后追加强指令，把「继续自动重试」的决策权交回用户（模型对不可能
             # 成功的任务会自动重派多轮，每轮分钟级）。按会话容器计数：同一会话

@@ -14,8 +14,8 @@
 一句话多意图的处理走两条通道，共同原则是「要不要」由代码判据决定，「怎么做」
 才交给 LLM：
 - steps（拆分执行）：路由层多命中直接拆，或 LLM 兜底拆（提示词约定何时拆）。
-  顺序性由 spawn 门禁的 steps 队列在代码层强制（见 runtime._pending_steps 与
-  spawn._admit），不依赖 supervisor 提示词自觉。
+  拆分结果只是一条信号——识别出的意图会随 INTENT 块注入，并在收尾时作为事实
+  摆给 supervisor 自查；实际派发顺序与并行由 supervisor 自主决定，框架不强制。
 - clarification（澄清反问）：触发与否完全由上面 ② 的分数判据决定——分数够自信
   时，LLM 即使在输出里写了澄清也会被丢弃；判据说要问时，LLM 必须写出问题，
   写不出来就用模板合成。这样「问不问」永远确定，「问什么」才交给模型。
@@ -366,7 +366,7 @@ class IntentPipeline:
             return None
 
         # 4. 至少两个业务意图都过线 → query 是一句复合请求，直接在路由层拆开短路返回，不进 LLM 兜底。
-        # 主意图取第一步（intent_type = steps[0]），spawn 门禁会按这个 steps 列表建队列，逐个校验 supervisor 的派发顺序。
+        # 主意图取第一步（intent_type = steps[0]），steps 列表随 INTENT 块注入，作收尾核对的事实来源。
         return self._router_intent(top_name, top_score, entities,
                                    prev_intent, query,
                                    steps=[IntentType(n) for n in steps_names])

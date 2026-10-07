@@ -98,21 +98,29 @@ def _intent_block(intent) -> str:
         exclude={"clarification", "prev_intent", "clarify_candidates"})
 
 
-def _steps_incomplete_note(agent: "Agent") -> str:
-    """复合任务的完备性告警：ReAct 收尾时队列还剩 step，说明 supervisor 漏派了。
+def _needs_ledger(agent) -> bool:
+    """是否需要注入收尾核对账本：识别到多意图、且本次 run 尚未核对过。"""
+    return bool(getattr(agent, "_recognized_steps", [])) and not agent._steps_checked
 
-    生成一句追加在最终回答尾部的中文提示（「本次复合任务还有未完成的步骤：
-    …」），列出剩余步骤的中文名。定位是软告警不阻断：漏步是事实，就该如实
-    告诉用户、由用户决定要不要继续，而不是静默丢掉（改这个函数之前的唯一
-    表现就是静默丢失），也不是由系统强行再派——补派该派什么子任务文本只有
-    supervisor 能组织，代码层代劳只会派空壳任务。队列空时返回空串，正常
-    回答零尾缀。调用点在 run() 的两条正常返回路径上（自然收尾 / 终止型工具）。
+
+def _render_ledger(agent) -> str:
+    """渲染收尾核对消息：识别到的意图 + 实际派发记录 + 产物清单（只摆事实，不下结论）。
+
+    把三列事实拼成一段文本交给模型自查——代码不替它判断「有没有漏派、失败该不该
+    汇报」，所以不会替模型说错话。意图名用 INTENT_LABELS_ZH 的中文标签；派发记录
+    取自本次 run 的派发账本（无则「无」）；产物清单取自 run 状态容器的产物账本。
     """
-    if not agent._pending_steps:
-        return ""
-    remaining = "、".join(INTENT_LABELS_ZH.get(t, t.value)
-                          for t in agent._pending_steps)
-    return f"\n\n（系统提示：本次复合任务还有未完成的步骤：{remaining}。如需继续请告知。）"
+    from paperflow.core.agent.state import get_run_state
+    steps = "、".join(INTENT_LABELS_ZH.get(t, t.value) for t in agent._recognized_steps)
+    dispatched = "、".join(f"{a}({s})" for a, s in agent._run_dispatches) or "无"
+    artifacts = get_run_state(getattr(agent, "_trace_id", "") or "").artifacts
+    produced = "、".join(artifacts) or "无"
+    return ("（系统核对）本轮识别出的意图：{steps}。\n"
+            "本轮已派发的子任务记录：{dispatched}。\n"
+            "本轮新落盘的产物：{produced}。\n"
+            "请核对：若有意图未派发、或某次派发失败/超时/被拒，必须在最终回答中如实说明；"
+            "全部完成则正常汇报，不要提及本条提示。").format(
+                steps=steps, dispatched=dispatched, produced=produced)
 
 
 #: 取消路径合成的 tool 消息（历史自愈）。自解释措辞：真实会话复验发现，裸的
@@ -441,14 +449,15 @@ class Agent:
         #: 与按 run 生成的 _trace_id 区分——子 agent 继承父 trace_id，用 trace_id 键控
         #: 会把同一轮里多个同类父实例的预算混在一起。构造即固定，不再变化。
         self._instance_id: str = uuid.uuid4().hex
-        #: 复合意图待派发队列。当意图管线识别出一句复合请求（last_intent.steps
-        #: 非空）时，_build_head 把完整的 steps 列表装进来，队头就是本轮主意图
-        #: （steps[0] == intent_type）——supervisor 的第一次 spawn 必须对上它，
-        #: 派发成功后队首出队，依此类推。这样「按顺序逐 step 派发、一步不落」
-        #: 就由 spawn 门禁在代码层强制（见 spawn._admit），而不是靠 AGENT.md
-        #: 提示词指望 supervisor 自觉；这个 run 没有复合意图时队列恒空，门禁
-        #: 走原有的单意图检查，行为不变。
-        self._pending_steps: list[IntentType] = []
+        #: 复合意图：本轮识别出的完整步骤列表（steps[0] == intent_type）。只作为收尾
+        #: 核对的事实来源——不再是强制派发顺序的队列，顺序与并行由 supervisor 自主决定。
+        #: 每轮 run 装载意图时赋值覆盖（而非突变），避免跨轮残留。
+        self._recognized_steps: list[IntentType] = []
+        #: 本次 run 是否已注入过收尾核对（每个 run 至多注入一次）。
+        self._steps_checked: bool = False
+        #: 本次 run 的派发账本（supervisor 自身的派发）。赋值走属性 setter，让
+        #: spawn 写入与收尾核对读到 run 状态容器里的同一份列表。
+        self._run_dispatches: list[tuple[str, str]] = []
 
         # opt-in 注入：仅对声明 needs_parent 的工具注入父引用。
         # 原子工具不需要 parent；只有嵌套子 agent 的工具声明——权限最小化。
@@ -468,6 +477,22 @@ class Agent:
         cb = self.stream_callback
         if cb is not None:
             cb(ev)
+
+    @property
+    def _run_dispatches(self) -> list[tuple[str, str]]:
+        """本次 run 的派发账本（supervisor 自身的派发），取自 run 状态容器。
+
+        spawn 每次派发（含被拒/去重）写进容器的 spawn_dispatches，收尾核对经本
+        属性读到同一份——两者必须是同一列表，否则核对只会看到空账本。
+        """
+        from paperflow.core.agent.state import get_run_state
+        return get_run_state(self._trace_id or "").spawn_dispatches
+
+    @_run_dispatches.setter
+    def _run_dispatches(self, value) -> None:
+        """覆盖本次 run 的派发账本（原地改写容器列表，不留旧引用）。"""
+        from paperflow.core.agent.state import get_run_state
+        get_run_state(self._trace_id or "").spawn_dispatches[:] = list(value)
 
     #: messages 只读 property（OpenAI wire 格式视图）。
     #: 只读：外部（CLI/测试）可观察但不可改，写入统一走 _append_to_messages。
@@ -582,7 +607,9 @@ class Agent:
                 # last_intent 显式置 None:conversation 的上一轮意图不更新。
                 logger.warning("intent pipeline failed, degraded to plain ReAct", exc_info=True)
                 self.last_intent = None
-                self._pending_steps = []
+                self._recognized_steps = []
+                self._run_dispatches = []
+                self._steps_checked = False
                 intent = None
 
             if intent is not None:
@@ -594,9 +621,11 @@ class Agent:
                 if intent.clarification:
                     intent, task = await self._resolve_clarification(task, intent)
                 self.last_intent = intent
-                # 复合意图队列初始化：完整 steps，队头 = steps[0] = intent_type 本身
-                # ——首个 spawn 必须对上主意图，admitted/去重命中后依次出队。
-                self._pending_steps = list(intent.steps)
+                # 复合意图装载：完整 steps 只作收尾核对的事实来源，不强制派发顺序。
+                # 同时清空上一轮的派发账本与核对标记（每轮 run 独立）。
+                self._recognized_steps = list(intent.steps)
+                self._run_dispatches = []
+                self._steps_checked = False
 
                 # 正常路径：将意图结果序列化为 INTENT 块，注入 system 消息，
                 # 让 LLM 在执行任务时获得路由先验。
@@ -920,6 +949,17 @@ class Agent:
                     self._persist_conversation([response])
                     continue
 
+                # 收尾核对：识别到多意图时，把「识别到的意图 + 实际派发记录 + 产物清单」
+                # 摆给模型，由它自己核对并如实汇报。代码不下结论，所以不会说错话；
+                # 每个 run 至多注入一次，max_turns 是第二道保险。注入后 continue，
+                # 让模型基于账本给出最终回答——本轮这条回答先不落盘。
+                if _needs_ledger(self):
+                    self._steps_checked = True
+                    ledger_msg = Message(role="user", content=_render_ledger(self))
+                    self._append_to_messages(ledger_msg)
+                    self._persist_conversation([ledger_msg])
+                    continue
+
                 # 正常完成（未被截断）
                 content = "".join(accumulated) + (response.content or "")
                 accumulated.clear()
@@ -933,9 +973,6 @@ class Agent:
                 if self.intent_enabled and self.last_intent is not None:
                     self.conversation.prev_intent = self.last_intent.intent_type
                     self.conversation.prev_user_input = task
-
-                # 完备性告警：复合队列非空 = 有 step 未派发（软提示，不阻断）
-                content += _steps_incomplete_note(self)
 
                 # 最终回答(经 on_finish 改写——回放给下轮的是"用户看到的事实",
                 # SAFE_PROMPT 等安全声明跨轮保留)落盘 + 进 in-context,供下轮回放
@@ -1025,8 +1062,6 @@ class Agent:
                 final_text = next(r.text for r in results if r.summary.get("terminal"))
                 for mw in self.security_middleware:
                     final_text = await mw.on_finish(self, final_text)
-                # 完备性告警：复合队列非空 = 有 step 未派发（软提示，不阻断）
-                final_text += _steps_incomplete_note(self)
                 final = Message(role="assistant", content=final_text)
                 self._append_to_messages(final)
                 self._persist_conversation([final])
