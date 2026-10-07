@@ -574,12 +574,20 @@ class SpawnSubAgentTool(Tool):
                 rs.turn_spawn_counts[turn] = used + 1
             # ⑤ 同路径在途互斥:两个任务文本可以完全不同(去重指纹不碰撞),却写同一个
             #    目标文件——并发跑就会静默互相覆盖(原子写只防撕裂不防覆盖)。把任务
-            #    文本里抽出的绝对路径与 run 容器上「正在被写」的路径集比对,命中即拒。
+            #    文本里抽出的绝对路径与「同一父实例」正在写的路径集比对,命中即拒。
+            #    只按父实例分桶,不按 trace 全局分桶:真正会同时写同一文件的,是同一个
+            #    父在同一轮里扇出的多路(兄弟 spawn);祖先任务文本里提到某路径不代表
+            #    后代要写它(后代或只读,或顺序依赖父产物),按父实例分桶才不会把 noter
+            #    写完再内部 spawn reviewer 审稿这类顺序流程误判成并发写。
             #    路径检查置于所有既有拒绝分支之后:被别的闸拒绝的派发不会留下已占用的
-            #    路径,否则一次被拒的派发会把该路径锁到任务结束。只拦「同时在途」,不拦
-            #    「按序重写已完成 spawn 写过的文件」——重新生成笔记是合法行为。
+            #    路径——若前移到预算分支之前,一次被别的闸拒绝的派发会先占用路径再早退
+            #    (早退不进 aexecute 的 finally),该路径就被永久锁死。代价是本闸的拒绝
+            #    发生在审稿/每轮预算自增之后,会照常消耗一次对应额度——这是刻意的取舍。
+            #    只拦「同时在途」,不拦「按序重写已完成 spawn 写过的文件」——重新生成
+            #    笔记是合法行为。
             target_paths = _extract_paths(task)
-            clash = [p for p in target_paths if p in rs.in_flight_paths]
+            occupied = rs.in_flight_paths.get(parent._instance_id, set())
+            clash = [p for p in target_paths if p in occupied]
             if clash:
                 denied_result = SubAgentResult(
                     status="denied",
@@ -587,7 +595,8 @@ class SpawnSubAgentTool(Tool):
                             "请先等它完成，或改为写不同的文件。")
                 return ToolResult(text=denied_result.model_dump_json(),
                                   summary=denied_result.model_dump())
-            rs.in_flight_paths.update(target_paths)
+            if target_paths:
+                rs.in_flight_paths.setdefault(parent._instance_id, set()).update(target_paths)
             reg[fp] = {"state": "running", "result": None, "started_at": now}
         # 走到这说明全部检查通过、任务已注册 running：弹复合队列队头（普通轮次
         # 是空操作）。拒绝路径都在上方提前 return，不会经过这里
@@ -665,9 +674,13 @@ class SpawnSubAgentTool(Tool):
                     reg[fp] = {"state": "done", "result": result,
                                "started_at": time.monotonic()}
                 # 释放本次派发占用的目标路径(与注册表清理同处、同锁):任务已结束,
-                # 同路径的新派发送下一轮即可放行。用 difference_update 只摘本任务
-                # 抽出的路径,不误伤其它在途任务占用的同一集合。
-                rs.in_flight_paths.difference_update(_extract_paths(task))
+                # 同路径的新派发送下一轮即可放行。只摘本父实例名下的这些路径,别的
+                # 父实例即便占用同一路径也不受影响(各自分桶)。
+                owned = rs.in_flight_paths.get(parent._instance_id)
+                if owned is not None:
+                    owned.difference_update(_extract_paths(task))
+                    if not owned:
+                        rs.in_flight_paths.pop(parent._instance_id, None)
         return result
 
     async def _run_child(self, child: Agent, agent_type: str, task: str) -> ToolResult:

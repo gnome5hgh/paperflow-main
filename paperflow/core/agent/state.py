@@ -50,8 +50,11 @@ class RunState:
         self.turn_spawn_counts: dict[int, int] = {}
         #: 审稿预算计数：(父实例 id, mode) -> 次数
         self.review_counts: dict[tuple[str, str], int] = {}
-        #: 在途写盘目标路径：被正在执行的 spawn 占用时，同路径的新 spawn 被拒
-        self.in_flight_paths: set[str] = set()
+        #: 在途写盘目标路径：按「占用它的父实例 id」分桶（父实例 -> 该父已占用的路径集）。
+        #: 只有同一父实例并发扇出的子 spawn 之间才互斥——真正会同时写同一文件的，是
+        #: 同一个父在同一轮里扇出的多路；祖先任务文本里提到某路径并不代表其后代要写它
+        #: （后代或只读，或顺序依赖父产物），按父实例分桶可避免把后代误判成并发写。
+        self.in_flight_paths: dict[str, set[str]] = {}
         #: 产物账本：落盘路径 -> 生产者（工具名）
         self.artifacts: dict[str, str] = {}
         #: 最后一次取用时刻（TTL 清扫依据）：是滑动窗口而非创建时刻——活跃任务每次取

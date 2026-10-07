@@ -1231,10 +1231,10 @@ class Agent:
             # 用户按 Ctrl+C 时，事件循环收到 CancelledError，to_thread 的 future 被取消，
             # 但已经在线程里跑起来的子 agent 会继续跑完——留下一个孤儿线程，继续烧 LLM token、继续写文件，用户以为已经停了。
             #
-            # aexecute（spawn.py:466-527）构造子 Agent 后，通过 _run_child 在父的事件循环上 await child.run(task)。
+            # aexecute 构造子 Agent 后，通过 _run_child 在父的事件循环上 await child.run(task)。
             # asyncio 的取消是协作式的，沿 await 链传播：父 run() 被取消 →
             # CancelledError 传入 spawn 调用点的这个 await →
-            # 进入 _run_child（其 docstring，spawn.py:532-534，明确写了“取消传播给子任务，再原样上抛”）→
+            # 进入 _run_child（其 docstring 明确写了“取消传播给子任务，再原样上抛”）→
             # 子 agent 的 run() 也被取消。整棵 agent 树一起退出，不需要任何额外的清理逻辑。
             if getattr(tool, "async_execute", False):
                 # 异步工具（如 spawn）：在当前事件循环上直接 await——子 agent 与父
