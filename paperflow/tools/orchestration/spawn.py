@@ -96,6 +96,23 @@ class LibrarianDigest(BaseModel):
     blocked_reason: str = ""
 
 
+class QaAgentDigest(BaseModel):
+    """qa-agent 的结果摘要:回答类型 + 简短结论 + 触及的文件。
+
+    source_kind 由摘要提取从最终回答文本推断(取值沿用 qa-agent 自己的职责词表
+    answer/read/notes/figure/memory/analyze)——qa-agent 没有 mode 入参、按请求自选,
+    所以这是推断值而非入参回显。
+    """
+    status: str
+    #: 回答类型(回答/精读/笔记/图表/记忆/检索),由最终回答文本推断
+    source_kind: str = ""
+    #: 结论性简短摘要,supervisor 据此汇报与衔接后续派发
+    answer_summary: str = ""
+    #: 本次回答读过的文件(论文/笔记绝对路径),便于上级判断还缺哪些材料
+    files_touched: list[str] = []
+    needs_attention: bool = False
+
+
 class GenericDigest(BaseModel):
     """未注册摘要 schema 的兜底:抽出简短摘要与关键条目,supervisor 不致无从下手。"""
     summary_short: str
@@ -115,6 +132,7 @@ def digest_schema_for(agent_type: str) -> type[BaseModel]:
         "noter": NoterDigest,
         "researcher": ResearcherDigest,
         "librarian": LibrarianDigest,
+        "qa-agent": QaAgentDigest,
     }.get(agent_type, GenericDigest)
 
 
