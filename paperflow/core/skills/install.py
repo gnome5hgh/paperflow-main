@@ -14,10 +14,10 @@ skill 上下文读入。
 ClawHub 供应链教训的对应防线：
 - 含 tools.py 的 skill 强制过目：-y / 非交互下一律拒绝，除非显式 --allow-code（fail-closed）
 - zip/tar 设大小与文件数上限（防 22MB 填充炸弹撑爆扫描管道）
-- lock 记录来源/版本/内容 hash/安装时间，为二期 update 与完整性校验留钩子
+- lock 记录来源 pin（git 记 ref+精确 commit sha）/has_code/installed_at，为 update 留钩子；
+  完整性锚点是 sha pin 而非内容哈希（对齐 Claude Code，无本地 verify）
 """
 
-import hashlib
 import inspect
 import json
 import os
@@ -66,11 +66,19 @@ def lock_path(pf_dir: Path) -> Path:
 
 
 def load_lock(pf_dir: Path) -> dict:
-    """:returns: lock 的 skills 映射；文件缺失视为空（未登记任何安装）。"""
+    """读 lock 的 skills 映射；文件缺失视为空（未登记任何安装）。
+
+    :raises ValueError: schema version 与 LOCK_VERSION 不符（新版结构不得被旧代码
+                        静默读写，对齐 Claude Code installed_plugins.json 版本策略）
+    """
     p = lock_path(pf_dir)
     if not p.exists():
         return {}
     data = json.loads(p.read_text(encoding="utf-8"))
+    if data.get("version") != LOCK_VERSION:
+        raise ValueError(
+            f"skills.lock.json schema 版本不符：期望 {LOCK_VERSION}，"
+            f"得到 {data.get('version')!r}——请升级 paperflow 后重试")
     return data.get("skills", {})
 
 
@@ -88,17 +96,8 @@ def _save_lock(pf_dir: Path, skills: dict) -> None:
 
 
 def _now_iso() -> str:
-    """安装时间戳（ISO，秒级）——manifest 审计要素，二期 update 的基线。"""
+    """安装时间戳（ISO，秒级）——lock 审计要素，update 的 lastUpdated 基线。"""
     return datetime.now().isoformat(timespec="seconds")
-
-
-def _hash_dir(path: Path) -> str:
-    """目录内容 sha256（相对路径 + 文件字节，排序拼接），用于完整性校验。"""
-    digest = hashlib.sha256()
-    for f in sorted(p for p in path.rglob("*") if p.is_file()):
-        digest.update(str(f.relative_to(path)).encode("utf-8"))
-        digest.update(f.read_bytes())
-    return "sha256:" + digest.hexdigest()
 
 
 def _is_git_source(source: str) -> bool:
@@ -109,12 +108,15 @@ def _is_git_source(source: str) -> bool:
     return len(parts) == 2 and all(parts) and "://" not in source
 
 
-def fetch_source(source: str, target: Path) -> Path:
+def fetch_source(source: str, target: Path, *, ref: str | None = None) -> tuple[Path, dict]:
     """把安装源落到 target 目录（本地目录直接复制，git 克隆，压缩包解压）。
 
     :param source: 本地目录 | git URL（含 owner/repo 简写、file://）| zip/tar 路径
     :param target: 空目录（调用方用 tempfile 保证）
-    :returns: 含一个或多个 skill 目录的根路径
+    :param ref: git 来源的分支/标签（仅 `git clone --branch` 支持的形态；None=默认 HEAD）
+    :returns: (含一个或多个 skill 目录的根路径, 来源元数据)——git 记
+              ``{"type","url","ref","sha"}``（sha=克隆后 HEAD，pin 精确 commit，
+              对齐 Claude Code marketplace 条目）；local/archive 记 ``{"type","path"}``
     :raises ValueError: 源不存在 / 压缩包超限 / git 克隆失败
     """
     p = Path(source)
@@ -125,7 +127,7 @@ def fetch_source(source: str, target: Path) -> Path:
         #（dest = skills/<name>），与来源目录名是否同名无关。
         dest = target / (p.name or "src")
         shutil.copytree(p, dest, dirs_exist_ok=True)
-        return dest
+        return dest, {"type": "local", "path": str(p.resolve())}
     # Path.suffix 只取最后一段，".tar.gz" 会得 ".gz"——用多级后缀拼接识别压缩包
     suffixes = "".join(p.suffixes).lower()
     if p.is_file() and suffixes in (".zip", ".tar", ".tar.gz", ".tgz"):
@@ -147,14 +149,21 @@ def fetch_source(source: str, target: Path) -> Path:
                 else:
                     # Python 3.11.0–3.11.3 无 filter 形参：保留原 extractall
                     tf.extractall(target)
-        return target
+        return target, {"type": "archive", "path": str(p.resolve())}
     if _is_git_source(source):
         url = source
         if len(source.split("/")) == 2 and "://" not in source and not source.startswith("git@"):
             url = f"https://github.com/{source}.git"
-        subprocess.run(["git", "clone", "--depth", "1", url, str(target / "repo")],
-                       check=True, capture_output=True)
-        return target / "repo"
+        clone_args = ["git", "clone", "--depth", "1"]
+        if ref:
+            clone_args += ["--branch", ref]
+        clone_args += [url, str(target / "repo")]
+        subprocess.run(clone_args, check=True, capture_output=True)
+        repo = target / "repo"
+        # pin 精确 commit：完整性锚点是 sha 而非目录内容哈希（Claude Code 模型）
+        sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                             check=True, capture_output=True, text=True).stdout.strip()
+        return repo, {"type": "git", "url": url, "ref": ref, "sha": sha}
     raise ValueError(f"无法识别的安装源: {source}")
 
 
@@ -211,18 +220,20 @@ def _default_confirm(prompt: str) -> bool:
         return False
 
 
-def install_skill(source: str, pf_dir: Path, *, assume_yes: bool = False,
-                  allow_code: bool = False, confirm=None, print_fn=print) -> int:
+def install_skill(source: str, pf_dir: Path, *, ref: str | None = None,
+                  assume_yes: bool = False, allow_code: bool = False,
+                  confirm=None, print_fn=print) -> int:
     """准入安装一个来源中的全部合法 skill。
 
     :param pf_dir: .paperflow 根目录（skill 落盘其 skills/ 子目录，lock 在其根）
+    :param ref: git 来源的分支/标签（lock 记录之，update 按其重装）
     :param confirm: 交互确认回调 confirm(展示文本) -> bool；缺省用 input()
     :returns: 0 全部成功；1 被拒绝/校验失败（已存在的 skill 视为失败，先 uninstall）
     """
     confirm = confirm or _default_confirm
     try:
         with tempfile.TemporaryDirectory(prefix="paperflow-skill-") as tmp:
-            root = fetch_source(source, Path(tmp))
+            root, source_meta = fetch_source(source, Path(tmp), ref=ref)
             candidates = discover_skill_dirs(root)
             if not candidates:
                 print_fn(f"源中未发现 skill（需含 SKILL.md）: {source}")
@@ -265,11 +276,14 @@ def install_skill(source: str, pf_dir: Path, *, assume_yes: bool = False,
                     # 「目标已存在」命中）
                     installed.append(dest)
                     shutil.copytree(s["path"], dest)
+                    is_git = source_meta["type"] == "git"
                     lock[s["name"]] = {
-                        "source": source,
-                        "version": s["metadata"].get("version"),
+                        "source": {k: source_meta[k]
+                                   for k in ("type", "url" if is_git else "path")},
+                        "ref": source_meta.get("ref"),
+                        "sha": source_meta.get("sha"),
                         "has_code": s["has_code"],
-                        "hash": _hash_dir(dest),
+                        "enabled": True,
                         "installed_at": _now_iso(),
                     }
                     print_fn(f"已安装: {s['name']} → {dest}")
@@ -307,8 +321,92 @@ def uninstall_skill(name: str, pf_dir: Path, *, print_fn=print) -> int:
     return 0
 
 
+def update_skill(name: str, pf_dir: Path, *, allow_code: bool = False,
+                 print_fn=print) -> int:
+    """更新 lock 登记的 git 来源 skill 到源最新版本（对齐 Claude Code plugin update）。
+
+    按记录的 url+ref 重克隆 → 源中须有同名 skill → 准入重走（新版本含
+    tools.py 必须显式 --allow-code，旧版本装过不豁免）→ 原子换目录 → 刷 lock。
+    :returns: 0 成功；1 拒绝/校验失败（lock schema 不符经 ValueError 上抛）
+    """
+    lock = load_lock(pf_dir)
+    entry = lock.get(name)
+    if entry is None:
+        print_fn(f"无法更新 '{name}': 未在 lock 中登记（git 提交或手动拷贝的 skill 不可更新）")
+        return 1
+    source = entry.get("source") or {}
+    if source.get("type") != "git":
+        print_fn(f"无法更新 '{name}': 来源类型为 {source.get('type', '未知')}，"
+                 "仅 git 来源可更新（local/archive 源不可复现）")
+        return 1
+    ref = entry.get("ref")
+    old_sha = entry.get("sha")
+    try:
+        with tempfile.TemporaryDirectory(prefix="paperflow-skill-update-") as tmp:
+            root, source_meta = fetch_source(source["url"], Path(tmp), ref=ref)
+            described = {d["name"]: d for d in
+                         (describe_skill(p) for p in discover_skill_dirs(root))}
+            if name not in described:
+                print_fn(f"更新失败: 源 {source['url']}（ref={ref or '默认'}）"
+                         f"中未找到同名 skill '{name}'")
+                return 1
+            if described[name]["has_code"] and not allow_code:
+                # fail-closed：与 install 同门——新版本含代码必须人工过目后显式放行
+                print_fn("拒绝更新：新版本捆绑可执行代码（tools.py）。"
+                         "请人工审读代码后用 --allow-code 显式放行。")
+                return 1
+            dest = skills_root(pf_dir) / name
+            backup = Path(tmp) / "old-version"
+            if dest.exists():
+                shutil.move(str(dest), str(backup))
+            try:
+                shutil.copytree(described[name]["path"], dest)
+                entry.update({
+                    "ref": source_meta.get("ref"),
+                    "sha": source_meta.get("sha"),
+                    "has_code": described[name]["has_code"],
+                    "installed_at": _now_iso(),
+                })
+                _save_lock(pf_dir, lock)
+            except BaseException:
+                # 换目录半程失败：还原旧目录，lock 未写保持旧值（全有或全无）
+                if dest.exists():
+                    shutil.rmtree(dest, ignore_errors=True)
+                if backup.exists():
+                    shutil.move(str(backup), str(dest))
+                raise
+            print_fn(f"已更新: {name}  sha {old_sha or '—'} → {entry.get('sha') or '—'}")
+            return 0
+    except (ValueError, OSError, subprocess.CalledProcessError,
+            zipfile.BadZipFile, tarfile.TarError) as e:
+        print_fn(f"更新失败: {e}")
+        return 1
+
+
+def enable_skill(name: str, pf_dir: Path, *, enabled: bool, print_fn=print) -> int:
+    """切换 lock 登记 skill 的启用状态（对齐 Claude Code enabledPlugins；幂等）。
+
+    停用 = installed 但扫描不可见（L1/L2/L3 与工具并入全线跳过）。未登记的
+    （git 提交/手动拷贝）不可切换——其移除/管理方式是删目录，写无来源的 lock
+    条目会污染 uninstall 语义。
+    """
+    lock = load_lock(pf_dir)
+    entry = lock.get(name)
+    if entry is None:
+        print_fn(f"无法{'停用' if not enabled else '启用'} '{name}': 未在 lock 中登记"
+                 "（git 提交或手动拷贝的 skill 用删目录方式管理）")
+        return 1
+    if entry.get("enabled", True) == enabled:
+        print_fn(f"'{name}' 已是{'启用' if enabled else '停用'}状态")
+        return 0
+    entry["enabled"] = enabled
+    _save_lock(pf_dir, lock)
+    print_fn(f"已{'启用' if enabled else '停用'}: {name}")
+    return 0
+
+
 def list_skills_command(skills_dir: str | None, pf_dir: Path, *, print_fn=print) -> int:
-    """列出 skills 目录下的 skill，标注来源（已装=lock 登记/未登记）、版本、是否含代码。"""
+    """列出 skills 目录下的 skill，标注来源（已装=lock 登记/已停用/未登记）、版本、是否含代码。"""
     from paperflow.core.skills.registry import SkillRegistry
 
     reg = SkillRegistry(skills_dir=skills_dir)
@@ -319,7 +417,13 @@ def list_skills_command(skills_dir: str | None, pf_dir: Path, *, print_fn=print)
         return 0
     for name in names:
         skill = reg.get_skill(name)
-        origin = "已装" if name in lock else "未登记"
+        entry = lock.get(name)
+        if entry is not None and not entry.get("enabled", True):
+            origin = "已停用"
+        elif entry is not None:
+            origin = "已装"
+        else:
+            origin = "未登记"
         print_fn(f"- {name}  [{origin}]  version={skill.metadata.get('version', '—')}"
                  f"  code={'yes' if skill.has_code else 'no'}")
     return 0

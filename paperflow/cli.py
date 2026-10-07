@@ -28,7 +28,7 @@ from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent
 from paperflow.core.agent import AgentRegistry
 from paperflow.core.skills import merge_tools
-from paperflow.core.skills import SkillRegistry
+from paperflow.core.skills import SkillRegistry, load_lock
 from paperflow.core.mcp.bridge import collect_mcp_agent_tools
 from paperflow.tools.skills.load_skill import LoadSkillTool
 from paperflow.core.llm import LLMClient
@@ -310,12 +310,22 @@ def main(argv: list[str] | None = None) -> int | None:
     skill_action = skill_parser.add_subparsers(dest="skill_action", required=True)
     skill_inst = skill_action.add_parser("install", help="准入安装：本地目录 | git URL | zip/tar")
     skill_inst.add_argument("source")
+    skill_inst.add_argument("--ref", default=None, metavar="REF",
+                            help="git 来源的分支/标签（缺省默认 HEAD；lock 记录之，update 按其重装）")
     skill_inst.add_argument("-y", "--yes", action="store_true", help="跳过确认（仅纯指令 skill）")
     skill_inst.add_argument("--allow-code", action="store_true",
                             help="允许捆绑 tools.py 的 skill（安装前必须人工审读代码）")
-    skill_action.add_parser("list", help="列出内置与已装 skill")
+    skill_action.add_parser("list", help="列出已装与未登记 skill")
     skill_uni = skill_action.add_parser("uninstall", help="卸载 lock 登记的 skill")
     skill_uni.add_argument("name")
+    skill_upd = skill_action.add_parser("update", help="更新 lock 登记的 git 来源 skill")
+    skill_upd.add_argument("name")
+    skill_upd.add_argument("--allow-code", action="store_true",
+                           help="新版本捆绑 tools.py 时显式放行（旧版本装过不豁免）")
+    skill_en = skill_action.add_parser("enable", help="启用 lock 登记的 skill")
+    skill_en.add_argument("name")
+    skill_dis = skill_action.add_parser("disable", help="停用 lock 登记的 skill（扫描不可见，不删文件）")
+    skill_dis.add_argument("name")
     args = parser.parse_args(argv)
 
     if args.version:
@@ -329,18 +339,30 @@ def main(argv: list[str] | None = None) -> int | None:
     # skill 子命令分发：不启服务、不建 LLM、不进 REPL——skill 管理不需要任何服务。
     if args.command == "skill":
         from paperflow.core.skills import (
-            install_skill, list_skills_command, uninstall_skill)
+            enable_skill, install_skill, list_skills_command,
+            uninstall_skill, update_skill)
         # skill 根目录锚定 cwd（与 config.yaml 同一解析基准）：<cwd>/.paperflow/
         pf_dir = Path.cwd() / ".paperflow"
         skills_dir = pf_dir / "skills"
-        if args.skill_action == "install":
-            return install_skill(args.source, pf_dir,
-                                 assume_yes=args.yes, allow_code=args.allow_code)
-        if args.skill_action == "list":
-            return list_skills_command(
-                str(skills_dir) if skills_dir.is_dir() else None, pf_dir)
-        if args.skill_action == "uninstall":
-            return uninstall_skill(args.name, pf_dir)
+        try:
+            if args.skill_action == "install":
+                return install_skill(args.source, pf_dir, ref=args.ref,
+                                     assume_yes=args.yes, allow_code=args.allow_code)
+            if args.skill_action == "list":
+                return list_skills_command(
+                    str(skills_dir) if skills_dir.is_dir() else None, pf_dir)
+            if args.skill_action == "uninstall":
+                return uninstall_skill(args.name, pf_dir)
+            if args.skill_action == "update":
+                return update_skill(args.name, pf_dir, allow_code=args.allow_code)
+            if args.skill_action == "enable":
+                return enable_skill(args.name, pf_dir, enabled=True)
+            if args.skill_action == "disable":
+                return enable_skill(args.name, pf_dir, enabled=False)
+        except ValueError as e:
+            # lock schema 版本不符等治理错误：友好退出码，不裸 traceback
+            print(f"错误：{e}")
+            return 1
 
     config = PaperFlowConfig.from_env()
     # MCP 客户端平台：config.mcp_servers 非空才启动（后台循环 + 非阻塞预取）。
@@ -383,8 +405,14 @@ def main(argv: list[str] | None = None) -> int | None:
     # 并入各 agent 工具表、load_skill 注入全部 agent（AgentConfig 为共享
     # 对象，此处就地修改即对后续所有 Agent 构造生效）。supervisor 的 skill 工具
     # 并入被 SkillRegistry.get_tools_for 代码级拒绝（权限最小化红线）。
-    _skills_dir = Path.cwd() / ".paperflow" / "skills"
-    skill_registry = SkillRegistry(str(_skills_dir) if _skills_dir.is_dir() else None)
+    # lock 中 enabled=false 的 skill 扫描期跳过（enabledPlugins 语义）；lock
+    # schema 版本不符时 load_lock 抛 ValueError——启动 fail-fast，与 SkillRegistry
+    # 校验同哲学（不安全状态不进系统）。
+    _pf_dir = Path.cwd() / ".paperflow"
+    _skills_dir = _pf_dir / "skills"
+    _disabled = {n for n, e in load_lock(_pf_dir).items() if not e.get("enabled", True)}
+    skill_registry = SkillRegistry(
+        str(_skills_dir) if _skills_dir.is_dir() else None, disabled=_disabled)
     for _agent_type in registry.list_agents():
         _cfg = registry.get_config(_agent_type)
         # LoadSkillTool 声明 needs_parent=True：Agent.__init__ 构造期即
