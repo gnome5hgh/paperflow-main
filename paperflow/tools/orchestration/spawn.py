@@ -72,6 +72,15 @@ class ResearcherDigest(BaseModel):
     plan_path: str = ""
 
 
+class LibrarianDigest(BaseModel):
+    """librarian 的结果摘要:同步/删除的计数,supervisor 据此汇报。"""
+    status: str
+    added: int = 0
+    skipped: int = 0
+    rejected: int = 0
+    total: int = 0
+
+
 class GenericDigest(BaseModel):
     """未注册摘要 schema 的兜底:抽出简短摘要与关键条目,supervisor 不致无从下手。"""
     summary_short: str
@@ -90,6 +99,7 @@ def digest_schema_for(agent_type: str) -> type[BaseModel]:
         "reviewer": ReviewerDigest,
         "noter": NoterDigest,
         "researcher": ResearcherDigest,
+        "librarian": LibrarianDigest,
     }.get(agent_type, GenericDigest)
 
 
