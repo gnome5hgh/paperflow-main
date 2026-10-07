@@ -302,6 +302,32 @@ class CitationManager:
             return {"status": status, "key": exact[0].key if removed else None,
                     "candidates": []}
 
+    def sync_all(self) -> dict:
+        """语料库全量同步入 bib：逐条按 add_from_pdf 语义入库，幂等增量。
+
+        枚举源是语料标题索引（CorpusIndex，论文中心快照）：只对带 pdf_path
+        的记录入库，纯笔记记录天然跳过。已在库的条目按标题去重跳过，因此
+        重复调用安全；缺作者/年份的记录沿用宁缺毋滥防御拒绝入库，在
+        rejected 中逐条列出（启动 GROBID 后重跑即可补齐）。
+
+        Returns:
+            dict: total=带 PDF 的记录数；added=新入库 key；skipped=已在库 key；
+            rejected=[{pdf_path, note}] 拒绝入库明细。
+        """
+        self._index.refresh()
+        records = self._index.pdf_records()
+        added, skipped, rejected = [], [], []
+        for rec in records:
+            r = self.add_from_pdf(rec["pdf_path"])
+            if r["created"]:
+                added.append(r["key"])
+            elif r["key"]:
+                skipped.append(r["key"])
+            else:
+                rejected.append({"pdf_path": rec["pdf_path"], "note": r["note"]})
+        return {"total": len(records), "added": added,
+                "skipped": skipped, "rejected": rejected}
+
     # —— 查询 / 渲染 ——
     def get(self, key: str) -> BibEntry | None:
         """按 key 查条目；无命中返回 None。"""

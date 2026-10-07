@@ -233,6 +233,16 @@ class CorpusIndex:
         return ""
 
     # —— 查询 ——
+    def pdf_records(self) -> list[dict]:
+        """返回带 PDF 的论文记录（批量入库用）；调用方负责先 refresh()。
+
+        Returns:
+            记录 dict 的副本列表，每条含 title/pdf_path/note_path/biblio；
+            纯笔记记录（pdf_path 为空）不返回。
+        """
+        with self._lock:
+            return [dict(rec) for rec in self._records.values() if rec.get("pdf_path")]
+
     def match(self, title: str) -> dict | None:
         """按全标题归一化精确匹配；无命中返回 None。"""
         return self._records.get(self.normalize(title))
