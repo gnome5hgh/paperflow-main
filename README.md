@@ -10,7 +10,7 @@ LLM 驱动的学术研究流程助手：一个交互式终端 REPL，围绕「�
 - **引用管理**：BibTeX 文库读写、语料标题索引、引用溯源，支持 APA / GB/T 7714 等格式
 - **视觉分析**：PDF 图表区域检测与提取，多模态模型看图解读
 - **记忆系统**：对话持久化 + 分层记忆块 + 后台 sleeptime 记忆整合 + 会话回放（`--resume`）
-- **Skills 机制**：`~/.paperflow/skills/` 单级目录 + 集中 lock 文件（对齐 Claude Code 的 pin / enable-disable 语义）
+- **Skills 机制**：`~/.paperflow/skills/` 单级目录 + 集中 lock 文件
 - **MCP 接入**：桥接外部 MCP server 的工具（逐工具可见性、写类工具确认），预批准白名单
 
 ## 环境要求
@@ -69,13 +69,3 @@ paperflow/
 ```
 
 数据流：用户输入 → 意图识别 → supervisor ReAct 循环（必要时 spawn 子 agent）→ 工具调用（本地工具 + MCP 工具）→ 结构化摘要聚合 → 流式回答。
-
-## 开发
-
-```bash
-# 安装开发依赖
-pip install -e ".[dev]"
-
-# 运行测试（单测使用 Milvus Lite 内嵌模式，无需 Docker 服务）
-pytest
-```
