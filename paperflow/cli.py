@@ -263,15 +263,12 @@ def main(argv: list[str] | None = None) -> int | None:
     """
     装配全部依赖并启动 REPL。
 
-    :returns: skill 子命令（install/list/uninstall）返回退出码 int；--version 与
-        无参 REPL 路径返回 None（REPL 正常退出即成功）。
+    :returns: 无参 REPL 路径返回 None（REPL 正常退出即成功）。
 
     命令行参数（argparse，P2-5）：
-        --help / --version：用法与版本。
+        --help：用法。
         --resume [SESSION_ID]：恢复历史会话；不带 id 时列出历史会话供选择。
         --skip-bootstrap：跳过依赖服务启动预检（等价 PAPERFLOW_SKIP_BOOTSTRAP=1）。
-        skill install/list/uninstall：skill 安装管理子命令（准入通道见paperflow/core/skills/install.py）；
-        分发后短路返回，返回值即退出码，不进入下方 REPL 装配。
     无参数行为与历史版本完全一致：装配后进入新会话 REPL。
 
     装配顺序（依赖关系）：
@@ -296,73 +293,12 @@ def main(argv: list[str] | None = None) -> int | None:
     parser = argparse.ArgumentParser(
         prog="paperflow",
         description="paperFlow 学术研究工作流助手（交互式 REPL，自然语言即命令）")
-    parser.add_argument("--version", action="store_true",
-                        help="显示版本号并退出")
     parser.add_argument("--resume", nargs="?", const="", default=None,
                         metavar="SESSION_ID",
                         help="恢复历史会话；不带 id 则列出历史会话供选择")
     parser.add_argument("--skip-bootstrap", action="store_true",
                         help="跳过依赖服务（Milvus/GROBID）启动预检")
-    # skill 管理子命令（Task 9）：install/list/uninstall——纯文件操作 + 本地扫描，
-    # 不依赖任何服务；分发在 --version 之后、装配之前短路返回（返回值即退出码）。
-    sub = parser.add_subparsers(dest="command")
-    skill_parser = sub.add_parser("skill", help="skill 安装管理（install/list/uninstall）")
-    skill_action = skill_parser.add_subparsers(dest="skill_action", required=True)
-    skill_inst = skill_action.add_parser("install", help="准入安装：本地目录 | git URL | zip/tar")
-    skill_inst.add_argument("source")
-    skill_inst.add_argument("--ref", default=None, metavar="REF",
-                            help="git 来源的分支/标签（缺省默认 HEAD；lock 记录之，update 按其重装）")
-    skill_inst.add_argument("-y", "--yes", action="store_true", help="跳过确认（仅纯指令 skill）")
-    skill_inst.add_argument("--allow-code", action="store_true",
-                            help="允许捆绑 tools.py 的 skill（安装前必须人工审读代码）")
-    skill_action.add_parser("list", help="列出已装与未登记 skill")
-    skill_uni = skill_action.add_parser("uninstall", help="卸载 lock 登记的 skill")
-    skill_uni.add_argument("name")
-    skill_upd = skill_action.add_parser("update", help="更新 lock 登记的 git 来源 skill")
-    skill_upd.add_argument("name")
-    skill_upd.add_argument("--allow-code", action="store_true",
-                           help="新版本捆绑 tools.py 时显式放行（旧版本装过不豁免）")
-    skill_en = skill_action.add_parser("enable", help="启用 lock 登记的 skill")
-    skill_en.add_argument("name")
-    skill_dis = skill_action.add_parser("disable", help="停用 lock 登记的 skill（扫描不可见，不删文件）")
-    skill_dis.add_argument("name")
     args = parser.parse_args(argv)
-
-    if args.version:
-        from importlib.metadata import PackageNotFoundError, version
-        try:
-            print(version("paperflow"))
-        except PackageNotFoundError:
-            print("unknown（开发环境：见 pyproject.toml）")
-        return
-
-    # skill 子命令分发：不启服务、不建 LLM、不进 REPL——skill 管理不需要任何服务。
-    if args.command == "skill":
-        from paperflow.core.skills import (
-            enable_skill, install_skill, list_skills_command,
-            uninstall_skill, update_skill)
-        # skill 根目录锚定 cwd（与 config.yaml 同一解析基准）：<cwd>/.paperflow/
-        pf_dir = Path.cwd() / ".paperflow"
-        skills_dir = pf_dir / "skills"
-        try:
-            if args.skill_action == "install":
-                return install_skill(args.source, pf_dir, ref=args.ref,
-                                     assume_yes=args.yes, allow_code=args.allow_code)
-            if args.skill_action == "list":
-                return list_skills_command(
-                    str(skills_dir) if skills_dir.is_dir() else None, pf_dir)
-            if args.skill_action == "uninstall":
-                return uninstall_skill(args.name, pf_dir)
-            if args.skill_action == "update":
-                return update_skill(args.name, pf_dir, allow_code=args.allow_code)
-            if args.skill_action == "enable":
-                return enable_skill(args.name, pf_dir, enabled=True)
-            if args.skill_action == "disable":
-                return enable_skill(args.name, pf_dir, enabled=False)
-        except ValueError as e:
-            # lock schema 版本不符等治理错误：友好退出码，不裸 traceback
-            print(f"错误：{e}")
-            return 1
 
     config = PaperFlowConfig.from_env()
     # MCP 客户端平台：config.mcp_servers 非空才启动（后台循环 + 非阻塞预取）。
