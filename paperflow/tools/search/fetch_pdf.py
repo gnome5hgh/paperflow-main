@@ -162,6 +162,8 @@ class FetchPdfTool(Tool):
             _run_state.downloaded[url] = str(dest)
             if title:
                 _run_state.downloaded[f"title:{_norm_title(title)}"] = str(dest)
+            # 写盘已成功（_fetch 内完成），登记产物路径 -> 生产者；索引失败不影响登记
+            _run_state.artifacts[str(dest)] = "fetch_pdf"
         note = ""
         try:
             get_rag_service().index_document(str(dest))   # 写盘后做索引热更新

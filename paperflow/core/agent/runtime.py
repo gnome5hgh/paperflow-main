@@ -1223,8 +1223,8 @@ class Agent:
         # 使用 asyncio.to_thread 将工具放到线程池执行，避免阻塞事件循环。
         # 对于 CPU/网络密集型操作，这能保证并发调度不被单个长耗时任务阻塞。
         #
-        # 特殊处理：若工具声明了 wants_run_state=True（搜索类工具），则注入一个按 trace_id 键控的去重池（_run_state），用于跨调用共享已访问的 URL 或文件，避免重复抓取。
-        # 该注入通过额外参数 _run_state 传递，不写入 ctx.args，因为 ctx.args 会被序列化用于审计，而去重池不可序列化。
+        # 特殊处理：若工具声明了 wants_run_state=True（搜索去重池与写盘类工具），则注入一个按 trace_id 键控的运行期容器（_run_state），用于跨调用共享已访问的 URL、产物账本等在途状态。
+        # 该注入通过额外参数 _run_state 传递，不写入 ctx.args，因为 ctx.args 会被序列化用于审计，而该容器不可序列化。
         try:
             # spawn 等异步原生工具：await tool.aexecute(...)，父事件循环上直接 await
             # asyncio.to_thread 把同步 execute 丢进线程池跑。这对普通工具没问题，但对 spawn 是致命的：asyncio 取消不了线程。

@@ -30,11 +30,16 @@ class EditFileTool(Tool):
     requires_confirm = True
     root_hints = NOTE_HINTS
     side_effects = ["write_file"]
+    #: 注入本次 run 的状态容器，用于把落盘路径登记进产物账本
+    wants_run_state = True
 
-    def execute(self, path: str, old_text: str, new_text: str) -> ToolResult:
+    def execute(self, path: str, old_text: str, new_text: str,
+                _run_state=None) -> ToolResult:
         """在文件里精确替换一处 old_text 为 new_text;不唯一或不存在时拒绝并给指引。
 
         查找用 str.count 判断唯一性——锚点必须唯一,避免替换错位置。
+        _run_state 为本次 run 的状态容器（未注入时为 None）：替换落盘成功后把路径
+        登记进产物账本；索引失败不影响登记。
         """
         # 空 old_text 守卫:str.count("") 恒大于 1,会误入"多命中"分支报出令人困惑的错,
         # 直接明示参数错误。
@@ -50,6 +55,8 @@ class EditFileTool(Tool):
         if count > 1:
             return ToolResult(text=f"待替换文本出现 {count} 次，请提供更长的唯一锚点")
         atomic_write(p, content.replace(old_text, new_text))
+        if _run_state is not None:
+            _run_state.artifacts[str(p)] = "edit_file"
         note = ""
         try:
             get_rag_service().index_document(str(p))

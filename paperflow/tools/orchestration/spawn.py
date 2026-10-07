@@ -219,6 +219,15 @@ def _task_has_path(task: str) -> bool:
     return _PATH_RE.search(task) is not None
 
 
+def _extract_paths(task: str) -> list[str]:
+    """从子任务文本抽出绝对路径（复用 _PATH_RE），用于同路径在途互斥。
+
+    与 _task_has_path 共用同一条启发式正则：同一串文本在「是否含路径」与「含哪些
+    路径」两处判定必须一致，否则去重门控与在途互斥会各按一套标准割裂。
+    """
+    return _PATH_RE.findall(task)
+
+
 class _UserWaitClock:
     """用户确认等待计时器:确认回调等待期间累积时长,供子 agent 超时预算扣除。
 
@@ -404,10 +413,10 @@ class SpawnSubAgentTool(Tool):
         """
         return asyncio.run(self.aexecute(agent_type, task, mode, intent))
 
-    def _admit(self, agent_type: str, task: str, mode: str | None,
+    def _admit(self, agent_type: str, task: str, mode: str | None = None,
                intent: str | None = None) -> "ToolResult | tuple[str, bool]":
-        """派发前的六道闸，按判定顺序：mode 校验 → 意图派发门禁 → spawn 白名单
-        → 同会话同指纹去重 → 审稿预算 → 每轮派发总量上限。
+        """派发前的七道闸，按判定顺序：mode 校验 → 意图派发门禁 → spawn 白名单
+        → 同会话同指纹去重 → 审稿预算 → 每轮派发总量上限 → 同路径在途互斥。
 
         通过时返回 (任务指纹, 是否含路径)——调用方负责在执行完的 finally 里
         按 has_path 决定 done 缓存或清条目；拒绝时直接返回 denied/去重命中的
@@ -563,6 +572,22 @@ class SpawnSubAgentTool(Tool):
                     return ToolResult(text=denied_result.model_dump_json(),
                                       summary=denied_result.model_dump())
                 rs.turn_spawn_counts[turn] = used + 1
+            # ⑤ 同路径在途互斥:两个任务文本可以完全不同(去重指纹不碰撞),却写同一个
+            #    目标文件——并发跑就会静默互相覆盖(原子写只防撕裂不防覆盖)。把任务
+            #    文本里抽出的绝对路径与 run 容器上「正在被写」的路径集比对,命中即拒。
+            #    路径检查置于所有既有拒绝分支之后:被别的闸拒绝的派发不会留下已占用的
+            #    路径,否则一次被拒的派发会把该路径锁到任务结束。只拦「同时在途」,不拦
+            #    「按序重写已完成 spawn 写过的文件」——重新生成笔记是合法行为。
+            target_paths = _extract_paths(task)
+            clash = [p for p in target_paths if p in rs.in_flight_paths]
+            if clash:
+                denied_result = SubAgentResult(
+                    status="denied",
+                    summary=f"目标路径在途占用，正在被另一个子任务写：{'、'.join(clash)}。"
+                            "请先等它完成，或改为写不同的文件。")
+                return ToolResult(text=denied_result.model_dump_json(),
+                                  summary=denied_result.model_dump())
+            rs.in_flight_paths.update(target_paths)
             reg[fp] = {"state": "running", "result": None, "started_at": now}
         # 走到这说明全部检查通过、任务已注册 running：弹复合队列队头（普通轮次
         # 是空操作）。拒绝路径都在上方提前 return，不会经过这里
@@ -584,6 +609,8 @@ class SpawnSubAgentTool(Tool):
         # 与 _admit 里的局部变量无关（这是另一个方法）。
         parent = self._parent
         sess = get_session_state(parent.session_id)
+        # run 容器：收尾在 finally 里释放本次派发占用的目标路径（_admit 已登记在它上面）
+        rs = get_run_state(parent._trace_id)
 
         result = None
         try:
@@ -637,6 +664,10 @@ class SpawnSubAgentTool(Tool):
                 else:
                     reg[fp] = {"state": "done", "result": result,
                                "started_at": time.monotonic()}
+                # 释放本次派发占用的目标路径(与注册表清理同处、同锁):任务已结束,
+                # 同路径的新派发送下一轮即可放行。用 difference_update 只摘本任务
+                # 抽出的路径,不误伤其它在途任务占用的同一集合。
+                rs.in_flight_paths.difference_update(_extract_paths(task))
         return result
 
     async def _run_child(self, child: Agent, agent_type: str, task: str) -> ToolResult:

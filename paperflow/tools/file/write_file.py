@@ -39,6 +39,8 @@ class WriteFileTool(Tool):
     requires_confirm = True
     root_hints = NOTE_HINTS
     side_effects = ["write_file"]
+    #: 注入本次 run 的状态容器，用于把落盘路径登记进产物账本
+    wants_run_state = True
 
     def _resolve_target(self, path, filename, dir) -> Path:
         """双入口 → 落盘路径的组合规则唯一真相源。
@@ -78,8 +80,13 @@ class WriteFileTool(Tool):
             return None
 
     def execute(self, content: str, path: str | None = None,
-                filename: str | None = None, dir: str | None = None) -> ToolResult:
-        """解析双入口 → 黑名单兜底 → 写盘 → 索引热更新。"""
+                filename: str | None = None, dir: str | None = None,
+                _run_state=None) -> ToolResult:
+        """解析双入口 → 黑名单兜底 → 写盘 → 登记产物 → 索引热更新。
+
+        _run_state 为本次 run 的状态容器（未注入时为 None）：写盘成功后把落盘路径
+        登记进产物账本，供后续收尾核对；索引失败不影响登记（登记在写盘之后即已确定）。
+        """
         try:
             p = self._resolve_target(path, filename, dir)
         except ValueError as e:
@@ -89,6 +96,8 @@ class WriteFileTool(Tool):
         if cfg is not None and is_denied_path(p, cfg.runtime.workspace):
             return ToolResult(text=f"敏感路径受保护，拒绝写入: {p}")
         atomic_write(p, content)
+        if _run_state is not None:
+            _run_state.artifacts[str(p)] = "write_file"
         note = ""
         try:
             get_rag_service().index_document(str(p))
