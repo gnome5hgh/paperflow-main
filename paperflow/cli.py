@@ -314,7 +314,7 @@ def main(argv: list[str] | None = None) -> int | None:
     skill_inst.add_argument("--allow-code", action="store_true",
                             help="允许捆绑 tools.py 的 skill（安装前必须人工审读代码）")
     skill_action.add_parser("list", help="列出内置与已装 skill")
-    skill_uni = skill_action.add_parser("uninstall", help="卸载 manifest 登记的 skill")
+    skill_uni = skill_action.add_parser("uninstall", help="卸载 lock 登记的 skill")
     skill_uni.add_argument("name")
     args = parser.parse_args(argv)
 
@@ -330,17 +330,17 @@ def main(argv: list[str] | None = None) -> int | None:
     if args.command == "skill":
         from paperflow.core.skills import (
             install_skill, list_skills_command, uninstall_skill)
-        config = PaperFlowConfig.from_env()
-        workspace = Path(config.runtime.workspace)
-        builtin_skills_dir = Path(__file__).resolve().parents[1] / "skills"
+        # skill 根目录锚定 cwd（与 config.yaml 同一解析基准）：<cwd>/.paperflow/
+        pf_dir = Path.cwd() / ".paperflow"
+        skills_dir = pf_dir / "skills"
         if args.skill_action == "install":
-            return install_skill(args.source, workspace,
+            return install_skill(args.source, pf_dir,
                                  assume_yes=args.yes, allow_code=args.allow_code)
         if args.skill_action == "list":
             return list_skills_command(
-                str(builtin_skills_dir) if builtin_skills_dir.is_dir() else None, workspace)
+                str(skills_dir) if skills_dir.is_dir() else None, pf_dir)
         if args.skill_action == "uninstall":
-            return uninstall_skill(args.name, workspace)
+            return uninstall_skill(args.name, pf_dir)
 
     config = PaperFlowConfig.from_env()
     # MCP 客户端平台：config.mcp_servers 非空才启动（后台循环 + 非阻塞预取）。
@@ -379,15 +379,12 @@ def main(argv: list[str] | None = None) -> int | None:
                   else str(Path(__file__).resolve().parents[1] / "agents"))
     registry = AgentRegistry(agents_dir)
 
-    # Skill 体系装配：两级扫描（包内 skills/ + <workspace>/skills/），skill 工具
+    # Skill 体系装配：单级扫描（<cwd>/.paperflow/skills/），skill 工具
     # 并入各 agent 工具表、load_skill 注入全部 agent（AgentConfig 为共享
     # 对象，此处就地修改即对后续所有 Agent 构造生效）。supervisor 的 skill 工具
     # 并入被 SkillRegistry.get_tools_for 代码级拒绝（权限最小化红线）。
-    builtin_skills_dir = Path(__file__).resolve().parents[1] / "skills"
-    skill_registry = SkillRegistry(
-        builtin_dir=str(builtin_skills_dir) if builtin_skills_dir.is_dir() else None,
-        workspace_dir=str(Path(config.runtime.workspace) / "skills"),
-    )
+    _skills_dir = Path.cwd() / ".paperflow" / "skills"
+    skill_registry = SkillRegistry(str(_skills_dir) if _skills_dir.is_dir() else None)
     for _agent_type in registry.list_agents():
         _cfg = registry.get_config(_agent_type)
         # LoadSkillTool 声明 needs_parent=True：Agent.__init__ 构造期即

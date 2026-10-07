@@ -1,15 +1,14 @@
 # paperflow/core/skills/registry.py
 """
-Skill 注册表 —— 扫描两级 skills/ 目录，加载可安装能力包。
+Skill 注册表 —— 扫描单一 skills/ 目录（.paperflow/skills/），加载可安装能力包。
 
 Skill 是「注入给现有 agent 的领域知识/流程/轻量工具」，无独立推理循环——
 与 agents/ 下的子 agent 定义（AGENT.md，独立 ReAct 循环）是两个概念。
 格式对齐 agentskills.io 开放规范：目录 + SKILL.md（frontmatter + 指令正文），
 可选 tools.py（Tool 捆绑）与 references/、assets/ 等资源。
 
-扫描路径（两级，workspace 同名覆盖内置，与 agents 两级扫描语义一致）：
-- ``skills/``（包内内置）
-- ``<workspace>/skills/``（用户安装/自定义）
+扫描路径：单一目录 ``<项目根>/.paperflow/skills/``（git 内置 skill 与
+`paperflow skill install` 落盘的 skill 同处，目录名即 skill 名）。
 
 安全要点：
 - ``allowed_agents`` 空 = 所有子 agent 可见；supervisor 仅在显式列入时可见
@@ -45,7 +44,7 @@ class SkillConfig:
         name            ← SKILL.md frontmatter "name"（必须等于目录名，agentskills.io 规范）
         description     ← SKILL.md frontmatter "description"（做什么 + 何时触发，L1 消费）
         instructions    ← SKILL.md 正文（frontmatter 后的 Markdown，L2 按需加载）
-        metadata        ← SKILL.md frontmatter "metadata"（version/author 等，manifest 展示用）
+        metadata        ← SKILL.md frontmatter "metadata"（version/author 等，lock 与清单展示用）
         allowed_agents  ← SKILL.md frontmatter "allowed_agents"；空 = 全部子 agent 可见，
                           supervisor 仅在显式列入时可见
         tools           ← tools.py 模块级 TOOLS 列表（可选，装配期并入 agent 工具表）
@@ -67,12 +66,11 @@ class SkillConfig:
 
 
 class SkillRegistry:
-    """
-    扫描两级 skills/ 目录的唯一注册表（与 AgentRegistry 平行）。
+    """扫描单一 skills/ 目录的唯一注册表（与 AgentRegistry 平行）。
 
     使用方式::
 
-        registry = SkillRegistry(builtin_dir="skills", workspace_dir="<ws>/skills")
+        registry = SkillRegistry("<root>/.paperflow/skills")
         block = registry.skills_block("noter")     # L1 清单（见 Task 4）
         tools = registry.get_tools_for("noter")    # 并入 agent 工具表（见 Task 4/7）
 
@@ -80,19 +78,17 @@ class SkillRegistry:
              ValueError 终止构造。进程内构造一次，由装配层持有传给所有 Agent。
     """
 
-    def __init__(self, builtin_dir: str | None = None, workspace_dir: str | None = None):
+    def __init__(self, skills_dir: str | None = None):
         """
-        :param builtin_dir: 包内内置 skills 目录；None 或不存在则跳过
-        :param workspace_dir: 用户 skills 目录（<workspace>/skills/）；None 或不存在则跳过。
-                              同名 skill 覆盖内置（后扫描者胜出）
+        :param skills_dir: skill 根目录（<项目根>/.paperflow/skills/）；
+                           None 或不存在则空注册表
         """
         self._skills: dict[str, SkillConfig] = {}
-        for root in (builtin_dir, workspace_dir):
-            if root:
-                self._discover(Path(root))
+        if skills_dir:
+            self._discover(Path(skills_dir))
 
     def _discover(self, skills_dir: Path) -> None:
-        """遍历目录下含 SKILL.md 的一级子目录，解析并注册（后扫描者覆盖同名）。"""
+        """遍历目录下含 SKILL.md 的一级子目录，解析并注册。"""
         if not skills_dir.is_dir():
             return
         # 按目录名排序，保证加载顺序可预测（与 AgentRegistry 同一约定）
