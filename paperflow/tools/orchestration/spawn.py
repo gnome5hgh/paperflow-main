@@ -78,17 +78,22 @@ class ResearcherDigest(BaseModel):
 
 
 class LibrarianDigest(BaseModel):
-    """librarian 的结果摘要:同步/删除的计数,supervisor 据此汇报。
+    """librarian 的结果摘要:同步/删除的计数 + 被拒条目与原因,supervisor 据此汇报。
 
     status 默认空串:sync_citations 的 tool summary 只有 total/added/skipped/
     rejected、没有 status,LLM 抽 digest 时容易漏该字段——给默认值避免校验失败
-    整个 digest 回落为 {},计数一并丢失。
+    整个 digest 回落为 {},计数一并丢失。rejected_items/blocked_reason 是给上级的
+    可行动线索:知道是哪几篇、为什么被拒,才能决定补什么料、派谁去补。
     """
     status: str = ""
     added: int = 0
     skipped: int = 0
     rejected: int = 0
     total: int = 0
+    #: 被拒条目的可辨识名(标题或路径),让上级知道该补哪几篇
+    rejected_items: list[str] = []
+    #: 被拒的原因类别(缺元数据 / 解析失败 / 不在语料 …),让上级知道该派谁补
+    blocked_reason: str = ""
 
 
 class GenericDigest(BaseModel):
