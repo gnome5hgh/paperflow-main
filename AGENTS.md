@@ -5,7 +5,7 @@
 ## Scope
 
 - 作用范围覆盖整个 `paperFlow` 仓库；本文件是根级治理 manifest，与子目录 manifest 构成两级路由。
-- **就近优先**：进入更深层目录后，优先服从距离更近的 `AGENTS.md`（当前有：`paperflow/`、`paperflow/core/`、`paperflow/rag/`、`paperflow/tools/`、`agents/`、`.paperflow/`）；根 manifest 负责「如何进入」，不替代子目录内部说明。
+- **就近优先**：进入更深层目录后，优先服从距离更近的 `AGENTS.md`（当前有：`paperflow/` 及其 `core/` `rag/` `tools/` `citations/` `vision/` `terminal/`、`agents/`、`.paperflow/`）；根 manifest 负责「如何进入」，不替代子目录内部说明。
 - 事实优先级：源码与测试 > 本 manifest 及各级子 manifest > `docs/` 设计文档。manifest 是入口，不是终点——文档与代码冲突时以代码为准。
 
 ## 目录结构
@@ -373,7 +373,7 @@ mcp_servers                     # 保留顶层（本身即映射）
 ## Routing
 
 - 上级：无（本文件即根 manifest）
-- 子目录 manifest（就近优先）：[`paperflow/AGENTS.md`](paperflow/AGENTS.md)（及其 `core/` `rag/` `tools/`）、[`agents/AGENTS.md`](agents/AGENTS.md)、[`.paperflow/AGENTS.md`](.paperflow/AGENTS.md)
+- 子目录 manifest（就近优先）：[`paperflow/AGENTS.md`](paperflow/AGENTS.md)（及其 `core/` `rag/` `tools/` `citations/` `vision/` `terminal/`）、[`agents/AGENTS.md`](agents/AGENTS.md)、[`.paperflow/AGENTS.md`](.paperflow/AGENTS.md)
 - Agent 插件定义：[`agents/supervisor/AGENT.md`](agents/supervisor/AGENT.md) 等各 `agents/<name>/AGENT.md`
 - 设计文档索引：见上文 Architecture 一节的「设计文档索引」行；ADR 正文在 [`docs/adr/`](docs/adr/)
 - 排障技能：[`.agents/skills/paperflow-troubleshooting/SKILL.md`](.agents/skills/paperflow-troubleshooting/SKILL.md)

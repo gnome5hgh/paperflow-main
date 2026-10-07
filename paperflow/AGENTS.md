@@ -2,7 +2,7 @@
 
 ## Scope
 
-- 本文件覆盖 `paperflow/` 主包；进入下层子包后，优先服从更近的 `AGENTS.md`（`core/`、`rag/`、`tools/` 各有一份）。
+- 本文件覆盖 `paperflow/` 主包；进入下层子包后，优先服从更近的 `AGENTS.md`（`core/`、`rag/`、`tools/`、`citations/`、`vision/`、`terminal/` 各有一份）。
 - 包级事实以源码与 `tests/` 为准，本文件只做导航与约束。
 
 ## Module Positioning
@@ -16,12 +16,12 @@
 paperflow/
 ├─ cli.py          # 装配根：中间件/记忆/意图/Agent 全部在此接线
 ├─ config.py       # 全部可调参数的唯一声明点（dataclass 树 + 递归合并 + env 派生）
-├─ core/           # 核心运行层（有自己的 AGENTS.md）
-├─ rag/            # RAG 检索栈（有自己的 AGENTS.md）
-├─ citations/      # 引用管理：bib.py / corpus.py / manager.py，懒加载单例
-├─ vision/         # 视觉分析：pdffigures2 提取管线 + 视觉模型看图
-├─ tools/          # 原子工具（有自己的 AGENTS.md）
-└─ terminal/       # 终端交互隔离层：io.py / render.py / diff.py，测试可注入
+├─ core/           # 核心运行层（有 AGENTS.md）
+├─ rag/            # RAG 检索栈（有 AGENTS.md）
+├─ citations/      # 引用管理（有 AGENTS.md）：bib.py / corpus.py / manager.py，懒加载单例
+├─ vision/         # 视觉分析（有 AGENTS.md）：pdffigures2 提取管线 + 视觉模型看图
+├─ tools/          # 原子工具（有 AGENTS.md）
+└─ terminal/       # 终端交互隔离层（有 AGENTS.md）：repl/ io/ render/ 确认中心/ 斜杠命令
 ```
 
 ## Core Rules
@@ -39,4 +39,4 @@ paperflow/
 ## Routing
 
 - 上级：[`../AGENTS.md`](../AGENTS.md)
-- 下级：[`core/AGENTS.md`](core/AGENTS.md) / [`rag/AGENTS.md`](rag/AGENTS.md) / [`tools/AGENTS.md`](tools/AGENTS.md)
+- 下级：[`core/AGENTS.md`](core/AGENTS.md) / [`rag/AGENTS.md`](rag/AGENTS.md) / [`tools/AGENTS.md`](tools/AGENTS.md) / [`citations/AGENTS.md`](citations/AGENTS.md) / [`vision/AGENTS.md`](vision/AGENTS.md) / [`terminal/AGENTS.md`](terminal/AGENTS.md)
