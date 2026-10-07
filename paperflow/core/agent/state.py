@@ -54,8 +54,9 @@ class RunState:
         self.in_flight_paths: set[str] = set()
         #: 产物账本：落盘路径 -> 生产者（工具名）
         self.artifacts: dict[str, str] = {}
-        #: 创建时刻（TTL 清扫依据）
-        self.created_at: float = time.monotonic()
+        #: 最后一次取用时刻（TTL 清扫依据）：是滑动窗口而非创建时刻——活跃任务每次取
+        #: 容器都会把它推进，因此任务再长也不会被自己的清扫删掉，只有真正闲置的才回收。
+        self.last_touched_at: float = time.monotonic()
 
 
 _RUN_STATES: dict[str, RunState] = {}
@@ -89,14 +90,21 @@ def get_session_state(session_id: str) -> SessionState:
 
 
 def get_run_state(trace_id: str) -> RunState:
-    """取该次用户任务的状态容器（不存在则建），取用时顺手丢弃过窗的整份 run 状态。"""
+    """取该次用户任务的状态容器（不存在则建），取用时顺手丢弃闲置过久的整份 run 状态。
+
+    回收按滑动窗口：命中已存在的容器先刷新它的取用时刻，再做清扫——若先扫后取，一个
+    存活超过窗口的活跃任务会在自己的取用调用里被删掉又立刻重建，中途积累的搜索负缓存
+    与成功短路会被静默清空。
+    """
     with _LOCK:
         now = time.monotonic()
-        stale = [tid for tid, rs in _RUN_STATES.items()
-                 if now - rs.created_at > RUN_STATE_TTL_S]
+        rs = _RUN_STATES.get(trace_id)
+        if rs is not None:
+            rs.last_touched_at = now
+        stale = [tid for tid, other in _RUN_STATES.items()
+                 if now - other.last_touched_at > RUN_STATE_TTL_S]
         for tid in stale:
             _RUN_STATES.pop(tid, None)
-        rs = _RUN_STATES.get(trace_id)
         if rs is None:
             rs = _RUN_STATES[trace_id] = RunState()
         return rs
