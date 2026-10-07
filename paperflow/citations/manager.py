@@ -272,6 +272,36 @@ class CitationManager:
                 external=True))
             return {"key": key, "created": True, "note": "EXTERNAL 条目已追加"}
 
+    def remove(self, key_or_title: str) -> dict:
+        """删除一条引用（key 精确命中或标题归一化命中）。
+
+        删除是高危操作：多条命中时不猜——返回 ambiguous 与候选列表，由
+        工具层转述给用户选择后重调；只有唯一命中才真正删除。
+
+        Args:
+            key_or_title: bib key 或论文标题。
+
+        Returns:
+            dict: status ∈ {removed, not_found, ambiguous}；removed 时带 key；
+            ambiguous 时带 candidates（key+title 列表）。
+        """
+        with self._lock:
+            q = key_or_title.strip()
+            entries = bibmod.parse_entries(self.bib_path)
+            exact = [e for e in entries if e.key == q]
+            if not exact:
+                exact = bibmod.find_all_by_title(self.bib_path, q)
+            if not exact:
+                return {"status": "not_found", "key": None, "candidates": []}
+            if len(exact) > 1:
+                return {"status": "ambiguous", "key": None,
+                        "candidates": [{"key": e.key, "title": e.title}
+                                       for e in exact]}
+            removed = bibmod.remove_entries(self.bib_path, {exact[0].key})
+            status = "removed" if removed else "not_found"
+            return {"status": status, "key": exact[0].key if removed else None,
+                    "candidates": []}
+
     # —— 查询 / 渲染 ——
     def get(self, key: str) -> BibEntry | None:
         """按 key 查条目；无命中返回 None。"""
