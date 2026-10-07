@@ -169,7 +169,7 @@ class IntentEncoderConfig:
     """
     base_url: str = ""
     api_key: str = ""
-    model: str = "Qwen/Qwen3-Embedding-0.6B"
+    model: str = "Qwen/Qwen3-Embedding-8B"
     #: 单批嵌入请求的文本条数（条）
     batch_size: int = 32
     #: 嵌入 HTTP 读超时（秒）
@@ -183,7 +183,7 @@ class RouterConfig:
     """混合路由器装配参数。"""
 
     #: 稠密分支权重 alpha（稀疏路权重 1-alpha）。
-    alpha: float = 0.15
+    alpha: float = 0.4
 
     #: 路由器每次查询检索的 utterances 条数（条）。
     top_k: int = 3

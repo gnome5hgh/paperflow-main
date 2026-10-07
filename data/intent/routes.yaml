@@ -111,7 +111,7 @@ routes:
   - 选项二
   - 那就第 7 个
   - 麻烦选12
-  score_threshold: 0.0565657
+  score_threshold: 0.589899
   steps_threshold: 0.9458
 - name: search_paper
   utterances:
@@ -384,7 +384,7 @@ routes:
   - 限定在近两年且开源
   - 限定近三年
   - 顶会优先
-  score_threshold: 0.0888889
+  score_threshold: 0.105051
   steps_threshold: 0.5177
 - name: generate_note
   utterances:
@@ -516,7 +516,7 @@ routes:
   - 这篇 paper 的重点帮我记录一下
   - 阅读完这篇 paper，帮我输出一份 summary note
   - 阅读这篇文献并生成摘要笔记
-  score_threshold: 0.617511
+  score_threshold: 0.604262
   steps_threshold: 0.575
 - name: research_discovery
   utterances:
@@ -651,7 +651,7 @@ routes:
   - 帮我找找我的文献里还没人做过的组合
   - Are there any open problems in my reading list worth pursuing?
   - What emerging directions can you suggest from my notes?
-  score_threshold: 0.491211
+  score_threshold: 0.481865
   steps_threshold: 1.0474
 - name: ask_question
   utterances:
@@ -796,7 +796,7 @@ routes:
   - 这篇论文想解决什么问题
   - 这篇论文的结论是什么
   - 这篇论文的创新点在哪里
-  score_threshold: 0.137374
+  score_threshold: 0.371717
   steps_threshold: 0.2644
 - name: manage_memory
   utterances:
@@ -932,7 +932,7 @@ routes:
   - 重置我的上下文记忆
   - 重置我的论文推荐历史
   - 重置整个记忆系统
-  score_threshold: 0.428283
+  score_threshold: 0.331313
   steps_threshold: 0.6508
 - name: set_research_topic
   utterances:
@@ -1174,7 +1174,7 @@ routes:
   - 研究主题更新为图神经网络的可解释性
   - 'I''ve decided my research topic: retrieval-augmented generation'
   - My research focus for this year is graph contrastive learning
-  score_threshold: 0.558263
+  score_threshold: 0.20202
   steps_threshold: 0.3254
 - name: analyze_paper
   utterances:
@@ -1286,7 +1286,7 @@ routes:
   - 这篇论文的讨论部分有哪些不足？请分析。
   - 这篇论文的论证逻辑有没有明显漏洞？
   - 这篇论文的贡献与不足分别体现在哪里
-  score_threshold: 0.712854
+  score_threshold: 0.709803
   steps_threshold: 0.5393
 - name: chitchat
   utterances:
@@ -1405,7 +1405,7 @@ routes:
   - 该休息啦，做个好梦
   - 随便扯点啥都行
   - 麻烦你了
-  score_threshold: 0.479062
+  score_threshold: 0.506785
   steps_threshold: 1.5559
 - name: out_of_scope
   utterances:
@@ -1537,7 +1537,7 @@ routes:
   - Help me plan a birthday party
   - What's a good recipe for lasagna?
   - Summarize this week's NBA games for me
-  score_threshold: 0.250505
+  score_threshold: 0.266667
   steps_threshold: 0.4475
 - name: help
   utterances:
@@ -1649,7 +1649,7 @@ routes:
   - 这个助手能做些啥
   - 这个助手都能做哪些事情？
   - 这个助手都能干些什么
-  score_threshold: 0.663112
+  score_threshold: 0.649845
   steps_threshold: 1.4767
 - name: feedback
   utterances:
@@ -1765,9 +1765,10 @@ routes:
   - 这篇内容质量很差
   - 这篇分析不够好
   - 这篇总结写得很差。
-  score_threshold: 0.557576
+  score_threshold: 0.50101
   steps_threshold: 0.4373
 - name: manage_citations
+  score_threshold: 0.753367
   utterances:
   - 把论文库的论文都加入bib
   - 把论文库里所有论文加入引用库

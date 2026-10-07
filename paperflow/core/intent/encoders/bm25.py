@@ -30,10 +30,10 @@ import numpy as np
 # ── BM25 稀疏编码超参 ───────────────────────────────────────────────────────
 
 #: BM25 词频饱和度参数 k1。
-#: - 值：6。
+#: - 值：4。
 #: - 含义与单位：控制 TF 饱和（词出现 10 次不比 5 次重要一倍）；无量纲正实数。
 #: - 改它的后果：改变稀疏打分，路由阈值需重新 fit。
-BM25_K1 = 6
+BM25_K1 = 4
 
 #: BM25 文档长度归一化参数 b。
 #: - 值：0。
@@ -43,11 +43,11 @@ BM25_K1 = 6
 BM25_B = 0
 
 #: BM25 query 编码的 IDF 平滑量。
-#: - 值：0.25。
+#: - 值：0.5。
 #: - 含义与单位：query 编码时对 df>0 加此值，避免零除与 log(0)（标准 BM25 的
 #:   df+0.5 平滑）；无量纲。
 #: - 改它的后果：改变 IDF 权重进而改变稀疏打分与排序，路由阈值需重新 fit。
-BM25_IDF_SMOOTHING = 0.25
+BM25_IDF_SMOOTHING = 0.5
 
 # 抑制 jieba 启动噪音（"Building prefix dict..." / "Loading model from cache..." /
 # "Prefix dict has been built successfully."）——CLI 启动不该刷屏。jieba 首次
