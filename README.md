@@ -69,3 +69,7 @@ paperflow/
 ```
 
 数据流：用户输入 → 意图识别 → supervisor ReAct 循环（必要时 spawn 子 agent）→ 工具调用（本地工具 + MCP 工具）→ 结构化摘要聚合 → 流式回答。
+
+## AI 协作入口
+
+仓库根的 `AGENTS.md` 是面向所有 AI 编码代理（ZCode / Claude Code / Codex 等）的治理 manifest（架构、命令、编码规范、文档同步规则），并与子目录逐级 manifest（`paperflow/` 及其 `core/rag/tools/`、`agents/`、`.paperflow/`）构成两级路由，就近优先。`CLAUDE.md` 是 Claude Code 的入口薄指针（本地维护、不入库）。事实优先级：源码与测试 > AGENTS.md > `docs/` 设计文档。
