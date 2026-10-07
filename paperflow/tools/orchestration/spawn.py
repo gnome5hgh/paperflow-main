@@ -553,15 +553,15 @@ class SpawnSubAgentTool(Tool):
                 # done 缓存复用：同任务刚做完、结果直接给你。同样记 deduped。
                 _record_dispatch(parent, agent_type, "deduped")
                 return hit["result"]
-            # ⑥ 审稿预算门:审稿类 mode 在注册 running 前计数检查——超限拒绝(不注册,
-            #    不污染去重注册表);去重命中早退不计数。置于注册前是 _admit 的既有
-            #    不变式:所有 ToolResult 返回都发生在注册 running 之前,否则异常路径
-            #    会留下永久 running 条目堵塞同指纹后续派发。键用父实例 id:同一 run
-            #    内多个同类型父实例(如两个 noter)各算各的,不因共用同一 trace 串号;
-            #    计数随 run 状态存活,跨 run(新 trace)自然重置。
-            if mode in _REVIEW_SPAWN_MODES:
-                bkey = (parent._instance_id, mode)
-                used = rs.review_counts.get(bkey, 0)
+            # ⑥ 审稿预算门:审稿类 mode 的次数检查——超限拒绝(不注册,不污染去重注册
+            #    表);去重命中早退不计数。此处只判不记:计数自增统一推迟到 ⑧ 通过之
+            #    后,使被后续任何一道闸(每轮上限/同路径互斥)拒绝的派发不消耗本额度,
+            #    拒绝话术也就与实际原因一致,不会把「路径冲突」误报成「预算耗尽」。
+            #    键用父实例 id:同一 run 内多个同类型父实例(如两个 noter)各算各的,不
+            #    因共用同一 trace 串号;计数随 run 状态存活,跨 run(新 trace)自然重置。
+            review_key = (parent._instance_id, mode) if mode in _REVIEW_SPAWN_MODES else None
+            if review_key is not None:
+                used = rs.review_counts.get(review_key, 0)
                 if used >= _REVIEW_SPAWN_BUDGET:
                     _record_dispatch(parent, agent_type, "denied")
                     denied_result = SubAgentResult(
@@ -569,13 +569,12 @@ class SpawnSubAgentTool(Tool):
                         summary=_REVIEW_BUDGET_DENIED_NOTE.format(budget=_REVIEW_SPAWN_BUDGET))
                     return ToolResult(text=denied_result.model_dump_json(),
                                       summary=denied_result.model_dump())
-                rs.review_counts[bkey] = used + 1
             # ⑦ 每轮派发总量上限:只统计 supervisor 自身的派发,按 ReAct 迭代下标
             #    (_current_turn,每轮 LLM 迭代自增)计数——封顶的是每次迭代内 supervisor
             #    能并行派发多少路,下一次迭代即重新起算,不会因为上一次迭代派得多而
-            #    永久锁死。审稿预算拒绝在前,不消耗本次迭代的额度。
+            #    永久锁死。此处同样只判不记,自增与 ⑥ 一并推迟到 ⑧ 之后。
+            turn = getattr(parent, "_current_turn", 0)
             if parent.agent_type == "supervisor":
-                turn = getattr(parent, "_current_turn", 0)
                 used = rs.turn_spawn_counts.get(turn, 0)
                 if used >= TURN_SPAWN_BUDGET:
                     _record_dispatch(parent, agent_type, "denied")
@@ -585,7 +584,6 @@ class SpawnSubAgentTool(Tool):
                                 "请先汇总已有结果向用户交代，需要继续时下一轮再派。")
                     return ToolResult(text=denied_result.model_dump_json(),
                                       summary=denied_result.model_dump())
-                rs.turn_spawn_counts[turn] = used + 1
             # ⑧ 同路径在途互斥:两个任务文本可以完全不同(去重指纹不碰撞),却写同一个
             #    目标文件——并发跑就会静默互相覆盖(原子写只防撕裂不防覆盖)。把任务
             #    文本里抽出的绝对路径与「同一父实例」正在写的路径集比对,命中即拒。
@@ -593,12 +591,9 @@ class SpawnSubAgentTool(Tool):
             #    父在同一轮里扇出的多路(兄弟 spawn);祖先任务文本里提到某路径不代表
             #    后代要写它(后代或只读,或顺序依赖父产物),按父实例分桶才不会把 noter
             #    写完再内部 spawn reviewer 审稿这类顺序流程误判成并发写。
-            #    路径检查置于所有既有拒绝分支之后:被别的闸拒绝的派发不会留下已占用的
-            #    路径——若前移到预算分支之前,一次被别的闸拒绝的派发会先占用路径再早退
-            #    (早退不进 aexecute 的 finally),该路径就被永久锁死。代价是本闸的拒绝
-            #    发生在审稿/每轮预算自增之后,会照常消耗一次对应额度——这是刻意的取舍。
-            #    只拦「同时在途」,不拦「按序重写已完成 spawn 写过的文件」——重新生成
-            #    笔记是合法行为。
+            #    本闸必须保持在最后一位:它一旦登记占用就无法回退,若其后还有闸拒绝,
+            #    早退不进 aexecute 的 finally,该路径就被永久锁死。只拦「同时在途」,
+            #    不拦「按序重写已完成 spawn 写过的文件」——重新生成笔记是合法行为。
             target_paths = _extract_paths(task)
             occupied = rs.in_flight_paths.get(parent._instance_id, set())
             clash = [p for p in target_paths if p in occupied]
@@ -610,6 +605,13 @@ class SpawnSubAgentTool(Tool):
                             "请先等它完成，或改为写不同的文件。")
                 return ToolResult(text=denied_result.model_dump_json(),
                                   summary=denied_result.model_dump())
+            # 全部闸通过:判定阶段(⑥⑦)只看不写,所有记账统一收敛到此处——计数自增、
+            # 路径占用登记、去重注册落在同一临界区。任何一道闸拒绝的派发都不消耗额度。
+            # 注册 running 与拒绝路径的先后不变式不变:所有拒绝都在上方提前 return。
+            if review_key is not None:
+                rs.review_counts[review_key] = rs.review_counts.get(review_key, 0) + 1
+            if parent.agent_type == "supervisor":
+                rs.turn_spawn_counts[turn] = rs.turn_spawn_counts.get(turn, 0) + 1
             if target_paths:
                 rs.in_flight_paths.setdefault(parent._instance_id, set()).update(target_paths)
             reg[fp] = {"state": "running", "result": None, "started_at": now}
@@ -636,7 +638,7 @@ class SpawnSubAgentTool(Tool):
 
         result = None
         try:
-            # ③ 构造子 agent:继承父的安全中间件、会话 ID(同一审计链)、确认回调与
+            # 构造子 agent(非闸):继承父的安全中间件、会话 ID(同一审计链)、确认回调与
             #    问用户回调——确认回调是关键:noter 的写盘工具要求用户确认,不传则
             #    默认回调始终拒绝,spawn 出的 noter 永远写不出笔记;问用户回调同理,
             #    noter/qa-agent 靠它中途向用户提问。不传意图管线/会话 → 子 agent 不做

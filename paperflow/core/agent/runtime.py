@@ -967,6 +967,10 @@ class Agent:
                 # 让模型基于账本给出最终回答——本轮这条回答先不落盘。
                 if _needs_ledger(self):
                     self._steps_checked = True
+                    # 注入账本后本轮这条纯文本先不落盘、直接 continue:若此前发生过截断
+                    # 续写,累积器里的半截不清空就会在下一轮与完整重答拼成「重复交付」。
+                    # 与压缩重建、正常完成两处的清空保持一致。
+                    accumulated.clear()
                     ledger_msg = Message(role="user", content=_render_ledger(self))
                     self._append_to_messages(ledger_msg)
                     self._persist_conversation([ledger_msg])

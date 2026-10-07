@@ -44,7 +44,12 @@ class RunState:
         self.failed_urls: dict[str, str] = {}
         #: 搜索成功短路：URL 或规范化标题 -> 落盘路径
         self.downloaded: dict[str, str] = {}
-        #: supervisor 自身派发账本：(agent_type, status)
+        #: supervisor 自身派发账本：(agent_type, status)——按 trace 共享：spawn 的子
+        #: agent 继承父 trace_id，因此与父共用同一个 RunState 实例。正确性依赖一条前提：
+        #: 只有 supervisor 的 _build_head（有意图管线）会重置它、只有 _needs_ledger 为真
+        #: 时读它，而子 agent 的 intent_enabled 恒为 False（spawn 不传意图管线），故
+        #: 子 agent 既不会写也不会读这份账本。若将来子 agent 拿到 conversation/意图管线，
+        #: 就会重置或读到父的账本——届时应改为按实例分桶而非按 trace 共享。
         self.spawn_dispatches: list[tuple[str, str]] = []
         #: 每轮派发计数：turn -> 次数（仅统计 supervisor 自身的派发）
         self.turn_spawn_counts: dict[int, int] = {}
