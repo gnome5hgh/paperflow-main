@@ -427,8 +427,8 @@ class SpawnSubAgentTool(Tool):
 
     def _admit(self, agent_type: str, task: str, mode: str | None = None,
                intent: str | None = None) -> "ToolResult | tuple[str, bool]":
-        """派发前的七道闸，按判定顺序：mode 校验 → 意图派发门禁 → spawn 白名单
-        → 同会话同指纹去重 → 审稿预算 → 每轮派发总量上限 → 同路径在途互斥。
+        """派发前的多道闸，按判定顺序：未知 agent 类型 → mode 校验 → 意图派发门禁
+        → spawn 白名单 → 同会话同指纹去重 → 审稿预算 → 每轮派发总量上限 → 同路径在途互斥。
 
         意图只作信号，不强制派发顺序——顺序与并行由 supervisor 自主决定。每条
         被拒/去重的派发尝试都记入 supervisor 的派发账本（状态 denied/deduped），
@@ -439,6 +439,14 @@ class SpawnSubAgentTool(Tool):
         ToolResult。审稿类 mode 的预算计数与注册同锁原子,拒绝路径不触碰注册表。
         """
         parent = self._parent
+        # 未知 agent 类型：最基础的一道闸，先于 mode/意图/spawn 白名单校验——给模型
+        # 一个可行动的拒绝（附可选清单），而不是让它把一个拼错的类型一路带到构造期。
+        if agent_type not in parent.agent_registry.list_agents():
+            result = SubAgentResult(
+                status="denied",
+                summary=f"未知 agent 类型: {agent_type}；可选: "
+                        f"{sorted(parent.agent_registry.list_agents())}")
+            return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
         # mode 参数校验：非法值直接拒绝（schema enum 约束 LLM 生成层，
         # 此处兜底防任何漏网之鱼静默错流——拼写错的 mode 注入会让子 agent 走错流程）。
         if mode is not None and mode not in SUB_AGENT_MODES:

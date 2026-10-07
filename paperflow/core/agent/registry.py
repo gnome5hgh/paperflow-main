@@ -226,3 +226,21 @@ class AgentRegistry:
         :returns: 按加载顺序（即目录名排序）排列的 agent_type 名字列表。
         """
         return list(self._agents.keys())
+
+    def agents_block(self, exclude: set[str] | None = None) -> str:
+        """渲染 <available_agents> 清单块（供派发方按能力选型）。
+
+        Args:
+            exclude: 不列入清单的 agent 类型（如派发方自身）。
+
+        Returns:
+            清单文本；无可列条目时返回空串（调用方据此整块省略）。
+        """
+        skip = exclude or set()
+        lines = [f"- {name}: {self.get_config(name).description}"
+                 for name in self.list_agents() if name not in skip]
+        if not lines:
+            return ""
+        return ("<available_agents>\n"
+                "可派发的子 agent（按能力选择，说明即其职责与边界）：\n"
+                + "\n".join(lines) + "\n</available_agents>")

@@ -374,6 +374,10 @@ class Agent:
         #: L1 <available_skills> 清单块（静态；空串 = 无可见 skill，head 整块省略）
         self.skills_block = skill_registry.skills_block(agent_type) if skill_registry else ""
 
+        #: <available_agents> 清单块（仅派发方持有；空串 = 整块省略）
+        self.agents_block = (agent_registry.agents_block(exclude={agent_type})
+                             if agent_type == "supervisor" else "")
+
         #: Agent 类型标识符
         self.agent_type = agent_type
 
@@ -562,12 +566,13 @@ class Agent:
         """构建本轮 ReAct 循环的头部消息列表（system 层 + 用户任务）。
 
         此方法在每个 ReAct 轮次开始时被调用，用于组装 LLM 输入的前置部分（system 消息）。
-        它按顺序拼接五块内容：
+        它按顺序拼接六块内容：
             1. system: AGENT.md 系统提示（来自 agent 配置，定义角色与行为规范）
             2. system: SKILLS 清单块（L1 渐进披露清单，若装配了 SkillRegistry 且有可见 skill）
-            3. system: 记忆块（Memory.compile() 输出的 assistant/profile + 文件树索引，若有）
-            4. system: 意图识别块（若启用意图管线且管线成功，格式化为 system 消息的 INTENT 块）
-            5. 末尾追加 user task。
+            3. system: 可派发子 agent 清单块（仅 supervisor，列出各子 agent 的 name + description）
+            4. system: 记忆块（Memory.compile() 输出的 assistant/profile + 文件树索引，若有）
+            5. system: 意图识别块（若启用意图管线且管线成功，格式化为 system 消息的 INTENT 块）
+            6. 末尾追加 user task。
 
         澄清（2026-10-04 统一）：管线判据认定该问时，由本方法内**同步**调 ask 回调
         问用户（_resolve_clarification）——不经 supervisor 的 LLM 转手（「要问」由
@@ -578,7 +583,7 @@ class Agent:
             task: 本轮用户输入文本（原始任务）。
 
         Returns:
-            list[Message]: 头部消息列表 [system_prompt, skills(可选), memory(可选), intent(可选), user_task]。
+            list[Message]: 头部消息列表 [system_prompt, skills(可选), available_agents(可选), memory(可选), intent(可选), user_task]。
         """
         # ====== 第1层：AGENT.md 系统提示 ======
         head: list[Message] = [Message(role="system", content=self.system_prompt)]
@@ -587,6 +592,12 @@ class Agent:
         # skill 指令的约束力声明写在块内；无可见 skill 时 skills_block 为空串，整块省略
         if self.skills_block:
             head.append(Message(role="system", content=self.skills_block))
+
+        # ====== 第 2.5 层：可派发子 agent 清单（仅 supervisor，静态） ======
+        # 派发顺序与并行由 supervisor 自主决定，因此它必须先知道有哪些子 agent、
+        # 各自能做什么；非派发方的 agents_block 为空串，整块省略（不产生空 system 消息）。
+        if self.agents_block:
+            head.append(Message(role="system", content=self.agents_block))
 
         # ====== 第3层：记忆块（核心记忆 + 文件系统索引） ======
         if self.memory is not None:
@@ -835,8 +846,9 @@ class Agent:
 
             1. 生成本次 run 的 trace_id（trace_<12位hex）并清洗 task 的未配对 surrogate
             2. 构建 head：① AGENT（AGENT.md 系统提示）→ ② SKILLS 清单块（若装配
-               SkillRegistry 且有可见 skill）→ ③ Memory.compile()（system/ 记忆块，
-               若有）→ ④ INTENT 块（intent_enabled 且管线成功时）→ user_task。
+               SkillRegistry 且有可见 skill）→ ③ 可派发子 agent 清单块（仅 supervisor）
+               → ④ Memory.compile()（system/ 记忆块，若有）→ ⑤ INTENT 块
+               （intent_enabled 且管线成功时）→ user_task。
                管线判据说该澄清时，在本步内同步问用户并代码级落地意图
             3. 从 MessageManager 加载该会话的 in-context 消息（跨轮回放），当前
                user task 落盘；消息归属 self._messages（in-context 窗口）
@@ -860,7 +872,7 @@ class Agent:
         # conversation.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 
-        # head:① AGENT ② SKILLS ③ Memory ④ INTENT 块,每轮重建
+        # head:① AGENT ② SKILLS ③ 可派发子 agent 清单 ④ Memory ⑤ INTENT 块,每轮重建
         # 不进累积;末尾 user task。澄清在 _build_head 内同步问用户并落地（2026-10-04）。
         head = await self._build_head(task)
 
