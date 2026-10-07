@@ -442,6 +442,7 @@ class SpawnSubAgentTool(Tool):
         # 未知 agent 类型：最基础的一道闸，先于 mode/意图/spawn 白名单校验——给模型
         # 一个可行动的拒绝（附可选清单），而不是让它把一个拼错的类型一路带到构造期。
         if agent_type not in parent.agent_registry.list_agents():
+            _record_dispatch(parent, agent_type, "denied")
             result = SubAgentResult(
                 status="denied",
                 summary=f"未知 agent 类型: {agent_type}；可选: "
