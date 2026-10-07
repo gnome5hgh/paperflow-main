@@ -325,7 +325,7 @@ class BlockManager:
                                    b.description, b.metadata_, 0)
 
     def restore_block(self, block_history_id: int) -> Block:
-        """按历史快照回滚块：把快照的值与版本写回 blocks 行，返回回滚后的块。
+        """按历史快照回滚块：把快照的值写回 blocks 行，返回回滚后的块。
 
         Args:
             block_history_id: block_history 表的自增主键 ID。
@@ -333,16 +333,22 @@ class BlockManager:
         Returns:
             回滚后的 Block 对象。
 
+        Raises:
+            KeyError: 快照不存在，或其对应块行已被删除。
+
         回滚逻辑：
-            - 从 block_history 读取快照数据（包含 block_id, value, version）。
-            - 用快照的值和版本直接覆盖 blocks 表的对应行。
+            - 从 block_history 读取快照数据（包含 block_id, value）。
+            - 以「当前行版本」为 CAS 期望版本，把快照值写回 blocks 行：写入成功后
+              版本推进为当前版本 + 1（回滚也照常推进版本，不做版本回退）。快照里的
+              version 是历史写入时的标注，不能当 CAS 期望值。
             - 注意：回滚不会生成新的历史记录（不记录“回滚操作”本身），
               如需可撤销的回滚，调用方可在回滚后手动调用 checkpoint_block。
         """
         snap = block_orm.restore_block_history(self.db, block_history_id)
-        # CAS 的期望版本取「当前行版本」而非快照里的版本——回滚的语义是把当前值改
-        # 成快照值，快照版本是历史写入时的标注，当期望值会永远不匹配。
         cur = block_orm.select_block(self.db, snap["block_id"])
+        if cur is None:
+            # 块行已删、只剩历史快照：报「块不存在」，与 get_block 的失败语义一致。
+            raise KeyError(f"block {snap['block_id']} not found")
         block_orm.update_block(self.db, snap["block_id"], snap["value"],
                                expected_version=cur["version"])
         return self.get_block(snap["block_id"])

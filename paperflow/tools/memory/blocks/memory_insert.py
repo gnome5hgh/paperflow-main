@@ -11,11 +11,16 @@ def _memory_insert(ctx, label: str, new_string: str, insert_line: int = -1) -> s
     mutate_block 的 mutator，整段一次持锁。
     """
     bm = ctx.block_manager
+    # 回报实际插入行号：默认 -1 落末尾时报告末尾位置，不暴露 -1。mutator 每次调用都
+    # 重算，最终保留的是真正写入所用的那一行。
+    resolved_line = insert_line
 
     def _insert(v: str) -> str:
-        """在 v 的 insert_line 处插入一行；-1 表示末尾。"""
+        """在 v 的 insert_line 处插入一行；-1 表示末尾，超出末尾按末尾处理。"""
+        nonlocal resolved_line
         lines = v.splitlines()
         at = len(lines) if insert_line == -1 else insert_line
+        resolved_line = at
         lines.insert(at, new_string)
         return "\n".join(lines)
 
@@ -25,7 +30,7 @@ def _memory_insert(ctx, label: str, new_string: str, insert_line: int = -1) -> s
         return f"Error: no block with label {label}"
     except ValueError as e:
         return f"Error: {e}"
-    return f"Inserted into block {label} at line {insert_line}"
+    return f"Inserted into block {label} at line {resolved_line}"
 
 
 class MemoryInsertTool(Tool):
