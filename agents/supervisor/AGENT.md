@@ -6,7 +6,7 @@ metadata:
   last_updated: "2026-09-19"
   status: active
   role: 调度主管
-  related_agents: [searcher, noter, qa-agent, researcher]
+  related_agents: [searcher, noter, qa-agent, researcher, librarian]
 allowed_agents: [supervisor]
 allowed_spawns: []   # supervisor 硬编码放行所有子 agent(_check_spawn_allowed 对 supervisor 旁路);留空表示不依赖此列表做递归限制
 ---
@@ -47,6 +47,7 @@ INTENT 块是框架意图识别的输出(意图类型/置信度/实体/steps),�
 | `research_discovery` | 业务 | spawn researcher，子任务拼入课题：用户指定优先，否则 human 块当前课题；无课题不猜，researcher 侧 ask_user_question |
 | `analyze_paper` | 业务 | spawn qa-agent,子任务写明精读/分析维度 |
 | `manage_memory` | 业务 | 查询(读过哪些/未读清单)→ spawn qa-agent;加入未读→先 extract_title 得权威标题,再 unread_list_add;移出未读→ unread_list_remove(指名标题) |
+| `manage_citations` | 业务 | 动作面拼入子任务:批量同步→spawn librarian(sync_citations 全量幂等);单篇添加→pdf_path/external 字段拼入;删除→librarian 会 ask_user_question 确认后执行,不代用户确认;查询/导出→说明目标格式(author-year/gbt7714/bibtex) |
 | `chitchat` | 系统 | 轻量回复 + 温和引导回学术场景。不派发(门禁会拒) |
 | `out_of_scope` | 系统 | 明确拒绝 + 说明能力边界(代写论文属学术不端,必须拦截)。不派发(门禁会拒) |
 | `help` | 系统 | 返回功能卡片/示例 Query 列表。不派发(门禁会拒) |

@@ -1,9 +1,11 @@
 """BibTeX 引用库读写：轻量扫描条目（查找/去重）与 append-only 追加。
 
 references.bib 是引用库的真相源——用户手工维护的分节注释（`% ---- 主题 ----`）
-须原样保留，故只追加、绝不重写。条目扫描用正则提取 key 与字段，不做完整
-语法解析（够查找/去重用）。写操作持进程内锁串行：子 agent 同进程 asyncio
-并发，进程内锁足够；多进程写属罕见场景，不为它上文件锁。
+须原样保留。写入只有两种原语：append-only 追加（append_entry，只在文件末尾
+添加）与按 key 的整块删除（remove_entries，只移除命中条目的原文块）；两者都
+不重新序列化其余内容，注释与未触碰条目的原文逐字节保留。条目扫描用正则提取
+key 与字段，不做完整语法解析（够查找/去重用）。写操作持进程内锁串行：子
+agent 同进程 asyncio 并发，进程内锁足够；多进程写属罕见场景，不为它上文件锁。
 
 --------------------------------------------------------------------
 BibTeX 格式速览（本模块注释术语对照）
@@ -36,6 +38,10 @@ references.bib 由一摞「条目」（entry，一张图书卡片）组成，一
     find_by_title   按标题查找/去重；先 _normalize（小写+去标点+折叠空白），
                     大小写与标点差异不影响"同标题"判定
     append_entry    锁内往文件末尾追加一条条目（append-only，不重写）
+    remove_entries  按 key 集合整块删除条目原文（其余内容逐字节保留），
+                    返回实际删除的 key 列表
+    find_all_by_title
+                    按标题查找全部命中（归一化比较）；删除前多条命中检测用
 
 边界：条目头必须严格是 `@type{key,`（key 后紧跟逗号）才能被识别；不解析 @string 宏等完整语法——对查找/去重/原文渲染三个用途足够。
 --------------------------------------------------------------------
@@ -208,3 +214,79 @@ def append_entry(path: str | Path, entry_text: str) -> None:
     with _write_lock:
         with open(p, "a", encoding="utf-8") as f:
             f.write("\n" + text)
+
+
+def _collapse_seam(left: str, right: str) -> str:
+    """把删除接缝两侧的连续空行压到至多一个；不扩张原本的空行。
+
+    接缝 = 被删条目原本占据的拼接点：left 是其前一段原文，right 是其后一段。
+    只处理两侧首尾的换行，left/right 的内部内容原样保留——这样删除目标之外的
+    区域（含用户手工分节注释、无关注释区的连续空行）逐字节不动。原本不足两个
+    换行的接缝不做扩张，避免制造出原文没有的空行。
+    """
+    left_body = left.rstrip("\n")
+    right_body = right.lstrip("\n")
+    newlines = (len(left) - len(left_body)) + (len(right) - len(right_body))
+    return left_body + "\n" * min(newlines, 2) + right_body
+
+
+def remove_entries(path: str | Path, keys: set[str]) -> list[str]:
+    """按 key 删除条目：逐条定位原文块整段删除，其余内容逐字节保留。
+
+    与 append-only 追加互补的删除原语。删除粒度是「条目原文块」——从
+    `@type{key,` 头到配对右括号整段移除，条目之间的分节注释、其余条目的
+    原文（含字段排布与花括号嵌套）一律不动，避免重新序列化造成格式损失。
+    删除接缝处被删条目两侧多余的连续空行会收敛为一个空行（不留过大空隙），
+    收敛只作用于接缝，文件其余区域逐字节不变。
+
+    Args:
+        path: bib 文件路径。
+        keys: 待删除的条目 key 集合。
+
+    Returns:
+        实际删除的 key 列表（文件中未命中的 key 不在其中）。
+    """
+    p = Path(path)
+    if not p.exists() or not keys:
+        return []
+    text = p.read_text(encoding="utf-8")
+    spans, removed = [], []
+    for m in re.finditer(r"@(\w+)\s*\{([^,{]+)\s*,", text):
+        key = m.group(2).strip()
+        if key not in keys:
+            continue
+        body = _entry_body(text, m.end())
+        spans.append((m.start(), m.end() + len(body) + 1))   # +1 吃掉配对右括号
+        removed.append(key)
+    if not removed:
+        return []
+    out, prev = [], 0
+    for start, end in spans:
+        out.append(text[prev:start])
+        prev = end
+    out.append(text[prev:])
+    # 逐接缝拼接：空行收敛只发生在删除点，不全局 re.sub（否则会压缩与删除
+    # 无关区域的连续空行，破坏「其余内容逐字节保留」契约）
+    new_text = out[0]
+    for segment in out[1:]:
+        new_text = _collapse_seam(new_text, segment)
+    with _write_lock:
+        p.write_text(new_text, encoding="utf-8")
+    return removed
+
+
+def find_all_by_title(path: str | Path, title: str) -> list[BibEntry]:
+    """按标题找全部命中条目（归一化比较），用于删除前的多条命中检测。
+
+    与 find_by_title 的区别：find_by_title 取首个命中（去重场景够用），
+    本函数返回全量命中——删除操作面对多条命中必须交给上层澄清，不能猜。
+
+    Args:
+        path: bib 文件路径。
+        title: 待匹配标题（内部归一化）。
+
+    Returns:
+        归一化标题相等（可能为空）的 `BibEntry` 列表。
+    """
+    norm = _normalize(title)
+    return [e for e in parse_entries(path) if e.title and _normalize(e.title) == norm]

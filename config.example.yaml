@@ -22,10 +22,12 @@ corpus:
   research_dir: ""
   citations_bib_path: ""
 
-# 意图编码器默认与 rag.embedding 同模型，留空继承其端点/key；换模型需重标路由阈值
+# 意图编码器：base_url/api_key 留空继承 rag.embedding 同名字段；model 不继承，
+# 默认 Qwen/Qwen3-Embedding-8B（与路由阈值同属一个标定包；注意 rag.embedding.embed_model
+# 仍是 0.6B）。换非同款模型需重标路由阈值。
 # intent:
 #   encoder:
-#     model: Qwen/Qwen3-Embedding-8B
+#     model: Qwen/Qwen3-Embedding-8B   # 覆盖示例（默认即此值）
 
 # RAG 检索栈：嵌入/精排端点、检索参数、切块、存储等的默认值见 paperflow/config.py
 rag:

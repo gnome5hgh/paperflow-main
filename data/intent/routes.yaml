@@ -111,7 +111,7 @@ routes:
   - 选项二
   - 那就第 7 个
   - 麻烦选12
-  score_threshold: 0.0565657
+  score_threshold: 0.589899
   steps_threshold: 0.9458
 - name: search_paper
   utterances:
@@ -384,7 +384,7 @@ routes:
   - 限定在近两年且开源
   - 限定近三年
   - 顶会优先
-  score_threshold: 0.0888889
+  score_threshold: 0.105051
   steps_threshold: 0.5177
 - name: generate_note
   utterances:
@@ -516,7 +516,7 @@ routes:
   - 这篇 paper 的重点帮我记录一下
   - 阅读完这篇 paper，帮我输出一份 summary note
   - 阅读这篇文献并生成摘要笔记
-  score_threshold: 0.617511
+  score_threshold: 0.604262
   steps_threshold: 0.575
 - name: research_discovery
   utterances:
@@ -651,7 +651,7 @@ routes:
   - 帮我找找我的文献里还没人做过的组合
   - Are there any open problems in my reading list worth pursuing?
   - What emerging directions can you suggest from my notes?
-  score_threshold: 0.491211
+  score_threshold: 0.481865
   steps_threshold: 1.0474
 - name: ask_question
   utterances:
@@ -796,7 +796,7 @@ routes:
   - 这篇论文想解决什么问题
   - 这篇论文的结论是什么
   - 这篇论文的创新点在哪里
-  score_threshold: 0.137374
+  score_threshold: 0.371717
   steps_threshold: 0.2644
 - name: manage_memory
   utterances:
@@ -932,7 +932,7 @@ routes:
   - 重置我的上下文记忆
   - 重置我的论文推荐历史
   - 重置整个记忆系统
-  score_threshold: 0.428283
+  score_threshold: 0.331313
   steps_threshold: 0.6508
 - name: set_research_topic
   utterances:
@@ -1174,7 +1174,7 @@ routes:
   - 研究主题更新为图神经网络的可解释性
   - 'I''ve decided my research topic: retrieval-augmented generation'
   - My research focus for this year is graph contrastive learning
-  score_threshold: 0.558263
+  score_threshold: 0.20202
   steps_threshold: 0.3254
 - name: analyze_paper
   utterances:
@@ -1286,7 +1286,7 @@ routes:
   - 这篇论文的讨论部分有哪些不足？请分析。
   - 这篇论文的论证逻辑有没有明显漏洞？
   - 这篇论文的贡献与不足分别体现在哪里
-  score_threshold: 0.712854
+  score_threshold: 0.709803
   steps_threshold: 0.5393
 - name: chitchat
   utterances:
@@ -1405,7 +1405,7 @@ routes:
   - 该休息啦，做个好梦
   - 随便扯点啥都行
   - 麻烦你了
-  score_threshold: 0.479062
+  score_threshold: 0.506785
   steps_threshold: 1.5559
 - name: out_of_scope
   utterances:
@@ -1537,7 +1537,7 @@ routes:
   - Help me plan a birthday party
   - What's a good recipe for lasagna?
   - Summarize this week's NBA games for me
-  score_threshold: 0.250505
+  score_threshold: 0.266667
   steps_threshold: 0.4475
 - name: help
   utterances:
@@ -1649,7 +1649,7 @@ routes:
   - 这个助手能做些啥
   - 这个助手都能做哪些事情？
   - 这个助手都能干些什么
-  score_threshold: 0.663112
+  score_threshold: 0.649845
   steps_threshold: 1.4767
 - name: feedback
   utterances:
@@ -1765,5 +1765,117 @@ routes:
   - 这篇内容质量很差
   - 这篇分析不够好
   - 这篇总结写得很差。
-  score_threshold: 0.557576
+  score_threshold: 0.50101
   steps_threshold: 0.4373
+- name: manage_citations
+  score_threshold: 0.753367
+  utterances:
+  - 把论文库的论文都加入bib
+  - 把论文库里所有论文加入引用库
+  - 把我语料库里的论文都导入references.bib
+  - 帮我把论文库全部论文加进bib文件
+  - 同步论文库到引用库
+  - 把语料库和引用库同步一下
+  - 更新我的references.bib
+  - 把新下载的论文加入bib
+  - 语料库有新论文了，同步到引用库
+  - 把所有PDF导入引用库
+  - 把库里所有论文生成bib条目
+  - 把整个论文库导入bib
+  - 批量导入论文到引用库
+  - 论文库同步到bib文件
+  - 把我的文献库整理进references.bib
+  - 引用库和语料库对齐一下
+  - 把最近入库的论文加到bib
+  - 帮我把所有文献添加到引用列表
+  - 把没入库的论文都补进bib
+  - 生成全部论文的bibtex
+  - 我要一个包含所有论文的bib文件
+  - 把论文库导出成bib
+  - 引用库缺哪些论文，帮我补全
+  - 同步一下引用库
+  - 刷新我的引用库
+  - 所有语料论文都写进references.bib
+  - 帮我把论文库完整导入引用库
+  - 一次性把全部论文加入bib
+  - 把论文库注册到引用管理
+  - 语料库的论文都进引用库了吗，没有的补上
+  - 把这篇论文加入引用库
+  - 把这篇加入bib
+  - 把刚才那篇论文加进references.bib
+  - 帮我把这篇文献添加到引用管理
+  - 把这篇PDF加入引用库
+  - 把这篇论文收进bib文件
+  - 添加这篇论文到我的引用库
+  - 把Kipf那篇GCN论文加入bib
+  - 把这篇paper加到引用列表
+  - 我想引用这篇，帮我加入bib
+  - 这篇论文还没进引用库，加一下
+  - 把下载的这篇论文加入references
+  - 帮我把这篇文章收进文献库
+  - 把新搜到的论文加入引用库
+  - 把这篇arXiv论文加进bib
+  - 把这篇加入我的references.bib
+  - 这篇也要加进引用库
+  - 把刚才下载的那篇加入bib
+  - 把这篇论文登进引用库
+  - 把这篇加到bib文件末尾
+  - 引用库加入这篇论文
+  - 帮把手头这篇收进references
+  - 新论文入库
+  - 把这篇论文加进我的引用列表
+  - 我的引用库里都有哪些论文
+  - 列出references.bib里的所有条目
+  - bib文件里有多少条引用
+  - 查一下引用库有没有某篇论文
+  - references.bib里有没有Vaswani那篇
+  - 帮我看看引用库列表
+  - 我的bib里都有什么
+  - 展示引用库全部条目
+  - 把引用库导出成参考文献列表
+  - 按author-year格式输出我的引用
+  - 帮我把bib渲染成参考文献格式
+  - 引用库里的论文列个清单
+  - 查某篇论文的bib key
+  - 这篇论文在引用库里吗
+  - 给我引用库的bibtex全文
+  - 引用库按年份排序列一下
+  - 我的引用文献列表
+  - 看看引用库里2023年以后的条目
+  - 引用库里的论文数一下
+  - 找到那篇论文的引用键
+  - 这条引用的key是什么
+  - 把引用库里的条目都列出来
+  - bib里搜索这篇论文
+  - 我的references都有哪些文献
+  - 输出gbt7714格式的参考文献
+  - 把我的引用库整理成文献列表
+  - 引用库总共有几篇
+  - 帮我查bib里的某条引用
+  - 列出我所有的bibtex条目
+  - 看看引用库的现状
+  - 这篇的bibtex条目长什么样
+  - 从引用库删掉这篇论文
+  - 把bib里这条引用删了
+  - 把这篇论文从references.bib移除
+  - 删除引用库里的这条
+  - 帮我把这篇从bib里去掉
+  - 移除bib里重复的条目
+  - 这条引用不要了，删掉
+  - 从我的引用列表里删除这篇
+  - 把引用库里错误的条目删掉
+  - 删掉bib里那篇重复的
+  - 引用库清理一下，把没用的删了
+  - 把这条bibtex条目移除
+  - 帮我删除references里的一篇
+  - 从引用管理里移除这篇文献
+  - bib里有条错的，帮我删了
+  - 去掉引用库里的这篇论文
+  - 这篇已经不用引用了，删掉条目
+  - 把重复添加的引用删掉
+  - 从文献引用库删除该论文
+  - 引用库去掉几篇不相关的
+  - 整理一下我的文献库
+  - 帮我维护一下引用库
+  - 我的引用管理
+  - bib该整理了

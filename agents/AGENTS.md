@@ -12,6 +12,7 @@ agents/
 ├─ searcher/     # 多源搜索 → reviewer 门禁 → 可选下载
 ├─ noter/        # 纯笔记生成，内部 reviewer 审稿 ≤3 轮
 ├─ researcher/   # 选题发现：语料盘点 → survey/gaps → idea 卡 → 研究计划
+├─ librarian/    # 文献库维护：references.bib 同步/新增/删除/查询导出
 ├─ reviewer/     # 叶子审稿：笔记审稿 / 下载门禁 / plan_review 三种模式
 └─ qa-agent/     # 论文/笔记/阅读记忆问答
 ```

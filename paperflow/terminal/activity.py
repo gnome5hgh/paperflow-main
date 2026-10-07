@@ -31,6 +31,8 @@ ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
     "add_citation": ("📎 引用", "次"),
     "list_citations": ("📎 列引", "次"),
     "format_citations": ("📎 排版", "次"),
+    "remove_citation": ("📎 删引", "次"),
+    "sync_citations": ("📎 同步", "次"),
     "lookup_venue_rank": ("🏛 查刊", "次"),
     # ── 视觉 ──
     "analyze_figures": ("🖼️ 解析", "次"),   # 视觉解析 PDF 插图（noter 高频、耗时数秒）

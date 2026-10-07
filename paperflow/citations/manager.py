@@ -272,6 +272,62 @@ class CitationManager:
                 external=True))
             return {"key": key, "created": True, "note": "EXTERNAL 条目已追加"}
 
+    def remove(self, key_or_title: str) -> dict:
+        """删除一条引用（key 精确命中或标题归一化命中）。
+
+        删除是高危操作：多条命中时不猜——返回 ambiguous 与候选列表，由
+        工具层转述给用户选择后重调；只有唯一命中才真正删除。
+
+        Args:
+            key_or_title: bib key 或论文标题。
+
+        Returns:
+            dict: status ∈ {removed, not_found, ambiguous}；removed 时带 key；
+            ambiguous 时带 candidates（key+title 列表）。
+        """
+        with self._lock:
+            q = key_or_title.strip()
+            entries = bibmod.parse_entries(self.bib_path)
+            exact = [e for e in entries if e.key == q]
+            if not exact:
+                exact = bibmod.find_all_by_title(self.bib_path, q)
+            if not exact:
+                return {"status": "not_found", "key": None, "candidates": []}
+            if len(exact) > 1:
+                return {"status": "ambiguous", "key": None,
+                        "candidates": [{"key": e.key, "title": e.title}
+                                       for e in exact]}
+            removed = bibmod.remove_entries(self.bib_path, {exact[0].key})
+            status = "removed" if removed else "not_found"
+            return {"status": status, "key": exact[0].key if removed else None,
+                    "candidates": []}
+
+    def sync_all(self) -> dict:
+        """语料库全量同步入 bib：逐条按 add_from_pdf 语义入库，幂等增量。
+
+        枚举源是语料标题索引（CorpusIndex，论文中心快照）：只对带 pdf_path
+        的记录入库，纯笔记记录天然跳过。已在库的条目按标题去重跳过，因此
+        重复调用安全；缺作者/年份的记录沿用宁缺毋滥防御拒绝入库，在
+        rejected 中逐条列出（启动 GROBID 后重跑即可补齐）。
+
+        Returns:
+            dict: total=带 PDF 的记录数；added=新入库 key；skipped=已在库 key；
+            rejected=[{pdf_path, note}] 拒绝入库明细。
+        """
+        self._index.refresh()
+        records = self._index.pdf_records()
+        added, skipped, rejected = [], [], []
+        for rec in records:
+            r = self.add_from_pdf(rec["pdf_path"])
+            if r["created"]:
+                added.append(r["key"])
+            elif r["key"]:
+                skipped.append(r["key"])
+            else:
+                rejected.append({"pdf_path": rec["pdf_path"], "note": r["note"]})
+        return {"total": len(records), "added": added,
+                "skipped": skipped, "rejected": rejected}
+
     # —— 查询 / 渲染 ——
     def get(self, key: str) -> BibEntry | None:
         """按 key 查条目；无命中返回 None。"""

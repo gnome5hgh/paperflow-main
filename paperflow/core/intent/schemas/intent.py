@@ -5,7 +5,8 @@
 输入/输出）职责不同。识别管线分五级：实体提取 / 选项答复检测 / 追问检测 / 混合路由 /
 LLM 兜底，本模块定义的几个类型是它们共同使用的产出契约：
 
-- ``IntentType``: 13 类意图枚举（枚举值即路由名，对应 routes.yaml 的 route 名集合）。
+- ``IntentType``: 14 类意图枚举（含业务意图引用库管理 manage_citations；枚举值即路由名，
+  对应 routes.yaml 的 route 名集合）。
 - ``IntentCategory``: 意图类别（business/dialogue/system）——消费分组，非路由层级。
 - ``INTENT_META``: intent → (category, dispatch_allowed) 单一真相源映射。
 - ``IntentStep``: 产出阶段枚举——审计/监控据此区分"这条意图是路由层定的
@@ -26,7 +27,7 @@ class IntentType(str, Enum):
     """意图类型枚举，value 与路由名一致（routes.yaml 中的 name）。
 
     枚举 = 契约 = 当前实现集——不允许"枚举允许但系统无处理路径"的悬空值。
-    13 值按三类组织（category 见 INTENT_META），类别是消费分组不是路由层级。
+    14 值按三类组织（category 见 INTENT_META），类别是消费分组不是路由层级。
     历史收敛：switch_topic 并入 set_research_topic、refine_query 并入
     search_paper——两者与近邻意图的边界是对话史信号，路由器原理上不可学，
     且派发行为与保留值完全一致。
@@ -40,6 +41,10 @@ class IntentType(str, Enum):
     RESEARCH_DISCOVERY = "research_discovery"  # 选题发现：交付方向/课题建议（业务；搜文献只是其手段）
     ANALYZE_PAPER = "analyze_paper"            # 精读分析：交付分析报告的长任务（业务）
     MANAGE_MEMORY = "manage_memory"            # 记忆查询 + 待读清单操作（业务）
+    MANAGE_CITATIONS = "manage_citations"      # 引用库管理：references.bib 的批量同步/单篇添加/删除/查询导出（业务）。
+                                               # 边界：管的是 bib 引用库不是待读清单（那归 manage_memory）；
+                                               # 管的是已有语料的元数据整理不是找论文（那归 search_paper）。
+                                               # 判据：请求的落点是 references.bib 发生变化或被读取。
     CHITCHAT = "chitchat"                      # 闲聊与应答语（系统；直接回复）
     OUT_OF_SCOPE = "out_of_scope"              # 超出能力范围：含与论文工作无关的请求（系统；明确拒绝）
     HELP = "help"                              # 本系统的使用方法/功能引导（系统）；系统无关请求归 out_of_scope
@@ -66,6 +71,7 @@ INTENT_META: dict[IntentType, tuple[IntentCategory, bool]] = {
     IntentType.RESEARCH_DISCOVERY: (IntentCategory.BUSINESS, True),
     IntentType.ANALYZE_PAPER:      (IntentCategory.BUSINESS, True),
     IntentType.MANAGE_MEMORY:      (IntentCategory.BUSINESS, True),
+    IntentType.MANAGE_CITATIONS:  (IntentCategory.BUSINESS, True),
     IntentType.CHITCHAT:           (IntentCategory.SYSTEM, False),
     IntentType.OUT_OF_SCOPE:       (IntentCategory.SYSTEM, False),
     IntentType.HELP:               (IntentCategory.SYSTEM, False),
@@ -85,6 +91,7 @@ INTENT_LABELS_ZH: dict[IntentType, str] = {
     IntentType.RESEARCH_DISCOVERY: "选题发现",
     IntentType.ANALYZE_PAPER:      "精读分析",
     IntentType.MANAGE_MEMORY:      "记忆/清单管理",
+    IntentType.MANAGE_CITATIONS:  "引用库管理",
     IntentType.CHITCHAT:           "闲聊",
     IntentType.OUT_OF_SCOPE:       "超出能力范围的请求",
     IntentType.HELP:               "使用帮助",
