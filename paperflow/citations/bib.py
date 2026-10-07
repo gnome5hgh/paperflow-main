@@ -208,3 +208,59 @@ def append_entry(path: str | Path, entry_text: str) -> None:
     with _write_lock:
         with open(p, "a", encoding="utf-8") as f:
             f.write("\n" + text)
+
+
+def remove_entries(path: str | Path, keys: set[str]) -> list[str]:
+    """按 key 删除条目：逐条定位原文块整段删除，其余内容逐字节保留。
+
+    与 append-only 追加互补的删除原语。删除粒度是「条目原文块」——从
+    `@type{key,` 头到配对右括号整段移除，条目之间的分节注释、其余条目的
+    原文（含字段排布与花括号嵌套）一律不动，避免重新序列化造成格式损失。
+
+    Args:
+        path: bib 文件路径。
+        keys: 待删除的条目 key 集合。
+
+    Returns:
+        实际删除的 key 列表（文件中未命中的 key 不在其中）。
+    """
+    p = Path(path)
+    if not p.exists() or not keys:
+        return []
+    text = p.read_text(encoding="utf-8")
+    spans, removed = [], []
+    for m in re.finditer(r"@(\w+)\s*\{([^,{]+)\s*,", text):
+        key = m.group(2).strip()
+        if key not in keys:
+            continue
+        body = _entry_body(text, m.end())
+        spans.append((m.start(), m.end() + len(body) + 1))   # +1 吃掉配对右括号
+        removed.append(key)
+    if not removed:
+        return []
+    out, prev = [], 0
+    for start, end in spans:
+        out.append(text[prev:start])
+        prev = end
+    out.append(text[prev:])
+    new_text = re.sub(r"\n{3,}", "\n\n", "".join(out))   # 收敛删除留下的连续空行
+    with _write_lock:
+        p.write_text(new_text, encoding="utf-8")
+    return removed
+
+
+def find_all_by_title(path: str | Path, title: str) -> list[BibEntry]:
+    """按标题找全部命中条目（归一化比较），用于删除前的多条命中检测。
+
+    与 find_by_title 的区别：find_by_title 取首个命中（去重场景够用），
+    本函数返回全量命中——删除操作面对多条命中必须交给上层澄清，不能猜。
+
+    Args:
+        path: bib 文件路径。
+        title: 待匹配标题（内部归一化）。
+
+    Returns:
+        归一化标题相等（可能为空）的 `BibEntry` 列表。
+    """
+    norm = _normalize(title)
+    return [e for e in parse_entries(path) if e.title and _normalize(e.title) == norm]
