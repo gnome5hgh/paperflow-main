@@ -297,7 +297,7 @@ def install_skill(source: str, pf_dir: Path, *, ref: str | None = None,
                 raise
             if allow_code and any(s["has_code"] for s in described):
                 print_fn("提示：捆绑 tools.py 的安全元数据将在下次启动时校验；"
-                         "若装坏了可运行 `paperflow skill uninstall <name>` 恢复。")
+                         "若装坏了可运行 `/skill uninstall <name>` 恢复。")
             return 0
     except (ValueError, OSError, subprocess.CalledProcessError,
             zipfile.BadZipFile, tarfile.TarError) as e:

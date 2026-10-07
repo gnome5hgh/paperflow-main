@@ -125,9 +125,10 @@ _SKILL_USAGE = """用法：
 
 
 def _build_skill_parser() -> argparse.ArgumentParser:
-    """skill 子命令解析。exit_on_error 逐层关闭：用法错误抛 ArgumentError
-    而非 SystemExit，handler 据此只打用法、不杀 REPL。参数语义与原
-    paperflow skill CLI（cli.py 迁出）逐字一致。"""
+    """skill 子命令解析。参数语义与原 paperflow skill CLI（cli.py 迁出）逐字一致。
+    用法错误的抛法分两路：required 校验（缺子命令/缺必选参数）经 parser.error()
+    抛 SystemExit(2)，不受 exit_on_error=False 影响；invalid choice 等场景抛
+    ArgumentError。handler 两者都接，只打用法、不杀 REPL。"""
     parser = argparse.ArgumentParser(prog="/skill", add_help=False,
                                      exit_on_error=False)
     action = parser.add_subparsers(dest="skill_action", required=True)
