@@ -40,6 +40,10 @@ class IntentType(str, Enum):
     RESEARCH_DISCOVERY = "research_discovery"  # 选题发现：交付方向/课题建议（业务；搜文献只是其手段）
     ANALYZE_PAPER = "analyze_paper"            # 精读分析：交付分析报告的长任务（业务）
     MANAGE_MEMORY = "manage_memory"            # 记忆查询 + 待读清单操作（业务）
+    MANAGE_CITATIONS = "manage_citations"      # 引用库管理：references.bib 的批量同步/单篇添加/删除/查询导出（业务）。
+                                               # 边界：管的是 bib 引用库不是待读清单（那归 manage_memory）；
+                                               # 管的是已有语料的元数据整理不是找论文（那归 search_paper）。
+                                               # 判据：请求的落点是 references.bib 发生变化或被读取。
     CHITCHAT = "chitchat"                      # 闲聊与应答语（系统；直接回复）
     OUT_OF_SCOPE = "out_of_scope"              # 超出能力范围：含与论文工作无关的请求（系统；明确拒绝）
     HELP = "help"                              # 本系统的使用方法/功能引导（系统）；系统无关请求归 out_of_scope
@@ -66,6 +70,7 @@ INTENT_META: dict[IntentType, tuple[IntentCategory, bool]] = {
     IntentType.RESEARCH_DISCOVERY: (IntentCategory.BUSINESS, True),
     IntentType.ANALYZE_PAPER:      (IntentCategory.BUSINESS, True),
     IntentType.MANAGE_MEMORY:      (IntentCategory.BUSINESS, True),
+    IntentType.MANAGE_CITATIONS:  (IntentCategory.BUSINESS, True),
     IntentType.CHITCHAT:           (IntentCategory.SYSTEM, False),
     IntentType.OUT_OF_SCOPE:       (IntentCategory.SYSTEM, False),
     IntentType.HELP:               (IntentCategory.SYSTEM, False),
@@ -85,6 +90,7 @@ INTENT_LABELS_ZH: dict[IntentType, str] = {
     IntentType.RESEARCH_DISCOVERY: "选题发现",
     IntentType.ANALYZE_PAPER:      "精读分析",
     IntentType.MANAGE_MEMORY:      "记忆/清单管理",
+    IntentType.MANAGE_CITATIONS:  "引用库管理",
     IntentType.CHITCHAT:           "闲聊",
     IntentType.OUT_OF_SCOPE:       "超出能力范围的请求",
     IntentType.HELP:               "使用帮助",
