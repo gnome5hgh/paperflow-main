@@ -36,9 +36,12 @@ from paperflow.rag.parsers.chunker import CHUNK_ID_LEN, Chunk, context_prefix
 #: 配方哈希的逻辑版本号：切块/解析「算法逻辑」修订号（非参数）。参数
 #: （``rag.chunker.*``、``rag.indexer.table_text_limit``、embed_model）自动进
 #: ``_recipe_hash`` 指纹；算法逻辑改动（如 ``_pack_sentences`` 改写、章节/媒体块
-#: 产出规则变更）无法被参数枚举，只能手动 +1 → 下次 ``index_all`` 全量重扫重嵌。
-#: 仅当切块/解析逻辑改动、产出块集合可能变化时才改，不要为参数调整而动它。
-RECIPE_LOGIC_REVISION = 1
+#: 产出规则变更、丢弃判据词表调整）无法被参数枚举，只能手动 +1 → 下次
+#: ``index_all`` 全量重扫重嵌。仅当切块/解析逻辑改动、产出块集合可能变化时才改，
+#: 不要为参数调整而动它。
+#: 修订 2：split_doc 新增期刊样板章节（致谢/资助/利益冲突/数据可用性等）与
+#: 正文残渣（不成句微碎片）的丢弃判据，产出块集合变小。
+RECIPE_LOGIC_REVISION = 2
 
 
 def _recipe_hash(cfg) -> str:

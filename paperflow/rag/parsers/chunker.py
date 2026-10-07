@@ -23,6 +23,30 @@ _REFERENCE_HEADS = ("references", "参考文献", "bibliography")
 #: 小数（3.5）与缩写（et al.）会误断，可接受——只影响窗口边界位置，不影响内容完整性。
 _SENT_SPLIT_RE = re.compile(r"(?<=[。！？!?])\s*|(?<=\.)\s+")
 
+#: 句末标点字符集（中英）。与 _SENT_SPLIT_RE 用途不同：它不切句，只回答
+#: 「这段正文里有没有完整句子」，供残渣判据使用。ASCII 句点必须算在内，
+#: 否则英文正文会被整体误判为无句。
+_SENT_END_RE = re.compile(r"[。！？!?.]")
+
+#: 需整段丢弃的期刊样板章节标题词干（小写子串匹配）。致谢 / 资助 / 利益冲突 /
+#: 数据可用性声明等出版流程产物对学术检索零价值，却以「标题 + 一句话」的形态
+#: 成为碎块参与检索排序、挤占 top-k。与 _REFERENCE_HEADS 同一机制、同一后果：
+#: 命中即整段跳过。词干刻意选多词短语并做子串匹配——样板标题形态多样
+#: （"Declaration of competing interest" / "Competing interests" / "■ Acknowledgments"），
+#: 而 conclusions / datasets / methodology 等真实章节不得命中。
+_DROP_HEADS = (
+    "data availability", "availability of data", "funding",
+    "competing interest", "competing financial", "conflict of interest",
+    "acknowledg", "author contribution", "authorship contribution",
+    "declaration", "supplementar", "publisher", "consent",
+    "ethic", "copyright", "license", "orcid", "peer review",
+)
+
+#: 正文残渣判据的 token 上限：低于它且不含任何句末标点的正文视为解析残渣
+#: （公式碎片、表格单元格拼接、被截断的空洞句）。阈值刻意保守——无句点的
+#: 稍长正文常是被解析截断的真实内容，放宽会成片误伤；只收最没有检索价值的微碎片。
+_FRAGMENT_MAX_TOKENS = 12
+
 
 def context_prefix(title: str, heading: str, body: str) -> str:
     """把「论文标题 > 章节标题」前缀行拼到块正文前。
@@ -59,9 +83,12 @@ class Chunk:
 class AcademicChunker:
     """两级切分：先按章节切，超长章节再按 token 数二次切分并带重叠。
 
-    嵌入模型（Qwen3-Embedding-0.6B 支持 32K 上下文）对分块长度没有硬约束，max_tokens=512 是检索粒度的选择：块太大召回噪声多、太小语义碎片化；
-    overlap 让相邻块重叠一部分，重叠让跨块语义连贯。token 计数用
-    ``core.tokenization.TOKEN_ENCODING``（与 core.memory 压缩共用）近似即可，不必精确。
+    切块前先做丢弃判据（参考文献 / 期刊样板 / 解析残渣，见 split_doc），
+    被丢弃的章节不产生块。嵌入模型（Qwen3-Embedding-0.6B 支持 32K 上下文）
+    对分块长度没有硬约束，max_tokens=512 是检索粒度的选择：块太大召回噪声多、
+    太小语义碎片化；overlap 让相邻块重叠一部分，重叠让跨块语义连贯。token
+    计数用 ``core.tokenization.TOKEN_ENCODING``（与 core.memory 压缩共用）
+    近似即可，不必精确。
     """
 
     def __init__(self, max_tokens: int, overlap_tokens: int):
@@ -92,6 +119,42 @@ class AcademicChunker:
         # 检查标题（去除首尾空白并转小写）是否以预定义的前缀开头。
         # 匹配的章节将被完全跳过，不进入检索块。
         return heading.strip().lower().startswith(_REFERENCE_HEADS)
+
+    def _is_boilerplate(self, heading: str) -> bool:
+        """判断章节标题是否为期刊样板段（致谢/资助/利益冲突/数据可用性等）。
+
+        与 _is_reference 同一机制、同一后果：整段跳过，不进入检索块。用子串
+        而非前缀匹配，因为样板标题形态多样（"Declaration of competing
+        interest" / "Competing interests" / "■ Acknowledgments"）。
+
+        Args:
+            heading: 章节标题字符串。
+
+        Returns:
+            bool: True 表示应跳过该章节，False 表示保留。
+        """
+        low = heading.strip().lower()
+        return any(stem in low for stem in _DROP_HEADS)
+
+    def _is_fragment(self, text: str) -> bool:
+        """判断章节正文是否为解析残渣：不成句的微碎片或空正文。
+
+        拦下两类东西——解析器把公式/表格单元格切出的无句点碎片，以及只有
+        标题没有正文的空章节。判据刻意保守：仅当正文低于 _FRAGMENT_MAX_TOKENS
+        且不含任何句末标点才判残渣；无句点的稍长正文常是被截断的真实内容，
+        不在此列。
+
+        Args:
+            text: 章节正文。
+
+        Returns:
+            bool: True 表示应跳过该章节，False 表示保留。
+        """
+        if not text.strip():
+            return True
+        if len(self._enc.encode(text)) >= _FRAGMENT_MAX_TOKENS:
+            return False
+        return not _SENT_END_RE.search(text)
 
     def _split_sentences(self, text: str) -> list[str]:
         """按句末标点把文本切成句子列表（过滤纯空白片段）。
@@ -248,7 +311,11 @@ class AcademicChunker:
 
     def split_doc(self, rel_path: str, sections: list[tuple[str, str]], source: str,
                   title: str = "") -> list[Chunk]:
-        """文档级：逐章节遍历，把带章节结构的一篇文档切成 Chunk 列表，跳过参考文献章节。
+        """文档级：逐章节遍历，把带章节结构的一篇文档切成 Chunk 列表。
+
+        进切块前先过三道丢弃判据，被丢弃的章节不产生块、不占块序号：
+        参考文献章节（_is_reference）、期刊样板章节（_is_boilerplate）、
+        解析残渣正文（_is_fragment）。
 
         Args:
             rel_path: 文档相对路径（进块 id 与元数据）。
@@ -267,8 +334,11 @@ class AcademicChunker:
 
         # 1. 遍历每个章节（标题, 正文）。
         for heading, text in sections:
-            # 2. 若章节标题匹配参考文献前缀，则跳过整个章节。
-            if self._is_reference(heading):
+            # 2. 丢弃判据：参考文献 / 期刊样板（按标题）、解析残渣（按正文）。
+            #    被丢弃的章节不产生块；后续章节的块序号照常顺延。
+            if self._is_reference(heading) or self._is_boilerplate(heading):
+                continue
+            if self._is_fragment(text):
                 continue
             # 3. 否则，对章节正文调用 `_split_long` 分割（可能返回一个或多个片段）。
             # 4. 前缀逐窗拼接（而非拼进原文再切）：长章节切多窗时每个窗口都自带「标题 > 章节」上下文，任一窗口被单独检回都不丢所属信息。
