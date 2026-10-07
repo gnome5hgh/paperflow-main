@@ -1238,9 +1238,10 @@ class Agent:
                 # 整棵 agent 树一起终止（P0-2 根治），不再经 to_thread 留孤儿线程。
                 raw = await tool.aexecute(**ctx.args)
 
-            # 搜索类工具：asyncio.to_thread(execute, ...) + 注入去重池
+            # 需要运行期状态的工具（搜索去重池 / 写盘产物登记）：注入本次 run 的容器。
+            # 子 agent 继承父 trace_id，所以同一用户任务内跨 agent 共享同一个容器。
             elif getattr(tool, "wants_run_state", False):
-                from paperflow.tools.search._common import get_run_state
+                from paperflow.core.agent.state import get_run_state
                 raw = await asyncio.to_thread(
                     tool.execute, **ctx.args, _run_state=get_run_state(self._trace_id))
 
