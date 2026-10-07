@@ -864,7 +864,7 @@ class Agent:
         # 每次 run 独立追踪 ID：同一 conversation 的多次 run 由 trace_id 区分。
         # spawn 的子 agent 继承父 trace_id——去重池（get_run_state 按其键控）因此
         # 在「一次用户任务」内跨 agent 共享：supervisor 超时重试派发的新 searcher
-        # 不会重复下载父任务已下载过的论文（验收实测缺陷 2026-10-02）。
+        # 不会重复下载父任务已下载过的论文。
         self._trace_id = self._inherited_trace_id or f"trace_{uuid.uuid4().hex[:12]}"
 
         # 信任边界：清洗用户输入里的未配对 surrogate（外部粘贴/合成文本可能携带，
@@ -1067,8 +1067,8 @@ class Agent:
                 self._persist_conversation([tool_msg])
 
             # 终止型工具：submit 类成功提交即本 agent 任务终结——直接
-            # 结束 ReAct 循环，不再进下一轮 LLM 调用（实测 reviewer 曾重复提交 95 次，
-            # 每轮 ~1.5 万 tokens）。返回值即提交文本：spawn 的 digest 提取依赖裁决
+            # 结束 ReAct 循环，不再进下一轮 LLM 调用（否则模型可能反复重复提交同一裁决，
+            # 每轮都白烧一遍推理 token）。返回值即提交文本：spawn 的 digest 提取依赖裁决
             # 全文，不能只回一句「已提交」。on_finish 钩子照常执行（安全扫描一致性）。
             if any(r.summary.get("terminal") for r in results):
                 final_text = next(r.text for r in results if r.summary.get("terminal"))

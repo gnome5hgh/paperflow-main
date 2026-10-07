@@ -1,8 +1,14 @@
 """共享 spawn 工具层——SpawnSubAgentTool 及配套 helper。
 
-子 agent 派发与结构化结果摘要的实现。装配仍只在 agents/supervisor/
-tools.py 的 _make_supervisor_tools——Supervisor 是唯一装配 spawn 工具的 agent
-(权限最小化:子 agent 不能递归调度)。需父 agent 注入(needs_parent),见 Tool 约定。
+子 agent 派发与结构化结果摘要的实现。装配给 supervisor（硬编码放行所有子 agent）
+与需要内部审稿/补料的 searcher/noter/researcher（按各自 allowed_spawns 白名单）；
+叶子 agent（reviewer/qa-agent/librarian）不装配、不递归调度。需父 agent 注入
+(needs_parent),见 Tool 约定。
+
+派发前 _admit 的八道闸（未知类型 / mode 校验 / 意图派发门禁 / spawn 白名单 /
+同会话同指纹去重 / 审稿预算 / 每轮派发上限 / 同路径在途互斥）与闸门状态容器
+（session/run 两作用域,见 core/agent/state.py）都在本模块;意图只作信号,
+顺序与并行由父 agent 自主决定,框架不强制。
 """
 import asyncio
 import hashlib
@@ -320,8 +326,8 @@ def _wrap_ask_user_callback(orig, clock: _UserWaitClock):
 
     ask_user_callback 是同步 Callable[[str], str](AskUserQuestionTool 在线程池里
     直接调用,与 async 的 confirm_callback 契约不同,故单独一个同步包装)。语义与
-    confirm 版一致:用户思考/输入是交互等待,不计入子 agent 执行预算——实测一次
-    ask_user 的用户回答耗时 117.9s,不排除会吃掉预算的 13%。
+    confirm 版一致:用户思考/输入是交互等待,不计入子 agent 执行预算——不排除会
+    吃掉预算的相当比例,否则用户答得慢一点子任务就被误杀。
     """
     def wrapped(question):
         clock.begin()
@@ -450,7 +456,7 @@ class SpawnSubAgentTool(Tool):
 
     def _admit(self, agent_type: str, task: str, mode: str | None = None,
                intent: str | None = None) -> "ToolResult | tuple[str, bool]":
-        """派发前的多道闸，按判定顺序：未知 agent 类型 → mode 校验 → 意图派发门禁
+        """派发前的八道闸，按判定顺序：未知 agent 类型 → mode 校验 → 意图派发门禁
         → spawn 白名单 → 同会话同指纹去重 → 审稿预算 → 每轮派发总量上限 → 同路径在途互斥。
 
         意图只作信号，不强制派发顺序——顺序与并行由 supervisor 自主决定。每条
@@ -462,7 +468,7 @@ class SpawnSubAgentTool(Tool):
         ToolResult。审稿类 mode 的预算计数与注册同锁原子,拒绝路径不触碰注册表。
         """
         parent = self._parent
-        # 未知 agent 类型：最基础的一道闸，先于 mode/意图/spawn 白名单校验——给模型
+        # ① 未知 agent 类型：最基础的一道闸，先于 mode/意图/spawn 白名单校验——给模型
         # 一个可行动的拒绝（附可选清单），而不是让它把一个拼错的类型一路带到构造期。
         if agent_type not in parent.agent_registry.list_agents():
             _record_dispatch(parent, agent_type, "denied")
@@ -471,14 +477,14 @@ class SpawnSubAgentTool(Tool):
                 summary=f"未知 agent 类型: {agent_type}；可选: "
                         f"{sorted(parent.agent_registry.list_agents())}")
             return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-        # mode 参数校验：非法值直接拒绝（schema enum 约束 LLM 生成层，
+        # ② mode 参数校验：非法值直接拒绝（schema enum 约束 LLM 生成层，
         # 此处兜底防任何漏网之鱼静默错流——拼写错的 mode 注入会让子 agent 走错流程）。
         if mode is not None and mode not in SUB_AGENT_MODES:
             _record_dispatch(parent, agent_type, "denied")
             result = SubAgentResult(status="denied",
                                     summary=f"未知 mode: {mode}，合法值: {sorted(SUB_AGENT_MODES)}")
             return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-        # 意图派发门禁：代码级确定性检查，不依赖 supervisor 遵循 AGENT.md 提示词。
+        # ③ 意图派发门禁：代码级确定性检查，不依赖 supervisor 遵循 AGENT.md 提示词。
         #
         # 声明优先：supervisor 显式声明了 intent 时按声明校验——可派发即放行，
         # 不可派发明确拒绝。这是会话意图被误判时唯一的申诉通道：用户已在澄清中
@@ -512,7 +518,7 @@ class SpawnSubAgentTool(Tool):
                 result = SubAgentResult(status="denied",
                                         summary=f"当前意图 {li.intent_type.value} 不派发领域 agent")
                 return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-        # ① spawn 权限运行时校验(_check_spawn_allowed 单点)。
+        # ④ spawn 权限运行时校验(_check_spawn_allowed 单点)。
         #    supervisor 硬编码放行;非 supervisor 越界 spawn → denied。
         denied = _check_spawn_allowed(parent, agent_type)
         if denied is not None:
@@ -520,7 +526,7 @@ class SpawnSubAgentTool(Tool):
             result = SubAgentResult(status="denied", summary=denied)
             return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
-        # ② 同会话同指纹去重(机械安全网):并行 spawn 并发访问注册表,检查+注册
+        # ⑤ 同会话同指纹去重(机械安全网):并行 spawn 并发访问注册表,检查+注册
         #    须持锁整体原子。门控规则由 _task_has_path 区分:
         #    - 无路径任务(纯文本,世界不变)→ running 提示 + done 窗口内缓存复用
         #    - 有路径任务(引用真实文件,世界可变)→ 只 running 去重,完成即清条目、
@@ -547,7 +553,7 @@ class SpawnSubAgentTool(Tool):
                 # done 缓存复用：同任务刚做完、结果直接给你。同样记 deduped。
                 _record_dispatch(parent, agent_type, "deduped")
                 return hit["result"]
-            # ③ 审稿预算门:审稿类 mode 在注册 running 前计数检查——超限拒绝(不注册,
+            # ⑥ 审稿预算门:审稿类 mode 在注册 running 前计数检查——超限拒绝(不注册,
             #    不污染去重注册表);去重命中早退不计数。置于注册前是 _admit 的既有
             #    不变式:所有 ToolResult 返回都发生在注册 running 之前,否则异常路径
             #    会留下永久 running 条目堵塞同指纹后续派发。键用父实例 id:同一 run
@@ -564,7 +570,7 @@ class SpawnSubAgentTool(Tool):
                     return ToolResult(text=denied_result.model_dump_json(),
                                       summary=denied_result.model_dump())
                 rs.review_counts[bkey] = used + 1
-            # ④ 每轮派发总量上限:只统计 supervisor 自身的派发,按 ReAct 迭代下标
+            # ⑦ 每轮派发总量上限:只统计 supervisor 自身的派发,按 ReAct 迭代下标
             #    (_current_turn,每轮 LLM 迭代自增)计数——封顶的是每次迭代内 supervisor
             #    能并行派发多少路,下一次迭代即重新起算,不会因为上一次迭代派得多而
             #    永久锁死。审稿预算拒绝在前,不消耗本次迭代的额度。
@@ -580,7 +586,7 @@ class SpawnSubAgentTool(Tool):
                     return ToolResult(text=denied_result.model_dump_json(),
                                       summary=denied_result.model_dump())
                 rs.turn_spawn_counts[turn] = used + 1
-            # ⑤ 同路径在途互斥:两个任务文本可以完全不同(去重指纹不碰撞),却写同一个
+            # ⑧ 同路径在途互斥:两个任务文本可以完全不同(去重指纹不碰撞),却写同一个
             #    目标文件——并发跑就会静默互相覆盖(原子写只防撕裂不防覆盖)。把任务
             #    文本里抽出的绝对路径与「同一父实例」正在写的路径集比对,命中即拒。
             #    只按父实例分桶,不按 trace 全局分桶:真正会同时写同一文件的,是同一个

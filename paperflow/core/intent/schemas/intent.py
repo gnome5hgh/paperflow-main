@@ -219,7 +219,7 @@ class IntentionResult(BaseModel):
     #: 填写条件：仅当输入包含 ≥2 个相互独立、分属不同
     #: 意图的业务动作；每个 step 必须是单业务意图（dispatch_allowed=True），按执行
     #: 顺序排列，最多 MAX_STEPS 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时
-    #: 必须留空（宁缺勿滥——steps 非空会放行 spawn 门禁，误拆即高权限口子）。
+    #: 必须留空（宁缺勿滥——steps 只是复合请求的信号，误拆会误导选型与收尾核对）。
     #: 注意：# 注释不会进入 pydantic description——触发契约
     #: 必须走下面的 Field(description=...) 才能进 LLM 提示词，这里仅留出处索引。
     steps: list["IntentType"] = Field(
@@ -228,7 +228,7 @@ class IntentionResult(BaseModel):
             "复合意图的有序拆分，仅在输入包含 ≥2 个相互独立、分属不同意图的业务动作时填写；"
             "每个 step 必须是单业务意图（dispatch_allowed=True 的枚举值），按执行顺序排列，"
             f"最多 {MAX_STEPS} 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时必须留空"
-            "（宁缺勿滥——steps 非空会放行 spawn 门禁，误拆即高权限口子）。"
+            "（宁缺勿滥——steps 只是复合请求的信号，误拆会误导选型）。"
         ),
     )
 
@@ -236,10 +236,11 @@ class IntentionResult(BaseModel):
     def _steps_guard(self) -> "IntentionResult":
         """steps 合法性护栏 + steps 与 clarification 互斥（代码级防御）。
 
-        steps 里的每一项都会被 spawn 门禁当作可派发意图放行，所以这里必须在
-        schema 层拦住三类非法拆分：超过 MAX_STEPS 步（LLM 硬凑的长链）、混入非派发意图
-        （LLM 把闲聊/帮助也拆进去，等于给不派发的意图开派发口子）、首步与主意图
-        不一致（主意图是 spawn 门禁和 INTENT 块的第一参考，错位会让两者打架）。
+        steps 是给 supervisor 的复合请求信号（随 INTENT 块注入、收尾时摆进账本核对），
+        不再是派发门禁——但一步混进不派发的系统意图仍会误导选型、让 spawn 被拒，所以
+        schema 层仍拦住三类非法拆分：超过 MAX_STEPS 步（LLM 硬凑的长链）、混入非派发意图
+        （LLM 把闲聊/帮助也拆进去）、首步与主意图
+        不一致（主意图是 INTENT 块的第一参考，错位会让信号自相矛盾）。
         违规不做半截修正，整体置空；也不抛校验错误——解析失败的兜底路径
         （fallback=UNCLASSIFIED）不该因护栏再炸一次。
         互斥：steps 非空说明输入已被拆解执行，无需再澄清；两者同时产出属模型
