@@ -155,10 +155,10 @@ def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
 #: 各管一段,互不冲突。
 _SPAWN_LOCK = threading.Lock()
 
-#: 同一轮内 supervisor 自身派发的总量上限:去重与信号量只管"是否重复"和"并发几路",
-#: 不管"一轮里总共派了多少路"。没有总量上限时,模型会把一个请求拆成十几路并行检索,
-#: token 成本随路数线性放大,且同类子任务过多时汇总质量反而下降。只统计 supervisor
-#: 自身的派发;子 agent 的审稿派发由审稿预算单独封顶,不双重计数。
+#: 每次 ReAct 迭代内 supervisor 自身派发的总量上限:去重与信号量只管"是否重复"和
+#: "并发几路",不管"一次迭代里总共派了多少路"。没有总量上限时,模型会在一次迭代里
+#: 拆出十几路并行检索,token 成本随路数线性放大,且同类子任务过多时汇总质量反而下降。
+#: 只统计 supervisor 自身的派发;子 agent 的审稿派发由审稿预算单独封顶,不双重计数。
 TURN_SPAWN_BUDGET = 8
 
 #: 失败升级:同会话同 agent_type 连续 N 次非 success(timeout/failed)
@@ -175,9 +175,10 @@ _FAILURE_ESCALATION_NOTE = (
 #: 审稿预算门:同一父实例内同类审稿 spawn 的次数上限。值取自旧的「审稿循环最多
 #: 3 轮」约定——预算下沉到代码强制后,LLM 不再负责数轮次,超限派发直接拒绝并给出路
 #: (基于已有裁决定稿、如实报告未解决项)。计数键 (父实例 id, mode):按「父实例」
-#: 而非「父 run」隔离,同一个父 agent 重新起一轮 run 不重置、被换一个父实例复用
-#: 也不串号;不同 mode 独立计数(笔记审稿/下载门禁/计划审稿互不挤占)。仅对真实
-#: 派发计数——去重命中(running 提示/done 复用)早退在计数之前,不消耗预算。
+#: 而非「父 run」隔离,使同一 run 内共用一个 trace 的多个同类型父实例各算各的、
+#: 兄弟不串号;计数存在 run 状态里,跨 run(新 trace)随之重置。不同 mode 独立计数
+#: (笔记审稿/下载门禁/计划审稿互不挤占)。仅对真实派发计数——去重命中(running
+#: 提示/done 复用)早退在计数之前,不消耗预算。
 _REVIEW_SPAWN_MODES = frozenset(m.value for m in (
     SubAgentMode.NOTE_REVIEW, SubAgentMode.DOWNLOAD_REVIEW, SubAgentMode.PLAN_REVIEW))
 _REVIEW_SPAWN_BUDGET = 3
@@ -405,7 +406,8 @@ class SpawnSubAgentTool(Tool):
 
     def _admit(self, agent_type: str, task: str, mode: str | None,
                intent: str | None = None) -> "ToolResult | tuple[str, bool]":
-        """派发前的五道闸（mode/意图/白名单/去重/审稿预算）。
+        """派发前的六道闸，按判定顺序：mode 校验 → 意图派发门禁 → spawn 白名单
+        → 同会话同指纹去重 → 审稿预算 → 每轮派发总量上限。
 
         通过时返回 (任务指纹, 是否含路径)——调用方负责在执行完的 finally 里
         按 has_path 决定 done 缓存或清条目；拒绝时直接返回 denied/去重命中的
@@ -472,13 +474,12 @@ class SpawnSubAgentTool(Tool):
                 _pending_steps 列表本体，原地 pop 即完成出队。"""
                 parent_queue.pop(0)
         else:
-            # 声明优先（2026-10-04）：supervisor 显式声明了 intent 时按声明校验——
-            # 可派发即放行，不可派发明确拒绝。这是会话意图被误判时唯一的申诉通道：
-            # 用户已在澄清中确认真实意图、而 last_intent 要到下一轮才更新，此前
-            # 门禁只认 last_intent 会把「模型+用户都确认正确」的派发也锁死（实测
-            # 同一派发被拒 6 次、追问 3 轮的死锁）。安全性与原设计一致——intent
-            # 是自声明，报假声明换不到任何额外权限，声明什么就按什么校验；门禁
-            # 防的是行为漂移（跳步/乱序/漏派），不是对抗。
+            # 声明优先：supervisor 显式声明了 intent 时按声明校验——可派发即放行，
+            # 不可派发明确拒绝。这是会话意图被误判时唯一的申诉通道：用户已在澄清中
+            # 确认真实意图、而 last_intent 要到下一轮才更新，只认 last_intent 会把
+            # 「模型+用户都确认正确」的派发也锁死。安全性与原设计一致——intent 是
+            # 自声明，报假声明换不到任何额外权限，声明什么就按什么校验；门禁防的是
+            # 行为漂移（跳步/乱序/漏派），不是对抗。
             if declared is not None:
                 if not INTENT_META[declared][1]:
                     result = SubAgentResult(
@@ -534,8 +535,9 @@ class SpawnSubAgentTool(Tool):
             # ③ 审稿预算门:审稿类 mode 在注册 running 前计数检查——超限拒绝(不注册,
             #    不污染去重注册表);去重命中早退不计数。置于注册前是 _admit 的既有
             #    不变式:所有 ToolResult 返回都发生在注册 running 之前,否则异常路径
-            #    会留下永久 running 条目堵塞同指纹后续派发。键用父实例 id:同一个父
-            #    实例换一轮 run 不重置预算,不同父实例(如两个 noter)各算各的。
+            #    会留下永久 running 条目堵塞同指纹后续派发。键用父实例 id:同一 run
+            #    内多个同类型父实例(如两个 noter)各算各的,不因共用同一 trace 串号;
+            #    计数随 run 状态存活,跨 run(新 trace)自然重置。
             if mode in _REVIEW_SPAWN_MODES:
                 bkey = (parent._instance_id, mode)
                 used = rs.review_counts.get(bkey, 0)
@@ -546,9 +548,10 @@ class SpawnSubAgentTool(Tool):
                     return ToolResult(text=denied_result.model_dump_json(),
                                       summary=denied_result.model_dump())
                 rs.review_counts[bkey] = used + 1
-            # ④ 每轮派发总量上限:只统计 supervisor 自身的派发,按当前轮次计数——
-            #    同一 run 里换一轮(用户新指令带来的新轮次)即重新起算,不会因为
-            #    前一轮派得多而永久锁死。审稿预算拒绝在前,不消耗本轮额度。
+            # ④ 每轮派发总量上限:只统计 supervisor 自身的派发,按 ReAct 迭代下标
+            #    (_current_turn,每轮 LLM 迭代自增)计数——封顶的是每次迭代内 supervisor
+            #    能并行派发多少路,下一次迭代即重新起算,不会因为上一次迭代派得多而
+            #    永久锁死。审稿预算拒绝在前,不消耗本次迭代的额度。
             if parent.agent_type == "supervisor":
                 turn = getattr(parent, "_current_turn", 0)
                 used = rs.turn_spawn_counts.get(turn, 0)
@@ -599,8 +602,8 @@ class SpawnSubAgentTool(Tool):
                 ask_user_callback=parent.ask_user_callback,
                 stream_callback=_make_child_stream_callback(parent),
                 # 继承父 trace_id：去重池（get_run_state 按 trace_id 键控）在
-                # 一次用户任务内跨 agent 共享——子 agent 不重复下载/抓取父任务
-                # 已处理过的资源（supervisor 超时重试派发新 searcher 的实测缺陷）。
+                # 一次用户任务内跨 agent 共享——子 agent 因此不重复下载/抓取父任务
+                # 已处理过的资源（父超时重试时会派出新的 searcher，不共享池就会重抓）。
                 trace_id=getattr(parent, "_trace_id", None),
             )
             if mode:
