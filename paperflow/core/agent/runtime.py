@@ -437,6 +437,10 @@ class Agent:
         self.ask_user_callback = ask_user_callback
         #: 本轮 run 的 IntentOutput（CLI 读 clarification 判定 + 跨轮 prev_intent）
         self.last_intent = None
+        #: 实例唯一标识：跨 run 稳定，供按「父实例」键控的预算计数使用（如审稿预算），
+        #: 与按 run 生成的 _trace_id 区分——子 agent 继承父 trace_id，用 trace_id 键控
+        #: 会把同一轮里多个同类父实例的预算混在一起。构造即固定，不再变化。
+        self._instance_id: str = uuid.uuid4().hex
         #: 复合意图待派发队列。当意图管线识别出一句复合请求（last_intent.steps
         #: 非空）时，_build_head 把完整的 steps 列表装进来，队头就是本轮主意图
         #: （steps[0] == intent_type）——supervisor 的第一次 spawn 必须对上它，

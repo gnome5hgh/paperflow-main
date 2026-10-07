@@ -15,6 +15,11 @@ from pydantic import BaseModel
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, StreamEvent
+# 运行期状态(去重注册表/失败计数/各类预算计数)统一由容器持有:session 作用域跨 run
+# 存活(同会话去重与失败计数),run 作用域按 trace 隔离(派发与预算账本)。容器取用时
+# 顺手清扫过期条目,故此处不再单独清理。done 结果可复用窗也复用容器的定义。
+from paperflow.core.agent.state import (
+    SPAWN_REUSE_WINDOW_S as _SPAWN_REUSE_WINDOW_S, get_run_state, get_session_state)
 from paperflow.core.intent.schemas.intent import INTENT_META, IntentType
 from paperflow.core.llm import StructuredOutput
 from paperflow.core.tool import Tool, ToolResult
@@ -144,42 +149,38 @@ def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
     return None
 
 
-#: spawn 去重注册表:session_id -> {任务指纹: {"state": "running"|"done", "result", "started_at"}}
-#: 同会话同任务防重复派发的机械安全网(主防线是 AGENT.md 里"同一意图不重复 spawn")。
-#: 键为 session_id,去重只在同一会话内生效,跨会话互不影响。指纹是纯文本的
-#: (sha256 规范化文本,零 I/O);done 结果能否复用由 _task_has_path 门控:
-#: 无路径任务(纯文本,世界不变)→ done 在窗口内可复用;有路径任务(引用真实文件,
-#: 子 agent 执行期间文件可能被改)→ 只做 running 去重,完成即清条目,永不缓存 done。
-_SPAWN_REGISTRY: dict[str, dict[str, dict]] = {}
-#: 注册表并发锁:execute 跑在线程池 worker 里,并行 spawn 会同时读写注册表——单次
+#: 并发锁:execute 跑在线程池 worker 里,并行 spawn 会同时读写容器状态——单次
 #: dict.get/set 虽原子,但"检查命中-注册 running"两步必须整体原子,否则两线程同时
-#: 各自派发一次,去重失效。
+#: 各自派发一次,去重失效。容器自身的锁只保证建容器与清扫原子,与这里的派发序列锁
+#: 各管一段,互不冲突。
 _SPAWN_LOCK = threading.Lock()
-#: done 结果可复用的时间窗(秒):窗口内同指纹(仅无路径任务)直接复用缓存结果,超窗
-#: 重跑——避免过期结果被当作新结果交付。有路径任务完成即清条目,无 done 可复用。
-_SPAWN_REUSE_WINDOW_S = 300
 
-#: 失败升级:同 (会话, agent_type) 连续 N 次非 success(timeout/failed)
-#: 后,在结果文本追加强指令「勿再派发,改用 ask_user」——业界共识是重试预算 3-5 次
-#: 后升级给人;本项目每次重试是分钟级多工具子任务,取更紧的 2。仅对 supervisor 生效
-#: (子 agent 无 ask_user 工具,升级无从谈起);成功即清零,不按任务文本指纹化。
+#: 同一轮内 supervisor 自身派发的总量上限:去重与信号量只管"是否重复"和"并发几路",
+#: 不管"一轮里总共派了多少路"。没有总量上限时,模型会把一个请求拆成十几路并行检索,
+#: token 成本随路数线性放大,且同类子任务过多时汇总质量反而下降。只统计 supervisor
+#: 自身的派发;子 agent 的审稿派发由审稿预算单独封顶,不双重计数。
+TURN_SPAWN_BUDGET = 8
+
+#: 失败升级:同会话同 agent_type 连续 N 次非 success(timeout/failed)
+#: 后,在结果文本追加强指令「勿再派发,改用 ask_user」——若重试预算用尽仍不升级,
+#: 模型会一直自动重试;本项目每次重试是分钟级多工具子任务,故取较紧的 2。仅对
+#: supervisor 生效(子 agent 无 ask_user 工具,升级无从谈起);成功即清零,
+#: 不按任务文本指纹化。
 _FAILURE_ESCALATION_THRESHOLD = 2
-_SPAWN_FAILURE_COUNTS: dict[tuple[str, str], int] = {}
 _FAILURE_ESCALATION_NOTE = (
     "\n\n⚠️ 该类型子任务已连续 {n} 次失败。请勿再次派发同类型子任务——"
     "改用 ask_user_question 向用户说明失败情况并请示（放弃 / 换思路 / 坚持重试）。"
 )
 
-#: 审稿预算门:同一父 run 内同类审稿 spawn 的次数上限。值承接旧 prompt 硬编码的
-#: 「审稿循环最多 3 轮」——预算从 AGENT.md 下沉到代码强制后,LLM 不再负责数轮次,
-#: 超限派发直接拒绝并给出路(基于已有裁决定稿、如实报告未解决项)。计数键
-#: (session_id, 父 run trace_id, mode):trace_id 每次 run() 重新生成 → 预算按父任务
-#: 天然重置;不同 mode 独立计数(笔记审稿/下载门禁/计划审稿互不挤占)。仅对真实
+#: 审稿预算门:同一父实例内同类审稿 spawn 的次数上限。值取自旧的「审稿循环最多
+#: 3 轮」约定——预算下沉到代码强制后,LLM 不再负责数轮次,超限派发直接拒绝并给出路
+#: (基于已有裁决定稿、如实报告未解决项)。计数键 (父实例 id, mode):按「父实例」
+#: 而非「父 run」隔离,同一个父 agent 重新起一轮 run 不重置、被换一个父实例复用
+#: 也不串号;不同 mode 独立计数(笔记审稿/下载门禁/计划审稿互不挤占)。仅对真实
 #: 派发计数——去重命中(running 提示/done 复用)早退在计数之前,不消耗预算。
 _REVIEW_SPAWN_MODES = frozenset(m.value for m in (
     SubAgentMode.NOTE_REVIEW, SubAgentMode.DOWNLOAD_REVIEW, SubAgentMode.PLAN_REVIEW))
 _REVIEW_SPAWN_BUDGET = 3
-_REVIEW_SPAWN_COUNTS: dict[tuple[str, str | None, str], int] = {}
 _REVIEW_BUDGET_DENIED_NOTE = (
     "同类审稿派发已达预算上限({budget} 次)。请基于已有审查裁决定稿,"
     "并在最终回复中如实报告未解决的 blocking 项,不要再次派发。"
@@ -215,21 +216,6 @@ def _task_has_path(task: str) -> bool:
     → 保守跳过 done 缓存 → 安全重跑,不交付陈旧结果。
     """
     return _PATH_RE.search(task) is not None
-
-
-def _evict_stale_spawn_entries(reg: dict, now: float) -> None:
-    """剔除注册表里已过复用窗的 done 条目(内存卫生)。
-
-    长会话下注册表会按指纹数无限累积 done 条目(每条持有一个结果常驻内存),超窗的
-    旧结果本就不可再复用,留着纯占内存。running 条目不删——它可能正被另一 worker
-    线程执行中,删掉会让并发去重的「检查+注册」原子性失效。调用方须在锁内调用
-    (访问注册表即顺手清理,无需单独定时任务)。
-    """
-    stale = [fp for fp, e in reg.items()
-             if e.get("state") == "done"
-             and now - e.get("started_at", now) > _SPAWN_REUSE_WINDOW_S]
-    for fp in stale:
-        reg.pop(fp, None)
 
 
 class _UserWaitClock:
@@ -521,12 +507,16 @@ class SpawnSubAgentTool(Tool):
         #    - 无路径任务(纯文本,世界不变)→ running 提示 + done 窗口内缓存复用
         #    - 有路径任务(引用真实文件,世界可变)→ 只 running 去重,完成即清条目、
         #      永不缓存 done——子 agent 执行期间文件可能已改,缓存旧结果会交付陈旧裁决
+        #    去重注册表在会话容器上(跨 run 存活,同会话内生效),下面用到的各类预算
+        #    计数在 run 容器上(按 trace 隔离,一次用户任务内独立)。取容器时其内部会
+        #    顺手剔除过窗条目(超窗 done 缓存、闲置过久的整份 run 状态),长会话不会
+        #    无限累积,故此处不再单独清理。
+        sess = get_session_state(parent.session_id)
+        rs = get_run_state(parent._trace_id)
         fp = _task_fingerprint(task, mode)
         has_path = _task_has_path(task)
         with _SPAWN_LOCK:
-            reg = _SPAWN_REGISTRY.setdefault(parent.session_id, {})
-            # 访问注册表即顺手清理超窗 done 条目(长会话防无限累积)
-            _evict_stale_spawn_entries(reg, time.monotonic())
+            reg = sess.spawn_registry
             hit = reg.get(fp)
             now = time.monotonic()
             if hit and hit["state"] == "running":
@@ -544,17 +534,32 @@ class SpawnSubAgentTool(Tool):
             # ③ 审稿预算门:审稿类 mode 在注册 running 前计数检查——超限拒绝(不注册,
             #    不污染去重注册表);去重命中早退不计数。置于注册前是 _admit 的既有
             #    不变式:所有 ToolResult 返回都发生在注册 running 之前,否则异常路径
-            #    会留下永久 running 条目堵塞同指纹后续派发。
+            #    会留下永久 running 条目堵塞同指纹后续派发。键用父实例 id:同一个父
+            #    实例换一轮 run 不重置预算,不同父实例(如两个 noter)各算各的。
             if mode in _REVIEW_SPAWN_MODES:
-                bkey = (parent.session_id, parent._trace_id, mode)
-                used = _REVIEW_SPAWN_COUNTS.get(bkey, 0)
+                bkey = (parent._instance_id, mode)
+                used = rs.review_counts.get(bkey, 0)
                 if used >= _REVIEW_SPAWN_BUDGET:
                     denied_result = SubAgentResult(
                         status="denied",
                         summary=_REVIEW_BUDGET_DENIED_NOTE.format(budget=_REVIEW_SPAWN_BUDGET))
                     return ToolResult(text=denied_result.model_dump_json(),
                                       summary=denied_result.model_dump())
-                _REVIEW_SPAWN_COUNTS[bkey] = used + 1
+                rs.review_counts[bkey] = used + 1
+            # ④ 每轮派发总量上限:只统计 supervisor 自身的派发,按当前轮次计数——
+            #    同一 run 里换一轮(用户新指令带来的新轮次)即重新起算,不会因为
+            #    前一轮派得多而永久锁死。审稿预算拒绝在前,不消耗本轮额度。
+            if parent.agent_type == "supervisor":
+                turn = getattr(parent, "_current_turn", 0)
+                used = rs.turn_spawn_counts.get(turn, 0)
+                if used >= TURN_SPAWN_BUDGET:
+                    denied_result = SubAgentResult(
+                        status="denied",
+                        summary=f"本轮派发已达上限 {TURN_SPAWN_BUDGET}，"
+                                "请先汇总已有结果向用户交代，需要继续时下一轮再派。")
+                    return ToolResult(text=denied_result.model_dump_json(),
+                                      summary=denied_result.model_dump())
+                rs.turn_spawn_counts[turn] = used + 1
             reg[fp] = {"state": "running", "result": None, "started_at": now}
         # 走到这说明全部检查通过、任务已注册 running：弹复合队列队头（普通轮次
         # 是空操作）。拒绝路径都在上方提前 return，不会经过这里
@@ -572,6 +577,10 @@ class SpawnSubAgentTool(Tool):
         if isinstance(admitted, ToolResult):
             return admitted
         fp, has_path = admitted
+        # 派发序列已过闸，此后收尾要写回去重注册表与失败计数——容器按作用域取用，
+        # 与 _admit 里的局部变量无关（这是另一个方法）。
+        parent = self._parent
+        sess = get_session_state(parent.session_id)
 
         result = None
         try:
@@ -582,7 +591,6 @@ class SpawnSubAgentTool(Tool):
             #    意图识别(子任务是结构化任务,非用户意图)。
             # 流式统一：子 agent 只透传工具行（前缀由渲染器统一加）、不流 content——
             # 与并行场景同一代码路径（多路并发不串字）。
-            parent = self._parent
             child = Agent(
                 llm=parent.llm, agent_registry=parent.agent_registry,
                 skill_registry=getattr(parent, "skill_registry", None),
@@ -600,15 +608,17 @@ class SpawnSubAgentTool(Tool):
             # 传解析后的超时:_run_child 用实际生效值(config > 类默认)
             result = await self._run_child(child, agent_type, task)
             # 失败升级：仅 supervisor 的派发计数——连续 N 次非 success
-            # 后追加强指令，把「继续自动重试」的决策权交回用户（实测曾对不可能
-            # 成功的下载连续派发 4 轮 searcher，每轮 ~7 分钟）。
+            # 后追加强指令，把「继续自动重试」的决策权交回用户（模型对不可能
+            # 成功的任务会自动重派多轮，每轮分钟级）。按会话容器计数：同一会话
+            # 内跨 run 累计，成功即清零，换 agent_type 各算各的。
             if parent.agent_type == "supervisor":
-                key = (parent.session_id, agent_type)
                 if result.summary.get("status") == "success":
-                    _SPAWN_FAILURE_COUNTS.pop(key, None)
+                    sess.failure_counts.pop(agent_type, None)
+                    sess.failure_counts_at.pop(agent_type, None)
                 else:
-                    n = _SPAWN_FAILURE_COUNTS.get(key, 0) + 1
-                    _SPAWN_FAILURE_COUNTS[key] = n
+                    n = sess.failure_counts.get(agent_type, 0) + 1
+                    sess.failure_counts[agent_type] = n
+                    sess.failure_counts_at[agent_type] = time.monotonic()
                     if n >= _FAILURE_ESCALATION_THRESHOLD:
                         result = ToolResult(
                             text=result.text + _FAILURE_ESCALATION_NOTE.format(n=n),
@@ -618,9 +628,7 @@ class SpawnSubAgentTool(Tool):
             # (有路径任务世界可变永不缓存 done;result 为 None 表示构造/执行异常,
             # 防 None 入缓存污染后续复用)。注册表读写全在锁内。
             with _SPAWN_LOCK:
-                reg = _SPAWN_REGISTRY.setdefault(self._parent.session_id, {})
-                # 完成写盘同样先清理超窗 done 条目(防长会话注册表无限膨胀)
-                _evict_stale_spawn_entries(reg, time.monotonic())
+                reg = sess.spawn_registry
                 if result is None or has_path:
                     reg.pop(fp, None)
                 else:
