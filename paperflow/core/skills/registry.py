@@ -78,21 +78,27 @@ class SkillRegistry:
              ValueError 终止构造。进程内构造一次，由装配层持有传给所有 Agent。
     """
 
-    def __init__(self, skills_dir: str | None = None):
+    def __init__(self, skills_dir: str | None = None, disabled: set[str] | None = None):
         """
         :param skills_dir: skill 根目录（<项目根>/.paperflow/skills/）；
                            None 或不存在则空注册表
+        :param disabled: 停用名单（lock 中 enabled=false 的 skill，enabledPlugins
+                         语义）；扫描期跳过——L1 清单/L2 load_skill/L3 资源与
+                         工具并入全线不可见，单点收口
         """
         self._skills: dict[str, SkillConfig] = {}
+        self._disabled = set(disabled or ())
         if skills_dir:
             self._discover(Path(skills_dir))
 
     def _discover(self, skills_dir: Path) -> None:
-        """遍历目录下含 SKILL.md 的一级子目录，解析并注册。"""
+        """遍历目录下含 SKILL.md 的一级子目录，解析并注册（停用名单先跳过）。"""
         if not skills_dir.is_dir():
             return
         # 按目录名排序，保证加载顺序可预测（与 AgentRegistry 同一约定）
         for skill_path in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
+            if skill_path.name in self._disabled:
+                continue
             skill_md = skill_path / "SKILL.md"
             if not skill_md.exists():
                 continue
