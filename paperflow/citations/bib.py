@@ -216,12 +216,28 @@ def append_entry(path: str | Path, entry_text: str) -> None:
             f.write("\n" + text)
 
 
+def _collapse_seam(left: str, right: str) -> str:
+    """把删除接缝两侧的连续空行压到至多一个；不扩张原本的空行。
+
+    接缝 = 被删条目原本占据的拼接点：left 是其前一段原文，right 是其后一段。
+    只处理两侧首尾的换行，left/right 的内部内容原样保留——这样删除目标之外的
+    区域（含用户手工分节注释、无关注释区的连续空行）逐字节不动。原本不足两个
+    换行的接缝不做扩张，避免制造出原文没有的空行。
+    """
+    left_body = left.rstrip("\n")
+    right_body = right.lstrip("\n")
+    newlines = (len(left) - len(left_body)) + (len(right) - len(right_body))
+    return left_body + "\n" * min(newlines, 2) + right_body
+
+
 def remove_entries(path: str | Path, keys: set[str]) -> list[str]:
     """按 key 删除条目：逐条定位原文块整段删除，其余内容逐字节保留。
 
     与 append-only 追加互补的删除原语。删除粒度是「条目原文块」——从
     `@type{key,` 头到配对右括号整段移除，条目之间的分节注释、其余条目的
     原文（含字段排布与花括号嵌套）一律不动，避免重新序列化造成格式损失。
+    删除接缝处被删条目两侧多余的连续空行会收敛为一个空行（不留过大空隙），
+    收敛只作用于接缝，文件其余区域逐字节不变。
 
     Args:
         path: bib 文件路径。
@@ -249,7 +265,11 @@ def remove_entries(path: str | Path, keys: set[str]) -> list[str]:
         out.append(text[prev:start])
         prev = end
     out.append(text[prev:])
-    new_text = re.sub(r"\n{3,}", "\n\n", "".join(out))   # 收敛删除留下的连续空行
+    # 逐接缝拼接：空行收敛只发生在删除点，不全局 re.sub（否则会压缩与删除
+    # 无关区域的连续空行，破坏「其余内容逐字节保留」契约）
+    new_text = out[0]
+    for segment in out[1:]:
+        new_text = _collapse_seam(new_text, segment)
     with _write_lock:
         p.write_text(new_text, encoding="utf-8")
     return removed

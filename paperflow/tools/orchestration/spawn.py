@@ -73,8 +73,13 @@ class ResearcherDigest(BaseModel):
 
 
 class LibrarianDigest(BaseModel):
-    """librarian 的结果摘要:同步/删除的计数,supervisor 据此汇报。"""
-    status: str
+    """librarian 的结果摘要:同步/删除的计数,supervisor 据此汇报。
+
+    status 默认空串:sync_citations 的 tool summary 只有 total/added/skipped/
+    rejected、没有 status,LLM 抽 digest 时容易漏该字段——给默认值避免校验失败
+    整个 digest 回落为 {},计数一并丢失。
+    """
+    status: str = ""
     added: int = 0
     skipped: int = 0
     rejected: int = 0

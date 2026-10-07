@@ -1,4 +1,4 @@
-"""remove_citation：从 references.bib 删除一条引用（高危，需用户确认）。"""
+"""remove_citation：从 references.bib 删除一条引用（不可逆，需用户确认）。"""
 from paperflow.core.tool import Tool, ToolResult
 
 
@@ -13,8 +13,13 @@ class RemoveCitationTool(Tool):
         },
         "required": ["key_or_title"],
     }
-    risk_level = "high"                 # 不可逆删除，走写类确认门禁
-    side_effects = ["write_file"]
+    # 删除不可逆，但影响面限于库内单条原文块、可重加；对齐 write_file/edit_file
+    # 的写类形态——medium 过默认阈值（config.runtime.max_risk="medium"），
+    # 再经 requires_confirm 在策略引擎第 3 级询问用户，而不是在第 2 级被
+    # 风险阈值直接拒（high > medium）。
+    risk_level = "medium"
+    requires_confirm = True
+    side_effects = ["delete_file"]
 
     def __init__(self, manager):
         self.manager = manager
