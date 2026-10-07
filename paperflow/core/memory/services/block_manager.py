@@ -1,16 +1,19 @@
 """BlockManager：记忆块 CRUD + 写前快照 + 单调版本号（撤销/重做的历史链）。
 
-更新块前把旧值整体快照进 block_history、版本号 +1——版本列只做写入标注与
-历史链排序，不做比较交换（单用户 + 全局写锁下并发写已被串行化，无需 CAS）。
-GitEnabledBlockManager 是其 git 变体：块变更同步写 markdown 投影 + git commit，
-语义是「SQL 是源、markdown 是投影」。
+更新块前把旧值整体快照进 block_history、版本号 +1；写入走 CAS（带期望版本的
+条件更新），版本被并发推进时拒绝而非静默覆盖。读-改-写类操作（追加/替换/删除
+行）必须走 mutate_block——它把整段序列放进一次持锁事务，避免两个并发写者各自
+基于同一份旧值计算后互相抹掉。GitEnabledBlockManager 是其 git 变体：块变更同步
+写 markdown 投影 + git commit，语义是「SQL 是源、markdown 是投影」。
 """
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Callable
 
 from paperflow.core.memory.constants import DEFAULT_ASSISTANT, DEFAULT_PROFILE
+from paperflow.core.memory.errors import ConcurrentUpdateError
 from paperflow.core.memory.orm import block as block_orm
 from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.schemas.block import Block
@@ -22,7 +25,10 @@ logger = logging.getLogger(__name__)
 _READ_ONLY = "block is read-only"
 _LIMIT = "Exceeds {limit} character limit"
 
-#: 旧核心块 label → 新 label（一次性迁移映射，见 spec 2026-09-30-memory-rename-sleeptime-taxonomy）
+#: CAS 冲突后的重试上限：重试意味着重读最新值并重放 mutator（要求 mutator 是纯函数）。
+_CAS_MAX_RETRIES = 3
+
+#: 旧核心块 label → 新 label（一次性迁移映射：human/persona 收敛为 profile/assistant）
 _LEGACY_LABELS = {"human": "profile", "persona": "assistant"}
 
 
@@ -70,7 +76,7 @@ class BlockManager:
         row = block_orm.select_block_by_label(self.db, label)
         if row is None:
             return []
-        return block_orm.select_block_history(self.db, row["id"])
+        return self.get_block_history(row["id"])
 
     def create_block(self, label: str, value: str, limit: int = 2000,
                      description: str | None = None,
@@ -123,6 +129,17 @@ class BlockManager:
         row = block_orm.select_block_by_label(self.db, label)
         return self._to_schema(row) if row else None
 
+    def get_block_history(self, block_id: str) -> list[dict]:
+        """按块 id 返回其全部历史快照（从旧到新，即 block_history 表行）。
+
+        Args:
+            block_id: 块的唯一标识。
+
+        Returns:
+            该块的历史快照列表（含 version/value 等列）；无历史时为空列表。
+        """
+        return block_orm.select_block_history(self.db, block_id)
+
     def migrate_legacy_labels(self) -> list[str]:
         """把旧核心块 label（human/persona）迁移为 profile/assistant（幂等）。
 
@@ -172,7 +189,7 @@ class BlockManager:
         return [self._to_schema(r) for r in block_orm.select_blocks(self.db)]
 
     def update_block_value(self, label: str, value: str) -> Block:
-        """更新块值：先校验（存在 / read_only / 长度），再快照旧值进历史并 +1 版本。
+        """把块值整体设为 value（原子：读取、快照、写入在一次持锁内完成）。
 
         Args:
             label: 块的标签。
@@ -184,31 +201,85 @@ class BlockManager:
         Raises:
             KeyError: label 不存在。
             ValueError: 块为 read_only 或新 value 超限。
-
-        版本策略：
-            - 每次更新把当前版本写进 block_history 快照，版本号单调 +1。
-            - 版本列只做写入标注与历史链排序，不做「读时≠写时拒绝」的 CAS 比较交换。
-            - 单用户 + 全局写锁下并发已被串行化，比较交换没有用武之地。
+            ConcurrentUpdateError: 读取后写入前版本被其他写者推进（CAS 拒绝）。
         """
-        # 1. 读取当前块并校验不变式
-        row = block_orm.select_block_by_label(self.db, label)
-        if row is None:
-            raise KeyError(f"block {label} not found")
-        if row["read_only"]:
-            raise ValueError(_READ_ONLY)
-        if len(value) > row["limit"]:
-            raise ValueError(_LIMIT.format(limit=row["limit"]))
+        with self.db.transaction():
+            # 读取当前块并校验不变式
+            row = block_orm.select_block_by_label(self.db, label)
+            if row is None:
+                raise KeyError(f"block {label} not found")
+            if row["read_only"]:
+                raise ValueError(_READ_ONLY)
+            if len(value) > row["limit"]:
+                raise ValueError(_LIMIT.format(limit=row["limit"]))
+            # checkpoint：改动前快照 → block_history（撤销/重做依据）
+            block_orm.checkpoint_block(self.db, row["id"], row["label"], row["value"],
+                                       row["limit"], row["description"],
+                                       {}, row["version"])
+            # CAS 写入：期望版本仍为读到的版本，否则抛冲突
+            block_orm.update_block(self.db, row["id"], value,
+                                   expected_version=row["version"])
+        block = self.get_block(row["id"])
+        self._after_block_write(block)
+        return block
 
-        # 2. 计算新版本号并创建快照（旧值保存到 block_history）
-        new_version = row["version"] + 1
-        # checkpoint：改动前快照 → block_history（撤销/重做依据）
-        block_orm.checkpoint_block(self.db, row["id"], row["label"], row["value"],
-                                   row["limit"], row["description"],
-                                   {}, row["version"])
+    def mutate_block(self, label: str,
+                     mutate: Callable[[str], str | None]) -> Block | None:
+        """原子读-改-写：读当前值 → 交给 mutate 计算新值 → 写回，整段一次持锁。
 
-        # 3. 更新 blocks 表
-        block_orm.update_block(self.db, row["id"], value, new_version)
-        return self.get_block(row["id"])
+        追加/替换类操作必须走这里：它们的「读旧值 → 算新值 → 写」跨多次调用，分开
+        执行时两个并发写者会各自基于同一份旧值计算，后写者把前者的改动抹掉。
+
+        Args:
+            label: 目标块标签。
+            mutate: 接收当前块值、返回新值的纯函数。返回 None 表示「判定不改」——
+                不写、不推进版本，直接返回 None（调用方据此回报未命中，如替换锚点
+                不存在）。必须是旧值的纯函数（只依赖入参），CAS 冲突后会在最新值上
+                重放它；依赖外部读到的状态会让重放失真。
+
+        Returns:
+            更新后的 Block；mutate 返回 None 时为 None。
+
+        Raises:
+            KeyError: label 不存在。
+            ValueError: 块为 read_only 或新值超限（含 mutator 抛出的校验错误）。
+            ConcurrentUpdateError: 连续重试仍冲突（说明有绕过本入口的写者）。
+        """
+        for _ in range(_CAS_MAX_RETRIES):
+            try:
+                with self.db.transaction():
+                    row = block_orm.select_block_by_label(self.db, label)
+                    if row is None:
+                        raise KeyError(f"block {label} not found")
+                    if row["read_only"]:
+                        raise ValueError(_READ_ONLY)
+                    new_value = mutate(row["value"])
+                    if new_value is None:
+                        return None
+                    if len(new_value) > row["limit"]:
+                        raise ValueError(_LIMIT.format(limit=row["limit"]))
+                    block_orm.checkpoint_block(
+                        self.db, row["id"], row["label"], row["value"],
+                        row["limit"], row["description"], {}, row["version"])
+                    block_orm.update_block(self.db, row["id"], new_value,
+                                           expected_version=row["version"])
+                block = self.get_block(row["id"])
+                self._after_block_write(block)
+                return block
+            except ConcurrentUpdateError:
+                continue          # 重读最新值后重放 mutate（纯函数，重放无损）
+        raise ConcurrentUpdateError(label)
+
+    def _after_block_write(self, block: Block) -> None:
+        """块内容写成功后的扩展钩子（基类无副作用）。
+
+        Args:
+            block: 刚写入的块。
+
+        设计意图：把「写成功之后要做的同步」集中到一个钩子，update_block_value 与
+        mutate_block 都调用它；子类（如 GitEnabled）只需实现一次就能覆盖所有写入口，
+        不必逐个覆盖写方法。
+        """
 
     def delete_block(self, block_id: str) -> None:
         """删除块。read_only 块拒绝（与 update_block_value 一致），防误删保护块。
@@ -269,7 +340,11 @@ class BlockManager:
               如需可撤销的回滚，调用方可在回滚后手动调用 checkpoint_block。
         """
         snap = block_orm.restore_block_history(self.db, block_history_id)
-        block_orm.update_block(self.db, snap["block_id"], snap["value"], snap["version"])
+        # CAS 的期望版本取「当前行版本」而非快照里的版本——回滚的语义是把当前值改
+        # 成快照值，快照版本是历史写入时的标注，当期望值会永远不匹配。
+        cur = block_orm.select_block(self.db, snap["block_id"])
+        block_orm.update_block(self.db, snap["block_id"], snap["value"],
+                               expected_version=cur["version"])
         return self.get_block(snap["block_id"])
 
 
@@ -370,12 +445,17 @@ class GitEnabledBlockManager(BlockManager):
         self._commit(f"create block {label}")
         return b
 
-    def update_block_value(self, label: str, value: str) -> Block:
-        """更新块值并同步到 markdown 投影 + git commit。"""
-        b = super().update_block_value(label, value)
-        self.memfs.sync_block_to_file(b)
-        self._commit(f"update block {label}")
-        return b
+    def _after_block_write(self, block: Block) -> None:
+        """写完块后同步 MemFS markdown 投影 + git commit（每写必 commit，无变更不空提交）。
+
+        Args:
+            block: 刚写入的块。
+
+        覆盖基类钩子而非分别覆盖各写方法：这样 update_block_value 与 mutate_block
+        两个入口都自动带上投影同步，不会出现「只落 SQL、漏投影」的分叉。
+        """
+        self.memfs.sync_block_to_file(block)
+        self._commit(f"update block {block.label}")
 
     def delete_block(self, block_id: str) -> None:
         """删除块：先执行基类校验（read_only 检查），然后走 _delete 清理投影。"""

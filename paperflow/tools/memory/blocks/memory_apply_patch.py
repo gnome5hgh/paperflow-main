@@ -53,19 +53,24 @@ def _apply_diff(value: str, patch: str) -> str:
 
 
 def _memory_apply_patch(ctx, label: str, patch: str) -> str:
-    """对指定块应用 patch；块缺失返回显式「no block」，多块 patch 直接拒绝。"""
+    """对指定块应用 patch；块缺失返回显式「no block」，多块 patch 直接拒绝。
+
+    读块 + 应用 patch 收进 mutate_block 的 mutator：patch 应用在持锁内基于最新值
+    进行，避免并发下用旧值算出的结果覆盖别人刚写的改动。多块 patch 是对输入本身的
+    静态拒绝，先于读块判定。
+    """
     bm = ctx.block_manager
-    block = bm.get_block_by_label(label)
-    if block is None:
-        return f"Error: no block with label {label}"
     if "*** Add Block:" in patch or "*** Update Block:" in patch:
         return "Error: multi-block patch not supported"
+
+    def _patched(v: str) -> str:
+        """对当前值应用 patch；语义不符时 _apply_diff 抛 ValueError。"""
+        return _apply_diff(v, patch)
+
     try:
-        result = _apply_diff(block.value, patch)
-    except ValueError as e:
-        return f"Error: {e}"
-    try:
-        bm.update_block_value(label, result)
+        bm.mutate_block(label, _patched)
+    except KeyError:
+        return f"Error: no block with label {label}"
     except ValueError as e:
         return f"Error: {e}"
     return f"Applied patch to block {label}"

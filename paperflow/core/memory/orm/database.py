@@ -1,14 +1,16 @@
 """SQLite 连接与建表（sqlite3 标准库，零新增依赖）。
 
 整库唯一连接单例：check_same_thread=False 允许多线程共享一条连接 + 一把
-threading.Lock 串行化所有写事务并立即 commit——同轮多个并发子 agent 各自
-线程写记忆时不会互踩。持久化只有「一张表一个主键、一次写一条」的量级，
-裸 sqlite3 足够，不需要 ORM 层。
+可重入锁串行化所有写事务——同轮多个并发子 agent 各自线程写记忆时不会互踩。
+单条读写下锁后立即 commit；需要「读旧值 → 算新值 → 写回」的原子序列走
+transaction()，整段持锁、只在最外层退出时提交。持久化只有「一张表一个主键、
+一次写一条」的量级，裸 sqlite3 足够，不需要 ORM 层。
 """
 from __future__ import annotations
 
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 __all__ = ["MemoryDB"]
@@ -67,8 +69,8 @@ class MemoryDB:
 
     设计决策：
         - 使用 check_same_thread=False 允许跨线程共享连接（多线程模型下，由应用层保证串行化）。
-        - 用 threading.Lock 保护 execute/executemany，确保同一时间只有一个写事务执行。
-        - 每个操作后立即 commit，保证持久化原子性，避免丢失数据。
+        - 用可重入锁保护 execute/executemany/transaction，确保同一时间只有一个写事务执行。
+        - 非事务的单条操作立即 commit，保证持久化原子性；事务内的语句由最外层统一提交。
         - 使用 sqlite3.Row 工厂，使查询结果支持列名访问（dict(row) 或 row["col"]）。
     """
 
@@ -87,8 +89,10 @@ class MemoryDB:
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         # 设置 Row 工厂，使查询结果可像字典一样访问
         self._conn.row_factory = sqlite3.Row
-        # 互斥锁，用于保护 execute/executemany 的写操作
-        self._lock = threading.Lock()
+        # 可重入锁：transaction() 内部会继续调 execute()，普通锁会自锁死。
+        self._lock = threading.RLock()
+        #: 事务嵌套深度：>0 时 execute 不自行提交，由最外层 transaction 统一提交。
+        self._tx_depth = 0
         self.init_schema()
 
     def init_schema(self) -> None:
@@ -100,8 +104,32 @@ class MemoryDB:
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
+    @contextmanager
+    def transaction(self):
+        """把多条语句包成一次持锁的原子操作（读-改-写序列必须走这里）。
+
+        可重入：嵌套调用共享同一把锁与同一次提交，只有最外层退出时才 commit /
+        rollback。内部调 execute/executemany 不会提前提交，因此整段序列对外不可见。
+
+        Yields:
+            底层 sqlite3 连接（供需要直接操作的调用方使用）。
+        """
+        with self._lock:
+            self._tx_depth += 1
+            try:
+                yield self._conn
+            except BaseException:
+                self._tx_depth -= 1
+                if self._tx_depth == 0:
+                    self._conn.rollback()
+                raise
+            else:
+                self._tx_depth -= 1
+                if self._tx_depth == 0:
+                    self._conn.commit()
+
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        """持锁执行单条写/读 SQL 并立即 commit，保证每次写原子落盘。
+        """持锁执行单条 SQL；不在事务内时立即 commit（事务内由最外层统一提交）。
 
         Args:
             sql: SQL 语句（支持参数化占位符 ?）。
@@ -111,18 +139,18 @@ class MemoryDB:
             sqlite3.Cursor 对象，可用于 fetch 结果。
 
         注意：
-            - 所有写操作（INSERT/UPDATE/DELETE）均立即 commit，防止数据丢失。
-            - 读操作也走此函数，同样加锁（保证读期间无写干扰，但 SQLite 默认事务
-              隔离级别足够，加锁主要是为了简化并发模型）。
+            - 非事务调用立即 commit（读语句同样走此路径，加锁主要为简化并发模型）。
+            - 若在 transaction() 内调用，则不提交，由最外层退出时统一 commit/rollback。
             - 若需批量操作，使用 executemany。
         """
         with self._lock:
             cur = self._conn.execute(sql, params)
-            self._conn.commit()
+            if self._tx_depth == 0:
+                self._conn.commit()
             return cur
 
     def executemany(self, sql: str, seq: list[tuple]) -> None:
-        """持锁批量执行（同样立即 commit）。
+        """持锁批量执行；不在事务内时立即 commit（事务内由最外层统一提交）。
 
         Args:
             sql: SQL 语句（参数化）。
@@ -133,4 +161,5 @@ class MemoryDB:
         """
         with self._lock:
             self._conn.executemany(sql, seq)
-            self._conn.commit()
+            if self._tx_depth == 0:
+                self._conn.commit()

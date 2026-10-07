@@ -3,9 +3,12 @@ __all__ = ["rewrite_block"]
 
 
 def rewrite_block(bm, label: str, new_memory: str) -> str:
-    """整块重写：update_block_value 失败（如 read_only）返回错误文本。"""
+    """整块重写：写失败（read_only / 超限）返回错误文本，块缺失抛 KeyError。
+
+    经 mutate_block 原子写入（整块替换也是「读-改-写」，统一走同一入口）。
+    """
     try:
-        bm.update_block_value(label, new_memory)
+        bm.mutate_block(label, lambda v: new_memory)
     except ValueError as e:
         return f"Error: {e}"
     return f"Rewrote block {label}"

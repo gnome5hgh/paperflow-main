@@ -55,9 +55,9 @@ class MemoryEditBatch(BaseModel):
 class MemoryEditValidationError(ValueError):
     """编辑指令未通过阶段 1 校验（目标不在类型枚举白名单内）。
 
-    与阶段 2 的应用期错误（如 update_block_value 因块超限/read_only 抛的
-    ValueError）区分：只有校验错误被上抛（原子性——一条不写）；应用期错误
-    计入连败计数，连败 3 次强制前进游标，避免同一批编辑被无限重放。
+    与阶段 2 的应用期错误（如块写入因超限/read_only 抛的 ValueError）区分：只有
+    校验错误被上抛（原子性——一条不写）；应用期错误计入连败计数，连败 3 次强制
+    前进游标，避免同一批编辑被无限重放。
     """
 
 
@@ -248,8 +248,9 @@ class Sleeptime:
     def _apply_edit(self, edit: MemoryEdit) -> None:
         """把编辑指令映射到 BlockManager（file → block label）。
 
-        追加/替换的目标块不存在时创建（append/replace 都允许「写新块」的
-        意图自动建块）。
+        追加/替换的目标块不存在时创建（append/replace 都允许「写新块」的意图自动
+        建块）。已有块走 mutate_block：append 在 mutator 里做「旧值 + 新内容」、
+        replace 做整块替换，整段读-算-写一次持锁。
 
         Args:
             edit: MemoryEdit，已通过校验的编辑指令。
@@ -257,20 +258,14 @@ class Sleeptime:
         # label 由 file 移除 .md 后缀并去除 "system/" 前缀得到（system/ 下的块 label 即文件名）。
         label = edit.file.removesuffix(".md").replace("system/", "")
 
-        # 处理 append / replace 动作
-        b = self.block_manager.get_block_by_label(label)
+        def _mutate(v: str) -> str:
+            """append 在旧值后追加一行，replace 整块替换。"""
+            if edit.action == "append":
+                return v + "\n" + edit.content
+            return edit.content
 
-        if edit.action == "append":
-            if b is None:
-                # 若块不存在，则创建新块
-                self.block_manager.create_block(label, edit.content)
-            else:
-                # 否则追加内容（换行分隔）
-                self.block_manager.update_block_value(
-                    label, b.value + "\n" + edit.content)
-
-        elif edit.action == "replace":
-            if b is None:
-                self.block_manager.create_block(label, edit.content)
-            else:
-                self.block_manager.update_block_value(label, edit.content)
+        try:
+            self.block_manager.mutate_block(label, _mutate)
+        except KeyError:
+            # 块不存在：建新块（append/replace 对缺失块的首写内容都等于 edit.content）
+            self.block_manager.create_block(label, edit.content)

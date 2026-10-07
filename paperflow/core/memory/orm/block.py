@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+from paperflow.core.memory.errors import ConcurrentUpdateError
 from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.schemas.block import Block
 
@@ -94,22 +95,29 @@ def select_blocks(db: MemoryDB) -> list[dict]:
     return [dict(r) for r in cur.fetchall()]
 
 
-def update_block(db: MemoryDB, block_id: str, value: str, version: int) -> None:
-    """更新块的值与版本号并刷新 updated_at。
+def update_block(db: MemoryDB, block_id: str, value: str,
+                 expected_version: int) -> None:
+    """按期望版本写入块值（CAS）：版本不匹配即抛冲突，绝不静默覆盖。
 
     Args:
         db: 数据库连接。
         block_id: 要更新的块 ID。
         value: 新的内容文本。
-        version: 新的版本号（应由调用方计算，如旧版本 + 1）。
+        expected_version: 调用方读到的版本号。写入成功后版本推进为 expected_version + 1。
+
+    Raises:
+        ConcurrentUpdateError: 行已被其他写者推进（影响行数为 0）。
 
     注意：
         - 该操作不检查 read_only 或 limit，也不记录历史快照；
           这些业务规则由 BlockManager 在调用前处理。
         - updated_at 自动设为当前 UTC 时间。
     """
-    db.execute("UPDATE blocks SET value=?, version=?, updated_at=? WHERE id=?",
-               (value, version, _now(), block_id))
+    cur = db.execute(
+        "UPDATE blocks SET value=?, version=?, updated_at=? WHERE id=? AND version=?",
+        (value, expected_version + 1, _now(), block_id, expected_version))
+    if cur.rowcount == 0:
+        raise ConcurrentUpdateError(block_id)
 
 
 def update_block_label(db: MemoryDB, block_id: str, label: str) -> None:

@@ -7,18 +7,22 @@ def _memory_insert(ctx, label: str, new_string: str, insert_line: int = -1) -> s
     """把 new_string 插入块的指定行号；insert_line=-1 表示追加到末尾。
 
     块缺失返回显式「no block」——改既有块的意图不该被静默创建掩盖拼错。
-    行号超出末尾时按末尾处理（splitlines 后 insert 会就地落在末尾）。
+    行号超出末尾时按末尾处理（splitlines 后 insert 会就地落在末尾）。读-算-写收进
+    mutate_block 的 mutator，整段一次持锁。
     """
     bm = ctx.block_manager
-    block = bm.get_block_by_label(label)
-    if block is None:
-        return f"Error: no block with label {label}"
-    lines = block.value.splitlines()
-    if insert_line == -1:
-        insert_line = len(lines)
-    lines.insert(insert_line, new_string)
+
+    def _insert(v: str) -> str:
+        """在 v 的 insert_line 处插入一行；-1 表示末尾。"""
+        lines = v.splitlines()
+        at = len(lines) if insert_line == -1 else insert_line
+        lines.insert(at, new_string)
+        return "\n".join(lines)
+
     try:
-        bm.update_block_value(label, "\n".join(lines))
+        bm.mutate_block(label, _insert)
+    except KeyError:
+        return f"Error: no block with label {label}"
     except ValueError as e:
         return f"Error: {e}"
     return f"Inserted into block {label} at line {insert_line}"
