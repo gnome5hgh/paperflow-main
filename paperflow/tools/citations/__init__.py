@@ -1,7 +1,8 @@
 """引用管理 LLM 工具面（6 个工具）。
 
-装配 noter（lookup/add/format/list/remove/sync_citations 全量）；reviewer 只装
-list+lookup 做溯源核验。工具实例经 `make_tools` 装配，`CitationManager` 由装配方
+装配面：noter/researcher 各装 lookup/add/format/list 四件；reviewer 只装
+list+lookup 做溯源核验；sync_citations/remove_citation 仅装配 librarian（文献库
+维护的唯一写入口）。工具实例经 `make_tools` 装配，`CitationManager` 由装配方
 注入（对齐 SpawnSubAgentTool 模式）。
 """
 from paperflow.tools.citations.add_citation import AddCitationTool
