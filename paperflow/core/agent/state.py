@@ -82,8 +82,9 @@ class RunState:
         self.writing_paths: dict[str, tuple[str, int]] = {}
         #: 写占用的登记锁：claim 的「看持有者 -> 计数自增」是复合操作，必须整体原子
         #: （与 spawn 侧守「检查-注册」同理）。当前调用方都在事件循环线程上，加的是
-        #: 一层便宜保险。
-        self._write_lock = threading.Lock()
+        #: 一层便宜保险。**它只护这张登记表，不串行化任何写入**——写入的排队在
+        #: runtime 的路径锁、写入的原子性在 atomic_write，别把三者混作一谈。
+        self._claim_lock = threading.Lock()
         #: 在途派发去重：(父实例 id, 任务指纹) -> 注册时刻。只登记「正在执行中」的派发，
         #: 完成即清除、不缓存结果——所以条目只活在一次 run 内，残留条目随整份容器被 TTL
         #: 回收，无需专门清扫。按父实例分桶：机械重复来自一次 LLM 生成（一个实例），分桶
@@ -112,7 +113,7 @@ class RunState:
         Returns:
             None 表示登记成功；否则返回当前持有者的实例 id，调用方据此拒绝本次写。
         """
-        with self._write_lock:
+        with self._claim_lock:
             held = self.writing_paths.get(path)
             if held is not None and held[0] != owner:
                 return held[0]
@@ -128,7 +129,7 @@ class RunState:
             path: str，目标绝对路径
             owner: str，持有者实例 id
         """
-        with self._write_lock:
+        with self._claim_lock:
             held = self.writing_paths.get(path)
             if held is None or held[0] != owner:
                 return
