@@ -42,10 +42,10 @@ class AddCitationTool(Tool):
         self.manager = manager
 
     def effective_target_path(self, args: dict) -> str | None:
-        """导出写互斥键：引用库文件。
+        """导出写互斥键：本工具往引用库里追加条目，落点就是那个 bib 文件。
 
-        三个引用工具写的是同一个 references.bib；本工具的参数是条目内容 / 键名，没有
-        path。经它键控后，两路并发写同一个 bib 会当场被拒，而不是被底层写入锁静默串行
+        本工具的参数是论文路径或题录字段，没有 path 参数；真正被写的是 references.bib。
+        经它键控后，两路并发往同一个 bib 追加会当场被拒，而不是被底层写入锁静默串行
         ——并发因此是可见的，而不是悄悄发生。
 
         Args:

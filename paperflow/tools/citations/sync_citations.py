@@ -29,11 +29,10 @@ class SyncCitationsTool(Tool):
         self.manager = manager
 
     def effective_target_path(self, args: dict) -> str | None:
-        """导出写互斥键：引用库文件。
+        """导出写互斥键：本工具批量同步语料库，全部写进同一个 bib 文件。
 
-        三个引用工具写的是同一个 references.bib；本工具的参数是条目内容 / 键名，没有
-        path。经它键控后，两路并发写同一个 bib 会当场被拒，而不是被底层写入锁静默串行
-        ——并发因此是可见的，而不是悄悄发生。
+        本工具不接参数，写的是 references.bib。经它键控后，同步与另一路改同一 bib
+        的操作会当场撞上，而不是被底层写入锁静默串行——并发因此是可见的。
 
         Args:
             args: dict，已解析的工具调用参数（未使用，仅为签名与基类一致）
