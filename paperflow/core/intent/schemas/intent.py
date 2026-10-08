@@ -14,8 +14,8 @@ LLM 兜底，本模块定义的几个类型是它们共同使用的产出契约�
 - ``IntentUnit``: 一轮里的一项意图（类型 + 置信度），构成意图列表的元素。
 - ``IntentOutput``: 管线逐级产出的结构化意图（意图列表 + 轮级信息），
   供上层调用方直接消费。
-- ``IntentionResult``: LLM 兜底阶段的结构化输出契约，扁平结构，
-  不封装路由器的内部决策。
+- ``IntentionResult``: LLM 兜底阶段的结构化输出契约——与 IntentOutput 同形
+  （意图列表 + 轮级字段），只含模型能产出的那部分。
 """
 
 from enum import Enum
@@ -120,8 +120,9 @@ class IntentUnit(BaseModel):
 
     confidence 允许为空：路由层拆分时每条候选路由各有自己的融合分数（真实值），
     而 LLM 兜底拆分只给主意图一个模型概率、后续步骤没有对应分数——此时留 None，
-    表示「该阶段未逐项产出」，不编造。置信度语义按产出阶段区分：ROUTER 来源 =
-    融合分数 clip 到 [0,1]（非概率，可为边缘值）；LLM 来源 = 模型概率。
+    表示「该阶段未逐项产出」，不编造（IntentionResult 的校验器强制清空后续项）。
+    置信度语义按产出阶段区分：ROUTER 来源 = 融合分数 clip 到 [0,1]（非概率，可为
+    边缘值）；LLM 来源 = 模型概率。
     """
 
     #: 意图类型
@@ -131,7 +132,36 @@ class IntentUnit(BaseModel):
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
-class IntentOutput(BaseModel):
+class _IntentListRules:
+    """意图列表的共用校验规则——承载面与 LLM 兜底面的列表语义必须逐字一致。
+
+    `IntentOutput`（管线逐级产出的承载类型）与 `IntentionResult`（LLM 兜底的结构化
+    输出契约）是同一件事的两个落点，结构同形（意图列表 + 轮级字段）。列表的合法性
+    规则只能有一份实现：各写一份的话，改了一边、另一边就静默接受本不该放行的拆分。
+    """
+
+    def _normalize_intent_list(self) -> None:
+        """剔除非业务的「额外」成员 + 列表与澄清互斥。
+
+        首要项（intents[0]）恒保留：它是这一轮的分类结论，整轮闲聊时也必须还是
+        chitchat——supervisor 的「非派发意图的处理」按类型分派回话方式，兜底成
+        UNCLASSIFIED 会让「闲聊该温和引导」与「越界该明确拒绝」变得不可区分。
+        首要项之外的非可派发成员（多意图句里混进来的系统意图）不是动作，剔掉——
+        留着只会让收尾核对照着它报出「还有未完成的步骤：闲聊」。
+
+        列表长度 ≥2 说明输入已被拆解执行，无需再澄清；两者同时产出属模型违命，
+        澄清让位。单意图 + 澄清是澄清轮的正常形态，必须保留——无条件清空会把
+        澄清整条链路杀掉。
+        """
+        business = {t for t, (_, allowed) in INTENT_META.items() if allowed}
+        head, *rest = self.intents
+        object.__setattr__(self, "intents",
+                           [head] + [u for u in rest if u.intent_type in business])
+        if len(self.intents) > 1 and self.clarification:
+            object.__setattr__(self, "clarification", None)
+
+
+class IntentOutput(_IntentListRules, BaseModel):
     """一整轮的意图产出：意图列表 + 轮级信息。
 
     意图列表是唯一真相源：单意图 = 长度 1 的列表，多意图 = 多个元素。主意图不再
@@ -173,15 +203,13 @@ class IntentOutput(BaseModel):
         return self.intents[0].intent_type
 
     @model_validator(mode="after")
-    def _filter_extras_and_sanitize(self) -> "IntentOutput":
-        """剔除非业务的「额外」成员 + 列表与澄清互斥 + 清洗 surrogate。
+    def _normalize_and_sanitize(self) -> "IntentOutput":
+        """应用共用的列表规则 + 清洗 surrogate 字符。
 
-        首要项（intents[0]）恒保留：它是这一轮的分类结论，整轮闲聊时也必须还是
-        chitchat——supervisor 的「非派发意图的处理」按类型分派回话方式，兜底成
-        UNCLASSIFIED 会让「闲聊该温和引导」与「越界该明确拒绝」变得不可区分。
-        首要项之外的非可派发成员（多意图句里混进来的系统意图）不是动作，剔掉——
-        留着只会让收尾核对照着它报出「还有未完成的步骤：闲聊」。
-        列表长度 ≥2 说明输入已被拆解执行，无需再澄清；两者同时产出时澄清让位。
+        列表规则（首要项恒保留 / 主意图之外的非业务成员剔除 / 列表与澄清互斥）见
+        `_IntentListRules._normalize_intent_list`——与 LLM 兜底面的同形契约共用一套
+        实现，不复制两份。
+
         清洗未配对的 surrogate 字符（PDF 提取 / LLM 兜底输出可能携带）——若不清洗，
         后续 model_dump_json 会抛 PydanticSerializationError（输入含 '\\udce5' 这类
         未配对代理项时触发）。
@@ -189,15 +217,7 @@ class IntentOutput(BaseModel):
         Returns:
             校验后的自身实例（model_validator 契约）。
         """
-        business = {t for t, (_, allowed) in INTENT_META.items() if allowed}
-        head, *rest = self.intents
-        object.__setattr__(self, "intents",
-                           [head] + [u for u in rest if u.intent_type in business])
-        # 已拆成多项（≥2）说明输入被当作复合请求执行，无需再澄清；两者同时产出属
-        # 模型违命，澄清让位。单意图 + 澄清 是澄清轮的正常形态，必须保留——无条件
-        # 清空会把澄清整条链路杀掉。
-        if len(self.intents) > 1 and self.clarification:
-            object.__setattr__(self, "clarification", None)
+        self._normalize_intent_list()
         self.rewritten_query = sanitize_surrogates(self.rewritten_query)
         if self.clarification:
             self.clarification = sanitize_surrogates(self.clarification)
@@ -223,71 +243,41 @@ class ArbitrationChoice(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
-class IntentionResult(BaseModel):
-    """LLM 兜底阶段的结构化输出契约（扁平结构，对提示词可靠性更有利）。
+class IntentionResult(_IntentListRules, BaseModel):
+    """LLM 兜底阶段的结构化输出契约。
 
-    底层结构化输出机制只校验类型不校验数值范围，因此 confidence 仍保留
+    与 IntentOutput 同形：意图列表（按执行顺序，首项即主意图，单意图 = 长度 1）
+    + 轮级字段。只含 LLM 能产出的那部分——entities 由确定性抽取器给出，不经模型，
+    故不在此契约里。
+
+    列表规则与 IntentOutput 共用 `_IntentListRules`；差异只在置信度：模型产出的后续项
+    由校验器强制清空（见 `_intents_guard`），因为「后续项没有对应分数」这件事只有本
+    类型成立。底层结构化输出机制只校验类型不校验数值范围，因此 confidence 仍保留
     pydantic 范围约束，避免 LLM 越界值流入上游。
     """
 
-    #: 意图类型
-    intent_type: IntentType
-
-    #: 置信度（模型概率，范围约束 [0,1]）
-    confidence: float = Field(ge=0.0, le=1.0)
+    #: 意图列表（单意图即长度 1），按执行顺序排列——首项即主意图。
+    #: description 会经 StructuredOutput 展开进提示词，是模型判断「何时拆」的唯一依据
+    #: （`#:` 注释进不了提示词）。填写条件：仅当输入包含 ≥2 个相互独立、分属不同意图的
+    #: 业务动作时才拆成多项，按执行顺序排列，首项是主意图；单一动作或拿不准时只填一项
+    #: （宁缺勿滥——列表只是复合请求的信号，误拆会误导选型与收尾核对）。
+    #: 引导只给原则（什么算相互独立），不写数字化上限：长度不是本字段的约束，模型的
+    #: 过度拆分由路由层阈值判据兜住，提示词不承担限长职责。
+    intents: list[IntentUnit] = Field(
+        min_length=1,
+        description=(
+            "按执行顺序排列的意图列表，首项是主意图：仅当输入包含 ≥2 个相互独立、分属不同"
+            "意图的业务动作时才拆成多项，每一项都是可派发的业务意图枚举值，按执行顺序排列；"
+            "单一动作或拿不准时只填一项"
+            "（宁缺勿滥——列表只是复合请求的信号，误拆会误导选型与收尾核对）。"
+            "confidence 只给首项填，后续项省略（后续项没有对应分数，不要编造）。"
+        ),
+    )
 
     #: LLM 改写后的查询（缺省为空串，管线使用原文）
     query_rewrite: str = ""
 
-    #: 主意图之外的额外步骤（有序）——主意图本身装在 intent_type 里，这里只装额外项。
-    #: description 会经 StructuredOutput 展开进提示词，是模型判断「何时拆」的唯一依据
-    #: （同 clarification 的教训——缺了它 extra_intents 永远为空）。
-    #: 填写条件：仅当输入包含 ≥2 个相互独立、分属不同意图的业务动作；每一项必须是
-    #: 单业务意图（dispatch_allowed=True），按执行顺序排列；单一动作或拿不准时必须留空
-    #: （宁缺勿滥——extra_intents 只是复合请求的信号，误拆会误导选型与收尾核对）。
-    #: 引导只给原则（什么算相互独立），不写数字化上限：长度不再是本字段的约束，
-    #: 模型的过度拆分由路由层阈值判据兜住，提示词不承担限长职责。
-    #: 注意：# 注释不会进入 pydantic description——触发契约
-    #: 必须走下面的 Field(description=...) 才能进 LLM 提示词，这里仅留出处索引。
-    extra_intents: list["IntentType"] = Field(
-        default=[],
-        description=(
-            "主意图之外的额外业务步骤：仅当输入包含 ≥2 个相互独立、分属不同意图的业务动作时填写；"
-            "每一项必须是单业务意图（dispatch_allowed=True 的枚举值），按执行顺序排列；"
-            "单一动作或拿不准时必须留空"
-            "（宁缺勿滥——extra_intents 只是复合请求的信号，误拆会误导选型与收尾核对）。"
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _extra_intents_guard(self) -> "IntentionResult":
-        """extra_intents 合法性护栏 + extra_intents 与 clarification 互斥（代码级防御）。
-
-        extra_intents 是给 supervisor 的复合请求信号（随 INTENT 块注入、收尾时摆进账本核对），
-        不再是派发门禁——但一步混进不派发的系统意图仍会误导选型、让 spawn 被拒，所以
-        schema 层只拦这一类非法拆分：混入非派发意图（LLM 把闲聊/帮助也拆进去）。
-        步骤数不设上限——路由路径天然被路由总数封顶，LLM 面也不再用数字封顶；
-        首步与主意图的一致性也不再校验——管线转换时主意图就是列表首项。
-        违规不做半截修正，整体置空；也不抛校验错误——解析失败的兜底路径
-        （fallback=UNCLASSIFIED）不该因护栏再炸一次。
-        互斥：extra_intents 非空说明输入已被拆解执行，无需再澄清；两者同时产出属模型
-        违命，clarification 让位。两字段的「要不要」上游管线均已用代码判据决定，
-        这里是最后一条防线。
-
-        Returns:
-            校验后的自身实例（model_validator 契约）。
-        """
-        if self.extra_intents:
-            business = {t for t, (_, allowed) in INTENT_META.items() if allowed}
-            if any(s not in business for s in self.extra_intents):
-                object.__setattr__(self, "extra_intents", [])
-        # extra_intents × clarification 互斥：复合句已拆就无需澄清，两者同时产出属模型
-        # 违命，代码级强制 clarification 让位（不抛错，静默清空即可）
-        if self.extra_intents and self.clarification:
-            object.__setattr__(self, "clarification", None)
-        return self
-
-    #: 歧义澄清问题（非空时管线提前返回，由调用方跨轮挂起待澄清意图）
+    #: 歧义澄清问题（非空时由调用方在本轮内同步问用户）
     #: 这个 description 与上面的 #: 注释重复是有意的：#: 只给读代码的人看，
     #: description 会经 StructuredOutput 的 schema 展开进提示词，是模型判断
     #: 「什么时候该填这个字段」的依据——缺了它澄清几乎不会被产出。
@@ -295,6 +285,34 @@ class IntentionResult(BaseModel):
         default=None,
         description=(
             "输入意图不明确、无法在意图间取舍时，写给用户的一句简短澄清问题；"
-            "能推断出合理意图时留空，用 intent_type 与 confidence 表达不确定程度。"
+            "能推断出合理意图时留空，用意图列表首项与它的 confidence 表达不确定程度。"
         ),
     )
+
+    @model_validator(mode="after")
+    def _intents_guard(self) -> "IntentionResult":
+        """应用共用的列表规则 + 强制清空后续项的置信度。
+
+        列表规则（首要项恒保留 / 主意图之外的非业务成员剔除 / 列表与澄清互斥）见
+        `_IntentListRules._normalize_intent_list`，与 IntentOutput 共用同一套实现。
+
+        置信度只保留首项：模型拿到列表形状后，会倾向给后续项也编一个数字；而 supervisor
+        的规则里有「低置信就先 ask_user_question 确认再动手」——喂给它一个编出来的数字
+        会引发无谓追问。后续项没有对应分数，留空表示「未逐项产出」，不是低置信。
+        这条**只作用于本类型**：IntentOutput 走路由路径时每条候选都有自己的融合分数
+        （真实值），绝不能在那边清空。
+
+        违规不做半截修正，也不抛校验错误——解析失败的兜底路径（fallback=UNCLASSIFIED）
+        不该因护栏再炸一次。
+
+        Returns:
+            校验后的自身实例（model_validator 契约）。
+        """
+        self._normalize_intent_list()
+        if len(self.intents) > 1:
+            object.__setattr__(self, "intents", [
+                self.intents[0],
+                *[u.model_copy(update={"confidence": None})
+                  for u in self.intents[1:]],
+            ])
+        return self

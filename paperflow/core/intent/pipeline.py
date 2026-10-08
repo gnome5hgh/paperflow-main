@@ -472,17 +472,10 @@ class IntentPipeline:
         # 复合拆分照常透传：LLM 拆分是复合意图在第四级时没有成功拆分后的第二个兜底，
         # 触发契约在提示词里约定；拆了还要问的违命输出由 schema 护栏清掉 clarification。
         result = await self._llm_extract(query, scored, force_clarification=False)
-        # 扁平 LLM 结果 → 意图列表：主意图取模型给的类型与概率，后续步骤没有对应
-        # 分数（置 None，不编造），保序去重并跳过与主意图重复的。
-        units = [IntentUnit(intent_type=result.intent_type,
-                            confidence=result.confidence)]
-        seen = {result.intent_type}
-        for extra in result.extra_intents:
-            if extra not in seen:
-                seen.add(extra)
-                units.append(IntentUnit(intent_type=extra, confidence=None))
+        # 兜底面的产出本身就是意图列表（与承载面同形），近乎直通：后续项的置信度已由
+        # schema 校验器清空，这里不再做形状转换，也没有「主意图装在哪个字段」的歧义。
         return IntentOutput(
-            intents=units,
+            intents=result.intents,
             entities=entities, source=IntentStep.LLM, prev_intent=prev_intent,
             rewritten_query=result.query_rewrite or query, # 若 LLM 提供了改写则用，否则保留原文
             clarification=None,
@@ -662,8 +655,9 @@ class IntentPipeline:
         if candidates:
             clarification = f"{clarification}\n{format_intent_options(candidates)}"
         return IntentOutput(
-            intents=[IntentUnit(intent_type=result.intent_type,
-                                confidence=result.confidence)],  # 澄清轮不拆分
+            # 澄清轮不拆分：模型违命拆了也只取首项——列表 ≥2 会让共用护栏清掉
+            # clarification，「说要问就一定问出去」随之失效。
+            intents=result.intents[:1],
             entities=entities, source=IntentStep.LLM, prev_intent=prev_intent,
             rewritten_query=result.query_rewrite or query,
             clarification=clarification,
@@ -680,14 +674,16 @@ class IntentPipeline:
             force_clarification: 是否强制澄清轮（切换 prompt 里的 clarification 条款）。
 
         Returns:
-            LLM 结构化输出的 IntentionResult；调用失败时为 UNCLASSIFIED 兜底值。
+            LLM 结构化输出的 IntentionResult（意图列表 + 轮级字段，与 IntentOutput
+            同形）；调用失败时为 UNCLASSIFIED 单意图兜底值。
         """
         return await self.structured.extract(
             prompt=self._build_llm_prompt(query, scored,
                                           force_clarification=force_clarification),
             schema=self.llm_fallback_schema,
-            fallback=lambda: IntentionResult(intent_type=IntentType.UNCLASSIFIED,
-                                             confidence=0.0),
+            fallback=lambda: IntentionResult(
+                intents=[IntentUnit(intent_type=IntentType.UNCLASSIFIED,
+                                    confidence=0.0)]),
         )
 
     def _synthesize_clarification(self, scored: list[tuple[str, float]]) -> str:
@@ -718,9 +714,10 @@ class IntentPipeline:
 
         注入四部分信息：
             1. 意图枚举列表（IntentType 所有取值）。
-            2. 输出字段约定：extra_intents 填写条件；clarification 条款按 force_clarification
-               切换——强制轮必须产出（触发权在代码），常规轮仅在缺决定性信息时填
-               （管线会丢弃，此处条款保留是给模型一致的输出契约）。
+            2. 输出字段约定：intents 列表的拆分条件与「只给首项填 confidence」约定；
+               clarification 条款按 force_clarification 切换——强制轮必须产出（触发权在
+               代码），常规轮仅在缺决定性信息时填（管线会丢弃，此处条款保留是给模型一致
+               的输出契约）。
             3. 路由层的近失候选（路由名 + 分数），供 LLM 参考确认或改判。
             4. 原始用户输入 query。
 
@@ -729,7 +726,7 @@ class IntentPipeline:
             near_miss: 路由层 top-k 候选列表，每项为 (路由名, 分数)——含未过阈值
                 线的候选，供 LLM 在路由先验上确认或改判，而非盲猜。
             force_clarification: 是否强制澄清轮。True 时提示词改为「必须产出
-                clarification」且禁用 extra_intents——调用方（_clarify_round）已用分数
+                clarification」且要求 intents 不拆分——调用方（_clarify_round）已用分数
                 判据认定该问，提示词只负责把问题文案要出来。
 
         Returns:
@@ -738,26 +735,28 @@ class IntentPipeline:
         parts = [
             "你是意图分类器。从以下意图中选择一个：",
             ", ".join(t.value for t in IntentType),
-            "输出 JSON：{intent_type, confidence, query_rewrite, extra_intents, clarification}。",
+            '输出 JSON：{"intents": [{"intent_type": ..., "confidence": ...}], '
+            '"query_rewrite": ..., "clarification": ...}。',
         ]
         if force_clarification:
             parts.append(
                 "本轮必须产出 clarification（写给用户的一句简短澄清问题）："
                 "输入在多个意图间存在歧义，需要用户补充信息后才能执行。"
                 "澄清文本会原样展示给用户，须自足、简短、只问一个问题。"
-                "extra_intents 必须留空（澄清轮不拆分）。"
+                "intents 只填一项、不拆分（澄清轮不拆分）。"
             )
         else:
             parts.extend([
-                "extra_intents 仅当输入包含 ≥2 个相互独立、分属不同意图的业务动作时才填：每一项 "
-                "是一个业务意图名（可派发类），按执行顺序排列；单一动作或拿不准时"
-                "必须留空（宁可不拆）。拆分时 intent_type 取第一步。",
+                "intents 是意图列表，按执行顺序排列，首项是主意图：仅当输入包含 ≥2 个"
+                "相互独立、分属不同意图的业务动作时才拆成多项（每一项都是可派发的业务"
+                "意图名）；单一动作或拿不准时必须只填一项（宁可不拆）。",
+                "confidence 只给 intents 首项填；后续项没有对应分数，省略即可（不要编造）。",
                 "clarification 可选，留空串表示不需要：只在输入缺决定性信息、无法在意图间取舍时才填，"
                 "例如指代不明（「帮我处理一下那篇」没说哪篇）或动作不明（没说读、写笔记还是分析）。"
-                "能推断出合理意图就不要澄清——直接给 intent_type，用 confidence 表达"
+                "能推断出合理意图就不要澄清——直接给出最可能的 intents，用首项 confidence 表达"
                 "不确定程度；闲聊、求助、超出范围这类意图永远不需要澄清。",
                 "澄清文本会原样展示给用户，须自足、简短、只问一个问题；即使填了澄清，"
-                "也要照常给出最可能的 intent_type 与 confidence。",
+                "也要照常给出最可能的 intents 与首项 confidence。",
             ])
         if near_miss:
             parts.append("路由层近失候选（供参考，可确认或改判）：")
