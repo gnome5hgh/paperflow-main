@@ -3,7 +3,7 @@
 noter 笔记 §5 用它拿「图 + 逐图分析」（embed_dir 把图存进 note 目录返回
 Obsidian 嵌入标记）；qa-agent 图表问答用它单图分析。视觉 key 缺失/无图/
 调用失败全部降级为文本反馈——笔记流程不被视觉故障打断。二进制 PNG 直接落盘
-（Path.write_bytes），不走 write_file——避免触发 RAG 热索引钩子污染向量库。
+（atomic_write_bytes），不走 write_file——避免触发 RAG 热索引钩子污染向量库。
 """
 import asyncio
 import re
