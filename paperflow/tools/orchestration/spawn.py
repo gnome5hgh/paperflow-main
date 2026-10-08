@@ -795,8 +795,8 @@ class SpawnSubAgentTool(Tool):
         if isinstance(admitted, ToolResult):
             return admitted
         fp = admitted
-        # 派发序列已过闸，此后收尾要写回去重注册表与失败计数——容器按作用域取用，
-        # 与 _admit 里的局部变量无关（这是另一个方法）。
+        # 派发序列已过闸。此后的收尾只清除本实例本轮记下的「在途」去重条目（登记发生在
+        # _admit 里），并按派发结果推进失败计数——容器按作用域取用，与 _admit 的局部变量无关。
         parent = self._parent
         sess = get_session_state(parent.session_id)
         # run 容器：收尾在 finally 里释放本次派发占用的目标路径（_admit 已登记在它上面）
