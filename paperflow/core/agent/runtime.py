@@ -64,6 +64,8 @@ from paperflow.core.security import (
 )
 from paperflow.core.tool import ToolResult
 from paperflow.core.security.text import sanitize_surrogates
+from paperflow.core.constants import SideEffect
+from paperflow.core.agent.state import get_run_state
 from paperflow.core.intent.constants import INTENT_LABELS_ZH, IntentStep, IntentType
 from paperflow.core.intent.schemas.intent import IntentOutput, IntentUnit
 from paperflow.core.intent.routing.confirm import match_option_choice
@@ -91,6 +93,24 @@ def _path_lock(path: str) -> asyncio.Lock:
     # 键 = 目标文件路径
     # setdefault 原子地“无则建、有则取”，保证同一文件的所有并发调用拿到的是同一把锁。
     return _path_locks.setdefault(path, asyncio.Lock())
+
+
+#: 写互斥的准入判据涉及的副作用集合：声明了文件写 / 删除的工具才按写目标登记占用。
+#: 用 side_effects 而不是 requires_confirm——后者回答「要不要问用户」，两者不是一回事
+#: （引用类工具声明了写却没有确认要求）。
+_WRITE_EFFECTS = frozenset({SideEffect.WRITE_FILE, SideEffect.DELETE_FILE})
+
+
+def _is_writer(tool) -> bool:
+    """判断工具是否声明了文件写副作用（写互斥的准入判据）。
+
+    Args:
+        tool: Tool | None，工具实例
+
+    Returns:
+        True 表示该工具会写文件、要按写目标参与同路径互斥。
+    """
+    return bool(set(getattr(tool, "side_effects", None) or ()) & _WRITE_EFFECTS)
 
 
 def _intent_block(intent) -> str:
@@ -1408,19 +1428,46 @@ class Agent:
         # 只有声明了需要用户确认的写类工具（write_file / edit_file 这类）才走加锁分支
         #
         # 锁为什么包住 _exec_tool_guarded 整体？
-        # 这是设计关键：锁的粒度不是“执行工具”，而是「确认决策 + 执行」全程（_exec_tool_guarded 的第 5-8 步，runtime.py:1024-1050，含 before 钩子里的 ConfirmRequired → confirm_callback → 工具执行）。所以 async with 必须放在 _exec_tool 这一层包住调用，而不是放进 guarded 函数内部。
+        # 这是设计关键：锁的粒度不是“执行工具”，而是「确认决策 + 执行」全程（_exec_tool_guarded 的 5-8 步，含 before 钩子里的 ConfirmRequired → confirm_callback → 工具执行）。所以 async with 必须放在 _exec_tool 这一层包住调用，而不是放进 guarded 函数内部。
         # 这样第二个并发调用会在锁上等待，直到第一个完整走完「用户确认 + 写文件」。等它拿到锁时，授权键已经被第一个调用写进了已授权集合，于是不再弹框直接放行——既消除了重复弹框，也把同路径的写操作串行化，丢写竞态随之消失。
         #
-        # _confirm_lock（run 层传入，runtime.py:826）：每次 run 一把，串行化所有并发工具调用的 confirm_callback 本身——解决的是“多人同时抢 CLI 标准输入”的问题，与文件路径无关。
+        # _confirm_lock（run 层传入）：每次 run 一把，串行化所有并发工具调用的 confirm_callback 本身——解决的是“多人同时抢 CLI 标准输入”的问题，与文件路径无关。
         # _path_lock（模块级注册表）：按文件路径串行化「确认+执行」——解决的是“同一文件被并发改写”的问题。
+        # 写占用（RunState.writing_paths）：管的是**跨 agent** 的同路径冲突——两个实例并发写同一文件时当场拒绝第二个，而不是排队后照样覆盖。_path_lock 管同一个 agent 自己的多次调用排队，两者互补。
         # 键经 tool.effective_target_path 导出而非直接读 args["path"]：write_file 的
         # filename 便捷入口没有 path 参数，组合出落盘路径后再上锁——否则 pathless
         # 调用绕过锁，丢写/重复确认竞态经此入口复发。
+        #
+        # 写互斥（第三件事，与上面两把锁各管一段）：写工具按**真实写目标**登记占用，
+        # 另一个实例正在写同一路径时**当场拒绝**——不排队等。等待结束仍然要写，那只是
+        # 「带额外步骤的丢更新」；本仓要防的正是跨子 agent 的静默丢失，所以让第二个写
+        # 根本不发生。登记是纯同步字典操作（无 await），所以能在这层 fail-fast，不会像
+        # 中间件那样先排到路径锁后面才拒。
+        # 判定写者用 side_effects；键复用 effective_target_path——它已经是确认键、串行锁
+        # 与 diffstat 的唯一权威，对交付物写者返回的就是写目标（不做第二套路径概念）。
         target = tool.effective_target_path(ctx.args) if tool is not None else None
-        if getattr(tool, "requires_confirm", False) and isinstance(target, str):
-            async with _path_lock(target):
-                return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
-        return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
+        owner = self._instance_id
+        claimed = isinstance(target, str) and _is_writer(tool)
+        rs = get_run_state(self._trace_id) if claimed else None
+        if claimed:
+            holder = rs.claim_write(target, owner)
+            if holder is not None:
+                # 拒绝分支在 try 之外：本次没登记成功，不能走释放（否则会摘掉别人的占用）。
+                # 仍走 after 链，让这次拒绝在审计里留痕（与 JSON 解析失败的早退同款）。
+                ctx.error = RuntimeError(f"写互斥：{target} 正被另一实例占用")
+                await self._run_after_hooks(ctx)
+                return ToolResult(text=(
+                    f"目标文件正被另一个并发子任务写入：{target}。"
+                    "不要改文件名另写一份；请稍后原样重试，或把该冲突上报给上级。"))
+        try:
+            if getattr(tool, "requires_confirm", False) and isinstance(target, str):
+                async with _path_lock(target):
+                    return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
+            return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
+        finally:
+            # 异常、取消、用户拒绝都会走到——所以占用不需要 TTL 兜底。
+            if claimed:
+                rs.release_write(target, owner)
 
     async def _exec_tool_guarded(self, tool, ctx, _confirm_lock, turn) -> ToolResult:
         """确认与执行段（_exec_tool 的 5-8 步）：同路径锁保护下运行。
@@ -1478,7 +1525,6 @@ class Agent:
             # 需要运行期状态的工具（搜索去重池 / 写盘产物登记）：注入本次 run 的容器。
             # 子 agent 继承父 trace_id，所以同一用户任务内跨 agent 共享同一个容器。
             elif getattr(tool, "wants_run_state", False):
-                from paperflow.core.agent.state import get_run_state
                 raw = await asyncio.to_thread(
                     tool.execute, **ctx.args, _run_state=get_run_state(self._trace_id))
 
