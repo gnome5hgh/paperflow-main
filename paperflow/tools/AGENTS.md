@@ -9,6 +9,7 @@
 ```text
 tools/
 ├─ file/           # 读/写/编辑/glob/grep/read_pdf/format_check + atomic.py 原子写盘（文本/bytes 两入口）
+│                  #   pdf_extract.py：read_pdf 的本地 PDF 抽取（PyMuPDF 直读，不经 RAG 栈）
 ├─ search/         # fetch_pdf(SSRF 校验+写盘后索引热更新) + _common.py 标题规范化/运行期状态再导出
 ├─ review/         # submit_review / submit_download_review（reviewer 裁决工具）
 ├─ rank/           # lookup_venue_rank（期刊/会议等级）
