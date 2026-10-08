@@ -600,8 +600,8 @@ class Agent:
             head.append(Message(role="system", content=self.skills_block))
 
         # ====== 第 2.5 层：可派发子 agent 清单（仅 supervisor，静态） ======
-        # 派发顺序与并行由 supervisor 自主决定，因此它必须先知道有哪些子 agent、
-        # 各自能做什么；非派发方的 agents_block 为空串，整块省略（不产生空 system 消息）。
+        # 派发顺序与并行由 supervisor 自主决定，因此它必须先知道有哪些子 agent、各自能做什么；
+        # 非派发方的 agents_block 为空串，整块省略（不产生空 system 消息）。
         if self.agents_block:
             head.append(Message(role="system", content=self.agents_block))
 

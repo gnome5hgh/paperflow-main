@@ -203,24 +203,24 @@ _SPAWN_LOCK = threading.Lock()
 #: 只统计 supervisor 自身的派发;子 agent 的审稿派发由审稿预算单独封顶,不双重计数。
 TURN_SPAWN_BUDGET = 8
 
-#: 失败升级:同会话同 agent_type 连续 N 次非 success(timeout/failed)
-#: 后,在结果文本追加强指令「勿再派发,改用 ask_user」——若重试预算用尽仍不升级,
-#: 模型会一直自动重试;本项目每次重试是分钟级多工具子任务,故取较紧的 2。仅对
-#: supervisor 生效(子 agent 无 ask_user 工具,升级无从谈起);成功即清零,
-#: 不按任务文本指纹化。
+#: 失败升级:同会话同 agent_type 连续 N 次非 success(timeout/failed)后,
+#: 在结果文本追加强指令「勿再派发,改用 ask_user」——若重试预算用尽仍不升级,模型会一直自动重试;
+#: 本项目每次重试是分钟级多工具子任务,故取较紧的 2。
+#: 仅对supervisor 生效(子 agent 无 ask_user 工具,升级无从谈起);
+#: 成功即清零,不按任务文本指纹化。
 _FAILURE_ESCALATION_THRESHOLD = 2
 _FAILURE_ESCALATION_NOTE = (
     "\n\n⚠️ 该类型子任务已连续 {n} 次失败。请勿再次派发同类型子任务——"
     "改用 ask_user_question 向用户说明失败情况并请示（放弃 / 换思路 / 坚持重试）。"
 )
 
-#: 审稿预算门:同一父实例内同类审稿 spawn 的次数上限。值取自旧的「审稿循环最多
-#: 3 轮」约定——预算下沉到代码强制后,LLM 不再负责数轮次,超限派发直接拒绝并给出路
-#: (基于已有裁决定稿、如实报告未解决项)。计数键 (父实例 id, mode):按「父实例」
-#: 而非「父 run」隔离,使同一 run 内共用一个 trace 的多个同类型父实例各算各的、
-#: 兄弟不串号;计数存在 run 状态里,跨 run(新 trace)随之重置。不同 mode 独立计数
-#: (笔记审稿/下载门禁/计划审稿互不挤占)。仅对真实派发计数——去重命中(running
-#: 提示/done 复用)早退在计数之前,不消耗预算。
+#: 审稿预算门:同一父实例内同类审稿 spawn 的次数上限。值取自旧的「审稿循环最多3 轮」约定——
+#: 预算下沉到代码强制后,LLM 不再负责数轮次,超限派发直接拒绝并给出路(基于已有裁决定稿、如实报告未解决项)。
+#: 计数键 (父实例 id, mode):按「父实例」而非「父 run」隔离,
+#: 使同一 run 内共用一个 trace 的多个同类型父实例各算各的、兄弟不串号;
+#: 计数存在 run 状态里,跨 run(新 trace)随之重置。
+#: 不同 mode 独立计数(笔记审稿/下载门禁/计划审稿互不挤占)。仅对真实派发计数——
+#: 去重命中(running 提示/done 复用)早退在计数之前,不消耗预算。
 _REVIEW_SPAWN_MODES = frozenset(m.value for m in (
     SubAgentMode.NOTE_REVIEW, SubAgentMode.DOWNLOAD_REVIEW, SubAgentMode.PLAN_REVIEW))
 _REVIEW_SPAWN_BUDGET = 3
@@ -553,12 +553,12 @@ class SpawnSubAgentTool(Tool):
                 # done 缓存复用：同任务刚做完、结果直接给你。同样记 deduped。
                 _record_dispatch(parent, agent_type, "deduped")
                 return hit["result"]
-            # ⑥ 审稿预算门:审稿类 mode 的次数检查——超限拒绝(不注册,不污染去重注册
-            #    表);去重命中早退不计数。此处只判不记:计数自增统一推迟到 ⑧ 通过之
-            #    后,使被后续任何一道闸(每轮上限/同路径互斥)拒绝的派发不消耗本额度,
+            # ⑥ 审稿预算门:审稿类 mode 的次数检查——超限拒绝(不注册,不污染去重注册表);
+            #    去重命中早退不计数。此处只判不记:计数自增统一推迟到 ⑧ 通过之后,
+            #    使被后续任何一道闸(每轮上限/同路径互斥)拒绝的派发不消耗本额度,
             #    拒绝话术也就与实际原因一致,不会把「路径冲突」误报成「预算耗尽」。
-            #    键用父实例 id:同一 run 内多个同类型父实例(如两个 noter)各算各的,不
-            #    因共用同一 trace 串号;计数随 run 状态存活,跨 run(新 trace)自然重置。
+            #    键用父实例 id:同一 run 内多个同类型父实例(如两个 noter)各算各的,
+            #    不因共用同一 trace 串号;计数随 run 状态存活,跨 run(新 trace)自然重置。
             review_key = (parent._instance_id, mode) if mode in _REVIEW_SPAWN_MODES else None
             if review_key is not None:
                 used = rs.review_counts.get(review_key, 0)
@@ -569,10 +569,10 @@ class SpawnSubAgentTool(Tool):
                         summary=_REVIEW_BUDGET_DENIED_NOTE.format(budget=_REVIEW_SPAWN_BUDGET))
                     return ToolResult(text=denied_result.model_dump_json(),
                                       summary=denied_result.model_dump())
-            # ⑦ 每轮派发总量上限:只统计 supervisor 自身的派发,按 ReAct 迭代下标
-            #    (_current_turn,每轮 LLM 迭代自增)计数——封顶的是每次迭代内 supervisor
-            #    能并行派发多少路,下一次迭代即重新起算,不会因为上一次迭代派得多而
-            #    永久锁死。此处同样只判不记,自增与 ⑥ 一并推迟到 ⑧ 之后。
+            # ⑦ 每轮派发总量上限:只统计 supervisor 自身的派发,
+            #    按 ReAct 迭代下标(_current_turn,每轮 LLM 迭代自增)计数——
+            #    封顶的是每次迭代内 supervisor能并行派发多少路,下一次迭代即重新起算,
+            #    不会因为上一次迭代派得多而永久锁死。此处同样只判不记,自增与 ⑥ 一并推迟到 ⑧ 之后。
             turn = getattr(parent, "_current_turn", 0)
             if parent.agent_type == "supervisor":
                 used = rs.turn_spawn_counts.get(turn, 0)
@@ -584,13 +584,13 @@ class SpawnSubAgentTool(Tool):
                                 "请先汇总已有结果向用户交代，需要继续时下一轮再派。")
                     return ToolResult(text=denied_result.model_dump_json(),
                                       summary=denied_result.model_dump())
-            # ⑧ 同路径在途互斥:两个任务文本可以完全不同(去重指纹不碰撞),却写同一个
-            #    目标文件——并发跑就会静默互相覆盖(原子写只防撕裂不防覆盖)。把任务
-            #    文本里抽出的绝对路径与「同一父实例」正在写的路径集比对,命中即拒。
-            #    只按父实例分桶,不按 trace 全局分桶:真正会同时写同一文件的,是同一个
-            #    父在同一轮里扇出的多路(兄弟 spawn);祖先任务文本里提到某路径不代表
-            #    后代要写它(后代或只读,或顺序依赖父产物),按父实例分桶才不会把 noter
-            #    写完再内部 spawn reviewer 审稿这类顺序流程误判成并发写。
+            # ⑧ 同路径在途互斥:两个任务文本可以完全不同(去重指纹不碰撞),
+            #    却写同一个目标文件——并发跑就会静默互相覆盖(原子写只防撕裂不防覆盖)。
+            #    把任务文本里抽出的绝对路径与「同一父实例」正在写的路径集比对,命中即拒。
+            #    只按父实例分桶,不按 trace 全局分桶:真正会同时写同一文件的,
+            #    是同一个父在同一轮里扇出的多路(兄弟 spawn);
+            #    祖先任务文本里提到某路径不代表后代要写它(后代或只读,或顺序依赖父产物),
+            #    按父实例分桶才不会把 noter 写完再内部 spawn reviewer 审稿这类顺序流程误判成并发写。
             #    本闸必须保持在最后一位:它一旦登记占用就无法回退,若其后还有闸拒绝,
             #    早退不进 aexecute 的 finally,该路径就被永久锁死。只拦「同时在途」,
             #    不拦「按序重写已完成 spawn 写过的文件」——重新生成笔记是合法行为。
