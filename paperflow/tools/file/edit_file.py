@@ -3,13 +3,12 @@
 
 LLM 只需输出变更部分(省 token),且不误伤无关内容。安全边界由中间件强制:path 可为
 任意绝对路径,敏感路径黑名单(workspace/audit、.git 等)由 WorkspacePolicyMiddleware
-拦截。风险为 medium(与 write_file 对齐),需用户确认。写后调用索引热更新钩子,与
-WriteFileTool 保持索引一致。
+拦截。风险为 medium(与 write_file 对齐),需用户确认。写盘与入库解耦:本工具只负责
+落盘 + 登记产物,入库由调用方改完后派发 indexer 完成。
 """
 from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.services.rag_service import get_rag_service
 from paperflow.tools.file._constants import NOTE_HINTS
 from paperflow.tools.file.atomic import atomic_write
 
@@ -51,7 +50,7 @@ class EditFileTool(Tool):
 
         查找用 str.count 判断唯一性——锚点必须唯一,避免替换错位置。
         _run_state 为本次 run 的状态容器（未注入时为 None）：替换落盘成功后把路径
-        登记进产物账本；索引失败不影响登记。
+        登记进产物账本。入库不在本工具：调用方据返回文本派发 indexer 重新入库。
 
         Args:
             path: str，目标文件绝对路径
@@ -78,10 +77,8 @@ class EditFileTool(Tool):
         atomic_write(p, content.replace(old_text, new_text))
         if _run_state is not None:
             _run_state.artifacts[str(p)] = "edit_file"
-        note = ""
-        try:
-            get_rag_service().index_document(str(p))
-        except Exception as e:
-            # Milvus 是外部服务可能未启动：索引失败只降级为提示，不掩盖已成功的编辑
-            note = f"（索引失败：{e}）"
-        return ToolResult(text=f"已编辑 {path}{note}", completion=f"File edited: {path}")
+        # 索引不在这里做：改完由调用方派发 indexer 重新入库（索引是「先删后建」，
+        # 直接重跑不会留下旧块）。
+        return ToolResult(
+            text=f"已编辑 {path}（尚未建立索引，请派发 indexer）",
+            completion=f"File edited: {path}")

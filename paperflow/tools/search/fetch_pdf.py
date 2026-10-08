@@ -13,13 +13,12 @@ from urllib.parse import urljoin, urlparse
 from paperflow.core.security.network import validate_url_target
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.citations import get_citation_manager
-from paperflow.rag.services.rag_service import get_rag_service
 from paperflow.tools.file.atomic import atomic_write_bytes
 from paperflow.tools.search._common import _norm_title
 
 
 class FetchPdfTool(Tool):
-    """下载 PDF 工具：带 SSRF 校验的网络抓取 + 写盘 + 索引热更新。
+    """下载 PDF 工具：带 SSRF 校验的网络抓取 + 写盘。
 
     Attributes:
         name: str，工具名 "fetch_pdf"
@@ -35,7 +34,7 @@ class FetchPdfTool(Tool):
 
     name = "fetch_pdf"
     # description 与行为对齐:纯下载,url 取检索结果（含 MCP 工具结果）中的 PDF 链接(LLM 据此传参)
-    description = "下载 PDF 到本地资料库（SSRF 校验 + 写盘后索引热更新）。url 取检索结果（含 MCP 工具结果）中的 PDF 链接。"
+    description = "下载 PDF 到本地资料库（SSRF 校验 + 写盘；入库需另行派发 indexer）。url 取检索结果（含 MCP 工具结果）中的 PDF 链接。"
     parameters = {
         "type": "object",
         "properties": {
@@ -162,7 +161,7 @@ class FetchPdfTool(Tool):
     def execute(self, url: str, download_to: str | None = None,
                 title: str | None = None,
                 _run_state=None) -> ToolResult:
-        """下载 PDF 到本地并触发索引热更新；失败返回可行动报错文本。
+        """下载 PDF 到本地；失败返回可行动报错文本。
 
         查重三道闸（均在写盘之前）：
         1. 本任务内已下载过（URL 或规范化标题命中 downloaded）→ 成功性短路；
@@ -200,7 +199,7 @@ class FetchPdfTool(Tool):
                     return ToolResult(text=f"语料库已有该论文（{loc}），无需下载。")
             except Exception:
                 pass    # 查重失败不挡下载（索引未就绪等），保守放行
-        # ↓ 以下 dest 计算、fetch、索引热更新逻辑原样保留 ↓
+        # ↓ 以下 dest 计算、fetch 逻辑原样保留 ↓
         if download_to:
             dest = Path(download_to)
         else:
@@ -237,12 +236,7 @@ class FetchPdfTool(Tool):
             _run_state.downloaded[url] = str(dest)
             if title:
                 _run_state.downloaded[f"title:{_norm_title(title)}"] = str(dest)
-            # 写盘已成功（_fetch 内完成），登记产物路径 -> 生产者；索引失败不影响登记
+            # 写盘已成功（_fetch 内完成），登记产物路径 -> 生产者
             _run_state.artifacts[str(dest)] = "fetch_pdf"
-        note = ""
-        try:
-            get_rag_service().index_document(str(dest))   # 写盘后做索引热更新
-        except Exception as e:
-            # Milvus 是外部服务可能未启动：索引失败只降级为提示，不掩盖下载成功
-            note = f"（索引失败：{e}）"
-        return ToolResult(text=f"已下载 PDF: {dest}{note}")
+        # 索引不在这里做：下载成功后由调用方派发 indexer 入库
+        return ToolResult(text=f"已下载 PDF: {dest}（尚未建立索引，请派发 indexer）")
