@@ -164,7 +164,7 @@ Every agent lives in `agents/<name>/` with two files:
 
 记忆会话内即时生效：`_refresh_head_memory` 每轮开头重建记忆块并替换 head——同轮里 `memory_replace` 改的块，下一轮 LLM 调用即见。
 
-运行期状态容器（`core/agent/state.py`）：把过去散在各模块、生命周期不一的模块级字典收成两个显式作用域——`SessionState`（跨 run 存活：同会话 spawn 去重注册表、同 agent_type 连续失败计数）与 `RunState`（按一次用户任务 / `trace_id` 隔离：搜索去重池与负缓存、supervisor 派发账本、审稿与每轮派发预算计数、在途写盘路径、产物账本）。两者都按 TTL 惰性清扫（取用时顺手剔除过期条目，不起定时任务；run 作用域按滑动窗口推进取用时刻，活跃任务不会被自身清扫误删）。
+运行期状态容器（`core/agent/state.py`）：把过去散在各模块、生命周期不一的模块级字典收成两个显式作用域——`SessionState`（跨 run 存活：只剩同 agent_type 连续失败计数；去重注册表在 run 作用域）与 `RunState`（按一次用户任务 / `trace_id` 隔离：搜索去重池与负缓存、在途派发去重注册表、supervisor 派发账本、审稿与每轮派发预算计数、在途写盘路径、产物账本）。两者都按 TTL 惰性清扫（run 整份丢弃、session 逐条过期——只剩失败计数；取用时顺手剔除过期条目，不起定时任务；run 作用域按滑动窗口推进取用时刻，活跃任务不会被自身清扫误删）。
 
 ### LLM client
 
@@ -288,7 +288,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 2. **mode 校验** — 非 `SubAgentMode` 合法值 → denied（schema enum 已约束 LLM 生成层，此处兜底漏网）
 3. **意图派发门禁** — 显式声明的 `intent` 优先按声明校验，未声明看本轮会话意图；`dispatch_allowed=False`（chitchat/out_of_scope/help/feedback/set_research_topic 等，含声明的不可派发意图）→ denied。**意图只作信号，不决定派发顺序**
 4. **spawn 权限** — `_check_spawn_allowed`：supervisor 硬编码放行；其余 agent 查自己的 `AgentConfig.allowed_spawns` 白名单
-5. **同会话同指纹去重**（指纹 = sha256(规范化任务文本 + mode)）— **无路径任务** 运行中去重 + 完成结果 300s 内可复用；**含路径任务** 只做运行中去重（文件可能中途变化，完成不缓存）
+5. **同批同指纹去重**（指纹 = sha256(规范化任务文本 + mode)；注册表在 run 状态容器，键 `(父实例 id, 任务指纹)`）：只登记正在执行中的派发、完成即清除、不缓存结果——只拦同一批工具调用内的机械重复，跨轮重派会真跑
 6. **审稿预算** — 同一父实例内 note_review/download_review/plan_review 各自 ≤3 次（计数键 `(父实例 id, mode)`），超限 denied（轮数预算下沉代码，LLM 不数轮次）
 7. **每轮派发上限** — supervisor 每次 ReAct 迭代内自身派发 ≤8 路，超限 denied（下一轮重新起算）
 8. **同路径在途互斥** — 任务文本抽出的目标绝对路径若正被**同一父实例**的在途派发占用 → denied（防并发静默覆盖；只拦同时在途，不拦按序重写已完成 spawn 写过的文件）
