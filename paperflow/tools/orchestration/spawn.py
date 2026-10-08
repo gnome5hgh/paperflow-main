@@ -5,14 +5,13 @@
 叶子 agent（reviewer/qa-agent/librarian）不装配、不递归调度。需父 agent 注入
 (needs_parent),见 Tool 约定。
 
-派发前 _admit 的八道闸（未知类型 / mode 校验 / 意图派发门禁 / spawn 白名单 /
-同指纹去重（同一批内的机械重复） / 审稿预算 / 每轮派发上限 / 同路径在途互斥）与闸门状态容器
+派发前 _admit 的七道闸（未知类型 / mode 校验 / 意图派发门禁 / spawn 白名单 /
+同指纹去重（同一批内的机械重复） / 审稿预算 / 每轮派发上限）与闸门状态容器
 （session/run 两作用域,见 core/agent/state.py）都在本模块;意图只作信号,
 顺序与并行由父 agent 自主决定,框架不强制。
 """
 import asyncio
 import hashlib
-import re
 import threading
 import time
 from typing import Callable
@@ -289,7 +288,7 @@ def _record_dispatch(parent: Agent, agent_type: str, status: SubAgentStatus) -> 
 def _deny(parent: Agent, agent_type: str, summary: str) -> ToolResult:
     """构造一次派发拒绝的结果,并同步记入派发账本。
 
-    八道闸的拒绝走同一形状(记账 denied + status=denied),集中在这里而不是每道闸各写
+    各道闸的拒绝走同一形状(记账 denied + status=denied),集中在这里而不是每道闸各写
     一遍构造样板:账本少记一笔,收尾核对就看不到那次「想派但没派成」,而漏记往往正是
     复制粘贴样板时发生的。
 
@@ -344,16 +343,6 @@ _REVIEW_BUDGET_DENIED_NOTE = (
     "并在最终回复中如实报告未解决的 blocking 项,不要再次派发。"
 )
 
-#: 任务文本中绝对路径的启发式正则(_extract_paths 的判据):抓 "/" 开头、不含空白/
-#: 中文标点/半角逗号分号冒号/引号的最长串。不读文件,纯文本匹配。
-#: 排除集不含半角括号(如 file(v2).md 能完整识别);中文全角括号仍是分隔符。
-#: lookbehind (?<![A-Za-z0-9_]) 让路径前可以是空白/标点(全角冒号/左括号/反引号)或
-#: 中文,但不含英文单词字符——这样 Q1/Q2、8/10、a/b 等散文斜杠(前接单词字符)仍忽略,
-#: 而「审阅草稿文件：/tmp/x」这类紧邻标点/中文的真路径能识别。误判方向:假阳性(散文
-#: 斜杠被当成路径)只会多拒一次同路径派发,模型改任务文本即可重试。
-_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])/[^\s，,;:。（）\"']+")
-
-
 def _task_fingerprint(task: str, mode: str | None = None) -> str:
     """任务文本指纹 = sha256(规范化空白后的文本 + mode)[:16]。
 
@@ -371,18 +360,6 @@ def _task_fingerprint(task: str, mode: str | None = None) -> str:
     norm = " ".join(task.split())
     key = f"{mode or ''}\n{norm}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-
-
-def _extract_paths(task: str) -> list[str]:
-    """从子任务文本抽出绝对路径（`_PATH_RE` 的唯一消费方），用于同路径在途互斥。
-
-    Args:
-        task: str，子任务文本
-
-    Returns:
-        任务文本中抽出的绝对路径列表。
-    """
-    return _PATH_RE.findall(task)
 
 
 class _UserWaitClock:
@@ -668,20 +645,18 @@ class SpawnSubAgentTool(Tool):
 
     def _admit(self, agent_type: str, task: str, mode: str | None = None,
                intent: str | None = None) -> "ToolResult | str":
-        """派发前的八道闸。前四道是「这一路合不合法」的纯判定，后四道是「会不会与别的
+        """派发前的七道闸。前四道是「这一路合不合法」的纯判定，后三道是「会不会与别的
         派发冲突、超支」的共享状态检查：
 
         - 纯判定（不进锁，只读、无共享状态写入）：① 未知 agent 类型 → ② mode 枚举
           → ③ 意图派发门禁 → ④ spawn 白名单
         - 共享状态（整体持 _SPAWN_LOCK）：⑤ 同批同指纹去重 → ⑥ 审稿预算
-          → ⑦ 每轮派发上限 → ⑧ 同路径在途互斥
+          → ⑦ 每轮派发上限
 
-        三条不变式：
+        两条不变式：
         - 所有拒绝都在登记 running **之前**提前 return，注册表不被拒绝路径污染；
-        - ⑥⑦ 只判不记：计数自增与 ⑧ 的路径登记、⑤ 的注册收敛在同一个临界区——否则被
-          后续闸拒绝的派发会白吃额度，拒绝话术还会把「路径冲突」误报成「预算耗尽」；
-        - ⑧ 必须最后判：它一登记占用就无法回退，若其后还有闸拒绝，早退不进调用方的
-          finally，该路径会被永久锁死。
+        - ⑥⑦ 只判不记：计数自增与 ⑤ 的注册收敛在同一个临界区——否则被后续闸拒绝的
+          派发会白吃额度。
 
         意图只作信号，不强制派发顺序——顺序与并行由 supervisor 自主决定；每条被拒/
         去重的尝试都记入派发账本（denied/deduped），供收尾核对看到「想派但没派成」。
@@ -730,8 +705,8 @@ class SpawnSubAgentTool(Tool):
         if not_allowed is not None:
             return _deny(parent, agent_type, not_allowed)
 
-        # ⑤~⑧ 触及共享状态（去重注册表 / 预算计数 / 在途路径），判定与记账整体持锁。
-        # 三者都在 run 容器上（按 trace 隔离，一次用户任务内独立）；容器取用时内部会顺手
+        # ⑤~⑦ 触及共享状态（去重注册表 / 预算计数），判定与记账整体持锁。
+        # 两者都在 run 容器上（按 trace 隔离，一次用户任务内独立）；容器取用时内部会顺手
         # 清扫过期条目，故此处不再单独清理。
         rs = get_run_state(parent._trace_id)
         fp = _task_fingerprint(task, mode)
@@ -768,28 +743,12 @@ class SpawnSubAgentTool(Tool):
                              f"本轮派发已达上限 {TURN_SPAWN_BUDGET}，"
                              "请先汇总已有结果向用户交代，需要继续时下一轮再派。")
 
-            # ⑧ 同路径在途互斥：任务文本可以完全不同（去重指纹不碰撞）却写同一个文件，并发跑
-            #    就会静默互相覆盖——原子写只保证「不会写到一半被读到」，不保证「后写不盖先写」。
-            #    只按父实例分桶：真正会同时写同一文件的是同一父实例扇出的兄弟，祖先提到某路径不代表后代要写它，
-            #    按父实例分桶才不会把「noter 写完再内部 spawn reviewer 审稿」这类顺序流程误判成并发写。
-            #    只拦「同时在途」，不拦按序重写已完成 spawn 写过的文件。
-            target_paths = _extract_paths(task)
-            clash = [p for p in target_paths
-                     # .get(parent._instance_id, set()) —— 取父实例的占用集合；该实例还没占用任何路径时（最常见的情况）返回空集
-                     if p in rs.in_flight_paths.get(parent._instance_id, set())]
-            if clash:
-                return _deny(parent, agent_type,
-                             f"目标路径在途占用，正在被另一个子任务写：{'、'.join(clash)}。"
-                             "请先等它完成，或改为写不同的文件。")
-
-            # 八道全过：记账收敛到一处——⑥⑦ 判定阶段只看不写，计数自增、路径登记与注册
+            # 七道全过：记账收敛到一处——⑥⑦ 判定阶段只看不写，计数自增与注册
             # running 落在同一临界区，任何一道闸拒绝的派发都不消耗额度。
             if review_key is not None:
                 rs.review_counts[review_key] = rs.review_counts.get(review_key, 0) + 1
             if parent.agent_type == "supervisor":
                 rs.turn_spawn_counts[turn] = rs.turn_spawn_counts.get(turn, 0) + 1
-            if target_paths:
-                rs.in_flight_paths.setdefault(parent._instance_id, set()).update(target_paths)
             reg[key] = now
         return fp
 
@@ -817,7 +776,7 @@ class SpawnSubAgentTool(Tool):
         # _admit 里），并按派发结果推进失败计数——容器按作用域取用，与 _admit 的局部变量无关。
         parent = self._parent
         sess = get_session_state(parent.session_id)
-        # run 容器：收尾在 finally 里释放本次派发占用的目标路径（_admit 已登记在它上面）
+        # run 容器：收尾在 finally 里清除本次派发的去重条目（_admit 已登记在它上面）
         rs = get_run_state(parent._trace_id)
 
         result = None
@@ -872,14 +831,6 @@ class SpawnSubAgentTool(Tool):
                 # 收尾清除本次派发的去重条目（键与 _admit 一致）。只登记在途、不缓存结果：
                 # 失败/超时同样立即清除，因此失败重试会真跑并逐次推进失败计数。
                 rs.spawn_registry.pop((parent._instance_id, fp), None)
-                # 释放本次派发占用的目标路径(与注册表清理同处、同锁):任务已结束,
-                # 同路径的新派发送下一轮即可放行。只摘本父实例名下的这些路径,别的
-                # 父实例即便占用同一路径也不受影响(各自分桶)。
-                owned = rs.in_flight_paths.get(parent._instance_id)
-                if owned is not None:
-                    owned.difference_update(_extract_paths(task))
-                    if not owned:
-                        rs.in_flight_paths.pop(parent._instance_id, None)
         return result
 
     async def _run_child(self, child: Agent, agent_type: str, task: str) -> ToolResult:

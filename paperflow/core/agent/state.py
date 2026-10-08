@@ -3,7 +3,7 @@
 - SessionState（键 session_id）：跨 run 存活。装「跨任务才有意义」的东西——连续失败
   计数（连续失败才升级）。
 - RunState（键 trace_id）：一次用户任务一个。装本次任务的中间产物——搜索去重池、派发与
-  产物账本、各类预算计数、在途路径、在途写占用、在途派发去重注册表。子 agent 继承父的
+  产物账本、各类预算计数、在途写占用、在途派发去重注册表。子 agent 继承父的
   trace_id，故整棵任务树共用一份。
 
 两者都按 TTL 惰性清扫（取用时顺手剔除过期条目，不需要定时任务），粒度不同：
@@ -55,7 +55,6 @@ class RunState:
         spawn_dispatches: list[tuple[str, str]]，supervisor 自身派发账本 (agent_type, status)
         turn_spawn_counts: dict[int, int]，轮次 → 该轮派发次数（每轮上限用）
         review_counts: dict[tuple[str, str], int]，(父实例 id, mode) → 审稿次数（预算用）
-        in_flight_paths: dict[str, set[str]]，父实例 id → 在途写盘目标路径集（同路径互斥用）
         writing_paths: dict[str, tuple[str, int]]，目标路径 → (持有者实例 id, 重入计数)（在途写互斥）
         spawn_registry: dict[tuple[str, str], float]，(父实例 id, 任务指纹) → 注册时刻（在途派发去重）
         artifacts: dict[str, str]，落盘路径 → 生产者工具名（产物账本）
@@ -76,9 +75,6 @@ class RunState:
         self.turn_spawn_counts: dict[int, int] = {}
         #: 审稿预算计数：(父实例 id, mode) -> 次数
         self.review_counts: dict[tuple[str, str], int] = {}
-        #: 在途写盘目标路径，按「占用它的父实例 id」分桶：只有同一父扇出的兄弟互斥，
-        #: 祖先/后代不误伤（后代可能只读、或顺序依赖父产物）。判定与释放见 spawn 闸 ⑧。
-        self.in_flight_paths: dict[str, set[str]] = {}
         #: 在途写占用：目标绝对路径 -> (持有者实例 id, 该持有者的重入计数)。只登记
         #: 「正在写的那一刻」——调用方在 finally 里释放，异常/取消都会走到，所以残留
         #: 条目只是防御性兜底，随整份容器被 TTL 回收。跨 agent 共享靠 trace：子 agent
