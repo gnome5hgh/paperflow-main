@@ -34,6 +34,10 @@ class FormatCheckTool(Tool):
     # 也读草稿文件(execute 从磁盘读结构)→ 需要 scratch;templates 由内部派生不在此
     root_hints = ["note", "scratch"]
 
+    #: 只读笔记做结构比对。模板缺失时会落盘一份常量骨架，但那是引导性写、落点不对应
+    #: 调用方给的路径，故不计入写副作用——计入会让本工具被当成写者、把笔记当成写目标。
+    side_effects = ["read_file"]
+
     #: 模板缺失时落盘的最小骨架(缺失建骨架而非报错)
     _SKELETON = ("# <论文标题>\n"
                  "## 概述\n"

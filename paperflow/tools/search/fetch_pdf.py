@@ -129,6 +129,35 @@ class FetchPdfTool(Tool):
             raise ValueError(f"响应不是 PDF（缺 %PDF magic bytes）: {url}")
         dest.write_bytes(r.content)
 
+    def effective_target_path(self, args: dict) -> str | None:
+        """导出写互斥键：本次下载的落盘路径。
+
+        与 execute 的落点推导同源——download_to 优先，否则落到语料库 pdf 根、文件名取
+        URL 尾段。推导不出来（没配 pdf 根、或 URL 尾段不能当文件名）时返回 None：那种
+        调用本身也会失败，不该占住一个写互斥键。
+
+        Args:
+            args: dict，已解析的工具调用参数
+
+        Returns:
+            下载落盘的绝对路径；无法推导时 None。
+        """
+        dest = args.get("download_to")
+        if isinstance(dest, str) and dest:
+            return dest
+        url = args.get("url")
+        if not isinstance(url, str) or not url:
+            return None
+        cfg = getattr(self, "_config", None)
+        pdf_root = (getattr(getattr(cfg, "corpus", None), "pdf_dir", "")
+                    if cfg is not None else "")
+        if not pdf_root:
+            return None
+        try:
+            return str(Path(pdf_root) / self._default_download_name(url))
+        except ValueError:
+            return None
+
     def execute(self, url: str, download_to: str | None = None,
                 title: str | None = None,
                 _run_state=None) -> ToolResult:

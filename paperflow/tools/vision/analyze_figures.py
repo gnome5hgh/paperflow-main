@@ -89,6 +89,22 @@ class AnalyzeFiguresTool(Tool):
         return lambda data: parent._emit_llm_call(
             getattr(parent, "_current_turn", 0), data)
 
+    def effective_target_path(self, args: dict) -> str | None:
+        """导出写互斥键：本次真正会写的目标。
+
+        本工具的 path 参数是要读的输入 PDF，不是写目标；唯一会写的是 embed_dir 下的
+        图文件，而且不给 embed_dir 时**零写入**（纯分析）。所以键取 embed_dir——若用
+        path（输入 PDF）当键，两路并发分析同一篇论文会互相误拒。
+
+        Args:
+            args: dict，已解析的工具调用参数
+
+        Returns:
+            embed_dir 的路径字符串；未给该参数（本次不落盘）时 None。
+        """
+        d = args.get("embed_dir")
+        return str(d) if isinstance(d, str) and d else None
+
     def execute(self, path: str, figure: int | None = None,
                 embed_dir: str | None = None) -> ToolResult:
         """提取图表 → 视觉分析（并行）→ 可选落盘 → 返回 digest。
