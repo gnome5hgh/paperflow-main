@@ -1422,29 +1422,31 @@ class Agent:
             if isinstance(target, str):
                 ctx.diffstat_old = _read_text_or_none(target)
 
-        # 当在一轮工具调用里并行发两个 edit_file 改同一个文件时会出现两个问题：
-        # 1、丢写竞态：两个协程对同一文件并发读-改-写，后写者会把先写者的修改覆盖掉
-        # 2、确认竞态：两个工具各自走到确认中间件，都在对方决策前弹确认框——用户输入的「a」（全部授权）只覆盖了先弹框的那个，后到者会再弹一次；而且两个协程并发读 CLI 标准输入本身就是竞态。
-        # 只有声明了需要用户确认的写类工具（write_file / edit_file 这类）才走加锁分支
+        # 并行写同一个文件会引出三件事，由三把不同的锁各管一段。把粒度与归属写清楚，
+        # 免得后续把某一层误当成另一层：
         #
-        # 锁为什么包住 _exec_tool_guarded 整体？
-        # 这是设计关键：锁的粒度不是“执行工具”，而是「确认决策 + 执行」全程（_exec_tool_guarded 的 5-8 步，含 before 钩子里的 ConfirmRequired → confirm_callback → 工具执行）。所以 async with 必须放在 _exec_tool 这一层包住调用，而不是放进 guarded 函数内部。
-        # 这样第二个并发调用会在锁上等待，直到第一个完整走完「用户确认 + 写文件」。等它拿到锁时，授权键已经被第一个调用写进了已授权集合，于是不再弹框直接放行——既消除了重复弹框，也把同路径的写操作串行化，丢写竞态随之消失。
+        # 1）同一 agent 内部的多次同路径写——丢写竞态 + 重复确认。两个协程对同一文件并发读-改-写，
+        #    后写者会覆盖先写者；两个工具又各自弹确认框，用户输入的「a」（本会话放行）只覆盖先弹框的
+        #    那个，后到者会再弹一次（而且两个协程并发读 CLI 标准输入本身就是竞态）。解法是模块级按路径
+        #    注册表 `_path_lock`：只有声明了 `requires_confirm` 的工具才走这个加锁分支，按
+        #    `effective_target_path` 取该路径的 `asyncio.Lock`，且锁要包住 `_exec_tool_guarded` **整体**
+        #    （确认决策 + 执行，即 5-8 步，含 before 钩子里的 ConfirmRequired → confirm_callback → 工具
+        #    执行），不能只包执行那一步——这是设计关键，所以 `async with` 放在 `_exec_tool` 这一层包住
+        #    调用，而不是放进 guarded 函数内部。第二个并发调用因此在锁上等到第一个完整走完「用户确认 +
+        #    写文件」；它拿到锁时授权键已进已授权集合，于是不再弹框直接放行——既消除重复弹框，又把同路径
+        #    写串行化，丢写竞态随之消失。键经 `tool.effective_target_path` 导出而非直接读 `args["path"]`：
+        #    write_file 的 filename 便捷入口没有 path 参数，须先组合出落盘路径再上锁——否则 pathless
+        #    调用绕过锁，两类竞态经此入口复发。
+        # 2）多人同时抢 CLI 标准输入（与文件路径无关）。`_confirm_lock` 是 run 层传入、每次 run 一把，
+        #    串行化所有并发工具调用的 confirm_callback 本身。
+        # 3）跨 agent 的同路径冲突——不排队，当场拒。写工具在 `RunState.writing_paths` 上按**真实写目标**
+        #    登记占用，另一个实例正在写同一路径时**当场拒绝**：等待结束仍然要写，那只是「带额外步骤的
+        #    丢更新」，本仓要防的正是跨子 agent 的静默丢失，所以让第二个写根本不发生。登记是纯同步字典
+        #    操作（无 await），所以能在这层 fail-fast，不会像中间件那样先排到路径锁后面才拒。
         #
-        # _confirm_lock（run 层传入）：每次 run 一把，串行化所有并发工具调用的 confirm_callback 本身——解决的是“多人同时抢 CLI 标准输入”的问题，与文件路径无关。
-        # _path_lock（模块级注册表）：按文件路径串行化「确认+执行」——解决的是“同一文件被并发改写”的问题。
-        # 写占用（RunState.writing_paths）：管的是**跨 agent** 的同路径冲突——两个实例并发写同一文件时当场拒绝第二个，而不是排队后照样覆盖。_path_lock 管同一个 agent 自己的多次调用排队，两者互补。
-        # 键经 tool.effective_target_path 导出而非直接读 args["path"]：write_file 的
-        # filename 便捷入口没有 path 参数，组合出落盘路径后再上锁——否则 pathless
-        # 调用绕过锁，丢写/重复确认竞态经此入口复发。
-        #
-        # 写互斥（第三件事，与上面两把锁各管一段）：写工具按**真实写目标**登记占用，
-        # 另一个实例正在写同一路径时**当场拒绝**——不排队等。等待结束仍然要写，那只是
-        # 「带额外步骤的丢更新」；本仓要防的正是跨子 agent 的静默丢失，所以让第二个写
-        # 根本不发生。登记是纯同步字典操作（无 await），所以能在这层 fail-fast，不会像
-        # 中间件那样先排到路径锁后面才拒。
-        # 判定写者用 side_effects；键复用 effective_target_path——它已经是确认键、串行锁
-        # 与 diffstat 的唯一权威，对交付物写者返回的就是写目标（不做第二套路径概念）。
+        # 三者互补：`_path_lock` 管同一个 agent 自己的多次调用排队，`_confirm_lock` 管输入通道，
+        # 写占用管跨实例。写者身份用 `side_effects` 判定；写占用键复用 `effective_target_path`——它已是
+        # 确认键、串行锁与 diffstat 的唯一权威，对交付物写者返回的就是写目标（不做第二套路径概念）。
         target = tool.effective_target_path(ctx.args) if tool is not None else None
         owner = self._instance_id
         claimed = isinstance(target, str) and _is_writer(tool)
@@ -1458,7 +1460,8 @@ class Agent:
                 await self._run_after_hooks(ctx)
                 return ToolResult(text=(
                     f"目标文件正被另一个并发子任务写入：{target}。"
-                    "不要改文件名另写一份；请稍后原样重试，或把该冲突上报给上级。"))
+                    "不要改文件名另写一份；请稍后原样重试，或把该冲突上报给上级。"),
+                    is_error=True)
         try:
             if getattr(tool, "requires_confirm", False) and isinstance(target, str):
                 async with _path_lock(target):
@@ -1466,6 +1469,10 @@ class Agent:
             return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
         finally:
             # 异常、取消、用户拒绝都会走到——所以占用不需要 TTL 兜底。
+            # 取消场景有一处已知的宽松：占用在此释放时，`asyncio.to_thread` 起的 worker 线程可能仍在跑
+            # 那次写——`to_thread` 不可取消，取消协程不会停掉线程。这可以接受：写是原子替换（不会留下
+            # 写了一半的文件），且 Ctrl+C 取消的是整棵 agent 树，不会有别的写者趁这段时间进来。代价是
+            # 「占用在手」在取消下不严格等于「写在进行」——不要依赖这个等价做判断。
             if claimed:
                 rs.release_write(target, owner)
 

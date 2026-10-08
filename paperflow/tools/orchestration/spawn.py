@@ -343,6 +343,7 @@ _REVIEW_BUDGET_DENIED_NOTE = (
     "并在最终回复中如实报告未解决的 blocking 项,不要再次派发。"
 )
 
+
 def _task_fingerprint(task: str, mode: str | None = None) -> str:
     """任务文本指纹 = sha256(规范化空白后的文本 + mode)[:16]。
 
