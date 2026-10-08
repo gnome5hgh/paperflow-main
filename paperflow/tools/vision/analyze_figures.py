@@ -12,6 +12,7 @@ from pathlib import Path
 from paperflow.config import PaperFlowConfig
 from paperflow.core.llm import LLMClient
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.file.atomic import atomic_write_bytes
 from paperflow.vision.analyzer import FigureAnalyzer
 from paperflow.vision.extractor import FigureExtractor
 
@@ -227,8 +228,7 @@ def _save_figure(fig, embed_dir: Path, pdf_stem: str) -> str:
     name = f"{pdf_stem}-fig{label}.{ext}"
     try:
         # embed_dir 可能是尚不存在的 figures/ 子目录——按需创建，避免写盘静默失败
-        embed_dir.mkdir(parents=True, exist_ok=True)
-        (embed_dir / name).write_bytes(fig.image_bytes)
+        atomic_write_bytes(embed_dir / name, fig.image_bytes)
     except OSError:
         pass
     return f"![[{name}]]"

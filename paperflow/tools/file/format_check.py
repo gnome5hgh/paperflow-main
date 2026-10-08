@@ -7,6 +7,7 @@ from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.rag.services.rag_service import get_rag_service
+from paperflow.tools.file.atomic import atomic_write
 
 
 class FormatCheckTool(Tool):
@@ -60,8 +61,7 @@ class FormatCheckTool(Tool):
         cfg = get_rag_service().config
         tpl = Path(self._template_path or (Path(cfg.runtime.workspace) / "templates" / "paper_note.md"))
         if not tpl.exists():
-            tpl.parent.mkdir(parents=True, exist_ok=True)
-            tpl.write_text(self._SKELETON, encoding="utf-8")
+            atomic_write(tpl, self._SKELETON)
         return [ln.lstrip("# ").strip() for ln in tpl.read_text(encoding="utf-8").splitlines()
                 if ln.startswith("#")]
 

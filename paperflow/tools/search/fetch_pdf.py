@@ -14,6 +14,7 @@ from paperflow.core.security.network import validate_url_target
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.citations import get_citation_manager
 from paperflow.rag.services.rag_service import get_rag_service
+from paperflow.tools.file.atomic import atomic_write_bytes
 from paperflow.tools.search._common import _norm_title
 
 
@@ -127,7 +128,7 @@ class FetchPdfTool(Tool):
         r.raise_for_status()                    # 4xx/5xx
         if not r.content.startswith(b"%PDF"):
             raise ValueError(f"响应不是 PDF（缺 %PDF magic bytes）: {url}")
-        dest.write_bytes(r.content)
+        atomic_write_bytes(dest, r.content)
 
     def effective_target_path(self, args: dict) -> str | None:
         """导出写互斥键：本次下载的落盘路径。
@@ -215,7 +216,6 @@ class FetchPdfTool(Tool):
         client, ssrf_check = self._client or self._make_client()
         if dest.exists():
             return ToolResult(text=f"已存在，跳过下载: {dest}")
-        dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             self._fetch(client, ssrf_check, url, dest)
         except _HttpxStatusError as e:
