@@ -1,13 +1,14 @@
 """运行期状态容器——按「活多久」分成两个显式作用域。
 
-- SessionState（键 session_id）：跨 run 存活。装「跨任务才有意义」的东西——同一会话内
-  的 spawn 去重（上一条消息派过的任务别重复派）与连续失败计数（连续失败才升级）。
+- SessionState（键 session_id）：跨 run 存活。装「跨任务才有意义」的东西——连续失败
+  计数（连续失败才升级）。
 - RunState（键 trace_id）：一次用户任务一个。装本次任务的中间产物——搜索去重池、派发与
-  产物账本、各类预算计数、在途路径。子 agent 继承父的 trace_id，故整棵任务树共用一份。
+  产物账本、各类预算计数、在途路径、在途派发去重注册表。子 agent 继承父的 trace_id，
+  故整棵任务树共用一份。
 
-两者都按 TTL 惰性清扫（取用时顺手剔除过期条目，不需要定时任务），但粒度不同：
-session 逐条过期（过窗的 done 缓存与失败计数），run 整份丢弃（trace 每次 run 重新
-生成、永不复用，所以整份删掉是安全的，预算也因此天然重置）。
+两者都按 TTL 惰性清扫（取用时顺手剔除过期条目，不需要定时任务），粒度不同：
+session 逐条过期（过窗的失败计数），run 整份丢弃（trace 每次 run 重新生成、永不复用，
+所以整份删掉是安全的，预算也因此天然重置；去重注册表也随之只在一次 run 内存在）。
 """
 from __future__ import annotations
 
@@ -16,11 +17,9 @@ import time
 
 __all__ = [
     "RunState", "SessionState", "get_run_state", "get_session_state",
-    "SPAWN_REUSE_WINDOW_S", "FAILURE_COUNT_TTL_S", "RUN_STATE_TTL_S",
+    "FAILURE_COUNT_TTL_S", "RUN_STATE_TTL_S",
 ]
 
-#: spawn done 缓存的可复用时间窗（秒）：窗口内同指纹（仅无路径任务）直接复用结果。
-SPAWN_REUSE_WINDOW_S = 300
 #: 失败升级计数的存活窗（秒）：语义是「同一段工作里连续失败」——窗口太短会让
 #: 升级提示失去意义，但也不能永不回收。
 FAILURE_COUNT_TTL_S = 3600
@@ -31,16 +30,16 @@ RUN_STATE_TTL_S = 3600
 class SessionState:
     """同一会话内跨 run 存活的运行期状态。
 
+    只剩连续失败计数——spawn 去重注册表已迁到 RunState（它只需活在一次 run 内）。
+    「连续失败」的语义天然跨轮（上一轮失败、这一轮又失败才升级），故留在会话作用域。
+
     Attributes:
-        spawn_registry: dict[str, dict]，任务指纹 → {state: running|done, result, started_at}（spawn 去重）
         failure_counts: dict[str, int]，agent_type → 连续失败次数（成功即清零）
         failure_counts_at: dict[str, float]，失败计数最近写入时刻（TTL 清扫依据）
     """
 
     def __init__(self) -> None:
-        """初始化空会话状态（各注册表与计数为空）。"""
-        #: spawn 去重：任务指纹 -> {"state": "running"|"done", "result", "started_at"}
-        self.spawn_registry: dict[str, dict] = {}
+        """初始化空会话状态（失败计数为空）。"""
         #: 连续失败计数：agent_type -> 次数（成功即清零）
         self.failure_counts: dict[str, int] = {}
         #: 失败计数的最近写入时刻：agent_type -> monotonic（TTL 清扫依据）
@@ -57,6 +56,7 @@ class RunState:
         turn_spawn_counts: dict[int, int]，轮次 → 该轮派发次数（每轮上限用）
         review_counts: dict[tuple[str, str], int]，(父实例 id, mode) → 审稿次数（预算用）
         in_flight_paths: dict[str, set[str]]，父实例 id → 在途写盘目标路径集（同路径互斥用）
+        spawn_registry: dict[tuple[str, str], float]，(父实例 id, 任务指纹) → 注册时刻（在途派发去重）
         artifacts: dict[str, str]，落盘路径 → 生产者工具名（产物账本）
         last_touched_at: float，最后一次取用时刻（TTL 滑动窗口清扫依据）
     """
@@ -78,6 +78,11 @@ class RunState:
         #: 在途写盘目标路径，按「占用它的父实例 id」分桶：只有同一父扇出的兄弟互斥，
         #: 祖先/后代不误伤（后代可能只读、或顺序依赖父产物）。判定与释放见 spawn 闸 ⑧。
         self.in_flight_paths: dict[str, set[str]] = {}
+        #: 在途派发去重：(父实例 id, 任务指纹) -> 注册时刻。只登记「正在执行中」的派发，
+        #: 完成即清除、不缓存结果——所以条目只活在一次 run 内，残留条目随整份容器被 TTL
+        #: 回收，无需专门清扫。按父实例分桶：机械重复来自一次 LLM 生成（一个实例），分桶
+        #: 足够，且不会让两个兄弟实例的同文本任务互相误拒。
+        self.spawn_registry: dict[tuple[str, str], float] = {}
         #: 产物账本：落盘路径 -> 生产者（工具名）
         self.artifacts: dict[str, str] = {}
         #: 最后一次取用时刻（TTL 依据）：滑动窗口而非创建时刻，原因见 get_run_state。
@@ -91,20 +96,15 @@ _LOCK = threading.RLock()
 
 
 def _sweep_session(st: SessionState, now: float) -> None:
-    """剔除过窗的 done 缓存与失败计数（running 条目不动——可能正被另一线程执行）。
+    """剔除过窗的失败计数（会话容器已无其它需清扫的条目）。
 
     Args:
         st: SessionState，待清扫的会话容器
         now: float，当前单调时钟时刻
 
     Returns:
-        无返回值（就地剔除过窗的 done 缓存与失败计数；running 条目不动）。
+        无返回值（就地剔除过窗的失败计数）。
     """
-    stale = [fp for fp, e in st.spawn_registry.items()
-             if e.get("state") == "done"
-             and now - e.get("started_at", now) > SPAWN_REUSE_WINDOW_S]
-    for fp in stale:
-        st.spawn_registry.pop(fp, None)
     for agent_type, ts in list(st.failure_counts_at.items()):
         if now - ts > FAILURE_COUNT_TTL_S:
             st.failure_counts_at.pop(agent_type, None)

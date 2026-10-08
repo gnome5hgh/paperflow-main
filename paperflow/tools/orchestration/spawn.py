@@ -6,7 +6,7 @@
 (needs_parent),见 Tool 约定。
 
 派发前 _admit 的八道闸（未知类型 / mode 校验 / 意图派发门禁 / spawn 白名单 /
-同会话同指纹去重 / 审稿预算 / 每轮派发上限 / 同路径在途互斥）与闸门状态容器
+同指纹去重（同一批内的机械重复） / 审稿预算 / 每轮派发上限 / 同路径在途互斥）与闸门状态容器
 （session/run 两作用域,见 core/agent/state.py）都在本模块;意图只作信号,
 顺序与并行由父 agent 自主决定,框架不强制。
 """
@@ -21,11 +21,9 @@ from pydantic import BaseModel
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, StreamEvent
-# 运行期状态(去重注册表/失败计数/各类预算计数)统一由容器持有:session 作用域跨 run
-# 存活(同会话去重与失败计数),run 作用域按 trace 隔离(派发与预算账本)。容器取用时
-# 顺手清扫过期条目,故此处不再单独清理。done 结果可复用窗也复用容器的定义。
-from paperflow.core.agent.state import (
-    SPAWN_REUSE_WINDOW_S as _SPAWN_REUSE_WINDOW_S, get_run_state, get_session_state)
+# 运行期状态由容器持有:去重注册表与各类预算计数在 run 作用域(按 trace 隔离),
+# 失败计数在会话作用域(跨 run 累计)。容器取用时顺手清扫过期条目,故此处不再单独清理。
+from paperflow.core.agent.state import get_run_state, get_session_state
 from paperflow.core.intent.schemas.intent import INTENT_META, IntentType
 from paperflow.core.llm import StructuredOutput
 from paperflow.core.tool import Tool, ToolResult
@@ -319,7 +317,7 @@ _FAILURE_ESCALATION_NOTE = (
 #: 使同一 run 内共用一个 trace 的多个同类型父实例各算各的、兄弟不串号;
 #: 计数存在 run 状态里,跨 run(新 trace)随之重置。
 #: 不同 mode 独立计数(笔记审稿/下载门禁/计划审稿互不挤占)。仅对真实派发计数——
-#: 去重命中(running 提示/done 复用)早退在计数之前,不消耗预算。
+#: 去重命中(running 提示)早退在计数之前,不消耗预算。
 _REVIEW_SPAWN_MODES = frozenset(m.value for m in (
     SubAgentMode.NOTE_REVIEW, SubAgentMode.DOWNLOAD_REVIEW, SubAgentMode.PLAN_REVIEW))
 _REVIEW_SPAWN_BUDGET = 3
@@ -328,13 +326,13 @@ _REVIEW_BUDGET_DENIED_NOTE = (
     "并在最终回复中如实报告未解决的 blocking 项,不要再次派发。"
 )
 
-#: 任务文本中绝对路径的启发式正则(_task_has_path 的布尔判据):抓 "/" 开头、不含空白/
-#: 中文标点/半角逗号分号冒号/引号的最长串。只做「是否含路径」的布尔判断,不读文件。
+#: 任务文本中绝对路径的启发式正则(_extract_paths 的判据):抓 "/" 开头、不含空白/
+#: 中文标点/半角逗号分号冒号/引号的最长串。不读文件,纯文本匹配。
 #: 排除集不含半角括号(如 file(v2).md 能完整识别);中文全角括号仍是分隔符。
 #: lookbehind (?<![A-Za-z0-9_]) 让路径前可以是空白/标点(全角冒号/左括号/反引号)或
 #: 中文,但不含英文单词字符——这样 Q1/Q2、8/10、a/b 等散文斜杠(前接单词字符)仍忽略,
-#: 而「审阅草稿文件：/tmp/x」这类紧邻标点/中文的真路径能识别。误判安全方向:假阳性
-#: 保守跳过 done 缓存 → 安全重跑;真路径漏判只剩「前接英文单词字符」这一窄缝。
+#: 而「审阅草稿文件：/tmp/x」这类紧邻标点/中文的真路径能识别。误判方向:假阳性(散文
+#: 斜杠被当成路径)只会多拒一次同路径派发,模型改任务文本即可重试。
 _PATH_RE = re.compile(r"(?<![A-Za-z0-9_])/[^\s，,;:。（）\"']+")
 
 
@@ -357,34 +355,14 @@ def _task_fingerprint(task: str, mode: str | None = None) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
-def _task_has_path(task: str) -> bool:
-    """任务文本是否含绝对路径(布尔判断,不提取):正则命中即 True。
-
-    门控语义:含路径的任务引用真实文件(世界可变——子 agent 执行期间文件可能被改),
-    故只做 running 去重、完成即清条目、永不缓存 done;无路径任务(纯文本)才允许
-    done 在窗口内复用。误判安全方向:散文里的 "/"(如 "/5 评分")被误判为路径(假阳性)
-    → 保守跳过 done 缓存 → 安全重跑,不交付陈旧结果。
-
-    Args:
-        task: str，子任务文本
-
-    Returns:
-        True 表示任务文本含绝对路径（只做布尔判断，不提取）。
-    """
-    return _PATH_RE.search(task) is not None
-
-
 def _extract_paths(task: str) -> list[str]:
-    """从子任务文本抽出绝对路径（复用 _PATH_RE），用于同路径在途互斥。
-
-    与 _task_has_path 共用同一条启发式正则：同一串文本在「是否含路径」与「含哪些
-    路径」两处判定必须一致，否则去重门控与在途互斥会各按一套标准割裂。
+    """从子任务文本抽出绝对路径（`_PATH_RE` 的唯一消费方），用于同路径在途互斥。
 
     Args:
         task: str，子任务文本
 
     Returns:
-        任务文本中抽出的绝对路径列表（同一条启发式正则，用于同路径在途互斥）。
+        任务文本中抽出的绝对路径列表。
     """
     return _PATH_RE.findall(task)
 
@@ -671,13 +649,13 @@ class SpawnSubAgentTool(Tool):
         return asyncio.run(self.aexecute(agent_type, task, mode, intent))
 
     def _admit(self, agent_type: str, task: str, mode: str | None = None,
-               intent: str | None = None) -> "ToolResult | tuple[str, bool]":
+               intent: str | None = None) -> "ToolResult | str":
         """派发前的八道闸。前四道是「这一路合不合法」的纯判定，后四道是「会不会与别的
         派发冲突、超支」的共享状态检查：
 
         - 纯判定（不进锁，只读、无共享状态写入）：① 未知 agent 类型 → ② mode 枚举
           → ③ 意图派发门禁 → ④ spawn 白名单
-        - 共享状态（整体持 _SPAWN_LOCK）：⑤ 同会话同指纹去重 → ⑥ 审稿预算
+        - 共享状态（整体持 _SPAWN_LOCK）：⑤ 同批同指纹去重 → ⑥ 审稿预算
           → ⑦ 每轮派发上限 → ⑧ 同路径在途互斥
 
         三条不变式：
@@ -697,8 +675,8 @@ class SpawnSubAgentTool(Tool):
             intent: str | None，显式声明的意图
 
         Returns:
-            通过时返回 (任务指纹, 是否含路径)——调用方按 has_path 决定 done 缓存或清条目；
-            拒绝/去重命中时直接返回对应状态的 ToolResult。
+            通过时返回任务指纹字符串——调用方据它清去重条目；拒绝/去重命中时直接返回
+            对应状态的 ToolResult。
         """
         parent = self._parent
 
@@ -735,29 +713,26 @@ class SpawnSubAgentTool(Tool):
             return _deny(parent, agent_type, not_allowed)
 
         # ⑤~⑧ 触及共享状态（去重注册表 / 预算计数 / 在途路径），判定与记账整体持锁。
-        # 去重注册表在会话容器（跨 run 存活、同会话内生效），预算与在途路径在 run 容器
-        # （按 trace 隔离）；取容器时内部会顺手清扫过期条目，故此处不再单独清理。
-        sess = get_session_state(parent.session_id)
+        # 三者都在 run 容器上（按 trace 隔离，一次用户任务内独立）；容器取用时内部会顺手
+        # 清扫过期条目，故此处不再单独清理。
         rs = get_run_state(parent._trace_id)
         fp = _task_fingerprint(task, mode)
-        has_path = _task_has_path(task)
         with _SPAWN_LOCK:
-            # ⑤ 去重：running → 提示等待；done 复用只对无路径任务开——有路径任务引用的
-            #    文件在子 agent 执行期间可能已改，缓存旧结果会交付陈旧裁决。两条早退都
-            #    记 deduped，且都在预算计数之前，不消耗额度。
-            reg = sess.spawn_registry
-            hit = reg.get(fp)
+            # ⑤ 去重：同指纹且正在执行中 → 提示等待。只拦同一批工具调用内的机械重复
+            #    （模型把同一个调用生成两遍）；不缓存结果，所以跨轮的重复不拦、失败重试
+            #    会真跑。键含父实例 id：机械重复来自一次 LLM 生成（一个实例），按实例分桶
+            #    足够，且不会让两个兄弟实例的同文本任务互相误拒。
+            reg = rs.spawn_registry
+            key = (parent._instance_id, fp)
             now = time.monotonic()
-            # 无路径任务
-            if hit and hit["state"] == "running":
+            if key in reg:
                 _record_dispatch(parent, agent_type, "deduped")
-                return ToolResult(text="同任务正在执行中，请等待其结果（已去重，勿重复派发）")
-
-            # 如果 5 分钟内用完全相同的文本再派一次无路径任务，会直接拿到上次的 ToolResult——子 agent 不重跑
-            if hit and hit["state"] == "done" and not has_path \
-                    and now - hit["started_at"] < _SPAWN_REUSE_WINDOW_S:
-                _record_dispatch(parent, agent_type, "deduped")
-                return hit["result"]
+                # 回传 SubAgentResult 形状（status=denied）而非裸文本：supervisor 统一按
+                # status 判读各路 spawn 结果，去重命中要能被同一条判读路径识别。
+                result = SubAgentResult(
+                    status="denied",
+                    summary="同任务正在执行中，请等待其结果（已去重，勿重复派发）")
+                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
             # ⑥ 审稿预算：键 (父实例, mode)——同一 run 内多个同类型父实例各算各的、兄弟不串号；
             #    不同 mode 独立计数。此处只判不记，自增见下方收敛块。
@@ -797,8 +772,8 @@ class SpawnSubAgentTool(Tool):
                 rs.turn_spawn_counts[turn] = rs.turn_spawn_counts.get(turn, 0) + 1
             if target_paths:
                 rs.in_flight_paths.setdefault(parent._instance_id, set()).update(target_paths)
-            reg[fp] = {"state": "running", "result": None, "started_at": now}
-        return fp, has_path
+            reg[key] = now
+        return fp
 
     async def aexecute(self, agent_type: str, task: str, mode: str | None = None,
                        intent: str | None = None) -> ToolResult:
@@ -819,7 +794,7 @@ class SpawnSubAgentTool(Tool):
         admitted = self._admit(agent_type, task, mode, intent)
         if isinstance(admitted, ToolResult):
             return admitted
-        fp, has_path = admitted
+        fp = admitted
         # 派发序列已过闸，此后收尾要写回去重注册表与失败计数——容器按作用域取用，
         # 与 _admit 里的局部变量无关（这是另一个方法）。
         parent = self._parent
@@ -875,20 +850,10 @@ class SpawnSubAgentTool(Tool):
                             text=result.text + _FAILURE_ESCALATION_NOTE.format(n=n),
                             summary=result.summary)
         finally:
-            # 完成收尾:无路径写 done 供窗口内复用;有路径/异常 → 清条目不缓存
-            # (有路径任务世界可变永不缓存 done;result 为 None 表示构造/执行异常,
-            # 防 None 入缓存污染后续复用)。注册表读写全在锁内。
             with _SPAWN_LOCK:
-                reg = sess.spawn_registry
-                # 有路径的任务，spawn_registry 中不写 "state": "done" 缓存
-                # 有路径的任务走的是 pop 分支——下一个 run 去查注册表 in_flight_paths ，查不到任何东西，正常派发。
-                if result is None or has_path:
-                    reg.pop(fp, None)
-                # 无路径任务——任务文本里一个绝对路径都没有，比如「审阅这份草稿并给出意见」，
-                # 这类任务完成后 spawn_registry 中会写 "state": "done" 缓存
-                else:
-                    reg[fp] = {"state": "done", "result": result,
-                               "started_at": time.monotonic()}
+                # 收尾清除本次派发的去重条目（键与 _admit 一致）。只登记在途、不缓存结果：
+                # 失败/超时同样立即清除，因此失败重试会真跑并逐次推进失败计数。
+                rs.spawn_registry.pop((parent._instance_id, fp), None)
                 # 释放本次派发占用的目标路径(与注册表清理同处、同锁):任务已结束,
                 # 同路径的新派发送下一轮即可放行。只摘本父实例名下的这些路径,别的
                 # 父实例即便占用同一路径也不受影响(各自分桶)。
