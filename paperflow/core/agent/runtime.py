@@ -452,7 +452,8 @@ class Agent:
         self.intent_pipeline = intent_pipeline
         self.conversation = conversation
         self.ask_user_callback = ask_user_callback
-        #: 本轮 run 的 IntentOutput（CLI 读 clarification 判定 + 跨轮 prev_intent）
+        #: 本轮 run 的 IntentOutput。澄清已由本 run 内的 _resolve_clarification 同步问过
+        #: 用户并代码级落地，不再是 CLI 跨轮挂起；它同时供 spawn 门禁与收尾核对读取。
         self.last_intent = None
         #: 实例唯一标识：跨 run 稳定，供按「父实例」键控的预算计数使用（如审稿预算），
         #: 与按 run 生成的 _trace_id 区分——子 agent 继承父 trace_id，用 trace_id 键控
@@ -579,7 +580,7 @@ class Agent:
             5. system: 意图识别块（若启用意图管线且管线成功，格式化为 system 消息的 INTENT 块）
             6. 末尾追加 user task。
 
-        澄清（2026-10-04 统一）：管线判据认定该问时，由本方法内**同步**调 ask 回调
+        澄清：管线判据认定该问时，由本方法内**同步**调 ask 回调
         问用户（_resolve_clarification）——不经 supervisor 的 LLM 转手（「要问」由
         代码强制，不靠提示词自觉），答案在代码层落地为意图后 ReAct 直接以正确意图
         启动，无跨轮挂起。
@@ -629,7 +630,7 @@ class Agent:
                 intent = None
 
             if intent is not None:
-                # ---------- 澄清：本轮内同步问用户（2026-10-04 统一） ----------
+                # ---------- 澄清：本轮内同步问用户 ----------
                 # 代码判据（S1/S2）说该问就一定问出去：直接调 ask 回调，不经
                 # supervisor 的 LLM 转手（提示词契约在这上面失守过）。答案在
                 # _resolve_clarification 内代码级落地（source=USER），本 run 以
@@ -878,7 +879,7 @@ class Agent:
         task = sanitize_surrogates(task)
 
         # head:① AGENT ② SKILLS ③ 可派发子 agent 清单 ④ Memory ⑤ INTENT 块,每轮重建
-        # 不进累积;末尾 user task。澄清在 _build_head 内同步问用户并落地（2026-10-04）。
+        # 不进累积;末尾 user task。澄清在 _build_head 内同步问用户并落地。
         head = await self._build_head(task)
 
         #: in-context 窗口每轮重建:跨轮回放统一经 MessageManager(SQL) 加载,避免: self._messages 跨 run 残留导致下一轮重复加载(每步都从权威源重新 load)。

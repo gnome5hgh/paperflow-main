@@ -30,7 +30,7 @@ class Route:
     #: 该路由专属阈值；None 表示使用路由器的全局 score_threshold
     score_threshold: float | None = None
 
-    #: 多标签拆分（steps）分支的专属阈值，None 表示回落 score_threshold。
+    #: 多标签拆分（意图列表）分支的专属阈值，None 表示回落 score_threshold。
     #: 与 score_threshold 分开声明的原因：两者作用于**不同聚合口径的分数**——
     #: score_threshold 标定在主管道 top_k 截断窗口的分数上（单意图主判），
     #: steps_threshold 标定在拆分分支全量重扫窗口的分数上（多标签独立裁决）。

@@ -4,7 +4,7 @@
 原属 supervisor 私有,子 agent(noter/qa-agent/searcher)接入中途问用户后上移共享层:
 一处定义、多处装配。权限卡在装配面——reviewer 不装配即无权问。
 
-意图确认通道（2026-10-04 澄清统一）：可选 intent_options 参数把「向用户确认意图」
+意图确认通道（澄清统一）：可选 intent_options 参数把「向用户确认意图」
 变成代码级协议——工具展示编号选项、用 match_option_choice 解析回复、命中即更新
 父 agent 的会话意图（last_intent + conversation.prev_intent），后续 spawn 门禁按
 确认意图放行。修复的病：意图误判 → spawn 被拒 → 问用户 → 用户确认困在工具结果里
