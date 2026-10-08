@@ -97,6 +97,39 @@ class _FileContent:
     figures: list[str]
 
 
+@dataclass
+class IndexOutcome:
+    """单篇文档的入库结果。
+
+    Attributes:
+        status: str，"indexed"（已入库）/ "skipped"（未入库：文件不存在或不在语料根下）
+            / "empty"（旧块已清理但新内容切不出块）
+        chunks: int，本次写入的块数（仅 "indexed" 有意义）
+        reason: str | None，跳过或空结果的原因，供调用方如实转述
+    """
+    status: str
+    chunks: int = 0
+    reason: str | None = None
+
+
+@dataclass
+class IndexRunOutcome:
+    """全量扫描的结果统计。
+
+    Attributes:
+        changed: int，本次重新索引的文档数
+        removed: int，本次清理的已删除文档数
+        chunks: int，本次写入的块数合计
+        bm25_docs: int，重建后 BM25 中的文档数
+        recipe_reset: bool，是否因配方哈希不符（或状态缺失）放弃旧状态走了全量重扫
+    """
+    changed: int = 0
+    removed: int = 0
+    chunks: int = 0
+    bm25_docs: int = 0
+    recipe_reset: bool = False
+
+
 class RagIndexer:
     """索引器：维护"文档路径 → 修改时间"的状态文件，据此做增量索引。
 
@@ -390,7 +423,7 @@ class RagIndexer:
         return state
 
     # ---------- 公开 API ----------
-    def index_document(self, path: str) -> None:
+    def index_document(self, path: str) -> IndexOutcome:
         """单篇文档的增量重索引入口，文档写入/编辑/下载完成后调用。
 
         为什么必须"先删后建"？
@@ -399,9 +432,9 @@ class RagIndexer:
         - 因此每次索引必须先清除旧块，再写入新块。
 
         边界条件处理：
-        - 若文件不存在，直接返回（静默跳过）。
-        - 若文件不在知识库根目录（如记忆目录），返回（避免跨目录同名文件冲突）。
-        - 若文档切块后为空（如全空白或只有参考文献），删除旧块后不写入新块，状态文件不更新。
+        - 若文件不存在，返回 skipped（不索引）。
+        - 若文件不在知识库根目录（如记忆目录），返回 skipped（避免跨目录同名文件冲突）。
+        - 若文档切块后为空（如全空白或只有参考文献），删除旧块后返回 empty，不写入新块、状态文件不更新。
         - 若文档内容未变（修改时间未变），外部调用方应避免调用本方法（但本方法本身不检查）。
 
         状态版本门控：仅当状态文件缺失或配方哈希与当前一致时才写入状态。配方
@@ -415,17 +448,22 @@ class RagIndexer:
 
         Args:
             path: 文档的绝对路径（或相对路径，会被解析）。
+
+        Returns:
+            IndexOutcome，本次入库的状态、写入块数与原因。状态为 "indexed"
+            （写入 chunks 块）、"skipped"（文件不存在或不在语料根下，reason 说明）、
+            "empty"（旧块已清理但切不出新块，reason 说明）。reason 供调用方如实转述。
         """
         p = Path(path)
         if not p.exists():
-            return                      # 索引不存在的文件：直接跳过
+            return IndexOutcome("skipped", reason="文件不存在")   # 索引不存在的文件：跳过
 
         rel = self._rel_path(str(p))
         if rel is None:
             # 非知识库根目录的路径（如记忆目录）直接跳过，避免与同名笔记冲突。
             # 记忆文件的写入也会触发本钩子，但本模块只索引笔记和 PDF；
             # 若不跳过，记忆目录下与笔记目录同名的文件会撞上同一个相对路径和块 id，导致笔记的块被静默覆盖删除。
-            return
+            return IndexOutcome("skipped", reason="不在语料根目录下（只索引笔记与 PDF）")
 
         # 1. 解析文档，获得切块原料（章节 + 标题 + 表格图注）
         parsed = self._parse_file(p)
@@ -448,7 +486,7 @@ class RagIndexer:
         chunks = [c for c in chunks if c.text.strip()]   # 过滤空白文本的块，避免产生无意义向量
         if not chunks:
             # 文档被清空：旧块已删，无需写新内容
-            return
+            return IndexOutcome("empty", reason="切块后无内容（旧块已清理）")
 
         # 4. 编码并写入
         vecs = self._embed_chunks(chunks)
@@ -476,7 +514,9 @@ class RagIndexer:
                 parsers[key] = pid
             self._save_state(docs, parsers)
 
-    def index_all(self) -> None:
+        return IndexOutcome("indexed", chunks=len(chunks))
+
+    def index_all(self) -> IndexRunOutcome:
         """全量增量扫描：只重索引新增或变更的文档，并清理已删除的文档。
 
         这是 `index_document` 的批量版本，适用于启动时或定时任务。
@@ -505,6 +545,11 @@ class RagIndexer:
         - 状态文件另带旁挂的 `parsers` 映射（{绝对路径: 解析器 id}，仅 PDF），
           记录每篇 PDF 本次实际使用的解析器。纯诊断，**不参与版本门控**；
           未变更文档保留原记录、已删除文档随 `seen` 扫描自动剪掉。
+
+        Returns:
+            IndexRunOutcome，本次扫描的统计：重索引文档数（changed）、清理文档数
+            （removed）、写入块数合计（chunks）、重建后 BM25 文档数（bm25_docs）
+            与是否走了全量重扫（recipe_reset，状态缺失或配方哈希不符时为 True）。
         """
         store = self.service._ensure_vector_store()
         raw = self._read_state()
@@ -513,8 +558,10 @@ class RagIndexer:
             # 状态缺失或配方哈希不符（参数/逻辑升级后的首次运行）：放弃旧状态，
             # 全量重扫重嵌。不能从向量库元数据恢复——库内块无法确认由当前配方
             # 产出，恢复会让旧配方块因 mtime 未变而永久残留。
+            recipe_reset = True
             state, parsers = {}, {}
         else:
+            recipe_reset = False
             state, parsers = raw[1], raw[2]
             # 同版本下保留原有两兜底：向量库被清空 → 状态作废；状态空 → 从元数据恢复。
             # 两兜底里 parsers 一并置空——旧解析器记录对应的块已不可信/无从得知。
@@ -525,8 +572,8 @@ class RagIndexer:
                 parsers = {}
 
         # 2. 从向量库的全部文档整体重建 BM25（因为 BM25 是内存索引，进程重启后为空）。
-        self.service._ensure_bm25().rebuild(
-            [(d[0], d[1]) for d in store.all_documents()])
+        all_docs = list(store.all_documents())
+        self.service._ensure_bm25().rebuild([(d[0], d[1]) for d in all_docs])
 
         # 收集待索引文档：扫描两个知识库根目录，按修改时间比对找出变更项。
         roots = [Path(self.service.config.corpus.note_dir),
@@ -567,6 +614,7 @@ class RagIndexer:
         removed = [k for k in state if k not in {str(s) for s in seen}]
 
         # 6. 清理已删除的文档。
+        removed_count = 0
         for abs_path in removed:
             rel = self._rel_path(abs_path)
             # 防御性跳过（旧版本可能残留非知识库路径）
@@ -580,10 +628,21 @@ class RagIndexer:
             for did in rm_ids:
                 self.service._ensure_bm25().remove_document(did)
             store.delete_doc(rel)
+            removed_count += 1
 
-        # 7. 增量索引变更的文档。
+        # 7. 增量索引变更的文档，累计本次写入的块数。
+        total_chunks = 0
         for p in changed:
-            self.index_document(str(p))
+            outcome = self.index_document(str(p))
+            total_chunks += outcome.chunks
 
         # 8. 保存新的状态文件（_save_state 自动带当前配方哈希；parsers 旁挂诊断）。
         self._save_state(new_state, new_parsers)
+
+        # bm25_docs 取扫描结束后的实际条数：重建在扫描前用旧库内容完成，
+        # 变更文档是重建之后才增量写入 BM25 的，故不能拿重建输入的长度充当
+        # （首次扫描时旧库为空，那样会恒为 0）。
+        return IndexRunOutcome(changed=len(changed), removed=removed_count,
+                               chunks=total_chunks,
+                               bm25_docs=self.service._ensure_bm25().count(),
+                               recipe_reset=recipe_reset)

@@ -12,6 +12,7 @@ from paperflow.config import PaperFlowConfig
 from paperflow.rag.parsers.chunker import AcademicChunker
 from paperflow.rag.parsers.grobid_client import ParsedDoc
 from paperflow.rag.services.breaker import RetrievalBreaker
+from paperflow.rag.services.indexer import IndexOutcome, IndexRunOutcome
 
 #: Milvus 可连性探测结果的缓存秒数。带时限才跟得上外部服务的崩溃与恢复；
 #: 探测本身要构造客户端并发 RPC，也不便宜，故不每次调用都探。
@@ -320,25 +321,31 @@ class RAGService:
         return self._rewriter
 
     # ---------- 对外便捷入口（索引/检索持同一把锁） ----------
-    def index_document(self, path: str) -> None:
+    def index_document(self, path: str) -> IndexOutcome:
         """单篇文档的增量重索引（持锁）。
 
         调用索引器的 index_document 方法，在锁保护下执行，保证索引状态一致。
 
         Args:
             path: 文档的绝对路径。
+
+        Returns:
+            IndexOutcome，本次入库的状态、块数与原因。
         """
         with self.lock:
-            self.get_indexer().index_document(path)
+            return self.get_indexer().index_document(path)
 
-    def index_all(self) -> None:
+    def index_all(self) -> IndexRunOutcome:
         """全量增量扫描：重索引新增/变更文档、清理已删除文档（持锁）。
 
         这里必须与单篇索引一样持同一把锁：索引过程会重建 BM25、整库写入
         向量库，若不持锁，查询会读到写到一半的中间状态。
+
+        Returns:
+            IndexRunOutcome，本次扫描的变更/清理/块数统计。
         """
         with self.lock:
-            self.get_indexer().index_all()
+            return self.get_indexer().index_all()
 
     def retrieve(self, query: str, top_k: int | None = None):
         """检索入口（持锁），返回按相关度排序的块列表。
