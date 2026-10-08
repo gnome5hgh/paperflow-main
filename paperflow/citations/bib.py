@@ -103,9 +103,10 @@ def ensure_file(path: str | Path) -> None:
         path: bib 文件的路径（字符串或 Path 对象）。
     """
     p = Path(path)
-    if not p.exists():
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(_HEADER, encoding="utf-8")
+    with _write_lock:
+        if not p.exists():
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(_HEADER, encoding="utf-8")
 
 
 def _entry_body(text: str, start: int) -> str:
@@ -171,11 +172,15 @@ def parse_entries(path: str | Path) -> list[BibEntry]:
     边界：
         - 条目必须严格遵循 `@type{key,` 格式，key 后紧跟逗号，否则无法识别。
         - 若条目体内有非字段的花括号，不影响字段提取（按深度配对）。
+        - 读时持模块级 `_write_lock`：与写入互斥，不会读到写了一半的文件。
     """
     p = Path(path)
-    if not p.exists():
-        return []
-    text = p.read_text(encoding="utf-8")
+    # 读方与写方共用这把锁：写（append / remove）在锁内落盘，读者等它写完再取内容，
+    # 因此不会读到写了一半的 bib。只把「取到完整文本」放进临界区，解析在锁外做。
+    with _write_lock:
+        if not p.exists():
+            return []
+        text = p.read_text(encoding="utf-8")
     entries = []
     # 匹配 `@类型{键,` 注意 key 不能包含逗号和花括号
     for m in re.finditer(r"@(\w+)\s*\{([^,{]+)\s*,", text):
