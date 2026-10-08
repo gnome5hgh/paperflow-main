@@ -293,7 +293,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 6. **审稿预算** — 同一父实例内 note_review/download_review/plan_review 各自 ≤3 次（计数键 `(父实例 id, mode)`），超限 denied（轮数预算下沉代码，LLM 不数轮次）
 7. **每轮派发上限** — supervisor 每次 ReAct 迭代内自身派发 ≤8 路，超限 denied（下一轮重新起算）。
 
-闸门状态（去重注册表、失败计数、派发账本、审稿与每轮预算计数、在途写占用、产物账本）统一由 `core/agent/state.py` 的 session/run 两个状态容器持有（见 Agent and ReAct loop）。**顺序与并行由 supervisor 自主决定**，框架不做限制；每条被拒/去重/完成的派发尝试记入 supervisor 的**派发账本**，收尾核对时把「识别到的意图 + 实际派发记录 + 新落盘产物」摆给模型自查（代码只摆账本、不下结论）。**同路径写互斥不在 spawn 闸里**：写工具按真实写目标在 `RunState.writing_paths` 登记写占用、跨实例当场拒绝（见 Agent and ReAct loop 的运行期状态容器与 ADR 0003）。
+闸门状态（去重注册表、失败计数、派发账本、审稿与每轮预算计数、在途写占用、产物账本）统一由 `core/agent/state.py` 的 session/run 两个状态容器持有（见 Agent and ReAct loop）。**顺序与并行由 supervisor 自主决定**，框架不做限制（契约里的「一个对象一路」是提示层的编排期望，不是闸门——闸门只兜上限：每轮 8 路，超出靠分轮补齐）；每条被拒/去重/完成的派发尝试记入 supervisor 的**派发账本**，收尾核对时把「识别到的意图 + 实际派发记录 + 新落盘产物」摆给模型自查（代码只摆账本、不下结论）。**同路径写互斥不在 spawn 闸里**：写工具按真实写目标在 `RunState.writing_paths` 登记写占用、跨实例当场拒绝（见 Agent and ReAct loop 的运行期状态容器与 ADR 0003）。
 
 **子 agent 构造与执行**：继承父的 security_middleware / session_id / confirm_callback / ask_user_callback（子 agent 能中途问用户）；**不传**意图管线/会话（子任务是结构化任务非用户意图）；`mode` 经「当前模式：{mode}」注入 system prompt。**预算执行**：超时 = 基座超时（`config.agents.timeouts`，按审计数据校准:noter 900s/searcher 420s/reviewer 300s/researcher 1800s/qa-agent 180s）+ 累计用户等待（`_UserWaitClock` 同时排除 confirm 确认与 ask_user 提问的人工等待）；`asyncio.TimeoutError`→timeout、`PermissionError`→denied、其他异常→failed；同一会话内同 agent_type 连续 2 次非 success → 结果文本追加强指令「勿再派发，改用 ask_user 请示」。**摘要提取**：末尾 2000 字符经 `StructuredOutput` 抽结构化 `digest`（按 agent_type 选 `SearcherDigest`/`ReviewerDigest`/`NoterDigest`/`ResearcherDigest`/`LibrarianDigest`/`QaAgentDigest`，未注册落 `GenericDigest`），失败回退全文摘要。
 
@@ -365,7 +365,7 @@ mcp_servers                     # 保留顶层（本身即映射）
 - **`allowed_agents` / `allowed_spawns` 已强制**：spawn 工具运行时校验白名单 + 意图派发门禁（supervisor 硬编码放行）
 - **安全是中间件洋葱**：before（可拒绝/要求确认）→ 执行 → 逆序 after；每轮 run 结束 on_finish 可改写最终回答。所有拦截降级为 ToolResult 文本，只有 `MaxTurnsExceeded` 向上抛
 - **SQL 是记忆真相源，markdown 是投影**；压缩/窗口驱逐永不删 SQL 行（Recall 完整）；记忆工具按角色分发（supervisor 7 个、子 agent 按「谁干活谁记录」各装子集，权限最小化）
-- **编排归 supervisor，代码只摆账本**：意图只作信号、不决定派发顺序——选型按 `<available_agents>` 的能力说明，顺序与并行由 supervisor 自主决定；多意图轮次代码只把「识别到的意图 + 派发账本 + 产物清单」摆给模型自查，不下结论、不强制队列
+- **编排归 supervisor，代码只摆账本**：意图只作信号、不决定派发顺序——选型按 `<available_agents>` 的能力说明，顺序与并行由 supervisor 自主决定；多意图轮次代码只把「识别到的意图 + 派发账本 + 产物清单」摆给模型自查，不下结论、不强制队列。契约里写明「**一个对象一路**」：批量同类对象（目录 / glob 结果 / 清单 / 「这几篇」）先枚举成逐项子任务，再一头一个 `spawn_sub_agent`，不让一个子 agent 承包整批——单个子 agent 只有一份预算，整批压在它身上时预算先被串行处理耗光，中途超时则整批都拿不到结果
 - **`Agent.run()` 返回 str**；子 agent 结果经 `SubAgentResult`（status/summary/digest/needs_attention）结构化回传 supervisor
 - **流式零开销**：`stream_callback`/`telemetry_callback` 为 None 时全链路保持原非流式行为（mock/无 UI 调用方不受影响）
 - **意图只进根 agent**：spawn 的子 agent 门控关闭；澄清只在 CLI 层跨轮处理，不暴露给 supervisor（避免 ask_user 双问）
