@@ -719,9 +719,9 @@ class SpawnSubAgentTool(Tool):
         fp = _task_fingerprint(task, mode)
         with _SPAWN_LOCK:
             # ⑤ 去重：同指纹且正在执行中 → 提示等待。只拦同一批工具调用内的机械重复
-            #    （模型把同一个调用生成两遍）；不缓存结果，所以跨轮的重复不拦、失败重试
-            #    会真跑。键含父实例 id：机械重复来自一次 LLM 生成（一个实例），按实例分桶
-            #    足够，且不会让两个兄弟实例的同文本任务互相误拒。
+            #    （模型把同一个调用生成两遍）；不缓存结果，所以跨轮的重复不拦、失败重试会真跑。
+            #    键含父实例 id：机械重复来自一次 LLM 生成（一个实例），
+            #    按实例分桶足够，且不会让两个兄弟实例的同文本任务互相误拒。
             reg = rs.spawn_registry
             key = (parent._instance_id, fp)
             now = time.monotonic()
