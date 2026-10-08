@@ -294,6 +294,41 @@ class IntentPipeline:
             intents=units, entities=entities, source=IntentStep.ROUTER,
             prev_intent=prev_intent, rewritten_query=query)
 
+    @staticmethod
+    def _collect_extra_intents(top_name, rescored,
+                               threshold_of, epsilon) -> list[tuple[str, float]]:
+        """从重扫结果里挑出够格的后续意图（保序、不含主意图、无长度上限）。
+
+        判据：跳过主意图与非业务意图；该路由必须标定过拆分阈值（>0，未标定的
+        「过线」没有含金量）；分数需超过「自身阈值 + ε」。按重扫顺序返回
+        (路由名, 分数)，分数保留供上层写成 per-intent 置信度。
+
+        独立的静态方法而非内联：让「无长度上限」这条性质能被单测直接钉住，
+        也便于标定脚本复用同一份候选筛选口径。
+
+        Args:
+            top_name: 主判胜出的业务路由名（列表首项的固定起点，不算后续）。
+            rescored: 第二次全量重扫的打分结果（已按分数降序）。
+            threshold_of: 取某条路由拆分阈值的回调（None/≤0 视为未标定）。
+            epsilon: 擦线保护余量。
+
+        Returns:
+            够格的后续意图 [(路由名, 融合分数)]，保序且不含主意图。
+        """
+        out: list[tuple[str, float]] = []
+        for name, score in rescored:
+            # 跳过主意图与非业务意图（chitchat/out_of_scope/help 不派发，
+            # 拆进去只会让 spawn 门禁拒掉整条链）
+            if name == top_name or not _is_business(name):
+                continue
+            threshold = threshold_of(name)
+            # None 或 ≤0 → 这条路由"没标定过"，过线毫无含金量
+            if threshold is None or threshold <= 0.0:
+                continue
+            if score >= threshold + epsilon:
+                out.append((name, score))
+        return out
+
     def _split_steps(self, top_name, top_score, query, entities,
                      prev_intent) -> IntentOutput | None:
         """多标签拆分：复合句在路由层直接拆出有序意图列表短路返回。
@@ -339,26 +374,14 @@ class IntentPipeline:
         rescored = self.router.scores(routing_text(query, entities),
                                       k=len(self.router.get_thresholds()))
 
-        # 2. 收集后续意图（保序、不含主意图）。
+        # 2. 收集后续意图（保序、不含主意图、无长度上限）。
+        # 判据与重扫顺序见 _collect_extra_intents；拆分阈值查询链：
+        # steps_threshold（重扫口径单独标定的值）→ 没标定则回落主判
+        # score_threshold（安全默认）→ 都没有则 None。
         # rescored 已按分数降序，所以拆出来的列表天然按"自信程度"排序。
-        extra: list[tuple[str, float]] = []
-        for name, score in rescored:
-            # 跳过主意图、非业务意图（chitchat/out_of_scope/help），因为这些意图不派发，拆进去只会让 spawn 门禁拒掉整条链
-            if name == top_name or not _is_business(name):
-                continue
-
-            # 取这条路由的「拆分专属阈值」
-            # 查询链：steps_threshold（重扫口径单独标定的值）
-            #        → 没标定则回落主判 score_threshold（安全默认）
-            #        → 都没有则 None。
-            threshold = self.router.get_steps_threshold(name)
-            # threshold None 或 ≤0 → 这条路由"没标定过"，过线毫无含金量
-            if threshold is None or threshold <= 0.0:
-                continue
-
-            # 这条路由的分数超过「自身阈值 + ε」才算通过。
-            if score >= threshold + ROUTER_STEPS_EPSILON:
-                extra.append((name, score))
+        extra = self._collect_extra_intents(
+            top_name, rescored,
+            self.router.get_steps_threshold, ROUTER_STEPS_EPSILON)
 
         # 3. 没有任何后续意图 → query 不是复合意图，返回 None
         if not extra:
@@ -396,7 +419,7 @@ class IntentPipeline:
         split = self._split_steps(top_name, top_score, query, entities,
                                   prev_intent)
 
-        # 1.1 query 是复合意图，返回包含 steps 的 IntentOutput
+        # 1.1 query 是复合意图，返回多项意图列表的 IntentOutput
         if split is not None:
             return split
 
