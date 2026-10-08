@@ -8,8 +8,9 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+from paperflow.core.memory.constants import MessageRole
 from paperflow.core.memory.orm.database import MemoryDB
-from paperflow.core.memory.schemas.message import Message, MessageRole
+from paperflow.core.memory.schemas.message import Message
 
 __all__ = ["insert_message", "select_messages_by_agent", "select_messages_by_ids",
            "search_messages", "count_messages"]

@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 
 from paperflow.config import McpServerConfig
+from paperflow.core.mcp.constants import McpConnectionState
 from paperflow.core.tool import Tool, ToolResult
 
 #: OpenAI function name 上限：^[a-zA-Z0-9_-]{1,64}$
@@ -214,7 +215,7 @@ def build_mcp_tools(server_name: str, cfg: McpServerConfig, manager) -> list[Too
         该 server 的工具适配器列表（未连接返回 []）；只读在前、写类在后。
     """
     st = manager.get_server_status(server_name)
-    if st is None or st.status != "connected":
+    if st is None or st.status != McpConnectionState.CONNECTED:
         return []
     visible, hidden = filter_tool_specs(cfg, st.tools)
     st.hidden = hidden

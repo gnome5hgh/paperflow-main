@@ -1,10 +1,12 @@
-"""记忆工具集常量：记忆编辑工具名集合 + 首启播种的默认核心块文案。
+"""记忆模块的常量——工具名集合与首启播种的核心块文案。
 
 BASE_MEMORY_TOOLS 是装配在 supervisor 上的记忆编辑工具名；BASE_SLEEPTIME_TOOLS
 是 Sleeptime 后台整合允许生成的编辑工具子集（Sleeptime 只做块级增改，不做
 unread_list/history_append 这类清单维护）。两者都只声明「工具名集合」，供
 装配与校验读取。
 """
+
+__all__ = ["BASE_MEMORY_TOOLS", "BASE_SLEEPTIME_TOOLS", "DEFAULT_PROFILE", "DEFAULT_ASSISTANT"]
 
 BASE_MEMORY_TOOLS = {
     "memory_replace", "memory_insert", "memory_rethink",

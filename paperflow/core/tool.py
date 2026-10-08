@@ -12,14 +12,7 @@ Tool 抽象基类 —— 所有 Agent 可调用工具的契约定义。
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 
-#: 可声明的副作用集合,side_effects 字段的值必须 ∈ 此集合
-SIDE_EFFECTS = frozenset({"write_file", "delete_file", "network", "read_file"})
-
-#: 合法风险等级集合,risk_level 字段的值必须 ∈ 此集合
-RISK_LEVELS = frozenset({"low", "medium", "high", "critical"})
-
-#: 风险等级 → 数值映射,供策略引擎比较风险大小
-RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+from paperflow.core.constants import RISK_LEVELS, SIDE_EFFECTS
 
 
 def validate_tool(tool: "Tool") -> None:

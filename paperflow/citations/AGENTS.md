@@ -8,6 +8,7 @@
 
 ```text
 citations/
+├─ constants/   # 跨模块词汇：CitationStatus（解析状态）+ RemoveOutcome（删除结局）
 ├─ bib.py       # references.bib 轻量读写：条目查找/去重 + append 追加 + 按条目原文块删除
 ├─ corpus.py    # 语料标题索引（易变投影）：note H1 + PDF 解析标题 → 全标题精确匹配，按 (path, mtime_ns) 增量重建
 └─ manager.py   # 编排：引用解析 → 入库 → 去重 → 渲染 → 调和

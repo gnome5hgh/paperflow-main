@@ -9,7 +9,7 @@
 ```text
 vision/
 ├─ extractor.py    # 提取管线编排：对齐 pdffigures2 的 8 步（文本→布局→图注→图形→分类→图检测→渲染）
-├─ parsers/        # 管线各步解析：text_extractor / document_layout / caption / graphics
+├─ parsers/        # 管线各步解析：text_extractor / document_layout / caption / graphics + constants/(FigureType 图注类型枚举)
 ├─ detectors/      # figure_detector(图区定位) + region_classifier(区域分类)
 ├─ geometry.py     # Box 等几何原语
 ├─ renderer.py     # 图区栅格化成 PNG

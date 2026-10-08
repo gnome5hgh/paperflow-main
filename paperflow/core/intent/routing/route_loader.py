@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 from paperflow.core.intent.schemas.route import Route
-from paperflow.core.intent.schemas.intent import IntentType
+from paperflow.core.intent.constants import IntentType
 
 
 #: 枚举收敛时已移除的旧值：switch_topic 并入 set_research_topic、

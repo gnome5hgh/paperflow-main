@@ -16,7 +16,7 @@ tools/
 ├─ rag/            # rag_retrieve
 ├─ vision/         # analyze_figures（needs_parent=True，视觉调用归属父轮次审计）
 ├─ memory/         # 11 个记忆工具：get_memory_tools() 惰性单例 + set/get_memory_context
-├─ orchestration/  # spawn_sub_agent + ask_user_question + confirm 原语
+├─ orchestration/  # spawn_sub_agent + ask_user_question + confirm 原语；constants/ 放 SubAgentMode/SubAgentStatus
 ├─ skills/         # load_skill（渐进披露 L2/L3）
 └─ common/         # make_tools 装配工厂 + _http.py 共享 HTTP 基础设施
 ```

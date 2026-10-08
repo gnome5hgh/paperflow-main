@@ -12,7 +12,7 @@ ask 回调同步问用户（routing.confirm 原语解析、意图代码级落地
 """
 from dataclasses import dataclass
 
-from paperflow.core.intent.schemas.intent import IntentType
+from paperflow.core.intent.constants import IntentType
 
 
 @dataclass

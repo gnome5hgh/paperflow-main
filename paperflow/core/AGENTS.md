@@ -8,15 +8,16 @@
 
 ```text
 core/
+├─ constants/      # 跨模块词汇：RiskLevel/SideEffect 枚举 + RISK_LEVELS/SIDE_EFFECTS/RISK_ORDER（由枚举派生）
 ├─ agent/          # ReAct 循环：runtime.py(Agent.run 主循环) + registry.py(AgentRegistry 插件发现) + base_prompt.py(全 agent 共有行为基座)
 ├─ llm/            # LLMClient(openai SDK 异步封装：chat/chat_stream/参数降级重试) + embedding.py / rerank.py(云端协议与实现同文件)
 ├─ security/       # 安全中间件洋葱：base.py 协议 + middleware/(audit/workspace 策略/输出扫描/策略引擎) + network.py + text.py
-├─ memory/         # Letta 记忆栈移植：schemas/ + orm/(SQLite) + services/ + tools/ + compaction.py + sleeptime.py
-├─ intent/         # 意图识别五级级联：entities → option_reply → followup → HybridRouter → LLM 兜底
+├─ memory/         # Letta 记忆栈移植：constants/(MessageRole/TitleSource 枚举 + 工具常量) + schemas/ + orm/(SQLite) + services/ + compaction.py + sleeptime.py
+├─ intent/         # 意图识别五级级联：constants/(IntentType/Category/Step + INTENT_META/LABELS) + entities → option_reply → followup → HybridRouter → LLM 兜底
 ├─ structured/     # 结构化输出（pydantic schema 契约抽取）
-├─ mcp/            # MCP 客户端平台：后台事件循环 + 逐工具桥接
+├─ mcp/            # MCP 客户端平台：后台事件循环 + 逐工具桥接；constants/ 放连接状态枚举
 ├─ skills/         # SkillRegistry：frontmatter 校验 + tools.py 动态导入 + 资源围栏
-├─ tool.py         # Tool ABC 与安全元数据（risk_level/side_effects/requires_confirm/…）
+├─ tool.py         # Tool ABC 与安全元数据（取值集合在 constants/）
 ├─ frontmatter.py  # AGENT.md/SKILL.md frontmatter 解析
 └─ tokenization.py # token 估算
 ```

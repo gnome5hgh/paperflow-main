@@ -15,18 +15,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import Enum
 from typing import Callable
 
 from paperflow.vision.geometry import Box, Box_container, Line, Paragraph
+from paperflow.vision.parsers.constants import FigureType
 from paperflow.vision.parsers.text_extractor import Page
-
-
-class FigureType(str, Enum):
-    """图注类型：图 / 表（对应 pdffigures2 的 FigureType 枚举，取值即英文原型）。"""
-
-    Figure = "Figure"
-    Table = "Table"
 
 
 @dataclass(frozen=True)

@@ -8,7 +8,7 @@
 """
 import re
 
-from paperflow.core.intent.schemas.intent import INTENT_LABELS_ZH, IntentType
+from paperflow.core.intent.constants import INTENT_LABELS_ZH, IntentType
 
 from paperflow.core.intent.routing.option_reply import OPTION_REPLY_RE
 

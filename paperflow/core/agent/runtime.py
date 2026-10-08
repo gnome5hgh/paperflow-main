@@ -64,9 +64,8 @@ from paperflow.core.security import (
 )
 from paperflow.core.tool import ToolResult
 from paperflow.core.security.text import sanitize_surrogates
-from paperflow.core.intent.schemas.intent import (
-    INTENT_LABELS_ZH, IntentOutput, IntentStep, IntentType, IntentUnit,
-)
+from paperflow.core.intent.constants import INTENT_LABELS_ZH, IntentStep, IntentType
+from paperflow.core.intent.schemas.intent import IntentOutput, IntentUnit
 from paperflow.core.intent.routing.confirm import match_option_choice
 from paperflow.core.intent.routing.entities import extract_entities
 

@@ -12,9 +12,10 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from paperflow.core.llm import Message as WireMessage
+from paperflow.core.memory.constants import MessageRole
 from paperflow.core.memory.orm import message as message_orm
 from paperflow.core.memory.orm.database import MemoryDB
-from paperflow.core.memory.schemas.message import Message, MessageRole
+from paperflow.core.memory.schemas.message import Message
 from paperflow.core.security.text import sanitize_surrogates
 
 __all__ = ["MessageManager"]

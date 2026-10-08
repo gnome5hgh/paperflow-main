@@ -13,6 +13,7 @@ from pathlib import Path
 
 from paperflow.citations import bib as bibmod
 from paperflow.citations.bib import BibEntry
+from paperflow.citations.constants import CitationStatus, RemoveOutcome
 from paperflow.citations.corpus import CorpusIndex
 
 #: key 生成的短标题停用词（首词过滤；其余一律保留）
@@ -26,8 +27,8 @@ class ResolvedCitation:
     """引用解析结果：key + 语料状态 + 相关路径。
 
     Attributes:
-        key: BibTeX 条目的键，若 status="missing" 则为 None。
-        status: "in_corpus"（语料库内）或 "missing"（库外/未找到）。
+        key: BibTeX 条目的键，若 status=MISSING 则为 None。
+        status: CitationStatus，IN_CORPUS（语料库内）或 MISSING（库外/未找到）。
         title: 论文全标题。
         year: 发表年份。
         note_path: 关联的笔记文件路径（若有）。
@@ -35,7 +36,7 @@ class ResolvedCitation:
     """
 
     key: str | None
-    status: str                  # "in_corpus" | "missing"
+    status: CitationStatus
     title: str = ""
     year: str = ""
     note_path: str | None = None
@@ -171,7 +172,7 @@ class CitationManager:
         q = (query or "").strip()
         # 空输入守卫：零开销早退（不进锁、不触发索引刷新），空查询无溯源意义
         if not q:
-            return ResolvedCitation(None, "missing")
+            return ResolvedCitation(None, CitationStatus.MISSING)
         # 全程持锁：保证「刷新索引 → 查 corpus → 查 bib」是原子快照——
         # 若中途释放，并发下 corpus 投影与 bib 真相源可能错位（如标题刚入库）
         with self._lock:
@@ -193,7 +194,7 @@ class CitationManager:
             # 第3步 未命中 → missing（溯源纪律的落点）：语料里没有这篇论文就没有可溯源的实体，
             # 此处绝不返回 key——调用方（lookup_citation工具）据此提示标 [⚠无支撑]，而不是拿着编造的 key 继续
             if rec is None:
-                return ResolvedCitation(None, "missing")
+                return ResolvedCitation(None, CitationStatus.MISSING)
 
             # 第4步 命中 → 组装返回值。关键：两层事实分开查证——
             # corpus 命中只证明「语料里有这篇」（status=in_corpus）；
@@ -207,7 +208,7 @@ class CitationManager:
             key = existing.key if existing else gen_key(title, biblio.get("authors", ""),
                                                         biblio.get("year", ""))
             # status 恒为 "in_corpus"（走到这里必已命中）；in_bib 区分"已在库"与"现场生成待落地"，lookup_citation 据此分级提示
-            return ResolvedCitation(key=key, status="in_corpus", title=title,
+            return ResolvedCitation(key=key, status=CitationStatus.IN_CORPUS, title=title,
                                     year=biblio.get("year", ""),
                                     note_path=rec.get("note_path"),
                                     pdf_path=rec.get("pdf_path"),
@@ -313,7 +314,7 @@ class CitationManager:
             key_or_title: bib key 或论文标题。
 
         Returns:
-            dict: status ∈ {removed, not_found, ambiguous}；removed 时带 key；
+            dict: status ∈ RemoveOutcome；removed 时带 key；
             ambiguous 时带 candidates（key+title 列表）。
         """
         with self._lock:
@@ -323,13 +324,13 @@ class CitationManager:
             if not exact:
                 exact = bibmod.find_all_by_title(self.bib_path, q)
             if not exact:
-                return {"status": "not_found", "key": None, "candidates": []}
+                return {"status": RemoveOutcome.NOT_FOUND, "key": None, "candidates": []}
             if len(exact) > 1:
-                return {"status": "ambiguous", "key": None,
+                return {"status": RemoveOutcome.AMBIGUOUS, "key": None,
                         "candidates": [{"key": e.key, "title": e.title}
                                        for e in exact]}
             removed = bibmod.remove_entries(self.bib_path, {exact[0].key})
-            status = "removed" if removed else "not_found"
+            status = RemoveOutcome.REMOVED if removed else RemoveOutcome.NOT_FOUND
             return {"status": status, "key": exact[0].key if removed else None,
                     "candidates": []}
 

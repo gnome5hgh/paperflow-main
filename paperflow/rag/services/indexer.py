@@ -31,6 +31,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from paperflow.rag.constants import RagSource
 from paperflow.rag.parsers.chunker import CHUNK_ID_LEN, Chunk, context_prefix
 
 #: 配方哈希的逻辑版本号：切块/解析「算法逻辑」修订号（非参数）。参数
@@ -78,18 +79,18 @@ def _recipe_hash(cfg) -> str:
 class _FileContent:
     """单篇文档解析产物：切块所需的全部原料。
 
-    source: "pdf" | "note"；
+    source: pdf | note；
     title: 文档标题（PDF=GROBID 主标题，笔记=H1，取不到为空串）；
     tables/figures: GROBID 提取的表格文本与图注（笔记与 PyMuPDF 回退路径为空）。
 
     Attributes:
-        source: str，来源类型："pdf" | "note"
+        source: RagSource，来源类型：pdf | note
         title: str，文档标题（PDF=GROBID 主标题，笔记=首个 H1；取不到为空串）
         sections: list[tuple[str, str]]，(章节标题, 正文) 列表
         tables: list[str]，GROBID 提取的表格文本（笔记与 PyMuPDF 回退路径为空）
         figures: list[str]，GROBID 提取的图注（同上为空）
     """
-    source: str
+    source: RagSource
     title: str
     sections: list[tuple[str, str]]
     tables: list[str]
@@ -278,7 +279,7 @@ class RagIndexer:
             # grobid 解析 PDF 时，除了章节正文，还从 TEI XML 里抽出 <table>（表格文本）和 <figDesc>（图注），
             # 装进 ParsedDoc.tables / ParsedDoc.figures
             parsed = self.service.pdf_parser().parse_pdf(str(path))
-            return _FileContent("pdf", parsed.title or "", parsed.sections,
+            return _FileContent(RagSource.PDF, parsed.title or "", parsed.sections,
                                 parsed.tables, parsed.figures)
 
         # Markdown 笔记：按 # / ## 标题分段，顺带捕获首个一级标题作文档标题
@@ -300,7 +301,7 @@ class RagIndexer:
         # 保存最后一个章节
         if cur_head or cur_body:
             sections.append((cur_head, "\n".join(cur_body)))
-        return _FileContent("note", title, sections, [], [])
+        return _FileContent(RagSource.NOTE, title, sections, [], [])
 
     def _media_chunks(self, rel: str, parsed: _FileContent,
                       start_index: int) -> list[Chunk]:

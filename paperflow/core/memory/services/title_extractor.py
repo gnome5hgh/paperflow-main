@@ -6,20 +6,23 @@
 """
 from dataclasses import dataclass
 
+from paperflow.core.memory.constants import TitleSource
+
 
 @dataclass
 class TitleResult:
-    """标题提取结果：title + 命中的来源（search/grobid/llm/pdftitle/pymupdf）。
+    """标题提取结果：title + 命中的来源（见 TitleSource）。
 
     全失败时 title 为 None，由调用方提示用户提供标题。
 
     Attributes:
         title: str | None，提取到的标题；全链失败为 None
-        source: str，命中来源（search/grobid/llm/pdftitle/pymupdf）；未命中为空串
+        source: str，命中来源（TitleSource 之一）；未命中为空串。
+            搜索元数据层可能带上游来源标识，故此处不做封闭校验。
     """
 
     title: str | None = None
-    source: str = ""
+    source: str = TitleSource.NONE
 
 
 class TitleExtractor:
@@ -71,7 +74,7 @@ class TitleExtractor:
         # ① 搜索元数据（最权威、免费，且不依赖 PDF 文件）
         if search_meta and search_meta.get("title"):
             return TitleResult(title=search_meta["title"],
-                               source=search_meta.get("source", "search"))
+                               source=search_meta.get("source", TitleSource.SEARCH))
 
         # 若无 PDF 路径，后续层级无法工作，直接返回空
         if not pdf_path:
@@ -81,25 +84,25 @@ class TitleExtractor:
         if self.grobid is not None:
             t = self.grobid.extract_title(pdf_path)
             if t:
-                return TitleResult(title=t, source="grobid")
+                return TitleResult(title=t, source=TitleSource.GROBID)
 
         # ③ LLM 提取（读取首页文本，由模型推断标题，适合格式不规范或非英语论文）
         if self.llm is not None:
             t = self._llm_extract(pdf_path)
             if t:
-                return TitleResult(title=t, source="llm")
+                return TitleResult(title=t, source=TitleSource.LLM)
 
         # ④ pdftitle（基于标题页布局启发式的轻量库，可选依赖）
         if self.use_pdftitle:
             t = self._pdftitle_extract(pdf_path)
             if t:
-                return TitleResult(title=t, source="pdftitle")
+                return TitleResult(title=t, source=TitleSource.PDFTITLE)
 
         # ⑤ PyMuPDF 首页启发式（最大字号 + 最靠顶部，纯文本布局兜底）
         if self.use_pymupdf:
             t = self._pymupdf_extract(pdf_path)
             if t:
-                return TitleResult(title=t, source="pymupdf")
+                return TitleResult(title=t, source=TitleSource.PYMUPDF)
 
         # 全失败：调用方应提示用户手动提供标题
         return TitleResult()

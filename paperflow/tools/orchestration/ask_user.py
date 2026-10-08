@@ -11,9 +11,8 @@
 工具结果里，同一轮里反复被拦。
 """
 from paperflow.core.intent.routing.confirm import format_intent_options, match_option_choice
-from paperflow.core.intent.schemas.intent import (
-    IntentOutput, IntentStep, IntentType, IntentUnit,
-)
+from paperflow.core.intent.constants import IntentStep, IntentType
+from paperflow.core.intent.schemas.intent import IntentOutput, IntentUnit
 from paperflow.core.tool import Tool, ToolResult
 
 

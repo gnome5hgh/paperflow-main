@@ -7,9 +7,8 @@
 跨轮会话状态（conversation_state）。这里集中导出公开接口，供外部调用方从
 单一入口导入。
 """
-from paperflow.core.intent.schemas.intent import (
-    IntentType, IntentStep, IntentUnit, IntentOutput, IntentionResult,
-)
+from paperflow.core.intent.constants import IntentType, IntentStep
+from paperflow.core.intent.schemas.intent import IntentUnit, IntentOutput, IntentionResult
 from paperflow.core.intent.schemas.route import Route, RouteChoice
 from paperflow.core.intent.encoders.bm25 import JiebaTokenizer, BM25Encoder
 from paperflow.core.intent.encoders.index import HybridLocalIndex

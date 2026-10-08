@@ -22,11 +22,8 @@
 """
 from pydantic import BaseModel
 
-from paperflow.core.intent.schemas.intent import (
-    INTENT_LABELS_ZH, INTENT_META,
-    ArbitrationChoice, IntentOutput, IntentType, IntentStep, IntentUnit,
-    IntentionResult,
-)
+from paperflow.core.intent.constants import INTENT_LABELS_ZH, INTENT_META, IntentType, IntentStep
+from paperflow.core.intent.schemas.intent import ArbitrationChoice, IntentOutput, IntentUnit, IntentionResult
 from paperflow.core.intent.routing.entities import extract_entities
 from paperflow.core.intent.routing.confirm import format_intent_options
 from paperflow.core.intent.routing.followup import detect_followup

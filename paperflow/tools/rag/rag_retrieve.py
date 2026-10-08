@@ -7,6 +7,7 @@ query），再持锁检索。检索与融合算法本身在 `rag/services/retrie
 import logging
 
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.rag.constants import RagSource
 from paperflow.rag.services.rag_service import get_rag_service
 from paperflow.tools.memory.runtime_context import get_memory_context
 
@@ -72,7 +73,7 @@ class RagRetrieveTool(Tool):
             "query": {"type": "string", "description": "检索问题"},
             "top_k": {"type": "integer",
                       "description": "返回块数；缺省时由配置 rag.retriever.top_k 决定"},
-            "source": {"type": "string", "enum": ["note", "pdf"],
+            "source": {"type": "string", "enum": [m.value for m in RagSource],
                        "description": "限定来源：note=读书笔记，pdf=论文原文；缺省不限"},
         },
         "required": ["query"],

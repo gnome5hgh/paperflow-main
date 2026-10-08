@@ -96,7 +96,7 @@ paperFlow 是 LLM 驱动的学术研究流程助手（ADR 0003）。单根 agent
 
 ```
 paperflow/
-  core/          核心运行层:agent(ReAct 循环) + agent_registry + llm + tool(抽象)
+  core/          核心运行层:constants(跨模块词汇:风险等级/副作用) + agent(ReAct 循环) + agent_registry + llm + tool(抽象)
                  + security(安全中间件) + memory(记忆系统) + intent(意图识别)
                  + structured(结构化输出) + mcp(MCP 客户端平台:后台循环 + 工具桥接)
   rag/           RAG 检索栈(解析/分块/向量/混合检索),懒加载单例
@@ -192,7 +192,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 3. **SecurityScanMiddleware** — 工具输出扫描（`output_scan="mark"` 的工具标注关键内容）
 4. **PolicyEngineMiddleware** — 三级检查：`blocked_by_default` 直接拒；`risk_level` 超过会话阈值 `max_risk`（默认 "medium"）拒；`requires_confirm` 抛 `ConfirmRequired` → 用户确认后同一（工具名, 目标路径）不再重复询问
 
-`Tool` 安全元数据（`paperflow/core/tool.py`）：`risk_level`（low/medium/high/critical）、`side_effects`、`blocked_by_default`、`requires_confirm`、`output_scan`（"mark"/None）、`root_hints`（语义根名提示 → `make_tools` 生成 `[目录]` 提示，不参与强制；强制=绝对路径+黑名单）。注册表加载时校验这些字段的合法值。
+`Tool` 安全元数据（`paperflow/core/tool.py`）：`risk_level`（low/medium/high/critical）、`side_effects`、`blocked_by_default`、`requires_confirm`、`output_scan`（"mark"/None）、`root_hints`（语义根名提示 → `make_tools` 生成 `[目录]` 提示，不参与强制；强制=绝对路径+黑名单）。注册表加载时校验这些字段的合法值。`risk_level`/`side_effects` 的取值集合与排序映射声明在 `core/constants/`（枚举即单一真相源），`tool.py` 与策略引擎都从那里取。
 
 ### Memory system
 

@@ -17,39 +17,57 @@ import threading
 import time
 from typing import Callable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, StreamEvent
 # 运行期状态由容器持有:去重注册表与各类预算计数在 run 作用域(按 trace 隔离),
 # 失败计数在会话作用域(跨 run 累计)。容器取用时顺手清扫过期条目,故此处不再单独清理。
 from paperflow.core.agent.state import get_run_state, get_session_state
-from paperflow.core.intent.schemas.intent import INTENT_META, IntentType
+from paperflow.core.intent.constants import INTENT_META, IntentType
 from paperflow.core.llm import StructuredOutput
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.tools.orchestration.modes import SubAgentMode, SUB_AGENT_MODES
+from paperflow.tools.orchestration.constants import (
+    SUB_AGENT_MODES, SubAgentMode, SubAgentStatus)
 
 
 class SubAgentResult(BaseModel):
     """子 agent 的结构化结果,supervisor 据此组织最终回答。
 
-    status ∈ {success, failed, timeout, denied};needs_attention 是独立标志
+    status ∈ SubAgentStatus 的「子任务结果」子集;needs_attention 是独立标志
     (denied + needs_attention=True 表示"被拒且需用户介入",与可重试的 failed 区分)。
     digest 是从子 agent 最终回答提取的结构化摘要,提取失败/超时落 {} (supervisor
     回退读 summary 全文)。
 
     Attributes:
-        status: str，success | failed | timeout | denied
+        status: SubAgentStatus，子任务结果（success | failed | timeout | denied）
         summary: str，子 agent 的最终回答全文
         error_detail: str，失败/超时/拒绝的细节（成功为空）
         needs_attention: bool，被拒且需用户介入（与可重试的 failed 区分）
         digest: dict，结构化摘要；提取失败/超时为 {}（supervisor 回退读 summary 全文）
     """
-    status: str
+    status: SubAgentStatus
     summary: str
     error_detail: str = ""
     needs_attention: bool = False
     digest: dict = {}
+
+    @model_validator(mode="after")
+    def _reject_dispatch_only_value(self) -> "SubAgentResult":
+        """拒绝只属于派发账本的 DEDUPED——去重意味着子任务没跑，没有结果可报。
+
+        去重命中时回传的是 denied（supervisor 统一按 status 判读各路结果），
+        账本另记 deduped。这道校验把「deduped 不进结果」从注释约定变成代码约束。
+
+        Returns:
+            校验通过的自身。
+
+        Raises:
+            ValueError: status 为 DEDUPED。
+        """
+        if self.status is SubAgentStatus.DEDUPED:
+            raise ValueError("DEDUPED 只描述派发被拦下，不是子任务结果状态")
+        return self
 
 
 class SearcherDigest(BaseModel):
@@ -250,7 +268,7 @@ def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
     return None
 
 
-def _record_dispatch(parent: Agent, agent_type: str, status: str) -> None:
+def _record_dispatch(parent: Agent, agent_type: str, status: SubAgentStatus) -> None:
     """把一次派发尝试记入 supervisor 的派发账本（run 状态容器，按 trace 键控）。
 
     只记 supervisor 自身的派发——子 agent 的内部派发不进这份账本，与每轮派发
@@ -261,7 +279,7 @@ def _record_dispatch(parent: Agent, agent_type: str, status: str) -> None:
     Args:
         parent: Agent，发起派发的父实例
         agent_type: str，目标子 agent 类型
-        status: str，派发结果（success/failed/denied/deduped 等）
+        status: SubAgentStatus，这次派发的结局
     """
     if parent.agent_type != "supervisor":
         return
@@ -283,8 +301,8 @@ def _deny(parent: Agent, agent_type: str, summary: str) -> ToolResult:
     Returns:
         ToolResult，text 与 summary 均为同一份 SubAgentResult 的 JSON 序列化。
     """
-    _record_dispatch(parent, agent_type, "denied")
-    result = SubAgentResult(status="denied", summary=summary)
+    _record_dispatch(parent, agent_type, SubAgentStatus.DENIED)
+    result = SubAgentResult(status=SubAgentStatus.DENIED, summary=summary)
     return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
 
@@ -726,11 +744,11 @@ class SpawnSubAgentTool(Tool):
             key = (parent._instance_id, fp)
             now = time.monotonic()
             if key in reg:
-                _record_dispatch(parent, agent_type, "deduped")
+                _record_dispatch(parent, agent_type, SubAgentStatus.DEDUPED)
                 # 回传 SubAgentResult 形状（status=denied）而非裸文本：supervisor 统一按
                 # status 判读各路 spawn 结果，去重命中要能被同一条判读路径识别。
                 result = SubAgentResult(
-                    status="denied",
+                    status=SubAgentStatus.DENIED,
                     summary="同任务正在执行中，请等待其结果（已去重，勿重复派发）")
                 return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
@@ -832,13 +850,13 @@ class SpawnSubAgentTool(Tool):
             result = await self._run_child(child, agent_type, task)
             # 派发账本：真实派发完成后按结果状态记账（与早退路径的 denied/deduped 互补），
             # 供收尾核对列出「本轮派了哪些、结果如何」。
-            _record_dispatch(parent, agent_type, result.summary.get("status", ""))
+            _record_dispatch(parent, agent_type, result.summary["status"])
             # 失败升级：仅 supervisor 的派发计数——连续 N 次非 success
             # 后追加强指令，把「继续自动重试」的决策权交回用户（模型对不可能
             # 成功的任务会自动重派多轮，每轮分钟级）。按会话容器计数：同一会话
             # 内跨 run 累计，成功即清零，换 agent_type 各算各的。
             if parent.agent_type == "supervisor":
-                if result.summary.get("status") == "success":
+                if result.summary.get("status") == SubAgentStatus.SUCCESS:
                     sess.failure_counts.pop(agent_type, None)
                     sess.failure_counts_at.pop(agent_type, None)
                 else:
@@ -910,17 +928,17 @@ class SpawnSubAgentTool(Tool):
 
         try:
             text, digest = await _run_and_extract()
-            result = SubAgentResult(status="success", summary=text, digest=digest)
+            result = SubAgentResult(status=SubAgentStatus.SUCCESS, summary=text, digest=digest)
         except asyncio.TimeoutError:
-            result = SubAgentResult(status="timeout", summary="子任务执行超时",
+            result = SubAgentResult(status=SubAgentStatus.TIMEOUT, summary="子任务执行超时",
                                     # 插值解析后的超时(配置命中时非类默认),报错可行动
                                     error_detail=f"SubAgent 在 {timeout}s 内未完成")
         except PermissionError as e:
             # 防御性分支:当前架构子 agent 的执行器把策略拒绝/安全拦截降级为普通文本,
             # 不向上抛,几乎不会触发。保留此分支对齐失败处理,不据此推导真实路径。
-            result = SubAgentResult(status="denied", summary="子任务被策略引擎拒绝",
+            result = SubAgentResult(status=SubAgentStatus.DENIED, summary="子任务被策略引擎拒绝",
                                     error_detail=str(e), needs_attention=True)
         except Exception as e:
-            result = SubAgentResult(status="failed", summary="子任务执行失败",
+            result = SubAgentResult(status=SubAgentStatus.FAILED, summary="子任务执行失败",
                                     error_detail=str(e))
         return ToolResult(text=result.model_dump_json(), summary=result.model_dump())

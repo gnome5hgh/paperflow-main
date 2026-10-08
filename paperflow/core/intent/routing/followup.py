@@ -8,7 +8,7 @@
 """
 import re
 
-from paperflow.core.intent.schemas.intent import IntentType
+from paperflow.core.intent.constants import IntentType
 
 #: 承接标记：出现即可能是追问（含叠词变体）
 # 这些词语常出现在承接上文的话中，表明用户在延续前一轮的主题或对前文进行追问

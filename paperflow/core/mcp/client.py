@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 
 from paperflow.config import McpServerConfig
 from paperflow.core.mcp.bridge import McpToolSpec
+from paperflow.core.mcp.constants import McpConnectionState
 
 
 class McpToolError(Exception):
@@ -33,7 +34,7 @@ class ServerStatus:
     Attributes:
         name: str，server 名
         transport: str，传输方式（stdio/http）
-        status: str，连接状态：pending | connected | failed
+        status: McpConnectionState，连接状态：pending | connected | failed
         error: str，失败原因（连接/会话级）
         tools: list[McpToolSpec]，server 报告的工具
         hidden: list[tuple[str, str]]，被过滤掉的工具及原因
@@ -42,7 +43,7 @@ class ServerStatus:
 
     name: str
     transport: str
-    status: str = "pending"        # pending | connected | failed
+    status: McpConnectionState = McpConnectionState.PENDING
     error: str = ""
     tools: list[McpToolSpec] = field(default_factory=list)
     hidden: list[tuple[str, str]] = field(default_factory=list)
@@ -184,7 +185,7 @@ class McpClientManager:
             # stdio 命令存在性预检（OpenHands 同款）——不在 PATH 直接失败不
             # spawn，错误信息直接指导用户装 uvx/npx
             if src.transport == "stdio" and shutil.which(src.command) is None:
-                self._status[name].status = "failed"
+                self._status[name].status = McpConnectionState.FAILED
                 self._status[name].error = f"命令不在 PATH: {src.command}"
                 self._ready[name].set_result(False)
                 self._warn(f"MCP server '{name}' {self._status[name].error}")
@@ -225,7 +226,7 @@ class McpClientManager:
                 listed = await asyncio.wait_for(session.list_tools(),
                                                 timeout=cfg.connect_timeout)
                 st.tools = [_convert_tool(t) for t in listed.tools]
-                st.status = "connected"
+                st.status = McpConnectionState.CONNECTED
                 st.error = ""
                 self._ready[name].set_result(True)
                 while True:
@@ -246,11 +247,11 @@ class McpClientManager:
                         # 不抛异常；能从 call_tool 抛出的异常实际只有传输/协议死亡
                         # （uvx 崩溃/OOM/被 kill 等）。此时会话已不可用，标记 failed，
                         # 下一次 call_tool_sync 走既定的"重连一次"路径。
-                        st.status = "failed"
+                        st.status = McpConnectionState.FAILED
                         st.error = f"{type(e).__name__}: {e}"
                         req.future.set_exception(e)
         except Exception as e:
-            st.status = "failed"
+            st.status = McpConnectionState.FAILED
             st.error = f"{type(e).__name__}: {e}"
             if name in self._ready and not self._ready[name].done():
                 self._ready[name].set_result(False)
@@ -332,8 +333,9 @@ class McpClientManager:
                 lines.append(f"- {name} [{cfg.transport}] 已禁用（enabled: false）")
                 continue
             st = self._status[name]
-            head = {"pending": "连接中…", "connected": "已连接",
-                    "failed": f"失败（{st.error}）"}[st.status]
+            head = {McpConnectionState.PENDING: "连接中…",
+                    McpConnectionState.CONNECTED: "已连接",
+                    McpConnectionState.FAILED: f"失败（{st.error}）"}[st.status]
             line = f"- {name} [{cfg.transport}] {head}，工具 {len(st.tools)} 个"
             if st.hidden:
                 line += "；已隐藏: " + "、".join(f"{n}（{r}）" for n, r in st.hidden)
@@ -402,10 +404,10 @@ class McpClientManager:
         cfg = self._servers[name]
         st = self._status[name]
         for attempt in (1, 2):
-            if st.status == "connected":
+            if st.status == McpConnectionState.CONNECTED:
                 break
             self.ensure_ready(name)                    # 预取未完成的先等（锁外阻塞）
-            if st.status == "connected":
+            if st.status == McpConnectionState.CONNECTED:
                 break
             if attempt == 2:
                 raise McpToolError(
@@ -415,7 +417,7 @@ class McpClientManager:
             # 等），保证每 enabled server 至多一条 serve 任务/会话。
             with self._reconnect_lock:
                 fut = self._ready.get(name)
-                if st.status != "connected" and (fut is None or fut.done()):
+                if st.status != McpConnectionState.CONNECTED and (fut is None or fut.done()):
                     self._warn(f"MCP server '{name}' 会话不可用，重连一次…")
                     self._schedule_reconnect(name)
             self.ensure_ready(name)                    # 等重连完成（锁外阻塞）

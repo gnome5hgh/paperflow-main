@@ -4,9 +4,10 @@
 （块/消息/agent 管理器 + MemFS）、压缩配置、
 Sleeptime 后台整合与常量。四层结构依赖单向：schemas → orm → services → tools。
 """
+from paperflow.core.memory.constants import MessageRole
 from paperflow.core.memory.schemas.block import BaseBlock, Block
 from paperflow.core.memory.schemas.memory import Memory
-from paperflow.core.memory.schemas.message import Message, MessageRole
+from paperflow.core.memory.schemas.message import Message
 from paperflow.core.memory.schemas.agent import AgentState
 from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.services.block_manager import BlockManager, GitEnabledBlockManager

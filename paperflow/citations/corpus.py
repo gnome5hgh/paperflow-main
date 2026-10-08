@@ -11,10 +11,12 @@ import json
 import threading
 from pathlib import Path
 
+from paperflow.core.memory.constants import TitleSource
+
 #: TitleExtractor 回退层级中可信任的来源：只有这些层级产出的标题可入索引/建条目。
 #: pymupdf 字体启发式会把期刊名/页眉/arXiv 头当标题（GROBID 不可用时会污染 corpus
 #: 与 bib），宁缺毋滥——提取不可靠就返回空，让调用方不索引/不建条目。
-_TRUSTED_TITLE_SOURCES = frozenset({"grobid", "pdftitle"})
+_TRUSTED_TITLE_SOURCES = frozenset({TitleSource.GROBID, TitleSource.PDFTITLE})
 
 
 class CorpusIndex:

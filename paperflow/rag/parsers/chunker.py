@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 
 from paperflow.core.tokenization import get_token_encoder
+from paperflow.rag.constants import RagSource
 
 #: 块 id 的哈希前缀长度（字符）：块 id 取 ``sha1(相对路径:序号)`` 十六进制串的
 #: 前 N 个字符。结构契约——改它所有块 id 变化，必须全量重建索引，否则旧块残留、
@@ -75,7 +76,7 @@ class Chunk:
         id: str，块唯一标识 sha1(相对路径 + 块序号)[:16]；与内容无关，同位置重复切分得到相同 id（写入幂等）
         text: str，块文本（首行含「标题 > 章节」前缀）
         path: str，文档相对知识库根的路径（兼作文档 id 与元数据，跨机器稳定）
-        source: str，来源类型："note"（Markdown 笔记）| "pdf"
+        source: RagSource，来源类型：note（Markdown 笔记）| pdf
         heading: str，所属章节标题（可能为空）
         chunk_index: int，块在文档中的全局序号（从 0 起）
     """
@@ -84,7 +85,7 @@ class Chunk:
                        # 该 ID 与内容无关，同一文档位置重复切分得到相同 ID，编辑同一位置会得到同 id，保证了索引写入的幂等性（覆盖而非追加）。
     text: str          # 块的文本内容。
     path: str          # 文档相对于知识库根目录的路径（同时用作文档 id 与元数据，跨机器稳定）
-    source: str        # 来源类型："note"（Markdown 笔记）| "pdf"
+    source: RagSource   # 来源类型：note（Markdown 笔记）| pdf
     heading: str       # 该块所属章节的标题（可能为空）。
     chunk_index: int   # 块在文档中的全局序号（从0开始），用于生成 ID。
 
@@ -323,7 +324,7 @@ class AcademicChunker:
         # 全程不切断句子——除非某一句本身就超过整个预算（ _pack_sentences 调用 _token_window）
         return self._pack_sentences(sentences)
 
-    def split_doc(self, rel_path: str, sections: list[tuple[str, str]], source: str,
+    def split_doc(self, rel_path: str, sections: list[tuple[str, str]], source: RagSource,
                   title: str = "") -> list[Chunk]:
         """文档级：逐章节遍历，把带章节结构的一篇文档切成 Chunk 列表。
 
@@ -334,7 +335,7 @@ class AcademicChunker:
         Args:
             rel_path: 文档相对路径（进块 id 与元数据）。
             sections: 章节列表，每项为 (章节标题, 章节正文)。
-            source: 来源类型（"note" | "pdf"），写入块元数据。
+            source: 来源类型（note | pdf），写入块元数据。
             title: 文档标题（PDF=GROBID 主标题，笔记=H1）；与 heading 一起拼成
                    每个窗口的首行前缀，随文本进入 embedding/BM25/展示。
 

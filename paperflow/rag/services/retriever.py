@@ -4,6 +4,7 @@
 """
 import logging
 
+from paperflow.rag.constants import RagSource
 from paperflow.rag.parsers.chunker import Chunk
 
 logger = logging.getLogger(__name__)
@@ -13,8 +14,9 @@ logger = logging.getLogger(__name__)
 #: 时池子同步放大。改它改变大 top_k 场景的精排候选面与开销，需重评检索质量。
 RERANK_CANDIDATE_MULTIPLIER = 2
 
-#: source 过滤的合法取值；超出按不过滤处理（工具层已有 enum 约束，此处防御）。
-VALID_SOURCES = (None, "note", "pdf")
+#: source 过滤的合法取值（None = 不过滤）；超出按不过滤处理（工具层已有 enum 约束，此处防御）。
+#: 从 RagSource 派生，避免与块元数据的取值集分成两份。
+VALID_SOURCES = (None, *(m.value for m in RagSource))
 
 
 #: query 侧任务指令（Qwen3-Embedding 官方格式 Instruct: {task}\nQuery: {query}，

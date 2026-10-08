@@ -16,10 +16,10 @@
 集合以（工具名, 目标路径）为键。
 """
 
+from paperflow.core.constants import RISK_ORDER
 from paperflow.core.security.base import (
     SecurityMiddleware, ToolContext, PolicyDenied, ConfirmRequired,
 )
-from paperflow.core.tool import RISK_ORDER
 
 
 class PolicyEngineMiddleware(SecurityMiddleware):

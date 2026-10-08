@@ -20,11 +20,11 @@ import fitz
 fitz.TOOLS.mupdf_display_errors(False)  # C 层 stderr 告警（损坏对象/字体）不糊屏：失败仍经工具返回值可见
 
 from paperflow.vision.parsers.caption import (
-    FigureType,
     build_captions,
     find_captions,
     strip_caption_lines,
 )
+from paperflow.vision.parsers.constants import FigureType
 from paperflow.vision.parsers.document_layout import build_document_layout
 from paperflow.vision.detectors.figure_detector import located_figures
 from paperflow.vision.renderer import render_figure
