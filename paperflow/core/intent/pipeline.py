@@ -682,8 +682,7 @@ class IntentPipeline:
                                           force_clarification=force_clarification),
             schema=self.llm_fallback_schema,
             fallback=lambda: IntentionResult(
-                intents=[IntentUnit(intent_type=IntentType.UNCLASSIFIED,
-                                    confidence=0.0)]),
+                intents=[IntentUnit(intent_type=IntentType.UNCLASSIFIED)]),
         )
 
     def _synthesize_clarification(self, scored: list[tuple[str, float]]) -> str:
@@ -714,10 +713,10 @@ class IntentPipeline:
 
         注入四部分信息：
             1. 意图枚举列表（IntentType 所有取值）。
-            2. 输出字段约定：intents 列表的拆分条件与「只给首项填 confidence」约定；
-               clarification 条款按 force_clarification 切换——强制轮必须产出（触发权在
-               代码），常规轮仅在缺决定性信息时填（管线会丢弃，此处条款保留是给模型一致
-               的输出契约）。
+            2. 输出字段约定：intents 列表的拆分条件（不产置信度，字段里也没有
+               confidence，模型无从编造）；clarification 条款按 force_clarification
+               切换——强制轮必须产出（触发权在代码），常规轮仅在缺决定性信息时填
+               （管线会丢弃，此处条款保留是给模型一致的输出契约）。
             3. 路由层的近失候选（路由名 + 分数），供 LLM 参考确认或改判。
             4. 原始用户输入 query。
 
@@ -735,7 +734,7 @@ class IntentPipeline:
         parts = [
             "你是意图分类器。从以下意图中选择一个：",
             ", ".join(t.value for t in IntentType),
-            '输出 JSON：{"intents": [{"intent_type": ..., "confidence": ...}], '
+            '输出 JSON：{"intents": [{"intent_type": ...}], '
             '"query_rewrite": ..., "clarification": ...}。',
         ]
         if force_clarification:
@@ -750,13 +749,12 @@ class IntentPipeline:
                 "intents 是意图列表，按执行顺序排列，首项是主意图：仅当输入包含 ≥2 个"
                 "相互独立、分属不同意图的业务动作时才拆成多项（每一项都是可派发的业务"
                 "意图名）；单一动作或拿不准时必须只填一项（宁可不拆）。",
-                "confidence 只给 intents 首项填；后续项没有对应分数，省略即可（不要编造）。",
                 "clarification 可选，留空串表示不需要：只在输入缺决定性信息、无法在意图间取舍时才填，"
                 "例如指代不明（「帮我处理一下那篇」没说哪篇）或动作不明（没说读、写笔记还是分析）。"
-                "能推断出合理意图就不要澄清——直接给出最可能的 intents，用首项 confidence 表达"
-                "不确定程度；闲聊、求助、超出范围这类意图永远不需要澄清。",
+                "能推断出合理意图就不要澄清——直接给出最可能的 intents，用列表本身表达你的判断"
+                "（不要给分数）；闲聊、求助、超出范围这类意图永远不需要澄清。",
                 "澄清文本会原样展示给用户，须自足、简短、只问一个问题；即使填了澄清，"
-                "也要照常给出最可能的 intents 与首项 confidence。",
+                "也要照常给出最可能的 intents。",
             ])
         if near_miss:
             parts.append("路由层近失候选（供参考，可确认或改判）：")

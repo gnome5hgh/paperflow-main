@@ -118,17 +118,16 @@ class IntentStep(str, Enum):
 class IntentUnit(BaseModel):
     """一轮里的一项意图。
 
-    confidence 允许为空：路由层拆分时每条候选路由各有自己的融合分数（真实值），
-    而 LLM 兜底拆分只给主意图一个模型概率、后续步骤没有对应分数——此时留 None，
-    表示「该阶段未逐项产出」，不编造（IntentionResult 的校验器强制清空后续项）。
-    置信度语义按产出阶段区分：ROUTER 来源 = 融合分数 clip 到 [0,1]（非概率，可为
-    边缘值）；LLM 来源 = 模型概率。
+    confidence 允许为空，两个产出路径的填法不同：路由面逐项填自己的融合分数
+    （真实值，clip 到 [0,1]）；LLM 兜底面**整列留空**——该路径不产置信度（见
+    IntentionResult）。留空表示「该路径没有产置信度」，不是低置信。
     """
 
     #: 意图类型
     intent_type: IntentType
 
-    #: 置信度，范围约束在 [0,1]（LLM 可能输出越界值，pydantic 强制约束）
+    #: 置信度，范围约束在 [0,1]（LLM 可能输出越界值，pydantic 强制约束）；
+    #: 路由面为融合分数，LLM 兜底面整列为 None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
@@ -262,10 +261,13 @@ class IntentionResult(_IntentListRules, BaseModel):
     + 轮级字段。只含 LLM 能产出的那部分——entities 由确定性抽取器给出，不经模型，
     故不在此契约里。
 
-    列表规则与 IntentOutput 共用 `_IntentListRules`；差异只在置信度：模型产出的后续项
-    由校验器强制清空（见 `_intents_guard`），因为「后续项没有对应分数」这件事只有本
-    类型成立。底层结构化输出机制只校验类型不校验数值范围，因此 confidence 仍保留
-    pydantic 范围约束，避免 LLM 越界值流入上游。
+    列表规则与 IntentOutput 共用 `_IntentListRules`；差异只在置信度：本路径
+    **整列不产置信度**，校验器把每一项的 confidence 都清空（见 `_intents_guard`）。
+    路由面逐项填的是自己算出的融合分数（真实值），模型写的数字与之不是同一尺度，
+    且本路径的判定由 `source` 短路（消费方见 source=llm 即先确认），那个数字没有
+    消费方——把没根据的数字混进统一字段，只会让两条路径产出的列表难以分辨。
+    底层结构化输出机制只校验类型不校验数值范围，因此 confidence 的 pydantic 范围
+    约束继续保留（构造期越界值照旧被拦，不因清空而放松）。
     """
 
     #: 意图列表（单意图即长度 1），按执行顺序排列——首项即主意图。
@@ -282,7 +284,6 @@ class IntentionResult(_IntentListRules, BaseModel):
             "意图的业务动作时才拆成多项，每一项都是可派发的业务意图枚举值，按执行顺序排列；"
             "单一动作或拿不准时只填一项"
             "（宁缺勿滥——列表只是复合请求的信号，误拆会误导选型与收尾核对）。"
-            "confidence 只给首项填，后续项省略（后续项没有对应分数，不要编造）。"
         ),
     )
 
@@ -297,22 +298,24 @@ class IntentionResult(_IntentListRules, BaseModel):
         default=None,
         description=(
             "输入意图不明确、无法在意图间取舍时，写给用户的一句简短澄清问题；"
-            "能推断出合理意图时留空，用意图列表首项与它的 confidence 表达不确定程度。"
+            "能推断出合理意图时留空，用意图列表本身表达你的判断。"
         ),
     )
 
     @model_validator(mode="after")
     def _intents_guard(self) -> "IntentionResult":
-        """应用共用的列表规则 + 强制清空后续项的置信度。
+        """应用共用的列表规则 + 整列清空置信度。
 
-        列表规则（首要项恒保留 / 主意图之外的非业务成员剔除 / 列表与澄清互斥）见
-        `_IntentListRules._normalize_intent_list`，与 IntentOutput 共用同一套实现。
+        列表规则（按类型保序去重 / 首要项恒保留 / 主意图之外的非业务成员剔除 /
+        列表与澄清互斥）见 `_IntentListRules._normalize_intent_list`，与 IntentOutput
+        共用同一套实现。
 
-        置信度只保留首项：模型拿到列表形状后，会倾向给后续项也编一个数字；而 supervisor
-        的规则里有「低置信就先 ask_user_question 确认再动手」——喂给它一个编出来的数字
-        会引发无谓追问。后续项没有对应分数，留空表示「未逐项产出」，不是低置信。
-        这条**只作用于本类型**：IntentOutput 走路由路径时每条候选都有自己的融合分数
-        （真实值），绝不能在那边清空。
+        置信度整列留空：本路径不产置信度——模型写的数字与路由面的融合分数不是同一
+        尺度，且本路径的判定由 `source` 短路（消费方见 source=llm 即先确认），那个
+        数字没有消费方。两条路径产出的列表长得一样，读者无法从元素上分辨哪个数字是
+        算出来的、哪个是模型随手写的，所以干脆整列留空、字段含义在两条路径上都干净。
+        这条**只作用于本类型**：IntentOutput 走路由路径，每条候选填的是自己算出的
+        融合分数（真实值），绝不能在那里清空。
 
         违规不做半截修正，也不抛校验错误——解析失败的兜底路径（fallback=UNCLASSIFIED）
         不该因护栏再炸一次。
@@ -321,10 +324,6 @@ class IntentionResult(_IntentListRules, BaseModel):
             校验后的自身实例（model_validator 契约）。
         """
         self._normalize_intent_list()
-        if len(self.intents) > 1:
-            object.__setattr__(self, "intents", [
-                self.intents[0],
-                *[u.model_copy(update={"confidence": None})
-                  for u in self.intents[1:]],
-            ])
+        object.__setattr__(self, "intents", [
+            u.model_copy(update={"confidence": None}) for u in self.intents])
         return self
