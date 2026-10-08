@@ -141,7 +141,12 @@ class _IntentListRules:
     """
 
     def _normalize_intent_list(self) -> None:
-        """剔除非业务的「额外」成员 + 列表与澄清互斥。
+        """按类型保序去重 + 剔除非业务的「额外」成员 + 列表与澄清互斥。
+
+        去重按 intent_type 保留首次出现、维持原顺序：同一件事在一轮里说两遍仍是
+        一件事。路由路径的每条候选本就互不相同（收集时已跳过主意图），这层对它是
+        空操作；LLM 兜底面才是需要它的地方——模型可能把主意图重复写进列表，重复项
+        会让列表虚长到 ≥2，从而误触发收尾核对并把上一轮意图清空（丢掉追问继承）。
 
         首要项（intents[0]）恒保留：它是这一轮的分类结论，整轮闲聊时也必须还是
         chitchat——supervisor 的「非派发意图的处理」按类型分派回话方式，兜底成
@@ -154,7 +159,14 @@ class _IntentListRules:
         澄清整条链路杀掉。
         """
         business = {t for t, (_, allowed) in INTENT_META.items() if allowed}
-        head, *rest = self.intents
+        seen: set[IntentType] = set()
+        deduped: list[IntentUnit] = []
+        for unit in self.intents:
+            if unit.intent_type in seen:
+                continue
+            seen.add(unit.intent_type)
+            deduped.append(unit)
+        head, *rest = deduped
         object.__setattr__(self, "intents",
                            [head] + [u for u in rest if u.intent_type in business])
         if len(self.intents) > 1 and self.clarification:
