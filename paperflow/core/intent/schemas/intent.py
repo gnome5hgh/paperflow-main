@@ -102,6 +102,17 @@ INTENT_LABELS_ZH: dict[IntentType, str] = {
 }
 
 
+#: 复合拆分步数上限（唯一定义点，契约层）。
+#: - 值：3。
+#: - 含义与单位：IntentionResult.steps 允许的最大长度，也用于多标签拆分截断（步数，整数）。
+#: - 改它的后果：改变多标签拆分与 steps 护栏口径；
+#:   _steps_guard 与两处提示词文案（下方 Field description、pipeline._build_llm_prompt）
+#:   均与本常量同源插值。
+#: - 是否进 YAML：否（结构契约常量）。
+#: 定在 schemas 而非 constants.py：pipeline 依赖 schemas，放 constants 会成循环导入。
+MAX_STEPS = 3
+
+
 class IntentStep(str, Enum):
     """产出阶段枚举——让审计/监控能看出意图由哪一级产出。"""
 
@@ -241,36 +252,48 @@ class IntentionResult(BaseModel):
 
     #: 复合意图的有序拆分。description 会经 StructuredOutput 展开进提示词，是模型
     #: 判断「何时拆」的唯一依据（同 clarification 的教训——缺了它 steps 永远为空）。
-    #: 填写条件是原则式的、不设步数上限：只在输入确实包含多个独立业务动作时才拆。
+    #: 填写条件：仅当输入包含 ≥2 个相互独立、分属不同
+    #: 意图的业务动作；每个 step 必须是单业务意图（dispatch_allowed=True），按执行
+    #: 顺序排列，最多 MAX_STEPS 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时
+    #: 必须留空（宁缺勿滥——steps 只是复合请求的信号，误拆会误导选型与收尾核对）。
     #: 注意：# 注释不会进入 pydantic description——触发契约
     #: 必须走下面的 Field(description=...) 才能进 LLM 提示词，这里仅留出处索引。
     steps: list["IntentType"] = Field(
         default=[],
         description=(
             "复合意图的有序拆分，仅在输入包含 ≥2 个相互独立、分属不同意图的业务动作时填写；"
-            "每个 step 必须是单业务意图（dispatch_allowed=True 的枚举值），按执行顺序排列；"
-            "单一动作或拿不准时必须留空"
-            "（宁缺勿滥——这只是复合请求的信号，误拆会误导选型与收尾核对）。"
+            "每个 step 必须是单业务意图（dispatch_allowed=True 的枚举值），按执行顺序排列，"
+            f"最多 {MAX_STEPS} 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时必须留空"
+            "（宁缺勿滥——steps 只是复合请求的信号，误拆会误导选型与收尾核对）。"
         ),
     )
 
     @model_validator(mode="after")
     def _steps_guard(self) -> "IntentionResult":
-        """拆分合法性护栏 + 拆分与澄清互斥。
+        """steps 合法性护栏 + steps 与 clarification 互斥（代码级防御）。
 
-        只拦一类会污染下游的拆分：混入不可派发的意图（闲聊/帮助被拆进来会让收尾核对
-        报出假步骤）。首步与主意图的一致性不再需要校验——转换时主意图就是列表首项。
-        违规不半截修正、也不抛错（解析失败的兜底路径不该因护栏再炸一次）。
+        steps 是给 supervisor 的复合请求信号（随 INTENT 块注入、收尾时摆进账本核对），
+        不再是派发门禁——但一步混进不派发的系统意图仍会误导选型、让 spawn 被拒，所以
+        schema 层仍拦住三类非法拆分：超过 MAX_STEPS 步（LLM 硬凑的长链）、混入非派发意图
+        （LLM 把闲聊/帮助也拆进去）、首步与主意图
+        不一致（主意图是 INTENT 块的第一参考，错位会让信号自相矛盾）。
+        违规不做半截修正，整体置空；也不抛校验错误——解析失败的兜底路径
+        （fallback=UNCLASSIFIED）不该因护栏再炸一次。
         互斥：steps 非空说明输入已被拆解执行，无需再澄清；两者同时产出属模型
-        违命，clarification 让位。
+        违命，clarification 让位。两字段的「要不要」上游管线均已用代码判据决定，
+        这里是最后一条防线。
 
         Returns:
             校验后的自身实例（model_validator 契约）。
         """
         if self.steps:
             business = {t for t, (_, allowed) in INTENT_META.items() if allowed}
-            if any(s not in business for s in self.steps):
+            if (len(self.steps) > MAX_STEPS
+                    or any(s not in business for s in self.steps)
+                    or self.steps[0] != self.intent_type):
                 object.__setattr__(self, "steps", [])
+        # steps × clarification 互斥：复合句已拆就无需澄清，两者同时产出属模型
+        # 违命，代码级强制 clarification 让位（不抛错，静默清空即可）
         if self.steps and self.clarification:
             object.__setattr__(self, "clarification", None)
         return self
