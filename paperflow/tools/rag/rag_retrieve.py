@@ -13,6 +13,15 @@ from paperflow.tools.memory.runtime_context import get_memory_context
 
 logger = logging.getLogger(__name__)
 
+#: 检索不可用时的固定降级声明。Milvus 中途崩溃（静默降级无人知晓）时，异常透传会变成
+#: 千篇一律的 Tool error——这里给出固定措辞，让上层明确知道「检索结果不可用」而不是
+#: 怀疑工具本身。错误原文附在末尾，便于定位。
+_DEGRADED_TEMPLATE = (
+    "⚠️ 向量检索不可用（Milvus 异常），本次检索失败，结果可能不完整。"
+    "原始错误：{error}。可尝试 `docker compose up -d` 重启依赖服务后重试；"
+    "或基于已有资料继续，如实说明检索不可用。"
+)
+
 
 def _recent_history(limit: int) -> list:
     """取最近对话历史（condense 改写输入）：memory 系统的 in-context 窗口投影。
@@ -119,7 +128,17 @@ class RagRetrieveTool(Tool):
             except Exception as e:
                 logger.warning("query 改写失败，降级为原始 query 检索：%s", e)
 
-        # 2. 持锁调用检索器（保证与索引操作的互斥）。Milvus 中途崩溃（静默降级
+        # 2. 熔断判断放在进锁之前：Milvus 不可达时每次检索都要先等一轮连接超时，而调用方
+        # 的预算是按秒计的；跳闸期间直接给结论才省得掉这段白等。冷却到期会自动放行一次
+        # 探测（半开），所以 Milvus 恢复后无需重启进程。假服务没有熔断器时按放行处理。
+        breaker = getattr(svc, "retrieval_breaker", None)
+        if breaker is not None and not breaker.allow():
+            return ToolResult(
+                text=_DEGRADED_TEMPLATE.format(error="熔断中（连续失败后暂停检索）")
+                     + f" 约 {breaker.retry_after:.0f} 秒后会自动重试。",
+                is_error=True)
+
+        # 3. 持锁调用检索器（保证与索引操作的互斥）。Milvus 中途崩溃（静默降级
         # 无人知晓）时异常透传会变成
         # 千篇一律的 Tool error——这里捕获并返回固定降级声明，让上层明确知道
         # 「检索结果可能不完整/不可用」而非怀疑工具本身。
@@ -128,17 +147,17 @@ class RagRetrieveTool(Tool):
                 # source 原样透传给检索器（非法值由 Retriever 侧按不过滤防御处理）。
                 chunks = svc.get_retriever().retrieve(queries, top_k, source)
         except Exception as e:
-            return ToolResult(
-                text="⚠️ 向量检索不可用（Milvus 异常），本次检索失败，结果可能不完整。"
-                     f"原始错误：{e}。可尝试 `docker compose up -d` 重启依赖服务后重试；"
-                     "或基于已有资料继续，如实说明检索不可用。",
-                is_error=True)
+            if breaker is not None:
+                breaker.record_failure()
+            return ToolResult(text=_DEGRADED_TEMPLATE.format(error=e), is_error=True)
+        if breaker is not None:
+            breaker.record_success()
 
-        # 3. 若无结果，返回结构化提示信息。
+        # 4. 若无结果，返回结构化提示信息。
         if not chunks:
             return ToolResult(text="检索无命中（索引可能为空，可先写几篇笔记）")
 
-        # 4. 否则，每条命中格式化为 `- [来源:路径] 正文摘录前 N 字` 的列表。
+        # 5. 否则，每条命中格式化为 `- [来源:路径] 正文摘录前 N 字` 的列表。
         # 摘录上限读 rag.tools.excerpt_chars：带前缀的块首行即「论文标题 > 章节标题」，
         # 需要足够窗口才能让上层同时拿到节号与可用的正文上下文。
         excerpt_chars = svc.config.rag.tools.excerpt_chars

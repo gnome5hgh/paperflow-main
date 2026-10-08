@@ -69,5 +69,5 @@
 - **根因**：Milvus 端口仍开着但服务已半死（或正在重启）时，检索不是立刻失败而是长时间阻塞——`paperflow/rag/storage/vector_store.py` 构造 `MilvusClient(uri=uri)` **未传 timeout**，全部 RPC 也无 timeout，于是走 pymilvus 默认值：`retry_on_rpc_failure`（`retry_times=75`、backoff 上限 3s）与 `connection_manager._recover → reconnect`（connect deadline 被规范化为 10s）。而一次 `Retriever.retrieve()` 要做**多次** Milvus RPC（首次 `all_documents()` 重建 BM25 + 每个改写 query 一次 `query` + 至多两次 `fetch_by_ids`），几个 10s 恢复等待累加即 25s/64s/90s 量级。仓库内没有超时、没有熔断（`RAGService.milvus_available()` 结果永久缓存且**无人调用**，是死代码）。
 - **放大伤害**：子 agent 超时帽是预算制（qa-agent 默认 180s，见 `paperflow/config.py`），1~2 次阻塞检索就能吃穿整个预算 → 子 agent `timeout` → supervisor 重派仍超时 → 整轮十几分钟拿不到结果，最后只能转成 ask_user 请示。
 - **附注**：Milvus 不可用时 `rag_retrieve` **不会**软降级成纯 BM25，而是返回固定文本「⚠️ 向量检索不可用（Milvus 异常）」（`paperflow/tools/rag/rag_retrieve.py`）；`Retriever` 里只有 embedding 与 reranker 两路有 try/except，向量路与 BM25 路的 `fetch_by_ids` 均无保护——BM25 索引虽在本地内存，其元数据仍依赖 Milvus，所以「退纯 BM25」在 Milvus 挂掉时物理上不可行。别把这条与「embedding 未配 key → 退纯 BM25」的软降级混淆。
-- **修法**：给 `MilvusClient` 与各 RPC 传 `timeout=`（秒级），或把检索包在带超时的调用里并在超时后短路；顺带把 `milvus_available()` 接进检索路径做熔断。
-- **验证**：`docker stop milvus-standalone` 后调一次 `rag_retrieve`，应在数秒内返回降级文本，而不是阻塞数十秒。
+- **修法（已实施）**：各 RPC 传 `rag.storage.timeout`（读路径 5s / 写路径 60s），并在 `rag_retrieve` 边界加检索侧熔断器（`paperflow/rag/services/breaker.py`，冷却 60s，跳闸期间直接返回降级文本）。旧版本上遇到时先升到含 `RetrievalBreaker` 的版本。
+- **验证**：`docker stop milvus-standalone` 后调一次 `rag_retrieve`，应在数秒内返回降级文本，而不是阻塞数十秒；再调一次应瞬时返回（熔断短路）；Milvus 起来后过冷却窗口自动恢复，无需重启进程。

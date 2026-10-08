@@ -6,6 +6,11 @@
 
 并发约定：本类方法假定调用方已持外部锁（RAGService.lock）——Milvus 客户端
 本身非线程安全，串行访问由上层保证。
+
+超时约定：每个 RPC 都要传超时（`rag.storage.timeout` / `write_timeout`）。这不只是「别等太久」
+——pymilvus 默认会对失败 RPC 重试最多 75 次、退避到 3 秒，服务不可达时一次调用能白等好几分钟。
+这个 timeout 同时是单次尝试的 gRPC 截止时间与整个重试循环的预算（pymilvus 从同一个参数取两者），
+所以设了就等于给这次调用封了顶，失败立刻回到上层交给熔断器判断。
 """
 from pymilvus import DataType, MilvusClient
 
@@ -19,9 +24,13 @@ class VectorStore:
         _client: MilvusClient，向量库客户端（本地文件路径走 Milvus Lite，http 走 Standalone）
         _collection: str，集合名
         _batch_size: int，all_documents 分页遍历的每页行数
+        _read_timeout: float | None，读路径单次 RPC 截止时间（秒）
+        _write_timeout: float | None，写路径单次 RPC 截止时间（秒）
     """
 
-    def __init__(self, uri: str, dim: int, collection_name: str, batch_size: int):
+    def __init__(self, uri: str, dim: int, collection_name: str, batch_size: int,
+                 read_timeout: float | None = None,
+                 write_timeout: float | None = None):
         """打开（必要时创建）指定 uri 的向量库集合。
 
         生产值来自 ``rag.storage.*``（唯一声明点 config.py，RagService 注入）。
@@ -32,16 +41,21 @@ class VectorStore:
             dim: 向量维度，必须与写入的 embedding 维度一致（建集合时定死）。
             collection_name: 集合名。
             batch_size: all_documents 分页遍历的每页行数（测试可传小值验证跨页）。
+            read_timeout: 读路径单次 RPC 截止时间（秒）；None 用 pymilvus 默认值
+                 ——默认那套重试策略在服务不可达时会白等很久，生产不建议留空。
+            write_timeout: 写路径单次 RPC 截止时间（秒）；批量入库本身耗时，故比读路径宽松。
         """
         self._client = MilvusClient(uri=uri)
         self._collection = collection_name
         self._batch_size = batch_size
+        self._read_timeout = read_timeout
+        self._write_timeout = write_timeout
 
-        if not self._client.has_collection(collection_name):
+        if not self._client.has_collection(collection_name, timeout=read_timeout):
             self._create_collection(dim)
 
         # 确保集合已加载进内存供检索（Standalone 必需，Lite 幂等无害）
-        self._client.load_collection(collection_name)
+        self._client.load_collection(collection_name, timeout=read_timeout)
 
     def _create_collection(self, dim: int) -> None:
         """按固定 schema 创建集合，同时建立向量索引和标量索引。
@@ -84,6 +98,7 @@ class VectorStore:
 
         self._client.create_collection(
             collection_name=self._collection, schema=schema, index_params=index_params,
+            timeout=self._write_timeout,
         )
 
     def upsert(self, chunks: list[Chunk], embeddings, mtime: float = 0.0) -> None:
@@ -112,8 +127,9 @@ class VectorStore:
             }
             for i, c in enumerate(chunks)
         ]
-        self._client.upsert(collection_name=self._collection, data=data)
-        self._client.flush(self._collection)
+        self._client.upsert(collection_name=self._collection, data=data,
+                            timeout=self._write_timeout)
+        self._client.flush(self._collection, timeout=self._write_timeout)
 
     @staticmethod
     def _escape_filter_value(value: str) -> str:
@@ -152,6 +168,7 @@ class VectorStore:
             limit=top_k,
             filter=expr, # 空串 = 不过滤
             output_fields=["text", "path", "source"], # 元数据随搜索结果带回，避免全表扫描补齐
+            timeout=self._read_timeout,
         )
 
         # Milvus 的 ``search`` 返回格式是嵌套结构：
@@ -181,6 +198,7 @@ class VectorStore:
             collection_name=self._collection,
             filter=f"id in [{quoted}]",
             output_fields=["text", "path", "source"],
+            timeout=self._read_timeout,
         )
         return [(r["id"], r["text"], r["path"], r["source"]) for r in res]
 
@@ -197,6 +215,7 @@ class VectorStore:
             collection_name=self._collection,
             filter=f'path == "{self._escape_filter_value(path)}"',
             output_fields=["id"],
+            timeout=self._read_timeout,
         )
         return [r["id"] for r in res]
 
@@ -211,9 +230,10 @@ class VectorStore:
         escaped = self._escape_filter_value(path)
         self._client.delete(
             collection_name=self._collection, filter=f'path == "{escaped}"',
+            timeout=self._write_timeout,
         )
         # 写入后调用 flush，使 count() 立即反映删除结果。
-        self._client.flush(self._collection)
+        self._client.flush(self._collection, timeout=self._write_timeout)
 
     def all_documents(self) -> list[tuple[str, str, str, float]]:
         """返回全部块，每块为 (块 id, 原文, 路径, 修改时间)。
@@ -236,6 +256,7 @@ class VectorStore:
             filter="", # 空过滤 = 全量
             output_fields=["text", "path", "mtime"],
             batch_size=self._batch_size,
+            timeout=self._read_timeout,
         )
 
         try:
@@ -261,5 +282,5 @@ class VectorStore:
         Returns:
             int: 集合中的记录条数。
         """
-        stats = self._client.get_collection_stats(self._collection)
+        stats = self._client.get_collection_stats(self._collection, timeout=self._read_timeout)
         return int(stats.get("row_count", 0))

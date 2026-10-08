@@ -391,6 +391,8 @@ class StorageConfig:
         uri: str，Milvus 连接地址（本地路径走 Lite，http 走 Standalone）
         collection: str，集合名
         batch_size: int，分页遍历每页行数
+        timeout: float，读路径单次 RPC 截止时间（秒）
+        write_timeout: float，写路径单次 RPC 截止时间（秒）
     """
 
     #: Milvus 连接地址。本地文件路径 → Milvus Lite（内嵌，单测用）；
@@ -402,6 +404,17 @@ class StorageConfig:
 
     #: all_documents 分页遍历每页行数（行；规避单次 query 16384 行上限）。
     batch_size: int = 1000
+
+    #: 读路径（search / query / 全量遍历 / 统计 / 集合加载）单次 RPC 的超时（秒）。
+    #: 必须设：不设时 pymilvus 走默认重试策略（最多 75 次、退避到 3 秒），服务不可达时
+    #: 一次检索能白等好几分钟。这个值同时管两件事——每次尝试的 gRPC 截止时间，以及整个
+    #: 重试循环的时间预算（pymilvus 从同一个 timeout 参数取两者），所以设了就等于给这次
+    #: 调用封了顶，失败立刻回到上层由熔断器判断。
+    timeout: float = 5.0
+
+    #: 写路径（upsert / flush / delete / 建集合）单次 RPC 的超时（秒）。
+    #: 比读路径宽松：批量入库本身就要若干秒，用读路径那档会把合法写入判成超时。
+    write_timeout: float = 60.0
 
 
 @dataclass

@@ -6,10 +6,16 @@
 整段串行执行是最简单且正确的并发模型。
 """
 import threading
+import time
 
 from paperflow.config import PaperFlowConfig
 from paperflow.rag.parsers.chunker import AcademicChunker
 from paperflow.rag.parsers.grobid_client import ParsedDoc
+from paperflow.rag.services.breaker import RetrievalBreaker
+
+#: Milvus 可连性探测结果的缓存秒数。带时限才跟得上外部服务的崩溃与恢复；
+#: 探测本身要构造客户端并发 RPC，也不便宜，故不每次调用都探。
+_MILVUS_PROBE_TTL = 30.0
 
 
 class RAGService:
@@ -23,6 +29,7 @@ class RAGService:
         config: PaperFlowConfig，全局配置（组件参数与路径的来源）
         lock: threading.RLock，保护整个索引/检索流程，保证并发状态一致
         chunker: AcademicChunker，构造期直接创建（纯逻辑无副作用）
+        retrieval_breaker: RetrievalBreaker，检索熔断器（Milvus 不可达时跳闸）
         _parse_cache: dict[(绝对路径, mtime, size), ParsedDoc]，GROBID 解析结果进程内缓存
         _embedder/_reranker/_grobid/_grobid_available/_vector_store/_milvus_available/_bm25/_indexer/_retriever/_rewriter: 惰性组件槽位（None 表示未构造，首次访问经双重检查加锁构造）
     """
@@ -49,6 +56,7 @@ class RAGService:
         self._grobid_available = None  # 缓存 GROBID 可用性探测结果 (bool | None)
         self._vector_store = None      # 向量库 (VectorStore)
         self._milvus_available = None    # Milvus 可连性探测缓存 (bool | None)
+        self._milvus_checked_at = 0.0    # 上次探测时刻（time.monotonic），配合 TTL 失效
         self._bm25 = None              # BM25 索引 (Bm25Index)
         self._indexer = None           # 索引器视图 (RagIndexer)
         self._retriever = None         # 检索器视图 (Retriever)
@@ -58,6 +66,10 @@ class RAGService:
         # 配方哈希据此失效——改 YAML 即触发全量重索引。
         self.chunker = AcademicChunker(config.rag.chunker.max_tokens,
                                        config.rag.chunker.overlap_tokens)
+
+        # 检索熔断器：Milvus 不可达时跳闸，省掉「每次检索都白等一轮连接超时」。
+        # 它是有状态的守卫而非惰性组件，构造期就建好；检索侧读它做放行判断。
+        self.retrieval_breaker = RetrievalBreaker()
 
         # GROBID 解析结果缓存：键为 (绝对路径, 修改时间戳, 文件大小)，
         # 值是对应的 ParsedDoc。进程内缓存避免同一 PDF 被反复解析。
@@ -130,6 +142,8 @@ class RAGService:
                             self.config.rag.storage.uri, dim,
                             collection_name=self.config.rag.storage.collection,
                             batch_size=self.config.rag.storage.batch_size,
+                            read_timeout=self.config.rag.storage.timeout,
+                            write_timeout=self.config.rag.storage.write_timeout,
                         )
                     except Exception as e:
                         raise RuntimeError(
@@ -138,22 +152,28 @@ class RAGService:
                         ) from e
         return self._vector_store
 
-    def milvus_available(self) -> bool:
-        """探测 Milvus 是否可连接（仅作启动期探测，结果不中途刷新）。
+    def milvus_available(self, ttl: float = _MILVUS_PROBE_TTL) -> bool:
+        """探测 Milvus 是否可连接，结果缓存 ttl 秒。
 
-        Lite（本地文件 uri）恒可连；Standalone 未启动则 False。结果缓存在
-        进程生命周期内——中途容器崩溃不由本方法感知，运行期可观测性由
-        rag_retrieve 工具的固定降级声明保证。
+        Lite（本地文件 uri）恒可连；Standalone 未启动则 False。缓存带时限是必需的——
+        Milvus 是外部服务，中途崩溃与恢复都可能发生，永久缓存会让探测结果与实际状态长期
+        背离。检索路径的实时保护不靠本方法（它要构造客户端并发 RPC，放热路径太贵），
+        而由 `retrieval_breaker` 负责：那是以真实检索当探测，比这里更准。
+
+        Args:
+            ttl: float，探测结果的有效秒数，过期即重新探测。
 
         Returns:
             bool: True 表示可连接。
         """
-        if self._milvus_available is None:
+        now = time.monotonic()
+        if self._milvus_available is None or now - self._milvus_checked_at >= ttl:
             try:
                 self._ensure_vector_store()
                 self._milvus_available = True
             except RuntimeError:
                 self._milvus_available = False
+            self._milvus_checked_at = now
         return self._milvus_available
 
     def _ensure_bm25(self):
