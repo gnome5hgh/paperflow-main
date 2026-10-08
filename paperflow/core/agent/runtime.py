@@ -1148,6 +1148,9 @@ class Agent:
             # 2. 每个工具调用通过 _exec_tool 处理，内部包含中间件管道、参数解析、执行等。
             # 3. 并行上限使用信号量限制，防止一次性打爆外部 API 或数据库连接池。
             # 4. 确认回调（如高风险操作需用户确认）通过一个共享锁串行化，避免多个工具同时抢占 CLI 标准输入导致竞态。
+
+            # supervisor 可以输出 8 个 spawn_sub_agent 调用，gather 把 8 个 _run_one 一起调度起来，
+            # 但是只有 4 个子 agent 真的在同时跑，还有 4 个卡在信号量上排队
             sem = asyncio.Semaphore(4)
             confirm_lock = asyncio.Lock()
 

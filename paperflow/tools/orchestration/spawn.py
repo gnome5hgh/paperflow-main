@@ -217,6 +217,9 @@ async def _extract_digest(llm, agent_type: str, text: str,
         telemetry_callback: 摘要 LLM 调用的元数据回调,None = 零开销跳过(不接线审计)
 
     """
+    # 摘要提取是可选增强,因此这里故意吞掉所有异常(超时、JSON 解析失败、schema 校验不过)
+    # 并返回空 dict,让调用方回退读 summary 全文——若让异常逃逸,一次摘要失败就会把一个
+    # 已经跑成功的子任务误判成 spawn 失败,把"锦上添花"的环节变成新的失败面。
     try:
         digest = await asyncio.wait_for(
             StructuredOutput(llm, telemetry_callback=telemetry_callback).extract(
@@ -265,6 +268,26 @@ def _record_dispatch(parent: Agent, agent_type: str, status: str) -> None:
     if parent.agent_type != "supervisor":
         return
     get_run_state(parent._trace_id).spawn_dispatches.append((agent_type, status))
+
+
+def _deny(parent: Agent, agent_type: str, summary: str) -> ToolResult:
+    """构造一次派发拒绝的结果,并同步记入派发账本。
+
+    八道闸的拒绝走同一形状(记账 denied + status=denied),集中在这里而不是每道闸各写
+    一遍构造样板:账本少记一笔,收尾核对就看不到那次「想派但没派成」,而漏记往往正是
+    复制粘贴样板时发生的。
+
+    Args:
+        parent: Agent，发起派发的父实例（账本只记 supervisor 的派发，非 supervisor 跳过）
+        agent_type: str，目标子 agent 类型
+        summary: str，给模型看的拒绝原因——需可行动(说清为什么被拒、该怎么调整)
+
+    Returns:
+        ToolResult，text 与 summary 均为同一份 SubAgentResult 的 JSON 序列化。
+    """
+    _record_dispatch(parent, agent_type, "denied")
+    result = SubAgentResult(status="denied", summary=summary)
+    return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
 
 #: 并发锁:execute 跑在线程池 worker 里,并行 spawn 会同时读写容器状态——单次
@@ -318,8 +341,7 @@ _PATH_RE = re.compile(r"(?<![A-Za-z0-9_])/[^\s，,;:。（）\"']+")
 def _task_fingerprint(task: str, mode: str | None = None) -> str:
     """任务文本指纹 = sha256(规范化空白后的文本 + mode)[:16]。
 
-    mode 参与指纹,防"同任务文本不同模式"的去重碰撞(同 task 但 run 模式不同,
-    结果不可互换)。
+    mode 参与指纹,防"同任务文本不同模式"的去重碰撞(同 task 但 run 模式不同,结果不可互换)。
 
     Args:
         task: str，子任务文本
@@ -328,6 +350,8 @@ def _task_fingerprint(task: str, mode: str | None = None) -> str:
     Returns:
         sha256(规范化文本 + mode) 的前 16 位十六进制指纹。
     """
+    # 先折叠空白再哈希:同一任务只差换行或多空格时应命中同一条目,否则模型把任务文本
+    # 换个排版就绕过去重、重复派发同一个子任务。
     norm = " ".join(task.split())
     key = f"{mode or ''}\n{norm}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
@@ -388,6 +412,8 @@ class _UserWaitClock:
 
     def begin(self) -> None:
         """确认等待开始(进入确认回调前调用)。"""
+        # 重复 begin 不重置起点(_active_start 已有值就保持):嵌套确认时内层 begin 若
+        # 覆盖起点,外层已经等掉的那段时长就丢算了,预算会被少延长。
         with self._lock:
             if self._active_start is None:
                 self._active_start = time.monotonic()
@@ -493,6 +519,8 @@ async def _run_child_with_budget(coro, timeout: float, clock: _UserWaitClock):
     Returns:
         子 agent 的结果；纯执行超时抛 asyncio.TimeoutError，取消沿 await 链级联传播。
     """
+    # 用 loop.time() 而非 time.monotonic() 是为了与 asyncio.wait 的时钟同域;两者都是
+    # 单调钟,所以下面能与 _UserWaitClock 的 time.monotonic() 直接相减。
     loop = asyncio.get_running_loop()
     task = asyncio.ensure_future(coro)
     base_deadline = loop.time() + timeout
@@ -500,7 +528,10 @@ async def _run_child_with_budget(coro, timeout: float, clock: _UserWaitClock):
         while not task.done():
             remaining = (base_deadline + clock.total()) - loop.time()
             if remaining <= 0:
-                # 纯执行超时(无用户等待兜底)→ 取消子 agent,抛 TimeoutError
+                # 纯执行超时(无用户等待兜底)→ 取消子 agent,抛 TimeoutError。
+                # 取消后必须 await 子任务、等它真正收尾再抛:否则子 agent 的清理
+                # (落盘、审计收尾、解锁)会与上抛的异常赛跑。吞掉它自己的异常是为了
+                # 让上抛的只有"超时"这一件事,不把子任务的报错混进超时语义。
                 task.cancel()
                 try:
                     await task
@@ -512,6 +543,8 @@ async def _run_child_with_budget(coro, timeout: float, clock: _UserWaitClock):
                 return task.result()
         return task.result()
     except asyncio.CancelledError:
+        # 父被取消(Ctrl+C):同样先把取消传下去、等子任务收尾,再原样上抛取消——
+        # 上抛的是 CancelledError 而非子任务的报错,调用方据此区分"被取消"与"失败"。
         task.cancel()
         try:
             await task
@@ -639,16 +672,23 @@ class SpawnSubAgentTool(Tool):
 
     def _admit(self, agent_type: str, task: str, mode: str | None = None,
                intent: str | None = None) -> "ToolResult | tuple[str, bool]":
-        """派发前的八道闸，按判定顺序：未知 agent 类型 → mode 校验 → 意图派发门禁
-        → spawn 白名单 → 同会话同指纹去重 → 审稿预算 → 每轮派发总量上限 → 同路径在途互斥。
+        """派发前的八道闸。前四道是「这一路合不合法」的纯判定，后四道是「会不会与别的
+        派发冲突、超支」的共享状态检查：
 
-        意图只作信号，不强制派发顺序——顺序与并行由 supervisor 自主决定。每条
-        被拒/去重的派发尝试都记入 supervisor 的派发账本（状态 denied/deduped），
-        供收尾核对看到「想派但没派成」的事实。
+        - 纯判定（不进锁，只读、无共享状态写入）：① 未知 agent 类型 → ② mode 枚举
+          → ③ 意图派发门禁 → ④ spawn 白名单
+        - 共享状态（整体持 _SPAWN_LOCK）：⑤ 同会话同指纹去重 → ⑥ 审稿预算
+          → ⑦ 每轮派发上限 → ⑧ 同路径在途互斥
 
-        通过时返回 (任务指纹, 是否含路径)——调用方负责在执行完的 finally 里
-        按 has_path 决定 done 缓存或清条目；拒绝时直接返回 denied/去重命中的
-        ToolResult。审稿类 mode 的预算计数与注册同锁原子,拒绝路径不触碰注册表。
+        三条不变式：
+        - 所有拒绝都在登记 running **之前**提前 return，注册表不被拒绝路径污染；
+        - ⑥⑦ 只判不记：计数自增与 ⑧ 的路径登记、⑤ 的注册收敛在同一个临界区——否则被
+          后续闸拒绝的派发会白吃额度，拒绝话术还会把「路径冲突」误报成「预算耗尽」；
+        - ⑧ 必须最后判：它一登记占用就无法回退，若其后还有闸拒绝，早退不进调用方的
+          finally，该路径会被永久锁死。
+
+        意图只作信号，不强制派发顺序——顺序与并行由 supervisor 自主决定；每条被拒/
+        去重的尝试都记入派发账本（denied/deduped），供收尾核对看到「想派但没派成」。
 
         Args:
             agent_type: str，目标子 agent 类型
@@ -657,149 +697,97 @@ class SpawnSubAgentTool(Tool):
             intent: str | None，显式声明的意图
 
         Returns:
-            通过时返回 (任务指纹, 是否含路径)；拒绝/去重命中时直接返回 denied 的 ToolResult。
+            通过时返回 (任务指纹, 是否含路径)——调用方按 has_path 决定 done 缓存或清条目；
+            拒绝/去重命中时直接返回对应状态的 ToolResult。
         """
         parent = self._parent
-        # ① 未知 agent 类型：最基础的一道闸，先于 mode/意图/spawn 白名单校验——给模型
-        # 一个可行动的拒绝（附可选清单），而不是让它把一个拼错的类型一路带到构造期。
+
+        # ① 未知类型：先于其余校验，拒绝时附可选清单，让模型能自己改对而不是一路带到构造期
         if agent_type not in parent.agent_registry.list_agents():
-            _record_dispatch(parent, agent_type, "denied")
-            result = SubAgentResult(
-                status="denied",
-                summary=f"未知 agent 类型: {agent_type}；可选: "
-                        f"{sorted(parent.agent_registry.list_agents())}")
-            return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-        # ② mode 参数校验：非法值直接拒绝（schema enum 约束 LLM 生成层，
-        # 此处兜底防任何漏网之鱼静默错流——拼写错的 mode 注入会让子 agent 走错流程）。
+            return _deny(parent, agent_type, f"未知 agent 类型: {agent_type}；可选: "
+                                            f"{sorted(parent.agent_registry.list_agents())}")
+
+        # ② mode：schema enum 已约束生成层，这里兜住漏网之鱼——拼错的 mode 会让子 agent 走错流程
         if mode is not None and mode not in SUB_AGENT_MODES:
-            _record_dispatch(parent, agent_type, "denied")
-            result = SubAgentResult(status="denied",
-                                    summary=f"未知 mode: {mode}，合法值: {sorted(SUB_AGENT_MODES)}")
-            return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-        # ③ 意图派发门禁：代码级确定性检查，不依赖 supervisor 遵循 AGENT.md 提示词。
-        #
-        # 声明优先：supervisor 显式声明了 intent 时按声明校验——可派发即放行，
-        # 不可派发明确拒绝。这是会话意图被误判时唯一的申诉通道：用户已在澄清中
-        # 确认真实意图、而 last_intent 要到下一轮才更新，只认 last_intent 会把
-        # 「模型+用户都确认正确」的派发也锁死。安全性与原设计一致——intent 是
-        # 自声明，报假声明换不到任何额外权限，声明什么就按什么校验。
-        # 未声明时看本轮会话意图：last_intent 是 dispatch_allowed=False 的意图
-        # （陈述方向/系统类）就拒绝派发领域 agent；last_intent 为 None（意图管线
-        # 失败降级）时放行，不因门禁误伤主流程。
+            return _deny(parent, agent_type, f"未知 mode: {mode}，合法值: {sorted(SUB_AGENT_MODES)}")
+
+        # ③ 意图门禁：代码级确定性检查，不依赖 supervisor 遵循 AGENT.md。
+        #    显式声明 intent 时按声明校验——这是会话意图被误判时的申诉通道（用户已在澄清里确认真实意图，
+        #    而 last_intent 要到下一轮才更新）；未声明才回落会话意图。声明什么就按什么校验，
+        #    报假声明换不到额外权限。last_intent 为 None（管线降级）时放行，不误伤主流程。
         declared: IntentType | None = None
         if intent is not None:
             try:
                 declared = IntentType(intent)
             except ValueError:
-                _record_dispatch(parent, agent_type, "denied")
-                result = SubAgentResult(
-                    status="denied",
-                    summary=f"未知 intent: {intent}，合法值为 IntentType 枚举")
-                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+                return _deny(parent, agent_type, f"未知 intent: {intent}，合法值为 IntentType 枚举")
         if declared is not None:
             if not INTENT_META[declared][1]:
-                _record_dispatch(parent, agent_type, "denied")
-                result = SubAgentResult(
-                    status="denied",
-                    summary=f"声明的意图 {declared.value} 不可派发领域 agent（仅业务意图可派发）")
-                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-        else:
-            li = parent.last_intent
-            if li is not None and not INTENT_META[li.intent_type][1]:
-                _record_dispatch(parent, agent_type, "denied")
-                result = SubAgentResult(status="denied",
-                                        summary=f"当前意图 {li.intent_type.value} 不派发领域 agent")
-                return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
-        # ④ spawn 权限运行时校验(_check_spawn_allowed 单点)。
-        #    supervisor 硬编码放行;非 supervisor 越界 spawn → denied。
-        denied = _check_spawn_allowed(parent, agent_type)
-        if denied is not None:
-            _record_dispatch(parent, agent_type, "denied")
-            result = SubAgentResult(status="denied", summary=denied)
-            return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
+                return _deny(parent, agent_type,
+                             f"声明的意图 {declared.value} 不可派发领域 agent（仅业务意图可派发）")
+        elif parent.last_intent is not None and not INTENT_META[parent.last_intent.intent_type][1]:
+            return _deny(parent, agent_type,
+                         f"当前意图 {parent.last_intent.intent_type.value} 不派发领域 agent")
 
-        # ⑤ 同会话同指纹去重(机械安全网):并行 spawn 并发访问注册表,检查+注册
-        #    须持锁整体原子。门控规则由 _task_has_path 区分:
-        #    - 无路径任务(纯文本,世界不变)→ running 提示 + done 窗口内缓存复用
-        #    - 有路径任务(引用真实文件,世界可变)→ 只 running 去重,完成即清条目、
-        #      永不缓存 done——子 agent 执行期间文件可能已改,缓存旧结果会交付陈旧裁决
-        #    去重注册表在会话容器上(跨 run 存活,同会话内生效),下面用到的各类预算
-        #    计数在 run 容器上(按 trace 隔离,一次用户任务内独立)。取容器时其内部会
-        #    顺手剔除过窗条目(超窗 done 缓存、闲置过久的整份 run 状态),长会话不会
-        #    无限累积,故此处不再单独清理。
+        # ④ 白名单：supervisor 硬编码放行，其余按自身 allowed_spawns 校验（单点在 _check_spawn_allowed）
+        not_allowed = _check_spawn_allowed(parent, agent_type)
+        if not_allowed is not None:
+            return _deny(parent, agent_type, not_allowed)
+
+        # ⑤~⑧ 触及共享状态（去重注册表 / 预算计数 / 在途路径），判定与记账整体持锁。
+        # 去重注册表在会话容器（跨 run 存活、同会话内生效），预算与在途路径在 run 容器
+        # （按 trace 隔离）；取容器时内部会顺手清扫过期条目，故此处不再单独清理。
         sess = get_session_state(parent.session_id)
         rs = get_run_state(parent._trace_id)
         fp = _task_fingerprint(task, mode)
         has_path = _task_has_path(task)
         with _SPAWN_LOCK:
+            # ⑤ 去重：running → 提示等待；done 复用只对无路径任务开——有路径任务引用的
+            #    文件在子 agent 执行期间可能已改，缓存旧结果会交付陈旧裁决。两条早退都
+            #    记 deduped，且都在预算计数之前，不消耗额度。
             reg = sess.spawn_registry
             hit = reg.get(fp)
             now = time.monotonic()
             if hit and hit["state"] == "running":
-                # 去重命中：同指纹任务正在跑，提示等待。记账为 deduped——
-                # 收尾核对据此看出「这一路想派但被去重早退了」。
                 _record_dispatch(parent, agent_type, "deduped")
                 return ToolResult(text="同任务正在执行中，请等待其结果（已去重，勿重复派发）")
             if hit and hit["state"] == "done" and not has_path \
                     and now - hit["started_at"] < _SPAWN_REUSE_WINDOW_S:
-                # done 缓存复用：同任务刚做完、结果直接给你。同样记 deduped。
                 _record_dispatch(parent, agent_type, "deduped")
                 return hit["result"]
-            # ⑥ 审稿预算门:审稿类 mode 的次数检查——超限拒绝(不注册,不污染去重注册表);
-            #    去重命中早退不计数。此处只判不记:计数自增统一推迟到 ⑧ 通过之后,
-            #    使被后续任何一道闸(每轮上限/同路径互斥)拒绝的派发不消耗本额度,
-            #    拒绝话术也就与实际原因一致,不会把「路径冲突」误报成「预算耗尽」。
-            #    键用父实例 id:同一 run 内多个同类型父实例(如两个 noter)各算各的,
-            #    不因共用同一 trace 串号;计数随 run 状态存活,跨 run(新 trace)自然重置。
+
+            # ⑥ 审稿预算：键 (父实例, mode)——同一 run 内多个同类型父实例各算各的、兄弟不串号；
+            #    不同 mode 独立计数。此处只判不记，自增见下方收敛块。
             review_key = (parent._instance_id, mode) if mode in _REVIEW_SPAWN_MODES else None
-            if review_key is not None:
-                used = rs.review_counts.get(review_key, 0)
-                if used >= _REVIEW_SPAWN_BUDGET:
-                    _record_dispatch(parent, agent_type, "denied")
-                    denied_result = SubAgentResult(
-                        status="denied",
-                        summary=_REVIEW_BUDGET_DENIED_NOTE.format(budget=_REVIEW_SPAWN_BUDGET))
-                    return ToolResult(text=denied_result.model_dump_json(),
-                                      summary=denied_result.model_dump())
-            # ⑦ 每轮派发总量上限:只统计 supervisor 自身的派发,
-            #    按 ReAct 迭代下标(_current_turn,每轮 LLM 迭代自增)计数——
-            #    封顶的是每次迭代内 supervisor能并行派发多少路,下一次迭代即重新起算,
-            #    不会因为上一次迭代派得多而永久锁死。此处同样只判不记,自增与 ⑥ 一并推迟到 ⑧ 之后。
+            if review_key is not None and rs.review_counts.get(review_key, 0) >= _REVIEW_SPAWN_BUDGET:
+                return _deny(parent, agent_type,
+                             _REVIEW_BUDGET_DENIED_NOTE.format(budget=_REVIEW_SPAWN_BUDGET))
+
+            # ⑦ 每轮上限：只统计 supervisor 自身的派发，按迭代下标计数——
+            #    下一次迭代即重新起算，不会因为上一次迭代派得多而永久锁死。此处同样只判不记。
             turn = getattr(parent, "_current_turn", 0)
-            if parent.agent_type == "supervisor":
-                used = rs.turn_spawn_counts.get(turn, 0)
-                if used >= TURN_SPAWN_BUDGET:
-                    _record_dispatch(parent, agent_type, "denied")
-                    denied_result = SubAgentResult(
-                        status="denied",
-                        summary=f"本轮派发已达上限 {TURN_SPAWN_BUDGET}，"
-                                "请先汇总已有结果向用户交代，需要继续时下一轮再派。")
-                    return ToolResult(text=denied_result.model_dump_json(),
-                                      summary=denied_result.model_dump())
-            # ⑧ 同路径在途互斥:两个任务文本可以完全不同(去重指纹不碰撞),
-            #    却写同一个目标文件——并发跑就会静默互相覆盖(原子写只防撕裂不防覆盖)。
-            #    把任务文本里抽出的绝对路径与「同一父实例」正在写的路径集比对,命中即拒。
-            #    只按父实例分桶,不按 trace 全局分桶:真正会同时写同一文件的,
-            #    是同一个父在同一轮里扇出的多路(兄弟 spawn);
-            #    祖先任务文本里提到某路径不代表后代要写它(后代或只读,或顺序依赖父产物),
-            #    按父实例分桶才不会把 noter 写完再内部 spawn reviewer 审稿这类顺序流程误判成并发写。
-            #    本闸必须保持在最后一位:它一旦登记占用就无法回退,若其后还有闸拒绝,
-            #    早退不进 aexecute 的 finally,该路径就被永久锁死。只拦「同时在途」,
-            #    不拦「按序重写已完成 spawn 写过的文件」——重新生成笔记是合法行为。
+            if parent.agent_type == "supervisor" \
+                    and rs.turn_spawn_counts.get(turn, 0) >= TURN_SPAWN_BUDGET:
+                return _deny(parent, agent_type,
+                             f"本轮派发已达上限 {TURN_SPAWN_BUDGET}，"
+                             "请先汇总已有结果向用户交代，需要继续时下一轮再派。")
+
+            # ⑧ 同路径在途互斥：任务文本可以完全不同（去重指纹不碰撞）却写同一个文件，并发跑
+            #    就会静默互相覆盖——原子写只保证「不会写到一半被读到」，不保证「后写不盖先写」。
+            #    只按父实例分桶：真正会同时写同一文件的是同一父实例扇出的兄弟，祖先提到某路径不代表后代要写它，
+            #    按父实例分桶才不会把「noter 写完再内部 spawn reviewer 审稿」这类顺序流程误判成并发写。
+            #    只拦「同时在途」，不拦按序重写已完成 spawn 写过的文件。
             target_paths = _extract_paths(task)
-            occupied = rs.in_flight_paths.get(parent._instance_id, set())
-            clash = [p for p in target_paths if p in occupied]
+            clash = [p for p in target_paths
+                     # .get(parent._instance_id, set()) —— 取父实例的占用集合；该实例还没占用任何路径时（最常见的情况）返回空集
+                     if p in rs.in_flight_paths.get(parent._instance_id, set())]
             if clash:
-                _record_dispatch(parent, agent_type, "denied")
-                denied_result = SubAgentResult(
-                    status="denied",
-                    summary=f"目标路径在途占用，正在被另一个子任务写：{'、'.join(clash)}。"
-                            "请先等它完成，或改为写不同的文件。")
-                return ToolResult(text=denied_result.model_dump_json(),
-                                  summary=denied_result.model_dump())
-            # 全部闸通过:判定阶段(⑥⑦)只看不写,所有记账统一收敛到此处——计数自增、
-            # 路径占用登记、去重注册落在同一临界区。任何一道闸拒绝的派发都不消耗额度。
-            # 注册 running 与拒绝路径的先后不变式不变:所有拒绝都在上方提前 return。
+                return _deny(parent, agent_type,
+                             f"目标路径在途占用，正在被另一个子任务写：{'、'.join(clash)}。"
+                             "请先等它完成，或改为写不同的文件。")
+
+            # 八道全过：记账收敛到一处——⑥⑦ 判定阶段只看不写，计数自增、路径登记与注册
+            # running 落在同一临界区，任何一道闸拒绝的派发都不消耗额度。
             if review_key is not None:
                 rs.review_counts[review_key] = rs.review_counts.get(review_key, 0) + 1
             if parent.agent_type == "supervisor":
@@ -807,7 +795,6 @@ class SpawnSubAgentTool(Tool):
             if target_paths:
                 rs.in_flight_paths.setdefault(parent._instance_id, set()).update(target_paths)
             reg[fp] = {"state": "running", "result": None, "started_at": now}
-        # 全部检查通过、任务已注册 running（拒绝路径都在上方提前 return）。
         return fp, has_path
 
     async def aexecute(self, agent_type: str, task: str, mode: str | None = None,
@@ -858,12 +845,15 @@ class SpawnSubAgentTool(Tool):
                 # 已处理过的资源（父超时重试时会派出新的 searcher，不共享池就会重抓）。
                 trace_id=getattr(parent, "_trace_id", None),
             )
+            # mode 靠前缀注入 system prompt,而不是构造参数:子 agent 的 AGENT.md 正文
+            # 会按「当前模式」这段自行判别走哪套流程(label → prompt 的跨层契约)。
+            # 只在前缀加一行、不动机身,让同一份 AGENT.md 同时承载多个模式的协议。
             if mode:
                 child.system_prompt = f"当前模式：{mode}\n{child.system_prompt}"
             # 传解析后的超时:_run_child 用实际生效值(config > 类默认)
             result = await self._run_child(child, agent_type, task)
-            # 派发账本：真实派发完成后按结果状态记账（与早退路径的 denied/deduped
-            # 互补），供收尾核对列出「本轮派了哪些、结果如何」。
+            # 派发账本：真实派发完成后按结果状态记账（与早退路径的 denied/deduped 互补），
+            # 供收尾核对列出「本轮派了哪些、结果如何」。
             _record_dispatch(parent, agent_type, result.summary.get("status", ""))
             # 失败升级：仅 supervisor 的派发计数——连续 N 次非 success
             # 后追加强指令，把「继续自动重试」的决策权交回用户（模型对不可能
