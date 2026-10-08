@@ -20,11 +20,14 @@ ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
     "grep": ("🔍 检索", "次"),
     "glob": ("🔍 检索", "次"),
     "rag_retrieve": ("📚 检索", "次"),
+    "index_paths": ("🗂️ 入库", "次"),
+    "reindex_all": ("🔄 收敛", "次"),
     "fetch_pdf": ("📥 下载", "次"),
     "format_check": ("✅ 校验", "次"),
-    # ── 写入 ──
+    # ── 写入与删除 ──
     "write_file": ("✏️ 写入", "文件"),
     "edit_file": ("✏️ 编辑", "文件"),
+    "delete_file": ("🗑️ 删除", "文件"),
     # ── 引用 ──
     "lookup_citation": ("📎 查引", "次"),
     "add_citation": ("📎 引用", "次"),
