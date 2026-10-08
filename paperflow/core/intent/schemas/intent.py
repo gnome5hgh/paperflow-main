@@ -126,9 +126,19 @@ class IntentUnit(BaseModel):
     #: 意图类型
     intent_type: IntentType
 
-    #: 置信度，范围约束在 [0,1]（LLM 可能输出越界值，pydantic 强制约束）；
-    #: 路由面为融合分数，LLM 兜底面整列为 None
-    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    #: 置信度，范围约束在 [0,1]（LLM 可能输出越界值，pydantic 强制约束）。
+    #: 路由面逐项填融合分数（真实值）；LLM 兜底面整列为 None。
+    #: description 会经 StructuredOutput 的 schema 展开进兜底提示词——那里必须点名
+    #: 「本路径不产置信度、填了也会被忽略」，否则模型看到的是一个可填但无说明的字段，
+    #: 填了又被静默清掉（路由路径不展开 schema、INTENT 块是纯值序列化，这条说明不会
+    #: 出现在别处）。
+    confidence: float | None = Field(
+        default=None, ge=0.0, le=1.0,
+        description=(
+            "该意图的置信度：只有路由层能给出真实分数（每条候选各自过了自己的拆分"
+            "阈值）；LLM 兜底路径不产置信度，这里不用填——填了也会被忽略。"
+        ),
+    )
 
 
 class _IntentListRules:
@@ -217,9 +227,9 @@ class IntentOutput(_IntentListRules, BaseModel):
     def _normalize_and_sanitize(self) -> "IntentOutput":
         """应用共用的列表规则 + 清洗 surrogate 字符。
 
-        列表规则（首要项恒保留 / 主意图之外的非业务成员剔除 / 列表与澄清互斥）见
-        `_IntentListRules._normalize_intent_list`——与 LLM 兜底面的同形契约共用一套
-        实现，不复制两份。
+        列表规则（按类型保序去重 / 首要项恒保留 / 主意图之外的非业务成员剔除 /
+        列表与澄清互斥）见 `_IntentListRules._normalize_intent_list`——与 LLM 兜底面的
+        同形契约共用一套实现，不复制两份。
 
         清洗未配对的 surrogate 字符（PDF 提取 / LLM 兜底输出可能携带）——若不清洗，
         后续 model_dump_json 会抛 PydanticSerializationError（输入含 '\\udce5' 这类
@@ -266,6 +276,8 @@ class IntentionResult(_IntentListRules, BaseModel):
     路由面逐项填的是自己算出的融合分数（真实值），模型写的数字与之不是同一尺度，
     且本路径的判定由 `source` 短路（消费方见 source=llm 即先确认），那个数字没有
     消费方——把没根据的数字混进统一字段，只会让两条路径产出的列表难以分辨。
+    这一点也写进了字段说明（`IntentUnit.confidence` 的 description 随 schema 展开进
+    兜底提示词），契约对模型是明说的，不靠事后静默清掉。
     底层结构化输出机制只校验类型不校验数值范围，因此 confidence 的 pydantic 范围
     约束继续保留（构造期越界值照旧被拦，不因清空而放松）。
     """
