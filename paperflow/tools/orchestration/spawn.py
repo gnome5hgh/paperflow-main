@@ -748,9 +748,12 @@ class SpawnSubAgentTool(Tool):
             reg = sess.spawn_registry
             hit = reg.get(fp)
             now = time.monotonic()
+            # 无路径任务
             if hit and hit["state"] == "running":
                 _record_dispatch(parent, agent_type, "deduped")
                 return ToolResult(text="同任务正在执行中，请等待其结果（已去重，勿重复派发）")
+
+            # 如果 5 分钟内用完全相同的文本再派一次无路径任务，会直接拿到上次的 ToolResult——子 agent 不重跑
             if hit and hit["state"] == "done" and not has_path \
                     and now - hit["started_at"] < _SPAWN_REUSE_WINDOW_S:
                 _record_dispatch(parent, agent_type, "deduped")
@@ -877,8 +880,12 @@ class SpawnSubAgentTool(Tool):
             # 防 None 入缓存污染后续复用)。注册表读写全在锁内。
             with _SPAWN_LOCK:
                 reg = sess.spawn_registry
+                # 有路径的任务，spawn_registry 中不写 "state": "done" 缓存
+                # 有路径的任务走的是 pop 分支——下一个 run 去查注册表 in_flight_paths ，查不到任何东西，正常派发。
                 if result is None or has_path:
                     reg.pop(fp, None)
+                # 无路径任务——任务文本里一个绝对路径都没有，比如「审阅这份草稿并给出意见」，
+                # 这类任务完成后 spawn_registry 中会写 "state": "done" 缓存
                 else:
                     reg[fp] = {"state": "done", "result": result,
                                "started_at": time.monotonic()}
