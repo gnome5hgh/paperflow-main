@@ -277,7 +277,8 @@ class IntentionResult(_IntentListRules, BaseModel):
     且本路径的判定由 `source` 短路（消费方见 source=llm 即先确认），那个数字没有
     消费方——把没根据的数字混进统一字段，只会让两条路径产出的列表难以分辨。
     这一点也写进了字段说明（`IntentUnit.confidence` 的 description 随 schema 展开进
-    兜底提示词），契约对模型是明说的，不靠事后静默清掉。
+    兜底提示词），契约对模型是明说的，不只靠事后静默清掉——字段名在字段清单里恒被
+    列出，模型若无视说明照填，护栏照样清空。
     底层结构化输出机制只校验类型不校验数值范围，因此 confidence 的 pydantic 范围
     约束继续保留（构造期越界值照旧被拦，不因清空而放松）。
     """

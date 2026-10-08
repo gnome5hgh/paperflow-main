@@ -713,8 +713,10 @@ class IntentPipeline:
 
         注入四部分信息：
             1. 意图枚举列表（IntentType 所有取值）。
-            2. 输出字段约定：intents 列表的拆分条件（不产置信度，字段里也没有
-               confidence，模型无从编造）；clarification 条款按 force_clarification
+            2. 输出字段约定：intents 列表的拆分条件——本段模板与指引都不提 confidence
+               （不邀请模型填），该字段仍会出现在 `StructuredOutput` 展开的字段清单里，
+               只是带着「本路径不产置信度、不用填」的说明；模型照填也仍会被 schema
+               护栏清空。clarification 条款按 force_clarification
                切换——强制轮必须产出（触发权在代码），常规轮仅在缺决定性信息时填
                （管线会丢弃，此处条款保留是给模型一致的输出契约）。
             3. 路由层的近失候选（路由名 + 分数），供 LLM 参考确认或改判。
