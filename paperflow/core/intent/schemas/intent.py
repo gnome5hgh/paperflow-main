@@ -239,50 +239,51 @@ class IntentionResult(BaseModel):
     #: LLM 改写后的查询（缺省为空串，管线使用原文）
     query_rewrite: str = ""
 
-    #: 复合意图的有序拆分。description 会经 StructuredOutput 展开进提示词，是模型
-    #: 判断「何时拆」的唯一依据（同 clarification 的教训——缺了它 steps 永远为空）。
-    #: 填写条件：仅当输入包含 ≥2 个相互独立、分属不同意图的业务动作；每个 step 必须是
+    #: 主意图之外的额外步骤（有序）——主意图本身装在 intent_type 里，这里只装额外项。
+    #: description 会经 StructuredOutput 展开进提示词，是模型判断「何时拆」的唯一依据
+    #: （同 clarification 的教训——缺了它 extra_intents 永远为空）。
+    #: 填写条件：仅当输入包含 ≥2 个相互独立、分属不同意图的业务动作；每一项必须是
     #: 单业务意图（dispatch_allowed=True），按执行顺序排列；单一动作或拿不准时必须留空
-    #: （宁缺勿滥——steps 只是复合请求的信号，误拆会误导选型与收尾核对）。
+    #: （宁缺勿滥——extra_intents 只是复合请求的信号，误拆会误导选型与收尾核对）。
     #: 引导只给原则（什么算相互独立），不写数字化上限：长度不再是本字段的约束，
     #: 模型的过度拆分由路由层阈值判据兜住，提示词不承担限长职责。
     #: 注意：# 注释不会进入 pydantic description——触发契约
     #: 必须走下面的 Field(description=...) 才能进 LLM 提示词，这里仅留出处索引。
-    steps: list["IntentType"] = Field(
+    extra_intents: list["IntentType"] = Field(
         default=[],
         description=(
-            "仅当输入包含 ≥2 个相互独立、分属不同意图的业务动作时填写；"
-            "每个 step 必须是单业务意图（dispatch_allowed=True 的枚举值），按执行顺序排列；"
+            "主意图之外的额外业务步骤：仅当输入包含 ≥2 个相互独立、分属不同意图的业务动作时填写；"
+            "每一项必须是单业务意图（dispatch_allowed=True 的枚举值），按执行顺序排列；"
             "单一动作或拿不准时必须留空"
-            "（宁缺勿滥——steps 只是复合请求的信号，误拆会误导选型与收尾核对）。"
+            "（宁缺勿滥——extra_intents 只是复合请求的信号，误拆会误导选型与收尾核对）。"
         ),
     )
 
     @model_validator(mode="after")
-    def _steps_guard(self) -> "IntentionResult":
-        """steps 合法性护栏 + steps 与 clarification 互斥（代码级防御）。
+    def _extra_intents_guard(self) -> "IntentionResult":
+        """extra_intents 合法性护栏 + extra_intents 与 clarification 互斥（代码级防御）。
 
-        steps 是给 supervisor 的复合请求信号（随 INTENT 块注入、收尾时摆进账本核对），
+        extra_intents 是给 supervisor 的复合请求信号（随 INTENT 块注入、收尾时摆进账本核对），
         不再是派发门禁——但一步混进不派发的系统意图仍会误导选型、让 spawn 被拒，所以
         schema 层只拦这一类非法拆分：混入非派发意图（LLM 把闲聊/帮助也拆进去）。
         步骤数不设上限——路由路径天然被路由总数封顶，LLM 面也不再用数字封顶；
         首步与主意图的一致性也不再校验——管线转换时主意图就是列表首项。
         违规不做半截修正，整体置空；也不抛校验错误——解析失败的兜底路径
         （fallback=UNCLASSIFIED）不该因护栏再炸一次。
-        互斥：steps 非空说明输入已被拆解执行，无需再澄清；两者同时产出属模型
+        互斥：extra_intents 非空说明输入已被拆解执行，无需再澄清；两者同时产出属模型
         违命，clarification 让位。两字段的「要不要」上游管线均已用代码判据决定，
         这里是最后一条防线。
 
         Returns:
             校验后的自身实例（model_validator 契约）。
         """
-        if self.steps:
+        if self.extra_intents:
             business = {t for t, (_, allowed) in INTENT_META.items() if allowed}
-            if any(s not in business for s in self.steps):
-                object.__setattr__(self, "steps", [])
-        # steps × clarification 互斥：复合句已拆就无需澄清，两者同时产出属模型
+            if any(s not in business for s in self.extra_intents):
+                object.__setattr__(self, "extra_intents", [])
+        # extra_intents × clarification 互斥：复合句已拆就无需澄清，两者同时产出属模型
         # 违命，代码级强制 clarification 让位（不抛错，静默清空即可）
-        if self.steps and self.clarification:
+        if self.extra_intents and self.clarification:
             object.__setattr__(self, "clarification", None)
         return self
 
