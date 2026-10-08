@@ -164,7 +164,7 @@ Every agent lives in `agents/<name>/` with two files:
 
 记忆会话内即时生效：`_refresh_head_memory` 每轮开头重建记忆块并替换 head——同轮里 `memory_replace` 改的块，下一轮 LLM 调用即见。
 
-运行期状态容器（`core/agent/state.py`）：把过去散在各模块、生命周期不一的模块级字典收成两个显式作用域——`SessionState`（跨 run 存活：只剩同 agent_type 连续失败计数；去重注册表在 run 作用域）与 `RunState`（按一次用户任务 / `trace_id` 隔离：搜索去重池与负缓存、在途派发去重注册表、supervisor 派发账本、审稿与每轮派发预算计数、在途写盘路径、产物账本）。两者都按 TTL 惰性清扫（run 整份丢弃、session 逐条过期——只剩失败计数；取用时顺手剔除过期条目，不起定时任务；run 作用域按滑动窗口推进取用时刻，活跃任务不会被自身清扫误删）。
+运行期状态容器（`core/agent/state.py`）：把过去散在各模块、生命周期不一的模块级字典收成两个显式作用域——`SessionState`（跨 run 存活：只剩同 agent_type 连续失败计数；去重注册表在 run 作用域）与 `RunState`（按一次用户任务 / `trace_id` 隔离：搜索去重池与负缓存、在途派发去重注册表、supervisor 派发账本、审稿与每轮派发预算计数、在途写占用、产物账本）。两者都按 TTL 惰性清扫（run 整份丢弃、session 逐条过期——只剩失败计数；取用时顺手剔除过期条目，不起定时任务；run 作用域按滑动窗口推进取用时刻，活跃任务不会被自身清扫误删）。
 
 ### LLM client
 
@@ -282,7 +282,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 ### Orchestration
 
-`paperflow/tools/orchestration/spawn.py` — **SpawnSubAgentTool**（`spawn_sub_agent`，`needs_parent=True`）。`aexecute(agent_type, task, mode=None, intent=None)` 先过 `_admit` 的**八道闸**（按判定顺序），全过才构造并运行子 agent：
+`paperflow/tools/orchestration/spawn.py` — **SpawnSubAgentTool**（`spawn_sub_agent`，`needs_parent=True`）。`aexecute(agent_type, task, mode=None, intent=None)` 先过 `_admit` 的**七道闸**（按判定顺序），全过才构造并运行子 agent：
 
 1. **未知 agent 类型** — 不在 `list_agents()` 内 → denied（附可选清单）
 2. **mode 校验** — 非 `SubAgentMode` 合法值 → denied（schema enum 已约束 LLM 生成层，此处兜底漏网）
@@ -290,10 +290,9 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 4. **spawn 权限** — `_check_spawn_allowed`：supervisor 硬编码放行；其余 agent 查自己的 `AgentConfig.allowed_spawns` 白名单
 5. **同批同指纹去重**（指纹 = sha256(规范化任务文本 + mode)；注册表在 run 状态容器，键 `(父实例 id, 任务指纹)`）：只登记正在执行中的派发、完成即清除、不缓存结果——只拦同一批工具调用内的机械重复，跨轮重派会真跑
 6. **审稿预算** — 同一父实例内 note_review/download_review/plan_review 各自 ≤3 次（计数键 `(父实例 id, mode)`），超限 denied（轮数预算下沉代码，LLM 不数轮次）
-7. **每轮派发上限** — supervisor 每次 ReAct 迭代内自身派发 ≤8 路，超限 denied（下一轮重新起算）
-8. **同路径在途互斥** — 任务文本抽出的目标绝对路径若正被**同一父实例**的在途派发占用 → denied（防并发静默覆盖；只拦同时在途，不拦按序重写已完成 spawn 写过的文件）
+7. **每轮派发上限** — supervisor 每次 ReAct 迭代内自身派发 ≤8 路，超限 denied（下一轮重新起算）。
 
-闸门状态（去重注册表、失败计数、派发账本、审稿与每轮预算计数、在途路径、产物账本）统一由 `core/agent/state.py` 的 session/run 两个状态容器持有（见 Agent and ReAct loop）。**顺序与并行由 supervisor 自主决定**，框架不做限制；每条被拒/去重/完成的派发尝试记入 supervisor 的**派发账本**，收尾核对时把「识别到的意图 + 实际派发记录 + 新落盘产物」摆给模型自查（代码只摆账本、不下结论）。
+闸门状态（去重注册表、失败计数、派发账本、审稿与每轮预算计数、在途写占用、产物账本）统一由 `core/agent/state.py` 的 session/run 两个状态容器持有（见 Agent and ReAct loop）。**顺序与并行由 supervisor 自主决定**，框架不做限制；每条被拒/去重/完成的派发尝试记入 supervisor 的**派发账本**，收尾核对时把「识别到的意图 + 实际派发记录 + 新落盘产物」摆给模型自查（代码只摆账本、不下结论）。**同路径写互斥不在 spawn 闸里**：写工具按真实写目标在 `RunState.writing_paths` 登记写占用、跨实例当场拒绝（见 Agent and ReAct loop 的运行期状态容器与 ADR 0003）。
 
 **子 agent 构造与执行**：继承父的 security_middleware / session_id / confirm_callback / ask_user_callback（子 agent 能中途问用户）；**不传**意图管线/会话（子任务是结构化任务非用户意图）；`mode` 经「当前模式：{mode}」注入 system prompt。**预算执行**：超时 = 基座超时（`config.agents.timeouts`，按审计数据校准:noter 900s/searcher 420s/reviewer 300s/researcher 1800s/qa-agent 180s）+ 累计用户等待（`_UserWaitClock` 同时排除 confirm 确认与 ask_user 提问的人工等待）；`asyncio.TimeoutError`→timeout、`PermissionError`→denied、其他异常→failed；同一会话内同 agent_type 连续 2 次非 success → 结果文本追加强指令「勿再派发，改用 ask_user 请示」。**摘要提取**：末尾 2000 字符经 `StructuredOutput` 抽结构化 `digest`（按 agent_type 选 `SearcherDigest`/`ReviewerDigest`/`NoterDigest`/`ResearcherDigest`/`LibrarianDigest`/`QaAgentDigest`，未注册落 `GenericDigest`），失败回退全文摘要。
 

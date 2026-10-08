@@ -27,7 +27,7 @@ core/
 - **ReAct 循环是唯一执行模型**：无确定性 pipeline，路由/工具选择/任务拆解全由 LLM 驱动；工具只是 JSON Schema 定义。
 - **安全是中间件洋葱**：before（可拒/要求确认）→ 执行 → 逆序 after；所有拦截降级为 ToolResult 文本（`policy_denied`/`user_denied` 等），绝不抛进 ReAct 循环。
 - **SQL 是记忆真相源，markdown 是投影**：压缩/窗口驱逐永不删 SQL 行；记忆块写入是一次持锁的原子读-改-写 + 写入 CAS（读-改-写类写经 `mutate_block`），带历史快照。
-- **运行期状态收在两个容器**：`agent/state.py` 的 `SessionState`（跨 run：只剩连续失败计数）与 `RunState`（按 trace 隔离：搜索去重池、在途派发去重注册表、派发与产物账本、各预算计数），按 TTL 惰性清扫（run 整份丢弃、session 逐条过期），不再散落模块级字典。
+- **运行期状态收在两个容器**：`agent/state.py` 的 `SessionState`（跨 run：只剩连续失败计数）与 `RunState`（按 trace 隔离：搜索去重池、在途派发去重注册表、派发与产物账本、各预算计数、在途写占用——同路径写互斥的判定已下沉到 runtime 执行层，容器只存占用），按 TTL 惰性清扫（run 整份丢弃、session 逐条过期），不再散落模块级字典。
 - **意图只进根 agent**：spawn 的子 agent 不传意图管线（门控关闭，省 LLM 调用）。
 - **流式零开销**：`stream_callback`/`telemetry_callback` 为 None 时全链路保持非流式行为。
 
