@@ -65,7 +65,7 @@ from paperflow.core.security import (
 from paperflow.core.tool import ToolResult
 from paperflow.core.security.text import sanitize_surrogates
 from paperflow.core.intent.schemas.intent import (
-    INTENT_LABELS_ZH, IntentOutput, IntentStep, IntentType,
+    INTENT_LABELS_ZH, IntentOutput, IntentStep, IntentType, IntentUnit,
 )
 from paperflow.core.intent.routing.confirm import match_option_choice
 from paperflow.core.intent.routing.entities import extract_entities
@@ -90,17 +90,22 @@ def _path_lock(path: str) -> asyncio.Lock:
 def _intent_block(intent) -> str:
     """把 IntentOutput 格式化为 INTENT 块（ReAct context 的强提示，非命令）。
 
-    排除 clarification 与 prev_intent：澄清只走 CLI 层（跨轮 pending），不暴露给
+    排除 clarification 与 prev_intent：澄清由 runtime 在本轮内同步问用户，不暴露给
     Supervisor（避免其用 AskUserQuestionTool 双问）；prev_intent 是 conversation 内部状态；
-    clarify_candidates 是澄清回传锚点（CLI 层消费），对模型是噪声。
+    clarify_candidates 是澄清回传锚点（运行时消费），对模型是噪声。
     """
     return "INTENT: " + intent.model_dump_json(
         exclude={"clarification", "prev_intent", "clarify_candidates"})
 
 
 def _needs_ledger(agent) -> bool:
-    """是否需要注入收尾核对账本：识别到多意图、且本次 run 尚未核对过。"""
-    return bool(getattr(agent, "_recognized_steps", [])) and not agent._steps_checked
+    """是否需要注入收尾核对账本：识别到多意图（≥2 项）、且本次 run 尚未核对过。
+
+    单意图轮次不注入——`_recognized_steps` 现在恒含主意图，用「非空」判断会让
+    每一轮都注入核对，所以判据是列表长度 ≥2。
+    """
+    return len(getattr(agent, "_recognized_steps", []) or []) >= 2 \
+        and not agent._steps_checked
 
 
 def _render_ledger(agent) -> str:
@@ -453,8 +458,8 @@ class Agent:
         #: 与按 run 生成的 _trace_id 区分——子 agent 继承父 trace_id，用 trace_id 键控
         #: 会把同一轮里多个同类父实例的预算混在一起。构造即固定，不再变化。
         self._instance_id: str = uuid.uuid4().hex
-        #: 复合意图：本轮识别出的完整步骤列表（steps[0] == intent_type）。只作为收尾
-        #: 核对的事实来源——不再是强制派发顺序的队列，顺序与并行由 supervisor 自主决定。
+        #: 本轮识别出的完整意图列表（来自 IntentOutput.intents，首项即主意图）。只作为
+        #: 收尾核对的事实来源——不是强制派发顺序的队列，顺序与并行由 supervisor 自主决定。
         #: 每轮 run 装载意图时赋值覆盖（而非突变），避免跨轮残留。
         self._recognized_steps: list[IntentType] = []
         #: 本次 run 是否已注入过收尾核对（每个 run 至多注入一次）。
@@ -632,9 +637,9 @@ class Agent:
                 if intent.clarification:
                     intent, task = await self._resolve_clarification(task, intent)
                 self.last_intent = intent
-                # 复合意图装载：完整 steps 只作收尾核对的事实来源，不强制派发顺序。
+                # 意图列表装载：完整意图列表只作收尾核对的事实来源，不强制派发顺序。
                 # 同时清空上一轮的派发账本与核对标记（每轮 run 独立）。
-                self._recognized_steps = list(intent.steps)
+                self._recognized_steps = [u.intent_type for u in intent.intents]
                 self._run_dispatches = []
                 self._steps_checked = False
 
@@ -671,7 +676,7 @@ class Agent:
         confirmed = match_option_choice(answer, candidates) if answer.strip() else None
         if confirmed is not None:
             resolved = IntentOutput(
-                intent_type=confirmed, confidence=1.0,
+                intents=[IntentUnit(intent_type=confirmed, confidence=1.0)],
                 entities=extract_entities(task), rewritten_query=task,
                 source=IntentStep.USER,
                 prev_intent=self.conversation.prev_intent)
@@ -986,8 +991,11 @@ class Agent:
                     content = await mw.on_finish(self, content)
 
                 # 如果启用了意图识别功能，并且本轮产生了意图（last_intent 非空） → 更新会话状态：记录本轮意图类型和用户输入，供下一轮追问或上下文理解使用。
+                # 上一轮意图只在「单一意图」时有值：多意图轮的追问不做位置猜测，取 None。
                 if self.intent_enabled and self.last_intent is not None:
-                    self.conversation.prev_intent = self.last_intent.intent_type
+                    intents = self.last_intent.intents
+                    self.conversation.prev_intent = (
+                        intents[0].intent_type if len(intents) == 1 else None)
                     self.conversation.prev_user_input = task
 
                 # 最终回答(经 on_finish 改写——回放给下轮的是"用户看到的事实",

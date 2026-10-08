@@ -11,8 +11,10 @@ LLM 兜底，本模块定义的几个类型是它们共同使用的产出契约�
 - ``INTENT_META``: intent → (category, dispatch_allowed) 单一真相源映射。
 - ``IntentStep``: 产出阶段枚举——审计/监控据此区分"这条意图是路由层定的
   还是 LLM 兜底定的"（从而统计路由命中率、LLM 兜底率）。
-- ``IntentOutput``: 管线逐级产出的结构化意图，供上层调用方直接消费。
-- ``IntentionResult``: LLM 兜底阶段的结构化输出契约，扁平三字段，
+- ``IntentUnit``: 一轮里的一项意图（类型 + 置信度），构成意图列表的元素。
+- ``IntentOutput``: 管线逐级产出的结构化意图（意图列表 + 轮级信息），
+  供上层调用方直接消费。
+- ``IntentionResult``: LLM 兜底阶段的结构化输出契约，扁平结构，
   不封装路由器的内部决策。
 """
 
@@ -100,17 +102,6 @@ INTENT_LABELS_ZH: dict[IntentType, str] = {
 }
 
 
-#: 复合拆分步数上限（唯一定义点，契约层）。
-#: - 值：3。
-#: - 含义与单位：IntentionResult.steps 允许的最大长度，也用于多标签拆分截断（步数，整数）。
-#: - 改它的后果：改变多标签拆分与 steps 护栏口径；
-#:   _steps_guard 与两处提示词文案（下方 Field description、pipeline._build_llm_prompt）
-#:   均与本常量同源插值。
-#: - 是否进 YAML：否（结构契约常量）。
-#: 定在 schemas 而非 constants.py：pipeline 依赖 schemas，放 constants 会成循环导入。
-MAX_STEPS = 3
-
-
 class IntentStep(str, Enum):
     """产出阶段枚举——让审计/监控能看出意图由哪一级产出。"""
 
@@ -124,18 +115,36 @@ class IntentStep(str, Enum):
                                            # 不经路由器复判（同一句话复判只会复现同一误判）
 
 
-class IntentOutput(BaseModel):
-    """pipeline 管线逐级产出的结构化意图。
+class IntentUnit(BaseModel):
+    """一轮里的一项意图。
 
-    confidence 语义（两种来源，消费方按 source 区分解释）：
-    ROUTER 来源 = 融合分数 clip 到 [0,1]（非概率，可为边缘值）；LLM 来源 = 模型概率。
+    confidence 允许为空：路由层拆分时每条候选路由各有自己的融合分数（真实值），
+    而 LLM 兜底拆分只给主意图一个模型概率、后续步骤没有对应分数——此时留 None，
+    表示「该阶段未逐项产出」，不编造。置信度语义按产出阶段区分：ROUTER 来源 =
+    融合分数 clip 到 [0,1]（非概率，可为边缘值）；LLM 来源 = 模型概率。
     """
 
     #: 意图类型
     intent_type: IntentType
 
     #: 置信度，范围约束在 [0,1]（LLM 可能输出越界值，pydantic 强制约束）
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class IntentOutput(BaseModel):
+    """一整轮的意图产出：意图列表 + 轮级信息。
+
+    意图列表是唯一真相源：单意图 = 长度 1 的列表，多意图 = 多个元素。主意图不再
+    单独存一份，而是 intents[0] 的只读派生属性——这样「主意图」与「列表首项」不可能
+    不一致，也让既有读取点（意图门禁、会话落地）无需改动。属性不是 pydantic 字段，
+    因此不会进 INTENT 块的序列化结果，模型看到的是列表本身。
+
+    轮级字段（entities / rewritten_query / source / clarification / clarify_candidates）
+    属于整轮而非某一项：实体抽取与查询改写都是一轮产出一次，澄清问的是「这一句我没听懂」。
+    """
+
+    #: 意图列表（单意图即长度 1），唯一真相源
+    intents: list[IntentUnit] = Field(min_length=1)
 
     #: 实体提取阶段得到的实体（由管线填充）
     entities: dict = Field(default_factory=dict)
@@ -149,30 +158,46 @@ class IntentOutput(BaseModel):
     #: 上一轮意图（追问检测阶段填充，来自会话上下文）
     prev_intent: IntentType | None = None
 
-    #: 复合意图的有序拆分（LLM 兜底或路由 multi-label 命中 ≥2 时填充；单意图为空）
-    steps: list["IntentType"] = []
-
-    #: 歧义澄清问题（LLM 兜底阶段填充；非空时管线提前返回，由调用方跨轮挂起待澄清意图）
+    #: 歧义澄清问题（LLM 兜底阶段填充；非空时由调用方在本轮内同步问用户）
     clarification: str | None = None
 
     #: 澄清的候选意图（仅 clarification 非空时填充，业务候选 top2，按展示顺序）。
-    #: 澄清回路的代码级回传锚点：CLI 挂起澄清时带走，用户回复经
+    #: 澄清回路的代码级回传锚点：调用方问用户后带走，用户回复经
     #: routing.confirm.match_option_choice 解析回其中之一，直接落地会话意图——
     #: 不进 INTENT 块（对模型是噪声），_intent_block 序列化时排除。
     clarify_candidates: list["IntentType"] = []
 
-    @model_validator(mode="after")
-    def _sanitize_surrogates(self) -> "IntentOutput":
-        """清洗未配对的 surrogate 字符（PDF 提取 / LLM 兜底输出可能携带）。
+    @property
+    def intent_type(self) -> IntentType:
+        """主意图 = 列表首项（只读派生，不进序列化）。"""
+        return self.intents[0].intent_type
 
-        若不清洗，后续 model_dump_json 会抛 PydanticSerializationError
-        （输入含 '\\udce5' 这类未配对代理项时触发）。
-        与 security.text 的信任边界清洗思路一致：这是跨管线消费的契约类型，
-        在构造时兜住脏文本，上游调用方无需逐个清洗。
+    @model_validator(mode="after")
+    def _filter_extras_and_sanitize(self) -> "IntentOutput":
+        """剔除非业务的「额外」成员 + 列表与澄清互斥 + 清洗 surrogate。
+
+        首要项（intents[0]）恒保留：它是这一轮的分类结论，整轮闲聊时也必须还是
+        chitchat——supervisor 的「非派发意图的处理」按类型分派回话方式，兜底成
+        UNCLASSIFIED 会让「闲聊该温和引导」与「越界该明确拒绝」变得不可区分。
+        首要项之外的非可派发成员（多意图句里混进来的系统意图）不是动作，剔掉——
+        留着只会让收尾核对照着它报出「还有未完成的步骤：闲聊」。
+        列表长度 ≥2 说明输入已被拆解执行，无需再澄清；两者同时产出时澄清让位。
+        清洗未配对的 surrogate 字符（PDF 提取 / LLM 兜底输出可能携带）——若不清洗，
+        后续 model_dump_json 会抛 PydanticSerializationError（输入含 '\\udce5' 这类
+        未配对代理项时触发）。
 
         Returns:
-            清洗后的自身实例（model_validator 契约）。
+            校验后的自身实例（model_validator 契约）。
         """
+        business = {t for t, (_, allowed) in INTENT_META.items() if allowed}
+        head, *rest = self.intents
+        object.__setattr__(self, "intents",
+                           [head] + [u for u in rest if u.intent_type in business])
+        # 已拆成多项（≥2）说明输入被当作复合请求执行，无需再澄清；两者同时产出属
+        # 模型违命，澄清让位。单意图 + 澄清 是澄清轮的正常形态，必须保留——无条件
+        # 清空会把澄清整条链路杀掉。
+        if len(self.intents) > 1 and self.clarification:
+            object.__setattr__(self, "clarification", None)
         self.rewritten_query = sanitize_surrogates(self.rewritten_query)
         if self.clarification:
             self.clarification = sanitize_surrogates(self.clarification)
@@ -199,10 +224,10 @@ class ArbitrationChoice(BaseModel):
 
 
 class IntentionResult(BaseModel):
-    """LLM 兜底阶段的结构化输出契约。
+    """LLM 兜底阶段的结构化输出契约（扁平结构，对提示词可靠性更有利）。
 
-    扁平三字段：底层结构化输出机制只校验类型不校验数值范围，
-    因此 confidence 仍保留 pydantic 范围约束，避免 LLM 越界值流入上游。
+    底层结构化输出机制只校验类型不校验数值范围，因此 confidence 仍保留
+    pydantic 范围约束，避免 LLM 越界值流入上游。
     """
 
     #: 意图类型
@@ -216,48 +241,36 @@ class IntentionResult(BaseModel):
 
     #: 复合意图的有序拆分。description 会经 StructuredOutput 展开进提示词，是模型
     #: 判断「何时拆」的唯一依据（同 clarification 的教训——缺了它 steps 永远为空）。
-    #: 填写条件：仅当输入包含 ≥2 个相互独立、分属不同
-    #: 意图的业务动作；每个 step 必须是单业务意图（dispatch_allowed=True），按执行
-    #: 顺序排列，最多 MAX_STEPS 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时
-    #: 必须留空（宁缺勿滥——steps 只是复合请求的信号，误拆会误导选型与收尾核对）。
+    #: 填写条件是原则式的、不设步数上限：只在输入确实包含多个独立业务动作时才拆。
     #: 注意：# 注释不会进入 pydantic description——触发契约
     #: 必须走下面的 Field(description=...) 才能进 LLM 提示词，这里仅留出处索引。
     steps: list["IntentType"] = Field(
         default=[],
         description=(
             "复合意图的有序拆分，仅在输入包含 ≥2 个相互独立、分属不同意图的业务动作时填写；"
-            "每个 step 必须是单业务意图（dispatch_allowed=True 的枚举值），按执行顺序排列，"
-            f"最多 {MAX_STEPS} 步，且 steps[0] 必须等于 intent_type；单一动作或拿不准时必须留空"
-            "（宁缺勿滥——steps 只是复合请求的信号，误拆会误导选型）。"
+            "每个 step 必须是单业务意图（dispatch_allowed=True 的枚举值），按执行顺序排列；"
+            "单一动作或拿不准时必须留空"
+            "（宁缺勿滥——这只是复合请求的信号，误拆会误导选型与收尾核对）。"
         ),
     )
 
     @model_validator(mode="after")
     def _steps_guard(self) -> "IntentionResult":
-        """steps 合法性护栏 + steps 与 clarification 互斥（代码级防御）。
+        """拆分合法性护栏 + 拆分与澄清互斥。
 
-        steps 是给 supervisor 的复合请求信号（随 INTENT 块注入、收尾时摆进账本核对），
-        不再是派发门禁——但一步混进不派发的系统意图仍会误导选型、让 spawn 被拒，所以
-        schema 层仍拦住三类非法拆分：超过 MAX_STEPS 步（LLM 硬凑的长链）、混入非派发意图
-        （LLM 把闲聊/帮助也拆进去）、首步与主意图
-        不一致（主意图是 INTENT 块的第一参考，错位会让信号自相矛盾）。
-        违规不做半截修正，整体置空；也不抛校验错误——解析失败的兜底路径
-        （fallback=UNCLASSIFIED）不该因护栏再炸一次。
+        只拦一类会污染下游的拆分：混入不可派发的意图（闲聊/帮助被拆进来会让收尾核对
+        报出假步骤）。首步与主意图的一致性不再需要校验——转换时主意图就是列表首项。
+        违规不半截修正、也不抛错（解析失败的兜底路径不该因护栏再炸一次）。
         互斥：steps 非空说明输入已被拆解执行，无需再澄清；两者同时产出属模型
-        违命，clarification 让位。两字段的「要不要」上游管线均已用代码判据决定，
-        这里是最后一条防线。
+        违命，clarification 让位。
 
         Returns:
             校验后的自身实例（model_validator 契约）。
         """
         if self.steps:
             business = {t for t, (_, allowed) in INTENT_META.items() if allowed}
-            if (len(self.steps) > MAX_STEPS
-                    or any(s not in business for s in self.steps)
-                    or self.steps[0] != self.intent_type):
+            if any(s not in business for s in self.steps):
                 object.__setattr__(self, "steps", [])
-        # steps × clarification 互斥：复合句已拆就无需澄清，两者同时产出属模型
-        # 违命，代码级强制 clarification 让位（不抛错，静默清空即可）
         if self.steps and self.clarification:
             object.__setattr__(self, "clarification", None)
         return self

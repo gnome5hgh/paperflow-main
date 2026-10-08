@@ -22,8 +22,9 @@ class ConversationState:
     prev_* 由 agent.run() 结束后更新。
 
     Attributes:
-        prev_intent: 上一轮识别出的意图类型，用于追问检测（首轮为 None）。
+        prev_intent: 上一轮识别出的意图类型，用于追问检测（首轮为 None）。仅当上一轮
+            是单一意图时才有值；多意图轮为 None——追问不做位置猜测。
         prev_user_input: 上一轮用户原始输入，用于追问分支重跑实体提取（因不缓存实体，需重提）。
     """
-    prev_intent: IntentType | None = None                    # 上一轮意图（追问检测消费）
+    prev_intent: IntentType | None = None                    # 上一轮意图（追问检测消费；多意图轮为 None）
     prev_user_input: str = ""                                # 上一轮输入（追问分支重跑实体提取用）

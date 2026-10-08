@@ -6,14 +6,14 @@
 - 选项答复检测：纯编号菜单选择直接产出 MENU_SELECTION（确定性正则，不重分类）
 - 追问检测：判断是否承接上一轮意图（依赖会话中的上一轮意图）
 - 混合路由：对 scores() 的输出做一组确定性过滤，一次打分派三个用场——
-  ① 多标签裁决：不止一个业务意图过了各自的标定阈值时，直接拆成有序 steps；
+  ① 多标签裁决：不止一个业务意图过了各自的标定阈值时，直接拆成有序意图列表；
   ② 澄清判据：分数贴着阈值线、或两个业务候选分数咬得很近时，转入强制澄清轮；
   ③ 给 LLM 兜底提供近失候选（没过线但分数靠前的意图，供模型参考改判）
 - LLM 兜底：用结构化输出解析意图，注入路由近失候选供参考，改写缺省原文
 
 一句话多意图的处理走两条通道，共同原则是「要不要」由代码判据决定，「怎么做」
 才交给 LLM：
-- steps（拆分执行）：路由层多命中直接拆，或 LLM 兜底拆（提示词约定何时拆）。
+- 意图列表（拆分执行）：路由层多命中直接拆，或 LLM 兜底拆（提示词约定何时拆）。
   拆分结果只是一条信号——识别出的意图会随 INTENT 块注入，并在收尾时作为事实
   摆给 supervisor 自查；实际派发顺序与并行由 supervisor 自主决定，框架不强制。
 - clarification（澄清反问）：触发与否完全由上面 ② 的分数判据决定——分数够自信
@@ -23,8 +23,9 @@
 from pydantic import BaseModel
 
 from paperflow.core.intent.schemas.intent import (
-    INTENT_LABELS_ZH, INTENT_META, MAX_STEPS,
-    ArbitrationChoice, IntentOutput, IntentType, IntentStep, IntentionResult,
+    INTENT_LABELS_ZH, INTENT_META,
+    ArbitrationChoice, IntentOutput, IntentType, IntentStep, IntentUnit,
+    IntentionResult,
 )
 from paperflow.core.intent.routing.entities import extract_entities
 from paperflow.core.intent.routing.confirm import format_intent_options
@@ -210,7 +211,7 @@ class IntentPipeline:
         # 命中即短路：MENU_SELECTION 可派发，派发权在 supervisor 对照其菜单。
         if is_option_reply(query):
             return IntentOutput(
-                intent_type=IntentType.MENU_SELECTION, confidence=1.0,
+                intents=[IntentUnit(intent_type=IntentType.MENU_SELECTION, confidence=1.0)],
                 entities=entities, source=IntentStep.OPTION,
                 prev_intent=prev_intent,
                 rewritten_query=query,  # 选择动作不改写原文
@@ -226,7 +227,7 @@ class IntentPipeline:
             # 但也会补充或修正新的实体（如“Figure 3”）。合并后本轮新实体优先，
             # 避免丢失上轮有效信息，同时体现当前输入的最新指向。
             return IntentOutput(
-                intent_type=prev_intent, confidence=1.0, # 追问直接继承，置信度置为 1
+                intents=[IntentUnit(intent_type=prev_intent, confidence=1.0)],  # 追问直接继承，置信度置为 1
                 entities={**prev_entities, **entities}, # Python 字典解包合并，后者（entities）的键值会覆盖前者（prev_entities）中同名的键。
                 source=IntentStep.FOLLOWUP, prev_intent=prev_intent,
                 rewritten_query=query # 追问不改写原文
@@ -269,63 +270,67 @@ class IntentPipeline:
     # ------------------------------------------------------------------
 
     def _router_intent(self, name, score, entities, prev_intent, query,
-                       steps=None) -> IntentOutput:
-        """路由层直接产出的意图结果（steps 非空 = 复合句短路）。
+                       extra_intents=None) -> IntentOutput:
+        """路由层直接产出的意图结果（extra_intents 非空 = 复合句短路）。
 
         Args:
             name: 胜出意图的路由名（枚举值）。
-            score: 该意图的融合分数（截断到 [0,1] 后作 confidence）。
+            score: 该意图的融合分数（截断到 [0,1] 后作置信度）。
             entities: 第 1 级实体提取的产出，原样透传。
             prev_intent: 上一轮意图（追问链路审计用）。
             query: 用户原始输入，原样作为 rewritten_query（路由层不改写）。
-            steps: 复合句拆分的有序意图列表；None/空 = 单意图。
+            extra_intents: 拆分出的后续意图 [(路由名, 融合分数)]（保序、不含主意图）；
+                None/空 = 单意图。
 
         Returns:
             source=ROUTER 的 IntentOutput，无澄清。
         """
+        units = [IntentUnit(intent_type=IntentType(name),
+                            confidence=self._clip01(score))]
+        for extra_name, extra_score in (extra_intents or []):
+            units.append(IntentUnit(intent_type=IntentType(extra_name),
+                                    confidence=self._clip01(extra_score)))
         return IntentOutput(
-            intent_type=IntentType(name),
-            confidence=self._clip01(score),
-            entities=entities, source=IntentStep.ROUTER,
-            prev_intent=prev_intent, rewritten_query=query,
-            steps=steps or [])
+            intents=units, entities=entities, source=IntentStep.ROUTER,
+            prev_intent=prev_intent, rewritten_query=query)
 
     def _split_steps(self, top_name, top_score, query, entities,
                      prev_intent) -> IntentOutput | None:
-        """多标签拆分：复合句在路由层直接拆出有序 steps 短路返回。
+        """多标签拆分：复合句在路由层直接拆出有序意图列表短路返回。
 
-        第二意图候选要同时满足三个条件才能拆进 steps：
+        第二意图候选要同时满足三个条件才能拆进列表：
         ① 它自己这条路由的阈值是 fit 标定过的（> 0）。routes.yaml 出厂时
            阈值全是 0.0，此时「过线」毫无含金量——未标定状态下任何第二
            高分都能过一条 0.0 的线，整句会被拆得面目全非。所以标定之前
            路由层不拆分，行为与旧版单标签完全一致；fit 写回真实阈值后
            拆分才自然激活。
-        ② 分数超过「steps 阈值 + ROUTER_STEPS_EPSILON」——与主意图同一条
+        ② 分数超过「拆分阈值 + ROUTER_STEPS_EPSILON」——与主意图同一条
            规则，独立裁决在重扫分数上（业界多标签惯例：全类打分 + 逐类
            阈值，无第二名的特殊放宽）。
-        ③ 是可派发的业务意图：闲聊、帮助这类系统意图永远不该出现在steps 里——它们不派发，拆进去只会让 spawn 门禁拒掉整条链。
+        ③ 是可派发的业务意图：闲聊、帮助这类系统意图永远不该出现在列表里
+           ——它们不派发，拆进去只会让 spawn 门禁拒掉整条链。
 
         候选打分用第二次 scores()（k=路由数全量重扫）：主管道 top_k 截断
         只看分数最高的前几条例句，复合句里第二意图的例句常常排不进窗口、
-        只能拿哨兵分——它根本没有候选资格，过线检查对它形同虚设。注意
+        只能拿哨兵分——它根本没有候选资格，过线检查对它形同虚设。注意：
         scores(k) 的 k 数的是例句条数：以路由数为窗口（随新增意图自动增长）
         保证每个路由至少一个例句的曝光位。若把窗口放大到「全部例句」（字面
         意义的全类打分），路由分会变成全库均值，聚合口径改变、现有阈值随之
         失配——须先重新标定阈值再切。
 
-        拆出不足 2 个意图时返回 None，调用方继续单意图消解（仲裁 → 澄清 →
+        拆不出 2 个意图时返回 None，调用方继续单意图消解（仲裁 → 澄清 →
         快路径）。
 
         Args:
-            top_name: 主判胜出的业务路由名（steps[0] 的固定起点）。
-            top_score: 主意图的融合分数（透传为结果的 confidence）。
+            top_name: 主判胜出的业务路由名（列表首项的固定起点）。
+            top_score: 主意图的融合分数（透传为列表首项的置信度）。
             query: 用户原始输入（重扫仍用剥离实体后的文本，由本方法内部处理）。
             entities: 第 1 级实体提取的产出，透传给结果。
             prev_intent: 上一轮意图，透传给结果。
 
         Returns:
-            拆出 ≥2 个意图时返回 source=ROUTER、steps 非空的 IntentOutput
-            （intent_type=steps[0]）；否则 None。
+            拆出 ≥2 个意图时返回 source=ROUTER、意图列表非空的 IntentOutput
+            （主意图是第一项）；否则 None。
         """
         # 1. 全量重扫打分
         # 为什么需要第二次打分：主判打分只看最像的前 3 条例句，
@@ -334,18 +339,13 @@ class IntentPipeline:
         rescored = self.router.scores(routing_text(query, entities),
                                       k=len(self.router.get_thresholds()))
 
-        # 2. 收集 steps
-        # steps_names 永远以主意图开头——steps[0] 就是主意图，这是契约
-        steps_names = [top_name]
-        # rescored 已按分数降序，所以拆出来的 steps 天然按"自信程度"排序
+        # 2. 收集后续意图（保序、不含主意图）。
+        # rescored 已按分数降序，所以拆出来的列表天然按"自信程度"排序。
+        extra: list[tuple[str, float]] = []
         for name, score in rescored:
             # 跳过主意图、非业务意图（chitchat/out_of_scope/help），因为这些意图不派发，拆进去只会让 spawn 门禁拒掉整条链
             if name == top_name or not _is_business(name):
                 continue
-
-            # 上限保护：steps 最多 MAX_STEPS=3 步（含主意图）。够了就别再看
-            if len(steps_names) >= MAX_STEPS:
-                break
 
             # 取这条路由的「拆分专属阈值」
             # 查询链：steps_threshold（重扫口径单独标定的值）
@@ -358,18 +358,17 @@ class IntentPipeline:
 
             # 这条路由的分数超过「自身阈值 + ε」才算通过。
             if score >= threshold + ROUTER_STEPS_EPSILON:
-                steps_names.append(name)
+                extra.append((name, score))
 
-        # 3. 判定经过拆分后 query 是否包含复合意图
-        # 只有 1 个主意图 → query 不是复合意图，返回 None
-        if len(steps_names) < 2:
+        # 3. 没有任何后续意图 → query 不是复合意图，返回 None
+        if not extra:
             return None
 
         # 4. 至少两个业务意图都过线 → query 是一句复合请求，直接在路由层拆开短路返回，不进 LLM 兜底。
-        # 主意图取第一步（intent_type = steps[0]），steps 列表随 INTENT 块注入，作收尾核对的事实来源。
+        # 主意图是列表第一项，完整意图列表随 INTENT 块注入，作收尾核对的事实来源。
         return self._router_intent(top_name, top_score, entities,
                                    prev_intent, query,
-                                   steps=[IntentType(n) for n in steps_names])
+                                   extra_intents=extra)
 
     async def _resolve_business(self, top_name, top_score, query, entities,
                                 prev_intent, scored) -> IntentOutput:
@@ -448,15 +447,22 @@ class IntentPipeline:
         # ====== 第5级：LLM 兜底（常规解析） ======
         # 走到这里说明代码判据认为「不需要澄清」。但 LLM 拿到输入后仍可能自作主张产出 clarification——
         # 一律丢弃：澄清的「问不问」只认代码判据，否则等于又把触发权交回给模型心证。
-        # steps 照常透传：LLM 拆分是复合意图在第四级时没有成功拆分后的第二个兜底，触发契约在提示词里约定；
-        # steps 非空时 schema 护栏会自动清掉 clarification，这里再显式置 None，把「拆了还要问」的违命输出也收口。
+        # 复合拆分照常透传：LLM 拆分是复合意图在第四级时没有成功拆分后的第二个兜底，
+        # 触发契约在提示词里约定；拆了还要问的违命输出由 schema 护栏清掉 clarification。
         result = await self._llm_extract(query, scored, force_clarification=False)
+        # 扁平 LLM 结果 → 意图列表：主意图取模型给的类型与概率，后续步骤没有对应
+        # 分数（置 None，不编造），保序去重并跳过与主意图重复的。
+        units = [IntentUnit(intent_type=result.intent_type,
+                            confidence=result.confidence)]
+        seen = {result.intent_type}
+        for step in result.steps:
+            if step not in seen:
+                seen.add(step)
+                units.append(IntentUnit(intent_type=step, confidence=None))
         return IntentOutput(
-            intent_type=result.intent_type,
-            confidence=result.confidence,
+            intents=units,
             entities=entities, source=IntentStep.LLM, prev_intent=prev_intent,
             rewritten_query=result.query_rewrite or query, # 若 LLM 提供了改写则用，否则保留原文
-            steps=result.steps or [],
             clarification=None,
         )
 
@@ -534,7 +540,7 @@ class IntentPipeline:
             candidates: 待仲裁的两个业务候选（_near_contested 的产出）。
 
         Returns:
-            仲裁成功返回 source=LLM、steps 为空的 IntentOutput；LLM 异常或
+            仲裁成功返回 source=LLM、单意图的 IntentOutput；LLM 异常或
             选择越出候选时返回 None（调用方回落）。
         """
         def label(t: IntentType) -> str:
@@ -562,10 +568,9 @@ class IntentPipeline:
         if result.intent_type not in candidates:
             return None
         return IntentOutput(
-            intent_type=result.intent_type,
-            confidence=self._clip01(result.confidence),
-            entities=entities, source=IntentStep.LLM,
-            rewritten_query=query, steps=[],
+            intents=[IntentUnit(intent_type=result.intent_type,
+                                confidence=self._clip01(result.confidence))],
+            entities=entities, source=IntentStep.LLM, rewritten_query=query,
         )
 
     def _clip01(self, score: float) -> float:
@@ -607,10 +612,11 @@ class IntentPipeline:
         - LLM 违命没写 clarification 时，用业务候选前两名合成模板问题（二选一
           问法；只有一个候选就开放式确认）。若连模板都不兜底，判据白算、澄清
           链路退化成永远不触发的死路径。
-        - intent_type/confidence 照常产出不缺席：澄清是搭在正常识别结果上的
-          附加通道，不改变单标签答案。
+        - 意图与置信度照常产出不缺席：澄清是搭在正常识别结果上的附加通道，
+          不改变单标签答案。
 
-        steps 显式为空：澄清和拆分互斥——都要拆了就不需要问，都要问了就别拆。
+        单意图列表 + 澄清是本轮的正常形态：澄清和拆分互斥——都要拆了就不需要问，
+        都要问了就别拆；列表长度 ≥2 时澄清会被 schema 护栏清掉。
 
         候选回传锚点：业务候选 top2 写入
         clarify_candidates，问题末尾由代码追加编号选项行（format_intent_options）
@@ -625,7 +631,7 @@ class IntentPipeline:
             scored: 主判分数（降序），供 LLM prompt 近失候选与模板合成取前两名。
 
         Returns:
-            source=LLM、clarification 非空的 IntentOutput（steps 恒为空）。
+            source=LLM、clarification 非空的 IntentOutput（意图列表恒为单意图）。
         """
         candidates = [IntentType(name) for name, score in scored
                       if score > 0 and _is_business(name)][:2]
@@ -634,11 +640,10 @@ class IntentPipeline:
         if candidates:
             clarification = f"{clarification}\n{format_intent_options(candidates)}"
         return IntentOutput(
-            intent_type=result.intent_type,
-            confidence=result.confidence,
+            intents=[IntentUnit(intent_type=result.intent_type,
+                                confidence=result.confidence)],  # 澄清轮不拆分
             entities=entities, source=IntentStep.LLM, prev_intent=prev_intent,
             rewritten_query=result.query_rewrite or query,
-            steps=[],  # 澄清轮不拆分
             clarification=clarification,
             clarify_candidates=candidates,
         )
@@ -723,9 +728,8 @@ class IntentPipeline:
         else:
             parts.extend([
                 "steps 仅当输入包含 ≥2 个相互独立、分属不同意图的业务动作时才填：每个 "
-                f"step 是一个业务意图名（可派发类），按执行顺序排列，最多 {MAX_STEPS} 步，且 "
-                "steps[0] 必须等于 intent_type；单一动作或拿不准时必须留空（宁可不拆）。"
-                "拆分时 intent_type 取第一步。",
+                "step 是一个业务意图名（可派发类），按执行顺序排列；单一动作或拿不准时"
+                "必须留空（宁可不拆）。拆分时 intent_type 取第一步。",
                 "clarification 可选，留空串表示不需要：只在输入缺决定性信息、无法在意图间取舍时才填，"
                 "例如指代不明（「帮我处理一下那篇」没说哪篇）或动作不明（没说读、写笔记还是分析）。"
                 "能推断出合理意图就不要澄清——直接给 intent_type，用 confidence 表达"

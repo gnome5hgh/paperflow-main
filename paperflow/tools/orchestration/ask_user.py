@@ -11,7 +11,9 @@
 → 再 spawn 还按旧意图拒——同一轮里问 3 次、派 6 次全被拦的死锁。
 """
 from paperflow.core.intent.routing.confirm import format_intent_options, match_option_choice
-from paperflow.core.intent.schemas.intent import IntentOutput, IntentStep, IntentType
+from paperflow.core.intent.schemas.intent import (
+    IntentOutput, IntentStep, IntentType, IntentUnit,
+)
 from paperflow.core.tool import Tool, ToolResult
 
 
@@ -100,7 +102,8 @@ class AskUserQuestionTool(Tool):
         """
         parent = self._parent
         parent.last_intent = IntentOutput(
-            intent_type=confirmed, confidence=1.0, source=IntentStep.USER)
+            intents=[IntentUnit(intent_type=confirmed, confidence=1.0)],
+            source=IntentStep.USER)
         conversation = getattr(parent, "conversation", None)
         if conversation is not None:
             conversation.prev_intent = confirmed
