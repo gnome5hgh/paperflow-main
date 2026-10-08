@@ -10,7 +10,16 @@ from paperflow.rag.services.rag_service import get_rag_service
 
 
 class FormatCheckTool(Tool):
-    """笔记 Markdown 标题树与模板对比(确定性代码,供 reviewer 用)。"""
+    """笔记 Markdown 标题树与模板对比(确定性代码,供 reviewer 用)。
+
+    Attributes:
+        name: str，工具名 "format_check"
+        description: str，工具描述
+        parameters: dict，JSON Schema（path）
+        risk_level: str，"low"
+        root_hints: list[str]，["note", "scratch"]
+        _template_path: str | None，模板路径覆盖（缺省取 workspace/templates/paper_note.md；测试注入用）
+    """
 
     name = "format_check"
     description = "检查笔记结构是否符合模板（对比 Markdown 标题树）"
@@ -34,6 +43,7 @@ class FormatCheckTool(Tool):
                  "## 局限与展望\n")
 
     def __init__(self):
+        """初始化工具；模板路径留待执行时按配置解析（测试可注入 _template_path）。"""
         super().__init__()
         # 模板是内部常量路径,默认 <workspace>/templates/paper_note.md;测试可注入 _template_path
         self._template_path = None
@@ -52,7 +62,14 @@ class FormatCheckTool(Tool):
                 if ln.startswith("#")]
 
     def execute(self, path: str) -> ToolResult:
-        """对比笔记标题树与模板,返回缺失章节清单或"结构完整"。"""
+        """对比笔记标题树与模板,返回缺失章节清单或"结构完整"。
+
+        Args:
+            path: str，待检查笔记的绝对路径
+
+        Returns:
+            ToolResult，文本为缺失章节清单或「结构完整」。
+        """
         note_heads = [ln.lstrip("# ").strip()
                       for ln in Path(path).read_text(encoding="utf-8").splitlines()
                       if ln.startswith("#")]

@@ -46,7 +46,7 @@ ClipRegionMaxTextDistance = 4
 ClipRegionMaxLargeTextDistance = 10
 ClipRegionMaxGraphicDistance = 20
 
-# scoreProposal 打分权重（在评测集上粗调过，改动需谨慎）
+# scoreProposal 打分权重（刻意固定，改动需谨慎）
 LeftRightFigurePenalty = 0.75      # 左/右方向（图注在侧面）的折扣
 SplitDifferentTypesPenalty = 0.75  # 拆开的上下两半类型不同（图/表）的折扣
 SplitSameTypesPenalty = 0.5        # 拆开的上下两半同类型（图/图）的折扣
@@ -110,11 +110,25 @@ def _paragraph_sort_key(p: Paragraph) -> tuple[float, float]:
     本移植的 Paragraph 没有行号（Scala 用 startLineNumber 排序），故用
     上缘 y + 左缘 x 近似阅读序。正文/图内文本/图注已各自按阅读序排列，
     合并排序时用该键即可得到整体阅读序。
+
+    Args:
+        p: Paragraph，待排序段落
+
+    Returns:
+        (上缘 y, 左缘 x) 排序键，近似阅读序（先上后下、同行先左后右）。
     """
     return (p.boundary.y1, p.boundary.x1)
 
 
 def _sorted_paragraphs(paragraphs: list[Paragraph]) -> list[Paragraph]:
+    """按阅读序返回排序后的段落副本。
+
+    Args:
+        paragraphs: list[Paragraph]，待排序段落
+
+    Returns:
+        按 _paragraph_sort_key 排序的新列表。
+    """
     return sorted(paragraphs, key=_paragraph_sort_key)
 
 
@@ -123,6 +137,12 @@ def _content_of_page(page: PageWithBodyText) -> tuple[list[Box], list[Box]]:
 
     非图内容（正文 + 图注 + 非图图形）挡住 proposal 的扩展边界；可能图内容
     （图形 + 图内文本）用于切图判断与双栏中心线检测。两组合并即全页内容外接。
+
+    Args:
+        page: PageWithBodyText，已分类的页面
+
+    Returns:
+        (非图内容框, 可能图内容框) 两个 Box 列表。
     """
     non_figure_content = (
         [p.boundary for p in page.body_text]
@@ -492,12 +512,26 @@ def _score_proposal(
 
 
 def _in_cut_interval(d: float) -> bool:
-    """判断比值是否落在拦腰切图区间内 [0.1, 0.9]。"""
+    """判断比值是否落在拦腰切图区间内 [0.1, 0.9]。
+
+    Args:
+        d: float，相交面积占比（0~1）
+
+    Returns:
+        True 表示该比值落在拦腰切图区间 [0.1, 0.9] 内。
+    """
     return cutFilterIntervalMin <= d <= cutFilterIntervalMax
 
 
 def _box_on_boundary(box: Box) -> bool:
-    """proposal 是否贴页面左/上边界（x1/y1 ≤ 30）。贴边区域多半是误扩。"""
+    """proposal 是否贴页面左/上边界（x1/y1 ≤ 30）。贴边区域多半是误扩。
+
+    Args:
+        box: Box，候选 proposal 区域
+
+    Returns:
+        True 表示贴页面左/上边界（多半是误扩）。
+    """
     return box.x1 <= boundaryFilterMinDistance or box.y1 <= boundaryFilterMinDistance
 
 
@@ -527,6 +561,12 @@ def _cartesian_product(xss: list[list[Proposal]]) -> list[list[Proposal]]:
 
     itertools.product 等价实现，顺序与 Scala 的手写递归一致（第一组为最外层）。
     空输入返回 [[]]。对空列表不做特殊处理——product() 恰好产出单个空元组。
+
+    Args:
+        xss: list[list[Proposal]]，各组候选 proposal
+
+    Returns:
+        所有组合的列表（每组取一个；空输入返回 [[]]）。
     """
     return [list(combo) for combo in product(*xss)]
 

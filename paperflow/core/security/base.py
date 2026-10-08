@@ -24,6 +24,28 @@ class ToolContext:
     approval_*）、审计树（turn/span_id/parent_id/depth）。各组由不同中间件在各自
     钩子里填充——见下方字段注释。``tool=None`` 表示未知工具（大模型幻觉或注入），
     此时各 before 钩子自行跳过，仍会走 after 钩子审计。
+
+    Attributes:
+        trace_id: str，本次 run 的唯一追踪 ID（聚合一次任务的所有工具调用）
+        session_id: str，会话标识（跨多次 run 保持一致）
+        agent_type: str，当前 Agent 类型（如 supervisor/searcher）
+        tool: Tool | None，当前执行的 Tool；None 表示未知工具（幻觉或注入）
+        tool_name: str，工具名（tool 为 None 时仍可记录）
+        args: dict，已解析的工具参数字典
+        timestamp: str | None，ISO 格式的调用发起时间（审计的 started_at）
+        started_at: float | None，time.monotonic() 起始时刻，用于算耗时
+        result: ToolResult | None，工具执行成功后的结果
+        error: Exception | None，执行或中间件拦截时抛出的异常
+        user_confirmed: bool，是否已获用户确认
+        diffstat_old: str | None，写类工具执行前采样的旧文本（仅渲染遥测，中间件不读）
+        turn: int，ReAct 循环轮次（从 0 起）
+        span_id: str | None，本次调用的审计 span ID（由 AuditMiddleware 生成）
+        parent_id: str | None，父 span ID（嵌套调用时取栈顶）
+        depth: int，调用深度（根为 0，嵌套每层 +1）
+        policy_context: dict | None，策略引擎评估时的配置快照
+        policy_fired: str | None，被触发的策略规则名（如 blocked_by_default）
+        approval_outcome: str | None，审批最终结果（user_confirmed/user_denied/auto_denied）
+        approval_decided_span_id: str | None，审批决策事件的 span ID（审计回溯用）
     """
 
     # --- 调用方与工具本体（由 Agent 构造，贯穿管道） ---
@@ -137,17 +159,30 @@ class SecurityError(Exception):
     WHY 用字段而非 isinstance 链：审计写 tool_ended 时一行 ``getattr`` 就能
     推导出决策类型，不需要维护一套「异常 → 标签」的映射表；普通工具异常
     （RuntimeError 等）没有该属性，兜底取 "error"。
+
+    Attributes:
+        decision: str，安全决策类型（子类覆盖为具体值，如 policy_denied）
     """
 
     decision: str   # 子类必须覆盖为具体的决策字符串，如 "policy_denied"
 
 
 class PolicyDenied(SecurityError):
-    """策略拒绝：工具被策略检查判定为不可执行，携带拒绝原因。"""
+    """策略拒绝：工具被策略检查判定为不可执行，携带拒绝原因。
+
+    Attributes:
+        decision: str，固定为 "policy_denied"
+        reason: str，人类可读的拒绝理由（反馈给 LLM）
+    """
 
     decision = "policy_denied"
 
     def __init__(self, reason: str):
+        """记录拒绝理由。
+
+        Args:
+            reason: str，拒绝理由；写入实例供上层反馈给 LLM
+        """
         self.reason = reason   # 人类可读的拒绝理由，将反馈给 LLM
 
 
@@ -157,11 +192,28 @@ class ConfirmRequired(SecurityError):
     携带工具名、入参、风险等级、副作用说明与确认回调；用户放行后调用
     ``confirm()`` 触发回调，把本次确认记进已确认集合（见 PolicyEngineMiddleware）。
     未确认（异常未放行）一律视为拒绝——只有最终放行的调用才算允许。
+
+    Attributes:
+        decision: str，固定为 "confirm_required"
+        tool_name: str，需要用户确认的工具名
+        params: dict，本次调用的参数（展示给用户）
+        risk_level: str，工具风险等级
+        side_effects: str，可能的副作用说明（如「写入文件」）
+        _on_confirmed: 回调 | None，确认后触发（把本次确认记入已确认集合）
     """
 
     decision = "confirm_required"
 
     def __init__(self, tool_name, params, risk_level, side_effects, on_confirmed=None):
+        """记录待确认工具的展示信息与放行回调。
+
+        Args:
+            tool_name: str，工具名
+            params: dict，本次调用参数（展示给用户）
+            risk_level: str，工具风险等级
+            side_effects: str，副作用说明
+            on_confirmed: 回调 | None，用户放行后触发，用于记入已确认集合
+        """
         self.tool_name = tool_name          # 需要用户确认的工具名
         self.params = params                # 本次调用的参数（用于展示给用户）
         self.risk_level = risk_level        # 工具的风险等级（如 "high"）
@@ -179,10 +231,22 @@ class ConfirmRequired(SecurityError):
 
 
 class SecurityBlocked(SecurityError):
-    """安全拦截：内容或路径检查发现违规，携带违规明细列表。"""
+    """安全拦截：内容或路径检查发现违规，携带违规明细列表。
+
+    Attributes:
+        decision: str，固定为 "security_blocked"
+        reason: str，拦截原因摘要
+        violations: list[dict]，违规明细（每项含 rule_id/severity/snippet）
+    """
 
     decision = "security_blocked"
 
     def __init__(self, reason: str, violations: list[dict]):
+        """记录拦截原因与违规明细。
+
+        Args:
+            reason: str，拦截原因摘要
+            violations: list[dict]，违规明细列表
+        """
         self.reason = reason                # 拦截原因摘要
         self.violations = violations        # 违规明细列表，每个元素包含 rule_id、severity、snippet 等

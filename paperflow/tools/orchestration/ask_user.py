@@ -7,8 +7,8 @@
 意图确认通道（澄清统一）：可选 intent_options 参数把「向用户确认意图」
 变成代码级协议——工具展示编号选项、用 match_option_choice 解析回复、命中即更新
 父 agent 的会话意图（last_intent + conversation.prev_intent），后续 spawn 门禁按
-确认意图放行。修复的病：意图误判 → spawn 被拒 → 问用户 → 用户确认困在工具结果里
-→ 再 spawn 还按旧意图拒——同一轮里问 3 次、派 6 次全被拦的死锁。
+确认意图放行。若只确认不更新意图，spawn 门禁仍按旧意图拒绝——用户确认会困在
+工具结果里，同一轮里反复被拦。
 """
 from paperflow.core.intent.routing.confirm import format_intent_options, match_option_choice
 from paperflow.core.intent.schemas.intent import (
@@ -22,6 +22,14 @@ class AskUserQuestionTool(Tool):
 
     经父 agent 注入的 ask_user_callback 读 stdin;callback 为空(程序化/测试环境)
     时返回"无法交互"提示,由调用 agent 基于已有信息自行决策,不挂死。
+
+    Attributes:
+        name: str，工具名 "ask_user_question"
+        description: str，工具描述（含 intent_options 语义）
+        parameters: dict，JSON Schema（question/intent_options）
+        needs_parent: bool，True（经父 agent 的 ask_user_callback 读输入）
+        risk_level: str，"low"
+        _parent: Agent，父 agent 引用（提供 ask_user_callback 与会话意图）
     """
 
     name = "ask_user_question"
@@ -56,6 +64,13 @@ class AskUserQuestionTool(Tool):
         自行决策;有回调时经 worker 线程读 stdin,不冻结事件循环。
         带 intent_options 时：代码追加编号选项行，回复可解析为候选之一则更新
         父 agent 的会话意图并在结果中明示；解析不出则如实告知模型意图未变。
+
+        Args:
+            question: str，要问用户的问题
+            intent_options: list[str] | None，候选意图枚举值（2-3 个）
+
+        Returns:
+            ToolResult，文本为「用户回答：…」；空回答返回明确提示，意图选项命中则注明会话意图已更新。
         """
         cb = getattr(self._parent, "ask_user_callback", None)
         if cb is None:
@@ -76,7 +91,7 @@ class AskUserQuestionTool(Tool):
         # cb 由 CLI 注入,在 worker 线程里读 stdin(阻塞等待用户输入,不冻结事件循环)
         answer = cb(display)
         if not answer.strip():
-            # 裸空串会诱发模型脑补（真实会话复验：把空回答编造成「任务被外部打断」）
+            # 裸空串会诱发模型脑补（把空回答编造成「任务被外部打断」）
             return ToolResult(text="用户回答：（空/超时/中断，未给出回答——请基于已有信息自行决策，勿推测用户另有指示）")
         if options:
             confirmed = match_option_choice(answer, options)
@@ -99,6 +114,12 @@ class AskUserQuestionTool(Tool):
 
         合成 IntentOutput 仅填门禁/审计所需字段——INTENT 块在 run 开始时已构建，
         mid-run 更新不影响本轮注入的上下文。
+
+        Args:
+            confirmed: IntentType，用户确认的意图
+
+        Returns:
+            无返回值；就地更新父 agent 的 last_intent 与 conversation.prev_intent。
         """
         parent = self._parent
         parent.last_intent = IntentOutput(

@@ -1,5 +1,5 @@
 # paperflow/core/llm/__init__.py
-"""LLM 域包 —— wire 消息契约、对话客户端与结构化输出（ADR 0006）。
+"""LLM 域包 —— wire 消息契约、对话客户端与结构化输出。
 
 公共出口（下游一律 `from paperflow.core.llm import ...`）：
 - ``Message``（wire 格式消息）/ ``LLMClient`` / ``tool_to_openai_schema`` ← client

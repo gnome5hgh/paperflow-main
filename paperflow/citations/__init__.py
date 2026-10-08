@@ -15,7 +15,14 @@ _singleton_lock = threading.Lock()
 
 
 def get_citation_manager(config=None) -> CitationManager:
-    """懒加载单例（双重检查加锁）；config 首次传参后固定。"""
+    """懒加载单例（双重检查加锁）；config 首次传参后固定。
+
+    Args:
+        config: PaperFlowConfig | None，首次调用须传（后续传参被忽略）；None 时按环境加载配置
+
+    Returns:
+        进程内共享的 CitationManager 单例。
+    """
     global _singleton
     if _singleton is None:
         with _singleton_lock:

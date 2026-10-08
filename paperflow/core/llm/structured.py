@@ -29,7 +29,15 @@ from paperflow.core.llm.client import Message
 @dataclass
 class StructuredOutputConfig:
     """StructuredOutput 的行为参数：重试次数、LLM 采样温度、是否关思维链、
-    是否强制 JSON 模式、schema 递归展开的最大深度。"""
+    是否强制 JSON 模式、schema 递归展开的最大深度。
+
+    Attributes:
+        max_retries: int，校验失败后的重试次数
+        temperature: float，采样温度（0.0 = 确定性）
+        disable_thinking: bool，是否关闭思维链（思维链尾随散文会破坏 JSON）
+        json_mode: bool，是否强制 JSON 输出格式
+        max_schema_depth: int，schema 递归展开的最大深度（防自引用模型无限递归）
+    """
 
     max_retries: int = 2
     temperature: float = 0.0
@@ -43,10 +51,23 @@ class StructuredOutputError(Exception):
 
 
 class StructuredOutput:
-    """三层防御：生成约束 → 验证重试（带对照纠错）→ 兜底。"""
+    """三层防御：生成约束 → 验证重试（带对照纠错）→ 兜底。
+
+    Attributes:
+        llm: LLMClient，底层对话客户端
+        config: StructuredOutputConfig，行为参数
+        telemetry_callback: 回调 | None，LLM 调用元数据回调（None = 零开销跳过）
+    """
 
     def __init__(self, llm, config: StructuredOutputConfig | None = None,
                  telemetry_callback=None):
+        """装配 LLM 客户端与行为参数。
+
+        Args:
+            llm: LLMClient，底层对话客户端
+            config: StructuredOutputConfig | None，行为参数（None 用默认）
+            telemetry_callback: 回调 | None，LLM 调用元数据回调（归属父 agent 的 trace/turn）
+        """
         self.llm = llm
         self.config = config or StructuredOutputConfig()
         #: LLM 调用元数据回调(与 Agent 侧同语义,None = 零开销跳过):
@@ -67,17 +88,22 @@ class StructuredOutput:
         3. 兜底：重试耗尽优先调用调用方 ``fallback``；无 fallback 才抛
            ``StructuredOutputError``——「尽力而为，失败也要有明确出口」。
 
-        :param prompt: 给 LLM 的任务文本（要抽取什么、有哪些约束）
-        :param schema: pydantic 模型类，既是校验目标，也经 _schema_to_prompt
-            展开成字段级提示喂给 LLM
-        :param fallback: 重试耗尽时的兜底构造函数（无参返回 BaseModel 实例）；
-            None 表示直接抛 StructuredOutputError
-        :param images: 视觉分析的图片 data URL 列表；非 None 时
-            user 消息改为「文本 + 图」的 content parts，文本仍是 prompt
+        Args:
+            prompt: 给 LLM 的任务文本（要抽取什么、有哪些约束）
+            schema: pydantic 模型类，既是校验目标，也经 _schema_to_prompt 展开成字段级提示喂给 LLM
+            fallback: 重试耗尽时的兜底构造函数（无参返回 BaseModel 实例）；None 表示直接抛 StructuredOutputError
+            images: 视觉分析的图片 data URL 列表；非 None 时 user 消息改为「文本 + 图」的 content parts，文本仍是 prompt
 
-        :returns: 校验通过的 schema 实例
 
-        :raises StructuredOutputError: 重试耗尽且无 fallback 时抛出
+
+        Returns:
+            校验通过的 schema 实例
+
+
+
+        Raises:
+            StructuredOutputError: 重试耗尽且无 fallback 时抛出
+
         """
         # 传了 images 时 user 消息改为 OpenAI content parts（文本 + 图片），
         # 让视觉模型能看图；未传则保持纯文本，旧行为不变。
@@ -129,7 +155,14 @@ class StructuredOutput:
 # ── 递归 Schema 展开 ──
 
 def _is_model(annotation) -> bool:
-    """annotation 是否是一个 pydantic 模型类（用于判断是否需递归展开）。"""
+    """annotation 是否是一个 pydantic 模型类（用于判断是否需递归展开）。
+
+    Args:
+        annotation: 任意类型注解
+
+    Returns:
+        True 表示是 pydantic 模型类（需递归展开）。
+    """
     return isinstance(annotation, type) and issubclass(annotation, BaseModel)
 
 
@@ -138,6 +171,12 @@ def _type_to_str(annotation) -> str:
 
     处理 list[X]（递归翻译内层）、``X | None``（标「可空」）以及基础类型映射
     （str→string、int→integer 等）；其余类型兜底用 repr 去掉 typing. 前缀。
+
+    Args:
+        annotation: 字段的 Python 类型注解
+
+    Returns:
+        给 LLM 看的自然语言类型名（如 string / list[integer] / X (可空)）。
     """
     origin = get_origin(annotation)
     if origin is list:
@@ -169,6 +208,14 @@ def _schema_to_prompt(schema: type[BaseModel], depth: int = 0,
     每个字段标注必填/可选，缩进按深度递增，最终拼成一段类 JSON 文本。
     字段声明了 ``description`` 时附在其后：那是模型判断「这个字段何时该填」的唯一
     依据（代码里的注释进不了提示词），未声明 description 的字段输出与旧版一致。
+
+    Args:
+        schema: type[BaseModel]，待展开的模型类
+        depth: int，当前递归深度（顶层 0）
+        max_depth: int，递归展开上限
+
+    Returns:
+        类 JSON 的字段级结构提示文本（每字段标注必填/可选与 description）。
     """
     pad = "  " * depth
     inner_pad = "  " * (depth + 1)
@@ -189,6 +236,15 @@ def _field_desc(name: str, field, depth: int, max_depth: int) -> str:
 
     先剥掉 Optional 包装拿到真实内层类型（_unwrap_optional），再判断是否需递归；
     Optional 语义通过 _optional_suffix 追加「(可空)」标注。
+
+    Args:
+        name: str，字段名
+        field: pydantic FieldInfo，字段元信息
+        depth: int，当前递归深度
+        max_depth: int，递归展开上限
+
+    Returns:
+        该字段的提示行（嵌套模型/list[模型] 递归展开，其余翻译类型名，含可空标注）。
     """
     annotation = field.annotation
     inner, optional = _unwrap_optional(annotation)
@@ -208,6 +264,12 @@ def _unwrap_optional(annotation):
 
     pydantic v2 的 model_fields 保留原始注解：PEP 604 的 ``X | None``
     其 origin 是 ``types.UnionType`` 而非 ``typing.Union``，两种都要兼容。
+
+    Args:
+        annotation: 字段的原始类型注解
+
+    Returns:
+        (内层类型, 是否可空) 二元组。
     """
     origin = get_origin(annotation)
     if _is_optional_union(origin):
@@ -220,18 +282,40 @@ def _unwrap_optional(annotation):
 def _is_optional_union(origin) -> bool:
     """origin 是否为「可空联合类型」：PEP 604 的 ``X | None`` 其 origin 是
     ``types.UnionType`` 而非 ``typing.Union``，两种都要识别。
+
+    Args:
+        origin: typing.get_origin 的结果
+
+    Returns:
+        True 表示是可空联合类型（兼容 typing.Union 与 types.UnionType 两种 origin）。
     """
     return origin is Union or origin is types.UnionType
 
 
 def _optional_suffix(optional: bool) -> str:
-    """Optional 语义追加「(可空)」标注（True 才加）。"""
+    """Optional 语义追加「(可空)」标注（True 才加）。
+
+    Args:
+        optional: bool，是否为可空类型
+
+    Returns:
+        可空时返回 " (可空)"，否则空串。
+    """
     return " (可空)" if optional else ""
 
 
 def _nested_body(model: type[BaseModel], depth: int, max_depth: int) -> str:
     """递归展开嵌套模型的主体；深度达到 max_depth 时只输出占位符 ``{...}``，
-    防自引用模型无限递归。"""
+    防自引用模型无限递归。
+
+    Args:
+        model: type[BaseModel]，嵌套模型类
+        depth: int，当前深度
+        max_depth: int，递归展开上限
+
+    Returns:
+        嵌套模型展开文本；深度超限时返回占位符 {model} {...}。
+    """
     if depth + 1 > max_depth:
         return f"{model.__name__} {{...}}"
     return _schema_to_prompt(model, depth + 1, max_depth)
@@ -243,6 +327,12 @@ def _extract_json_body(text: str) -> str:
     LLM 可能用 Markdown 代码围栏（```json ... ```）包裹 JSON，或前后缀散文；
     先剥掉首个代码围栏，再取首 ``{`` 到末 ``}`` 的子串。抽取不到（start==-1）
     时原样返回，让上层 json.loads 报错进入纠错重试路径。
+
+    Args:
+        text: str，LLM 的原始回复
+
+    Returns:
+        抽取到的 JSON 正文；抽不到时原样返回（交给上层 json.loads 报错进纠错重试）。
     """
     text = text.strip()
     if text.startswith("```"):

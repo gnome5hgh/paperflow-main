@@ -160,7 +160,13 @@ def is_ambiguous(scored: list[tuple[str, float]],
 
 
 class IntentPipeline:
-    """意图识别五级级联编排：依赖混合路由器与结构化输出模块。"""
+    """意图识别五级级联编排：依赖混合路由器与结构化输出模块。
+
+    Attributes:
+        router: HybridRouter，第 4 级混合路由判定
+        structured: 结构化输出通道，供 LLM 兜底/澄清生成使用
+        llm_fallback_schema: type[BaseModel]，LLM 兜底使用的输出模型（默认 IntentionResult）
+    """
 
     def __init__(self, router, structured,
                  llm_fallback_schema: type[BaseModel] = IntentionResult):
@@ -206,8 +212,8 @@ class IntentPipeline:
 
         # ====== 第2级：选项答复检测（确定性正则，在追问之前） ======
         # 纯编号菜单选择是「选择」动作而非自由文本，不经 NLU 重分类——
-        # 否则 score_threshold=0.0 的路由会以微小分数误命中任意意图（如实测
-        # 「1」被路由到 set_research_topic），spawn 门禁随之误拦真实意图。
+        # 否则 score_threshold=0.0 的路由会以微小分数误命中任意意图（如把
+        # 「1」路由到 set_research_topic），spawn 门禁随之误拦真实意图。
         # 命中即短路：MENU_SELECTION 可派发，派发权在 supervisor 对照其菜单。
         if is_option_reply(query):
             return IntentOutput(

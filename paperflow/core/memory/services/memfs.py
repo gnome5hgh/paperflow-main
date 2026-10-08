@@ -28,6 +28,11 @@ class MemFS:
         1. 正向同步：块变更时，将块内容写入对应的 .md 文件（含 frontmatter 元数据）。
         2. 反向同步：检测 .md 文件是否被人工修改，返回变更列表供调用方写回 SQL。
         3. 索引生成：自动维护 memory_filesystem.md 文件树，供 LLM 感知所有记忆文件。
+
+    Attributes:
+        memory_dir: Path，记忆文件系统根目录（.md 投影存放处）
+        system_dir: Path，system/ 子目录（assistant/profile 等核心块）
+        db: MemoryDB | None，仅 detect_file_changes() 反查 blocks 表时使用
     """
 
     def __init__(self, memory_dir: Path, db=None):

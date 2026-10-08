@@ -66,6 +66,16 @@ class Block(BaseBlock):
         - project_id / organization_id / created_by_id / last_updated_by_id 为预留字段，
           供未来多租户或权限追踪使用，当前均置为 None。
         - created_at / updated_at 由 ORM 层在插入/更新时自动填充（若未提供）。
+
+    Attributes:
+        id: str，主键（"block-<hex>" 自动生成）
+        version: int，乐观锁计数；每次更新 +1，写前快照进 block_history 作撤销/重做链
+        project_id: str | None，预留：项目归属
+        organization_id: str | None，预留：组织归属
+        created_by_id: str | None，预留：创建者 ID
+        last_updated_by_id: str | None，预留：最后更新者 ID
+        created_at: datetime | None，创建时间（由 DB/ORM 填充）
+        updated_at: datetime | None，最后更新时间（由 DB/ORM 填充）
     """
 
     id: str = Field(default_factory=_block_id)           # 主键，自动生成

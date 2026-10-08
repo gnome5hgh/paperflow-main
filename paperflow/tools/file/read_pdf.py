@@ -10,11 +10,29 @@ from paperflow.rag.services.rag_service import get_rag_service
 
 def _normalize_path(p: str) -> str:
     """归一化路径:连续空白折叠为单空格 + 小写。用于模糊匹配——LLM 可能把双空格
-    文件名折叠成单空格,归一化后与真实文件名一致。"""
+    文件名折叠成单空格,归一化后与真实文件名一致。
+
+    Args:
+        p: str，路径或文件名
+
+    Returns:
+        折叠连续空白并小写后的字符串（模糊匹配用）。
+    """
     return " ".join(p.split()).lower()
 
 
 class ReadPdfTool(Tool):
+    """解析 PDF 为结构化文本的只读工具（GROBID，不可用回退 PyMuPDF）。
+
+    Attributes:
+        name: str，工具名 "read_pdf"
+        description: str，工具描述
+        parameters: dict，JSON Schema（path）
+        risk_level: str，"low"（只读）
+        root_hints: list[str]，["pdf"]
+        output_scan: str，"mark"
+        side_effects: list[str]，["read_file"]
+    """
     name = "read_pdf"
     description = "解析 PDF 论文为结构化文本（GROBID，不可用时回退 PyMuPDF）"
     parameters = {
@@ -34,6 +52,12 @@ class ReadPdfTool(Tool):
 
         精确路径优先(走解析缓存,reviewer 每轮审稿复用同一份解析);精确失败才走
         容错分支——LLM 可能折叠路径空白,按归一化 basename 在 pdf 根下找唯一命中。
+
+        Args:
+            path: str，PDF 文件绝对路径
+
+        Returns:
+            ToolResult，文本为按章节拼接的正文；解析不出内容时返回提示文本。
         """
         try:
             doc = get_rag_service().parse_pdf_cached(path)
@@ -56,7 +80,14 @@ class ReadPdfTool(Tool):
         """精确路径失败时的容错解析。安全语义:唯一命中才用、不猜。
 
         0 候选 → 明确"未找到";多候选 → 明确"不唯一"交 LLM 澄清。只对 pdf 根递归
-        搜索,不外扩。命中后仍走解析缓存。"""
+        搜索,不外扩。命中后仍走解析缓存。
+
+        Args:
+            path: str，精确解析失败的原始路径
+
+        Returns:
+            唯一命中时返回解析结果；0 候选抛 FileNotFoundError，多候选抛 ValueError（交 LLM 澄清）。
+        """
         cfg = get_rag_service().config
         root = Path(cfg.corpus.pdf_dir)
         # 归一化目标取 basename 而非全路径:LLM 空格折叠只影响文件名本身,子目录层级

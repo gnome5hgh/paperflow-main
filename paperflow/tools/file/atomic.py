@@ -13,13 +13,17 @@ def atomic_write(path: Path, content: str) -> None:
 
     临时文件与目标同目录（同文件系统，replace 不跨设备）；写入 fsync 落盘后再
     replace，替换前内容已持久；失败时清理临时文件不残留。
+
+    Args:
+        path: Path，目标文件路径（父目录自动创建）
+        content: str，待写入的完整文本
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".tmp-", suffix=".paperflow")
     try:
-        # mkstemp 默认 0600，与 Obsidian 同步盘/常见 0644 习惯不一致（真实使用
-        # 测试 P3-2；用户决策：默认 0644）。PAPERFLOW_FILE_MODE 可覆盖（如 0600）。
+        # mkstemp 默认 0600，与常见 0644 习惯不一致；统一按 0644 落盘，
+        # PAPERFLOW_FILE_MODE 可覆盖（如 0600）。
         try:
             os.chmod(tmp, int(os.environ.get("PAPERFLOW_FILE_MODE", "644"), 8))
         except (OSError, ValueError):

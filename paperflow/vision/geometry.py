@@ -37,6 +37,7 @@ class Word:
     positions: list[Position]
 
     def __post_init__(self) -> None:
+        """校验词至少有一个字符位置（空词无意义）。"""
         # 与 Paragraph.scala 一致：词必须至少有一个字符位置，空词没有意义
         if not self.positions:
             raise ValueError("word 必须有非空的 positions")
@@ -44,7 +45,7 @@ class Word:
 
 @dataclass(frozen=True)
 class Line:
-    """一行词：词列表 + 整行包围盒 + 是否水平（brief 接口显式传入，不做推导）。
+    """一行词：词列表 + 整行包围盒 + 是否水平（由调用方显式传入，不做推导）。
 
     Attributes:
         words: 该行包含的词（按阅读顺序）。
@@ -57,11 +58,13 @@ class Line:
     is_horizontal: bool
 
     def __post_init__(self) -> None:
+        """校验行至少含一个词。"""
         if not self.words:
             raise ValueError("line 必须有非空的 words")
 
     @property
     def text(self) -> str:
+        """整行文本（各词以空格连接）。"""
         return " ".join(w.text for w in self.words)
 
 
@@ -81,11 +84,13 @@ class Paragraph:
     boundary: Box
 
     def __post_init__(self) -> None:
+        """校验段至少含一行。"""
         if not self.lines:
             raise ValueError("paragraph 必须有非空的 lines")
 
     @property
     def text(self) -> str:
+        """整段文本（各行以空格连接）。"""
         return " ".join(l.text for l in self.lines)
 
 
@@ -94,6 +99,17 @@ class Box:
     """轴对齐矩形：要求 x1<=x2 且 y1<=y2。
 
     明确允许零宽/零高——PDFBox 对合法文本片段也可能给出零面积边界，不能当非法拒绝。
+
+    Attributes:
+        x1: float，左边界（PDF 点）
+        y1: float，上边界
+        x2: float，右边界
+        y2: float，下边界
+        width: float，派生：x2 - x1
+        height: float，派生：y2 - y1
+        xCenter: float，派生：水平中心
+        yCenter: float，派生：垂直中心
+        area: float，派生：宽 × 高
     """
 
     x1: float
@@ -102,27 +118,33 @@ class Box:
     y2: float
 
     def __post_init__(self) -> None:
+        """校验宽高非负（x1<=x2 且 y1<=y2；零宽零高合法）。"""
         if self.x1 > self.x2 or self.y1 > self.y2:
             raise ValueError("Box 要求 x1<=x2 且 y1<=y2（宽高不能为负）")
 
     @property
     def width(self) -> float:
+        """矩形宽度（x2 - x1）。"""
         return self.x2 - self.x1
 
     @property
     def height(self) -> float:
+        """矩形高度（y2 - y1）。"""
         return self.y2 - self.y1
 
     @property
     def xCenter(self) -> float:
+        """水平中心坐标。"""
         return (self.x2 + self.x1) / 2
 
     @property
     def yCenter(self) -> float:
+        """垂直中心坐标。"""
         return (self.y2 + self.y1) / 2
 
     @property
     def area(self) -> float:
+        """矩形面积（宽 × 高）。"""
         return self.width * self.height
 
     def intersects(self, other: "Box", margin: float = 0.0) -> bool:

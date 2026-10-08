@@ -12,6 +12,10 @@ class TitleResult:
     """标题提取结果：title + 命中的来源（search/grobid/llm/pdftitle/pymupdf）。
 
     全失败时 title 为 None，由调用方提示用户提供标题。
+
+    Attributes:
+        title: str | None，提取到的标题；全链失败为 None
+        source: str，命中来源（search/grobid/llm/pdftitle/pymupdf）；未命中为空串
     """
 
     title: str | None = None
@@ -23,6 +27,12 @@ class TitleExtractor:
 
     grobid/llm 为可注入依赖（测试用 stub）；pdftitle/pymupdf 用 import-guard
     按 use_* 开关启用（pdftitle 是可选依赖，未装则跳过）。
+
+    Attributes:
+        grobid: GROBID 客户端 | None，需实现 extract_title(pdf_path) -> str
+        llm: LLM 客户端 | None，需实现 extract(prompt, schema) -> Model
+        use_pdftitle: bool，是否启用 pdftitle 库层（可选依赖，未装则跳过）
+        use_pymupdf: bool，是否启用 PyMuPDF 启发式兜底层
     """
 
     def __init__(self, grobid=None, llm=None, use_pdftitle=True, use_pymupdf=True):
@@ -118,6 +128,11 @@ class TitleExtractor:
         from pydantic import BaseModel
 
         class _Title(BaseModel):
+            """LLM 标题提取的结构化输出模型（单字段）。
+
+            Attributes:
+                title: str，LLM 判定出的论文标题
+            """
             title: str
 
         # 运行异步 LLM 提取（同步封装）

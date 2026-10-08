@@ -16,6 +16,16 @@ DIMENSIONS = ("requirements", "faithfulness", "consistency", "completeness", "st
 
 
 class SubmitReviewTool(Tool):
+    """汇总笔记审查裁决的终止型工具（reviewer 笔记审查模式返回）。
+
+    Attributes:
+        name: str，工具名 "submit_review"
+        description: str，工具描述
+        parameters: dict，JSON Schema（path/verdict/issues）
+        risk_level: str，"low"（只读格式化，无副作用）
+        terminal: bool，True（提交成功即终结本轮任务）
+        root_hints: list[str]，["note", "scratch", "research"]（仅生成 [目录] 提示）
+    """
     name = "submit_review"
     description = ("汇总对一篇笔记的审查裁决（reviewer 笔记审查模式返回）。"
                    "verdict=pass 当且仅当无 blocking 意见；每条 issue 必须可执行（location + action）。")
@@ -39,7 +49,7 @@ class SubmitReviewTool(Tool):
     }
     risk_level = "low"                     # 只读格式化，无副作用
     # 终止型工具：校验通过的提交即本 agent 任务终结，Agent.run 直接
-    # 结束 ReAct 循环——重复提交是成本事故（实测一次门禁重复提交 6 次）。
+    # 结束 ReAct 循环——重复提交会白烧 token，属于成本事故。
     terminal = True
     # 审稿流目标是 scratch/note 草稿路径；execute 不读文件内容（只格式化提交字段），
     # 声明 scratch 仅生成 [目录] 提示、零安全影响（强制在 WorkspacePolicy，与本声明无关）。
@@ -50,6 +60,14 @@ class SubmitReviewTool(Tool):
 
         三步校验:verdict 枚举 → 逐 issue 枚举/必需字段 → verdict 与 issues 一致性
         (pass 当且仅当无 blocking)。通过后按 severity 分组渲染,供 noter 确定性读取。
+
+        Args:
+            path: str，被审查笔记的绝对路径
+            verdict: str，"pass"（无 blocking）或 "fail"
+            issues: list[dict]，每条含 severity/dimension/location/action
+
+        Returns:
+            ToolResult；非法输入返回可行动报错文本，通过时回裁决全文并置 summary["terminal"]。
         """
         # ① verdict 枚举校验（enum_check 共享，同 submit_download_review）
         bad = enum_check(verdict, VERDICTS, "verdict")

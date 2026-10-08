@@ -13,6 +13,13 @@ def _apply_diff(value: str, patch: str) -> str:
     删行用前向扫描宽容匹配（'-' 行从当前位置向后找首个匹配并复制中间行），而
     ' ' 上下文行仍精确位置匹配——LLM 生成的 patch 与实际内容常有漂移，宽容删行
     吸收漂移、精确上下文守住边界。
+
+    Args:
+        value: str，块当前文本
+        patch: str，简化 unified diff
+
+    Returns:
+        应用 patch 后的整块文本；上下文行不匹配或删行找不到时抛 ValueError。
     """
     import re
     lines = value.splitlines()
@@ -58,13 +65,28 @@ def _memory_apply_patch(ctx, label: str, patch: str) -> str:
     读块 + 应用 patch 收进 mutate_block 的 mutator：patch 应用在持锁内基于最新值
     进行，避免并发下用旧值算出的结果覆盖别人刚写的改动。多块 patch 是对输入本身的
     静态拒绝，先于读块判定。
+
+    Args:
+        ctx: MemoryToolsContext，记忆工具运行时上下文
+        label: str，目标块标签
+        patch: str，简化 unified diff
+
+    Returns:
+        成功返回应用成功文本；多块 patch 直接拒绝，块缺失/语义不符返回错误文本。
     """
     bm = ctx.block_manager
     if "*** Add Block:" in patch or "*** Update Block:" in patch:
         return "Error: multi-block patch not supported"
 
     def _patched(v: str) -> str:
-        """对当前值应用 patch；语义不符时 _apply_diff 抛 ValueError。"""
+        """对当前值应用 patch；语义不符时 _apply_diff 抛 ValueError。
+
+        Args:
+            v: str，块的当前值（持锁内的最新值）
+
+        Returns:
+            应用 patch 后的新值；语义不符时抛 ValueError。
+        """
         return _apply_diff(v, patch)
 
     try:
@@ -77,6 +99,14 @@ def _memory_apply_patch(ctx, label: str, patch: str) -> str:
 
 
 class MemoryApplyPatchTool(Tool):
+    """用简化 unified diff 更新记忆块的工具（仅单块模式）。
+
+    Attributes:
+        name: str，工具名 "memory_apply_patch"
+        description: str，工具描述
+        parameters: dict，JSON Schema（label/patch）
+        risk_level: str，"medium"
+    """
     name = "memory_apply_patch"
     description = "用简化 unified diff 更新记忆块"
     parameters = {
@@ -90,6 +120,15 @@ class MemoryApplyPatchTool(Tool):
     risk_level = "medium"
 
     def execute(self, label: str, patch: str) -> ToolResult:
+        """对指定记忆块应用简化 unified diff。
+
+        Args:
+            label: str，目标块标签
+            patch: str，简化 unified diff
+
+        Returns:
+            ToolResult；未装配记忆服务时返回不可用提示，其余异常降级为错误文本。
+        """
         ctx = get_memory_context()
         if ctx is None:
             return ToolResult(text="记忆服务未装配，记忆工具不可用")

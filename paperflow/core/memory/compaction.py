@@ -21,6 +21,13 @@ class SummarySchema(BaseModel):
 
     五个字段分别捕捉：用户核心请求、已完成进度、关键技术约束/决策/错误、
     待办优先级、以及必须保留的用户偏好与领域细节。
+
+    Attributes:
+        task_overview: str，用户的核心请求与成功标准
+        current_state: str，已完成的进度
+        important_discoveries: str，关键技术约束/决策/错误
+        next_steps: str，待办事项与优先级
+        context_to_preserve: str，必须保留的用户偏好与领域细节
     """
 
     task_overview: str              # 用户核心请求与成功标准
@@ -35,6 +42,12 @@ class CompactionSettings:
 
     trigger_ratio 决定「多满才触发压缩」，reserve_ratio 决定「尾部保留多少
     预算」；context_size 显式给出时覆盖 model_window 的默认推导。
+
+    Attributes:
+        mode: Literal，压缩模式；"sliding_window" 保留头部+摘要+尾部，其余三值见 __init__
+        trigger_ratio: float，触发压缩的 token 使用率阈值（0~1）
+        reserve_ratio: float，压缩后尾部保留的预算比例（0~1）
+        context_size: int，显式上下文预算（token）；0 表示由模型窗口推导
     """
 
     mode: Literal["sliding_window", "all_messages",

@@ -63,7 +63,17 @@ _HEADER = ("% ==================================================================
 
 @dataclass
 class BibEntry:
-    """一条 BibTeX 条目的最小视图（查找/去重/渲染用）。"""
+    """一条 BibTeX 条目的最小视图（查找/去重/渲染用）。
+
+    Attributes:
+        key: str，引用键（条目唯一编号）
+        entry_type: str，条目类型（article/inproceedings/book…）
+        title: str，标题字段
+        authors: str，author 字段原文
+        year: str，year 字段
+        fields: dict，全部字段名 → 值
+        raw: str，条目原文（@type{...} 到配对右括号，bibtex 渲染用）
+    """
 
     key: str
     entry_type: str = "article"
@@ -75,7 +85,14 @@ class BibEntry:
 
 
 def _normalize(text: str) -> str:
-    """标题归一化：小写 + 去标点 + 折叠空白（全标题精确匹配的基础）。"""
+    """标题归一化：小写 + 去标点 + 折叠空白（全标题精确匹配的基础）。
+
+    Args:
+        text: str，待归一化文本（通常为标题）
+
+    Returns:
+        小写、去标点、折叠空白后的字符串（全标题精确匹配的基础）。
+    """
     return re.sub(r"[\s\W_]+", "", text.lower())
 
 
@@ -223,6 +240,13 @@ def _collapse_seam(left: str, right: str) -> str:
     只处理两侧首尾的换行，left/right 的内部内容原样保留——这样删除目标之外的
     区域（含用户手工分节注释、无关注释区的连续空行）逐字节不动。原本不足两个
     换行的接缝不做扩张，避免制造出原文没有的空行。
+
+    Args:
+        left: str，删除接缝左侧原文
+        right: str，删除接缝右侧原文
+
+    Returns:
+        接缝两侧连续空行压到至多一个后的拼接文本（内部内容逐字节保留）。
     """
     left_body = left.rstrip("\n")
     right_body = right.lstrip("\n")

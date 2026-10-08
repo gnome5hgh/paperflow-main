@@ -22,6 +22,11 @@ class _VenueClient(_HttpClientMixin):
 
     浏览器头是反爬关键:LetPub 对无浏览器标识的请求可能返回验证页/空结果页,抓不到分区
     行;Accept/Accept-Language 模拟真实浏览器,降低被识别为脚本的概率。
+
+    Attributes:
+        client: httpx.Client，带浏览器头的抓取客户端（超时 20s）
+        ssrf_check: 回调，URL 目标校验（缺省用 validate_url_target）
+        _BROWSER_HEADERS: dict，类级常量：UA/Accept/Accept-Language（反爬识别用）
     """
 
     #: 浏览器 UA + Accept 头——LetPub 反爬识别无 UA 客户端并返回空结果（见类 docstring）
@@ -33,6 +38,12 @@ class _VenueClient(_HttpClientMixin):
     }
 
     def __init__(self, transport=None, ssrf_check=None):
+        """建带浏览器头的 httpx 客户端并确定 SSRF 校验回调。
+
+        Args:
+            transport: HTTPTransport | None，测试注入的 MockTransport
+            ssrf_check: 回调 | None，URL 校验；缺省用真实校验（测试传桩）
+        """
         self.client = httpx.Client(transport=transport, timeout=20.0,
                                    headers=dict(self._BROWSER_HEADERS))
         # ssrf_check 默认真实验证；测试传 lambda 桩注入（配合 httpx.MockTransport 隔离网络）
@@ -44,7 +55,14 @@ def _parse_letpub(html: str) -> dict | None:
 
     结果页每个数据行形如:<td>ISSN</td><td>刊名…</td><td>IF/h-index…</td><td>4区</td>,
     第 4 列即分区列(1-4 区/一-四区)。只取第一个数据行:精确检索时首行即目标期刊;
-    不做整页扫描,避免命中列表里无关期刊的分区(歧义误判的根源)。"""
+    不做整页扫描,避免命中列表里无关期刊的分区(歧义误判的根源)。
+
+    Args:
+        html: str，LetPub 结果页 HTML
+
+    Returns:
+        只含中科院分区的等级 dict（ccf/jcr 为 None）；解析失败返回 None。
+    """
     # 阿拉伯数字分区（4区）转中文（四区），与等级值域 cas∈{一区..四区} 对齐
     _CN_NUM = {"1": "一", "2": "二", "3": "三", "4": "四"}
     for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S | re.I):
@@ -74,6 +92,13 @@ def _parse_sjr(html: str, venue: str) -> dict | None:
     「等级未知 → 不默认通过」。修复:先定位规范化 venue 名在页内首次出现的位置,
     只在其后 ~500 字符窗口内找 Q 档;找不到 → None(走「未找到等级」,让 reviewer
     人工核验)。归一化(小写 + 去非字母数字)让标题与页面文本去掉标签/大小写干扰后对齐。
+
+    Args:
+        html: str，SJR 搜索页 HTML
+        venue: str，目标期刊名（定位窗口起点）
+
+    Returns:
+        只含 JCR 档位的等级 dict（ccf/cas 为 None）；定位不到或窗口内无 Q 档返回 None。
     """
     norm_page = re.sub(r"[^a-z0-9]", "", (html or "").lower())
     norm_venue = re.sub(r"[^a-z0-9]", "", (venue or "").lower())
@@ -92,6 +117,17 @@ def _parse_sjr(html: str, venue: str) -> dict | None:
 
 
 class LookupVenueRankTool(Tool):
+    """查询论文发表 venue 等级的工具（本地映射 + LetPub/SJR 在线兜底）。
+
+    Attributes:
+        name: str，工具名 "lookup_venue_rank"
+        description: str，工具描述
+        parameters: dict，JSON Schema（venue/issn）
+        risk_level: str，"low"
+        side_effects: list[str]，["network"]
+        output_scan: str，"mark"（返回网页解析结果，打未校验横幅）
+        _client: _VenueClient | None，惰性构造的抓取客户端
+    """
     name = "lookup_venue_rank"
     description = ("查询论文发表 venue（期刊/会议）的等级：本地 CCF/JCR/中科院映射 + "
                    "LetPub/SJR 在线兜底。返回等级、判定（是否 ≥Q2）与证据链接。"
@@ -109,22 +145,39 @@ class LookupVenueRankTool(Tool):
     output_scan = "mark"                     # 返回外部内容（网页解析结果）→ 未校验横幅
 
     def __init__(self):
+        """初始化工具；抓取客户端留待在线兜底路径才懒建（本地/缓存命中不走网络）。"""
         super().__init__()
         # 懒建客户端：本地命中/缓存命中不走网络；仅在线兜底路径才实例化
         self._client = None
 
     @classmethod
     def _make_client(cls, transport=None, ssrf_check=None):
-        """供测试注入 httpx.MockTransport 与 ssrf 桩（对齐 Arxiv/OpenAlex 测试模式）。"""
+        """供测试注入 httpx.MockTransport 与 ssrf 桩（对齐 Arxiv/OpenAlex 测试模式）。
+
+        Args:
+            transport: HTTPTransport | None，测试注入的 MockTransport
+            ssrf_check: 回调 | None，URL 校验桩
+
+        Returns:
+            装配好的 _VenueClient。
+        """
         return _VenueClient(transport=transport, ssrf_check=ssrf_check)
 
     def _rank_text(self, rank: dict, source: str, evidence: str) -> str:
         """把等级 dict 渲染成 LLM 可见文本:等级、判定(≥Q2)、来源与证据链接。
 
         等级键用大写形式(CCF-A / JCR-Q1 / CAS-一区),便于 LLM 与测试按该形式断言。
+
+        Args:
+            rank: dict，等级 dict
+            source: str，等级来源（本地/LetPub/SJR）
+            evidence: str，证据链接
+
+        Returns:
+            LLM 可见的渲染文本（等级键值、是否 ≥Q2 的判定、来源与证据）。
         """
         # 等级展示用 "CCF-A" / "JCR-Q1" / "CAS-一区" 大写键-值形式，
-        # 便于 LLM 与 brief 测试按 "CCF-A" 断言（小写 "ccf=A" 无法命中该断言）
+        # 便于 LLM 与测试直接按 "CCF-A" 断言（小写 "ccf=A" 形式不易读也不便断言）
         parts = [f"{k.upper()}-{v}" for k, v in rank.items() if v]
         verdict = "通过（≥Q2）" if _venue_passes(rank) else "不通过"
         return (f"venue 等级：{'；'.join(parts) or '无'} | 判定：{verdict} | "
@@ -132,7 +185,12 @@ class LookupVenueRankTool(Tool):
 
     def _cache_put(self, ckey: tuple, rank: dict) -> None:
         """写缓存并维持 LRU 语义：新写入视为最近使用（移末尾），
-        超上限逐出队头（最久未用）。brief 代码只写了写入，逐出逻辑在此补全。"""
+        超上限逐出队头（最久未用）。
+
+        Args:
+            ckey: tuple，缓存键
+            rank: dict，等级 dict
+        """
         RANK_CACHE[ckey] = rank
         RANK_CACHE.move_to_end(ckey)
         while len(RANK_CACHE) > RANK_CACHE_MAX:
@@ -143,6 +201,13 @@ class LookupVenueRankTool(Tool):
 
         查询链:缓存 → 本地映射 → LetPub(优先按 ISSN 精确查,避开同名歧义)→ SJR →
         全未命中。网络/解析异常显式报错,未命中显式「请人工核验,不默认通过」。
+
+        Args:
+            venue: str，venue 名（OpenAlex source.display_name）
+            issn: str | None，ISSN（精确查期刊，避开同名歧义）
+
+        Returns:
+            ToolResult；全程 fail-closed——网络/解析异常显式报错，全未命中提示人工核验、不默认通过。
         """
         # ① 缓存命中（LRU：命中即视为最近使用，move_to_end）
         ckey = (normalize_venue(venue), issn)
@@ -192,6 +257,12 @@ def _venue_passes(rank: dict) -> bool:
     """按「期刊 JCR Q1/Q2、中科院一/二区、会议 CCF-A/B」判定是否通过。
 
     本地再导一次 passes_q2,避免与 _venue_rank 模块循环 import。
+
+    Args:
+        rank: dict，等级 dict
+
+    Returns:
+        True 表示达到「≥Q2」（本地再导 passes_q2 以避免循环 import）。
     """
     from paperflow.tools.rank._venue_rank import passes_q2
     return passes_q2(rank)

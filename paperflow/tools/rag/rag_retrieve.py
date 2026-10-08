@@ -57,6 +57,9 @@ class RagRetrieveTool(Tool):
     与 Retriever 的区别：
     - Retriever 实现核心检索算法。
     - RagRetrieveTool 是工具层封装，负责单例管理、锁控制和输出格式化。
+
+    Attributes:
+        _service: RAGService | None，惰性获取的全局检索服务单例（测试可注入）
     """
 
     name = "rag_retrieve"

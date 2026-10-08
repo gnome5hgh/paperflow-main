@@ -38,6 +38,10 @@ class ParsedDoc:
 class GrobidClient:
     """GROBID 服务的 HTTP 客户端，负责可用性探测与 PDF 全文解析。
     本客户端封装了与 GROBID REST API 的交互，包括健康检查、标题提取和全文解析。
+
+    Attributes:
+        url: str，GROBID 服务基础 URL（已去掉末尾斜杠）
+        _client: httpx.Client，HTTP 客户端（可注入 MockTransport 供测试）
     """
 
     def __init__(self, url: str, timeout: float, transport=None):

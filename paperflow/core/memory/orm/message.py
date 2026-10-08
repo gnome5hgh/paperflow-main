@@ -21,7 +21,14 @@ def _now() -> str:
 
 
 def _row_to_dict(row) -> dict:
-    """将 sqlite3.Row 转为普通 dict（便于 ORM 层处理）。"""
+    """将 sqlite3.Row 转为普通 dict（便于 ORM 层处理）。
+
+    Args:
+        row: sqlite3.Row，一行查询结果（列名可访问）
+
+    Returns:
+        该行的普通 dict（按列名取值）。
+    """
     return dict(row)
 
 

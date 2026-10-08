@@ -70,7 +70,14 @@ _ALIASES = {
 
 
 def normalize_venue(name: str) -> str:
-    """规范化：小写、去非字母数字，剥会议噪音前缀，再查别名表。返回空串则无法匹配。"""
+    """规范化：小写、去非字母数字，剥会议噪音前缀，再查别名表。返回空串则无法匹配。
+
+    Args:
+        name: str，venue 原文（期刊/会议名）
+
+    Returns:
+        规范化键（小写去非字母数字 + 剥噪音前缀 + 查别名）；无法匹配时为空串。
+    """
     s = re.sub(r"[^a-z0-9]", "", (name or "").lower())
     for w in _NOISE_WORDS:
         if s.startswith(w):
@@ -79,14 +86,28 @@ def normalize_venue(name: str) -> str:
 
 
 def lookup_local(venue: str) -> dict | None:
-    """本地映射表查询；未命中返回 None。"""
+    """本地映射表查询；未命中返回 None。
+
+    Args:
+        venue: str，venue 名
+
+    Returns:
+        本地映射表中的等级 dict（含 ccf/jcr/cas）；未命中返回 None。
+    """
     if not venue:
         return None
     return VENUE_RANKS.get(normalize_venue(venue))
 
 
 def passes_q2(rank: dict) -> bool:
-    """等级是否达到「≥Q2」:期刊 JCR Q1/Q2 或中科院一/二区,或会议 CCF-A/B。其余不通过。"""
+    """等级是否达到「≥Q2」:期刊 JCR Q1/Q2 或中科院一/二区,或会议 CCF-A/B。其余不通过。
+
+    Args:
+        rank: dict，等级 dict（ccf/jcr/cas）
+
+    Returns:
+        True 表示达到「≥Q2」（JCR Q1/Q2、中科院一/二区，或 CCF-A/B）。
+    """
     if rank.get("jcr") in ("Q1", "Q2"):
         return True
     if rank.get("cas") in ("一区", "二区"):

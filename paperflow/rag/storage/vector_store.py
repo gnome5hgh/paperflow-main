@@ -13,7 +13,13 @@ from paperflow.rag.parsers.chunker import Chunk
 
 
 class VectorStore:
-    """向量库的读写封装：写入/覆盖块、按向量检索、按路径删除、读取全部块。"""
+    """向量库的读写封装：写入/覆盖块、按向量检索、按路径删除、读取全部块。
+
+    Attributes:
+        _client: MilvusClient，向量库客户端（本地文件路径走 Milvus Lite，http 走 Standalone）
+        _collection: str，集合名
+        _batch_size: int，all_documents 分页遍历的每页行数
+    """
 
     def __init__(self, uri: str, dim: int, collection_name: str, batch_size: int):
         """打开（必要时创建）指定 uri 的向量库集合。

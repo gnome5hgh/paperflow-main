@@ -16,6 +16,14 @@ def enum_check(value, allowed: tuple, label: str) -> str | None:
 
     报错文案带当前值（即使 None 也展示）与合法值列表，让 reviewer 的 LLM 看到
     「哪个字段、当前是什么、合法范围是什么」后自行修正。label 是字段名。
+
+    Args:
+        value: 任意值，待校验的字段值（None 也会展示）
+        allowed: tuple，合法值集合
+        label: str，字段名（写进报错文案）
+
+    Returns:
+        合法返回 None；否则返回带当前值与合法值列表的可行动报错文本。
     """
     if value not in allowed:
         return f"{label} 非法: {value}，应为 {', '.join(allowed)}"

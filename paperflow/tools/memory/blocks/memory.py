@@ -5,6 +5,14 @@ from paperflow.tools.memory.blocks._common import rewrite_block
 
 
 class MemoryTool(Tool):
+    """统一记忆块管理工具（create/replace/delete/rename 四动作分发）。
+
+    Attributes:
+        name: str，工具名 "memory"
+        description: str，工具描述（告诉模型何时用）
+        parameters: dict，JSON Schema（action/label/value）
+        risk_level: str，"medium"（写入类）
+    """
     name = "memory"
     description = "统一记忆块管理（create/replace/delete/rename）"
     parameters = {
@@ -20,7 +28,17 @@ class MemoryTool(Tool):
 
     def execute(self, action: str, label: str, value: str | None = None,
                 **kwargs) -> ToolResult:
-        """按 action 分发到块的增改删查；错误一律降级为文本返回（errors-as-data）。"""
+        """按 action 分发到块的增改删查；错误一律降级为文本返回（errors-as-data）。
+
+        Args:
+            action: str，动作：create | replace | delete | rename
+            label: str，目标块标签
+            value: str | None，块内容（create/replace 用）
+            kwargs: dict，rename 时的新标签 new_label
+
+        Returns:
+            ToolResult；未装配记忆服务/标签冲突/只读/未知动作都降级为文本（errors-as-data）。
+        """
         ctx = get_memory_context()
         if ctx is None:
             return ToolResult(text="记忆服务未装配，记忆工具不可用")

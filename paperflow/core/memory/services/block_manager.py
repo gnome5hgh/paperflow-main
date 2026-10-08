@@ -33,7 +33,11 @@ _LEGACY_LABELS = {"human": "profile", "persona": "assistant"}
 
 
 class BlockManager:
-    """核心块业务层：持有 read_only / limit 不变式，维护写前快照历史链。"""
+    """核心块业务层：持有 read_only / limit 不变式，维护写前快照历史链。
+
+    Attributes:
+        db: MemoryDB，blocks/block_history 表的连接
+    """
 
     def __init__(self, db: MemoryDB):
         """初始化块管理器。
@@ -360,6 +364,11 @@ class GitEnabledBlockManager(BlockManager):
     语义是「SQL 是源、markdown 是投影」：权威数据在 blocks 表，.md 文件只是
     给人看/给人手改的可读投影，git 只做可审计历史（每写必 commit，无变更不
     产生空 commit）。
+
+    Attributes:
+        memfs: MemFS，markdown 投影层，每次块变更同步并 commit
+        _memfs_dir: Path，MemFS 根目录（同时是 git 仓库工作区）
+        _repo: dulwich Repo，投影目录的 git 仓库句柄
     """
 
     def __init__(self, db, memfs_dir: Path | None = None):
@@ -445,7 +454,16 @@ class GitEnabledBlockManager(BlockManager):
         return sha.decode() if isinstance(sha, bytes) else str(sha)
 
     def create_block(self, label: str, value: str, **kwargs) -> Block:
-        """创建块并同步到 markdown 投影 + git commit。"""
+        """创建块并同步到 markdown 投影 + git commit。
+
+        Args:
+            label: str，块标签
+            value: str，块内容
+            kwargs: 透传给基类 create_block 的可选字段（description/read_only 等）
+
+        Returns:
+            创建后的 Block（已写入 markdown 投影并 commit）。
+        """
         b = super().create_block(label, value, **kwargs)
         self.memfs.sync_block_to_file(b)
         self._commit(f"create block {label}")
@@ -464,7 +482,11 @@ class GitEnabledBlockManager(BlockManager):
         self._commit(f"update block {block.label}")
 
     def delete_block(self, block_id: str) -> None:
-        """删除块：先执行基类校验（read_only 检查），然后走 _delete 清理投影。"""
+        """删除块：先执行基类校验（read_only 检查），然后走 _delete 清理投影。
+
+        Args:
+            block_id: str，要删除的块 ID
+        """
         # 基类 delete_block 校验 read_only 后走 self._delete()（投影清理 + git commit）
         super().delete_block(block_id)
 

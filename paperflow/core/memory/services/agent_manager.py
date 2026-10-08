@@ -27,6 +27,11 @@ class AgentManager:
 
     注意：AgentState.memory 不持久化到 agent_state 表，而是每次 get_agent 时
     通过 block_manager.list_blocks() 动态生成——保证 memory 始终与块表一致。
+
+    Attributes:
+        db: MemoryDB，agent_state 表的连接
+        block_manager: BlockManager，get_agent 时动态读取最新块构建 memory
+        message_manager: MessageManager，供后续扩展（当前未使用）
     """
 
     def __init__(self, db: MemoryDB, block_manager: BlockManager,
@@ -151,6 +156,9 @@ class AgentManager:
               触发 memory 刷新，随后重新编译 system prompt。
             - 由于 AgentState 是值对象，此方法仅用于显式标记“需要刷新”，实际
               重编译由外部调用者（如 Agent 循环）根据新 state 执行。
+
+        Args:
+            agent_id: str，目标会话的 agent 标识
         """
         st = self.get_agent(agent_id)
         st.memory = Memory(blocks=self.block_manager.list_blocks())

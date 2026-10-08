@@ -72,6 +72,12 @@ class MemoryDB:
         - 用可重入锁保护 execute/executemany/transaction，确保同一时间只有一个写事务执行。
         - 非事务的单条操作立即 commit，保证持久化原子性；事务内的语句由最外层统一提交。
         - 使用 sqlite3.Row 工厂，使查询结果支持列名访问（dict(row) 或 row["col"]）。
+
+    Attributes:
+        path: Path，数据库文件路径
+        _conn: sqlite3.Connection，整库唯一连接（check_same_thread=False，由锁串行化）
+        _lock: threading.RLock，可重入锁；transaction() 内会重入 execute，普通锁会自锁死
+        _tx_depth: int，事务嵌套深度；>0 时 execute 不自行提交，由最外层 transaction 统一提交
     """
 
     def __init__(self, path: Path):

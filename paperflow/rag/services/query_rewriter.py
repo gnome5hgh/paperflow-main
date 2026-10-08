@@ -57,7 +57,12 @@ def _make_output_schema(rewrite_num: int) -> type[BaseModel]:
     """
 
     class RewriteOutput(BaseModel):
-        """改写 LLM 的结构化输出 schema。"""
+        """改写 LLM 的结构化输出 schema。
+
+        Attributes:
+            standalone_query: str，消解指代后的自包含检索查询
+            rewrites: list[str]，与 standalone_query 语义等价但措辞不同的检索查询
+        """
 
         standalone_query: str = Field(description="消解指代后的自包含检索查询，保持原问题主语言")
         rewrites: list[str] = Field(
@@ -71,6 +76,11 @@ class RewriteResult:
     """改写结果：queries 是最终查询集（queries[0] 即主查询，供 reranker 打分）。
 
     degraded=True 表示 LLM 失败已降级——queries 退化为 [原query]。
+
+    Attributes:
+        queries: list[str]，最终查询集（queries[0] 即主查询，供 reranker 打分）
+        standalone: str，消解指代后的自包含查询
+        degraded: bool，True 表示 LLM 失败已降级（queries 退化为 [原query]）
     """
 
     queries: list[str]
@@ -191,7 +201,16 @@ def _run_sync(coro):
 
 
 class QueryRewriter:
-    """检索查询改写器：一次结构化 LLM 调用产出 standalone + rewrites，失败降级原 query。"""
+    """检索查询改写器：一次结构化 LLM 调用产出 standalone + rewrites，失败降级原 query。
+
+    Attributes:
+        _history_limit: int，拼进改写 prompt 的最近历史条数
+        _max_queries: int，最终查询集封顶（含原 query）
+        _max_query_chars: int，单条改写查询的字符上限
+        _requirements: str，按 rewrite_num 生成的 prompt 要求段
+        _schema: type[BaseModel]，改写结构化输出模型
+        _so: StructuredOutput，改写调用通道（解析失败零重试）
+    """
 
     def __init__(self, llm, history_limit: int, *, rewrite_num: int,
                  max_queries: int, max_query_chars: int):

@@ -18,6 +18,13 @@ class RAGService:
     每个组件经 _ensure_* 方法用「双重检查加锁」构造：先看缓存，为空才进锁
     再看一次，仍空才真正构造——保证并发下只初始化一次（模型加载耗时数秒，
     重复加载既慢又浪费）。索引器与检索器必须共享同一实例，见模块注释。
+
+    Attributes:
+        config: PaperFlowConfig，全局配置（组件参数与路径的来源）
+        lock: threading.RLock，保护整个索引/检索流程，保证并发状态一致
+        chunker: AcademicChunker，构造期直接创建（纯逻辑无副作用）
+        _parse_cache: dict[(绝对路径, mtime, size), ParsedDoc]，GROBID 解析结果进程内缓存
+        _embedder/_reranker/_grobid/_grobid_available/_vector_store/_milvus_available/_bm25/_indexer/_retriever/_rewriter: 惰性组件槽位（None 表示未构造，首次访问经双重检查加锁构造）
     """
 
     def __init__(self, config: PaperFlowConfig):

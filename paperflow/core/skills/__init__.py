@@ -1,5 +1,5 @@
 # paperflow/core/skills/__init__.py
-"""Skill 域包 —— 可安装能力包的注册表、装配并入与准入安装（ADR 0011）。
+"""Skill 域包 —— 可安装能力包的注册表、装配并入与准入安装。
 
 公共出口（下游一律 `from paperflow.core.skills import ...`）：
 - ``SkillRegistry`` / ``SkillConfig`` ← registry（运行时发现/校验/可见性/渐进披露）

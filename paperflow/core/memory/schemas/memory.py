@@ -27,6 +27,9 @@ class Memory:
           其 blocks 列表应视为 BlockManager 的缓存副本，保持最终一致。
         - 所有修改操作（create/update/set）只影响内存中的列表，
           调用方需在适当时机通过 BlockManager 将变更持久化到数据库。
+
+    Attributes:
+        blocks: list[Block]，内存态的块快照（BlockManager 的缓存副本，变更需经 BlockManager 落盘）
     """
 
     def __init__(self, blocks: list[Block] | None = None):

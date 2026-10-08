@@ -29,6 +29,10 @@ class Retriever:
 
     与检索工具 RagRetrieveTool（tools/rag）是两类职责：这里实现检索与融合算法；
     RagRetrieveTool 只做对外暴露的薄封装（取单例、持锁、格式化结果）。
+
+    Attributes:
+        service: RAGService 门面，底层组件经它惰性获取
+        _bm25_synced: bool，BM25 进程级同步标记；首次查询前需从向量库整体重建一次
     """
 
     def __init__(self, service):

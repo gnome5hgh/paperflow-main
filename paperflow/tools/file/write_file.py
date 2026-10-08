@@ -15,6 +15,19 @@ from paperflow.tools.file.atomic import atomic_write
 
 
 class WriteFileTool(Tool):
+    """写入或整篇重写文件的工具（path 精确入口 / filename+dir 便捷入口）。
+
+    Attributes:
+        name: str，工具名 "write_file"
+        description: str，工具描述（含双入口说明）
+        parameters: dict，JSON Schema（content/path/filename/dir）
+        risk_level: str，"medium"（写操作）
+        requires_confirm: bool，True
+        root_hints: list[str]，NOTE_HINTS
+        side_effects: list[str]，["write_file"]
+        wants_run_state: bool，True（写盘后登记产物账本）
+        _default_write_root: str | None，装配注入的默认写根（filename 模式省略 dir 时的落点）
+    """
     name = "write_file"
     description = (
         "写入或整篇重写文件。两种入口二选一：① path=绝对路径（精确控制，敏感路径黑名单外均可写）；"
@@ -51,6 +64,14 @@ class WriteFileTool(Tool):
         ValueError（消息即 LLM 面报错文本）。execute 把它转成 ToolResult，
         effective_target_path 把它折叠为 None（该调用必然报错、不落盘，
         确认键/写锁无需作用域）。
+
+        Args:
+            path: str | None，精确入口的绝对路径
+            filename: str | None，便捷入口的文件名（须为纯文件名）
+            dir: str | None，便捷入口的目标目录（缺省用默认写根）
+
+        Returns:
+            落盘路径 Path；入口冲突/缺失、filename 非法、无默认写根时抛 ValueError（消息即报错文本）。
         """
         # 双入口互斥校验：path 与 filename 恰好给一个
         if path and filename:
@@ -72,6 +93,12 @@ class WriteFileTool(Tool):
 
         filename 便捷入口在此导出组合落盘路径：同一文件无论经 path 还是
         filename 入口写，确认键与写锁键一致；不同文件各自确认、互不串锁。
+
+        Args:
+            args: dict，已解析的工具调用参数
+
+        Returns:
+            组合后的落盘路径字符串；解析失败返回 None（确认键/写锁无需作用域）。
         """
         try:
             return str(self._resolve_target(args.get("path"), args.get("filename"),
@@ -86,6 +113,16 @@ class WriteFileTool(Tool):
 
         _run_state 为本次 run 的状态容器（未注入时为 None）：写盘成功后把落盘路径
         登记进产物账本，供后续收尾核对；索引失败不影响登记（登记在写盘之后即已确定）。
+
+        Args:
+            content: str，待写入的完整文本
+            path: str | None，精确入口绝对路径
+            filename: str | None，便捷入口文件名
+            dir: str | None，便捷入口目录
+            _run_state: RunState | None，本次 run 的状态容器（登记产物）
+
+        Returns:
+            ToolResult；解析失败/敏感路径/写盘异常都返回错误文本。
         """
         try:
             p = self._resolve_target(path, filename, dir)

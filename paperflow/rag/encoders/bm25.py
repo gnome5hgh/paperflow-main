@@ -36,6 +36,10 @@ class Bm25Index:
     - 文档 id 由路径加序号哈希生成，同一 id 的内容可能被反复编辑覆盖。
     - 若用 list 追加，旧内容会越积越多，导致 BM25 统计失真。
     - 用 dict 按 id 赋值可实现覆盖更新（幂等），按 id 弹出可精确删除。
+
+    Attributes:
+        _docs: dict[str, list[str]]，文档 id → 分词列表（按 id 覆盖赋值，幂等）
+        _bm25: BM25Okapi | None，惰性构建的索引；_docs 变更后置 None，下次查询重建
     """
 
     def __init__(self):

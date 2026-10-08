@@ -38,6 +38,12 @@ class MemoryEdit(BaseModel):
     """单条记忆编辑指令：目标文件 + 动作 + 内容/钩子。
 
     content 与 hook 都带长度上限（防 LLM 输出爆炸）；file 须命中白名单。
+
+    Attributes:
+        file: str，目标文件名（须命中类型枚举白名单：system/profile|assistant、feedback_*、project_*、reference_*）
+        action: Literal["append", "replace"]，编辑动作
+        content: str，写入内容（上限 8000 字符）
+        hook: str，可选的钩子说明（上限 500 字符）
     """
 
     file: str
@@ -47,7 +53,11 @@ class MemoryEdit(BaseModel):
 
 
 class MemoryEditBatch(BaseModel):
-    """一次整合会话的编辑指令集合（上限 20 条，防单轮过量写入）。"""
+    """一次整合会话的编辑指令集合（上限 20 条，防单轮过量写入）。
+
+    Attributes:
+        edits: list[MemoryEdit]，本轮整合的编辑指令（上限 20 条）
+    """
 
     edits: list[MemoryEdit] = Field(default_factory=list, max_length=20)
 
@@ -67,6 +77,20 @@ class Sleeptime:
     整合节奏由触发参数（frequency/min_interval_s）控制；进度由游标跟踪——
     游标值基于 messages 表行数推导（不从内存计数器恢复），因此进程重启后
     从正确位置自愈：不重复整合已处理的消息、也不遗漏新增的消息。
+
+    Attributes:
+        agent_state: AgentState，提供 agent_id 供查询消息与推导游标
+        block_manager: BlockManager，编辑指令最终落到它执行
+        message_manager: MessageManager，读对话消息与推导游标
+        structured: StructuredOutput，LLM 抽取编辑指令的通道
+        enable: bool，总开关
+        frequency: int，新增消息数达到该值才触发整合
+        min_interval_s: float，两次整合的最小间隔
+        max_entries: int，预留的单批上限（当前未消费）
+        _running: bool，本次整合是否在执行中（防并发重叠）
+        _last_run: float，上次整合的单调时钟时刻
+        _failures: int，连续失败计数（达阈值强制推进游标，防死循环）
+        _cursor: int，已处理到的消息数游标（由 messages 表行数推导，进程重启可自愈）
     """
 
     def __init__(self, agent_state, block_manager, message_manager,
@@ -74,20 +98,21 @@ class Sleeptime:
                  min_interval_s: float = 60.0, max_entries: int = 20):
         """装配整合器依赖与触发参数。
 
-        :param agent_state: AgentState 实例（supervisor 的 agent 状态），
-            提供 agent_id 供按会话查询消息、推导游标
-        :param block_manager: BlockManager，编辑指令最终映射到它执行
-            （block CRUD + MemFS markdown 投影与 git commit）
-        :param message_manager: MessageManager，读对话消息、推导游标
-            （size = 该会话消息总数）；None 时游标恒 0、整合跳过
-        :param structured: StructuredOutput，LLM 抽取编辑指令的通道；
-            LLM 输出不可信，指令须经校验才应用
-        :param enable: 总开关；False 时 run_once_if_due 恒直接返回
-        :param frequency: 新增消息数达到该值才触发整合（默认 50）——
-            「攒够再整合」避免逐条写块把噪音也沉淀进核心记忆
-        :param min_interval_s: 两次整合的最小间隔，防高频触发打爆 LLM 调用
-        :param max_entries: 预留的单批编辑上限；实际上限由
-            MemoryEditBatch 的 max_length=20 约束，此参数当前未消费
+        Args:
+            agent_state: AgentState 实例（supervisor 的 agent 状态），提供 agent_id
+                供按会话查询消息、推导游标。
+            block_manager: BlockManager，编辑指令最终映射到它执行（block CRUD +
+                MemFS markdown 投影与 git commit）。
+            message_manager: MessageManager，读对话消息、推导游标（size = 该会话
+                消息总数）；None 时游标恒 0、整合跳过。
+            structured: StructuredOutput，LLM 抽取编辑指令的通道；LLM 输出不可信，
+                指令须经校验才应用。
+            enable: 总开关；False 时 run_once_if_due 恒直接返回。
+            frequency: 新增消息数达到该值才触发整合（「攒够再整合」避免逐条写块把
+                噪音也沉淀进核心记忆）。
+            min_interval_s: 两次整合的最小间隔，防高频触发打爆 LLM 调用。
+            max_entries: 预留的单批编辑上限；实际上限由 MemoryEditBatch 的
+                max_length=20 约束，此参数当前未消费。
         """
         self.agent_state = agent_state
         self.block_manager = block_manager
@@ -259,7 +284,14 @@ class Sleeptime:
         label = edit.file.removesuffix(".md").replace("system/", "")
 
         def _mutate(v: str) -> str:
-            """append 在旧值后追加一行，replace 整块替换。"""
+            """append 在旧值后追加一行，replace 整块替换。
+
+            Args:
+                v: str，块的当前值（旧值）
+
+            Returns:
+                应用本条编辑后的新块值（append 追加一行，replace 整块替换）。
+            """
             if edit.action == "append":
                 return v + "\n" + edit.content
             return edit.content

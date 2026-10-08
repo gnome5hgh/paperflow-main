@@ -23,7 +23,12 @@ from paperflow.core.tool import RISK_ORDER
 
 
 class PolicyEngineMiddleware(SecurityMiddleware):
-    """策略检查中间件：默认禁止、风险阈值、确认放行三级检查。"""
+    """策略检查中间件：默认禁止、风险阈值、确认放行三级检查。
+
+    Attributes:
+        max_risk: str，会话允许的最大风险等级（超过即拒绝）
+        _confirmed: set[tuple[str, str | None]]，本会话已放行的 (工具名, 目标路径) 集合
+    """
 
     def __init__(self, max_risk: str = "medium"):
         """指定会话风险阈值；非法阈值在构造期即失败。

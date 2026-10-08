@@ -39,6 +39,13 @@ class SubAgentResult(BaseModel):
     (denied + needs_attention=True 表示"被拒且需用户介入",与可重试的 failed 区分)。
     digest 是从子 agent 最终回答提取的结构化摘要,提取失败/超时落 {} (supervisor
     回退读 summary 全文)。
+
+    Attributes:
+        status: str，success | failed | timeout | denied
+        summary: str，子 agent 的最终回答全文
+        error_detail: str，失败/超时/拒绝的细节（成功为空）
+        needs_attention: bool，被拒且需用户介入（与可重试的 failed 区分）
+        digest: dict，结构化摘要；提取失败/超时为 {}（supervisor 回退读 summary 全文）
     """
     status: str
     summary: str
@@ -52,6 +59,13 @@ class SearcherDigest(BaseModel):
 
     pending_confirm / needs_attention 对应下载门禁的"待用户确认"路径——这是
     spawn 结果之外的第二处用户介入点,supervisor 需据此提示用户确认。
+
+    Attributes:
+        count: int，命中篇数
+        papers: list[str]，命中的论文标题
+        downloaded: list[str]，已下载的论文
+        pending_confirm: list[str]，待用户确认的下载项
+        needs_attention: bool，是否存在需用户介入的项（如下载门禁待确认）
     """
     count: int
     papers: list[str]
@@ -61,7 +75,14 @@ class SearcherDigest(BaseModel):
 
 
 class ReviewerDigest(BaseModel):
-    """reviewer 的结果摘要:裁决结论 + 通过/未通过计数 + 建议下载清单。"""
+    """reviewer 的结果摘要:裁决结论 + 通过/未通过计数 + 建议下载清单。
+
+    Attributes:
+        verdict: str，裁决结论（pass/fail）
+        pass_count: int，通过条目数
+        fail_count: int，未通过条目数
+        download_list: list[str]，建议下载清单
+    """
     verdict: str
     pass_count: int
     fail_count: int
@@ -69,13 +90,26 @@ class ReviewerDigest(BaseModel):
 
 
 class NoterDigest(BaseModel):
-    """noter 的结果摘要:note_path 是产物绝对路径,status 描述写盘结果。"""
+    """noter 的结果摘要:note_path 是产物绝对路径,status 描述写盘结果。
+
+    Attributes:
+        note_path: str，笔记产物的绝对路径
+        status: str，写盘结果
+    """
     note_path: str = ""
     status: str
 
 
 class ResearcherDigest(BaseModel):
-    """researcher 的结果摘要:四个产物路径 + 状态,supervisor 据此汇报。"""
+    """researcher 的结果摘要:四个产物路径 + 状态,supervisor 据此汇报。
+
+    Attributes:
+        status: str，研究链路的结果状态
+        survey_path: str，survey 产物路径
+        gaps_path: str，gaps 产物路径
+        ideas_path: str，idea 卡路径
+        plan_path: str，研究计划路径
+    """
     status: str
     survey_path: str = ""
     gaps_path: str = ""
@@ -90,6 +124,15 @@ class LibrarianDigest(BaseModel):
     rejected、没有 status,LLM 抽 digest 时容易漏该字段——给默认值避免校验失败
     整个 digest 回落为 {},计数一并丢失。rejected_items/blocked_reason 是给上级的
     可行动线索:知道是哪几篇、为什么被拒,才能决定补什么料、派谁去补。
+
+    Attributes:
+        status: str，操作状态（默认空串——sync 的 summary 无该字段，给默认避免整份 digest 回落为 {}）
+        added: int，新增条目数
+        skipped: int，已在库跳过数
+        rejected: int，拒绝入库数
+        total: int，扫描总数
+        rejected_items: list[str]，被拒条目的可辨识名
+        blocked_reason: str，被拒的原因类别
     """
     status: str = ""
     added: int = 0
@@ -108,6 +151,13 @@ class QaAgentDigest(BaseModel):
     source_kind 由摘要提取从最终回答文本推断(取值沿用 qa-agent 自己的职责词表
     answer/read/notes/figure/memory/analyze)——qa-agent 没有 mode 入参、按请求自选,
     所以这是推断值而非入参回显。
+
+    Attributes:
+        status: str，回答处理状态
+        source_kind: str，回答类型（回答/精读/笔记/图表/记忆/检索；由最终回答文本推断）
+        answer_summary: str，结论性简短摘要
+        files_touched: list[str]，本次读过的文件
+        needs_attention: bool，是否需用户介入
     """
     status: str
     #: 回答类型(回答/精读/笔记/图表/记忆/检索),由最终回答文本推断
@@ -120,7 +170,13 @@ class QaAgentDigest(BaseModel):
 
 
 class GenericDigest(BaseModel):
-    """未注册摘要 schema 的兜底:抽出简短摘要与关键条目,supervisor 不致无从下手。"""
+    """未注册摘要 schema 的兜底:抽出简短摘要与关键条目,supervisor 不致无从下手。
+
+    Attributes:
+        summary_short: str，简短摘要
+        key_items: list[str]，关键条目
+        count: int | None，条目数（不适用时为 None）
+    """
     summary_short: str
     key_items: list[str] = []
     count: int | None = None
@@ -131,6 +187,12 @@ def digest_schema_for(agent_type: str) -> type[BaseModel]:
 
     spawn 侧按 agent_type 挑 schema,supervisor 按 agent_type 解释 digest——
     新 agent 类型接入只需在此注册。
+
+    Args:
+        agent_type: str，子 agent 类型
+
+    Returns:
+        对应的摘要 pydantic 模型类；未注册的类型返回 GenericDigest。
     """
     return {
         "searcher": SearcherDigest,
@@ -151,7 +213,9 @@ async def _extract_digest(llm, agent_type: str, text: str,
     只取 text 尾部 2000 字符控制 prompt 长度:子 agent 回答可能很长(如 noter 的
     整篇笔记),结构化摘要只需要结论性尾部。
 
-    :param telemetry_callback: 摘要 LLM 调用的元数据回调,None = 零开销跳过(不接线审计)
+    Args:
+        telemetry_callback: 摘要 LLM 调用的元数据回调,None = 零开销跳过(不接线审计)
+
     """
     try:
         digest = await asyncio.wait_for(
@@ -169,6 +233,13 @@ def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
 
     supervisor 硬编码放行;其余 agent 依据自身 allowed_spawns 白名单校验,越界返回
     错误信息(调用方映射为 denied)。spawn_sub_agent 的运行时校验单点。
+
+    Args:
+        parent: Agent，发起派发的父实例
+        agent_type: str，目标子 agent 类型
+
+    Returns:
+        有权返回 None；越界返回错误信息（调用方映射为 denied）。
     """
     if parent.agent_type == "supervisor":
         return None
@@ -185,6 +256,11 @@ def _record_dispatch(parent: Agent, agent_type: str, status: str) -> None:
     上限的计数口径一致。被拒/去重的尝试也记（状态 denied/deduped），收尾核对时
     模型能据此看到「想派但没派成」的事实。parent 非 supervisor 时直接跳过，不给
     子 agent 的任务留噪声。
+
+    Args:
+        parent: Agent，发起派发的父实例
+        agent_type: str，目标子 agent 类型
+        status: str，派发结果（success/failed/denied/deduped 等）
     """
     if parent.agent_type != "supervisor":
         return
@@ -244,6 +320,13 @@ def _task_fingerprint(task: str, mode: str | None = None) -> str:
 
     mode 参与指纹,防"同任务文本不同模式"的去重碰撞(同 task 但 run 模式不同,
     结果不可互换)。
+
+    Args:
+        task: str，子任务文本
+        mode: str | None，运行模式（参与指纹防碰撞）
+
+    Returns:
+        sha256(规范化文本 + mode) 的前 16 位十六进制指纹。
     """
     norm = " ".join(task.split())
     key = f"{mode or ''}\n{norm}"
@@ -251,12 +334,18 @@ def _task_fingerprint(task: str, mode: str | None = None) -> str:
 
 
 def _task_has_path(task: str) -> bool:
-    r"""任务文本是否含绝对路径(布尔判断,不提取):正则命中即 True。
+    """任务文本是否含绝对路径(布尔判断,不提取):正则命中即 True。
 
     门控语义:含路径的任务引用真实文件(世界可变——子 agent 执行期间文件可能被改),
     故只做 running 去重、完成即清条目、永不缓存 done;无路径任务(纯文本)才允许
     done 在窗口内复用。误判安全方向:散文里的 "/"(如 "/5 评分")被误判为路径(假阳性)
     → 保守跳过 done 缓存 → 安全重跑,不交付陈旧结果。
+
+    Args:
+        task: str，子任务文本
+
+    Returns:
+        True 表示任务文本含绝对路径（只做布尔判断，不提取）。
     """
     return _PATH_RE.search(task) is not None
 
@@ -266,6 +355,12 @@ def _extract_paths(task: str) -> list[str]:
 
     与 _task_has_path 共用同一条启发式正则：同一串文本在「是否含路径」与「含哪些
     路径」两处判定必须一致，否则去重门控与在途互斥会各按一套标准割裂。
+
+    Args:
+        task: str，子任务文本
+
+    Returns:
+        任务文本中抽出的绝对路径列表（同一条启发式正则，用于同路径在途互斥）。
     """
     return _PATH_RE.findall(task)
 
@@ -279,8 +374,14 @@ class _UserWaitClock:
     begin/end 而非"结束才记":预算循环要看到**进行中**的等待(只记结束时,确认进行中
     total 为 0,预算会误以为没在等用户而误杀)。total() 返回已完成 + 进行中的和。
     确认包装与预算循环在同一事件循环线程,防御性加锁防未来多线程变化。
+
+    Attributes:
+        _completed: float，已完成的确认等待累计时长（秒）
+        _active_start: float | None，进行中的确认等待起点
+        _lock: threading.Lock，防御性加锁（当前调用方均在同一事件循环线程）
     """
     def __init__(self) -> None:
+        """初始化空计时器（无已完成等待、无进行中的等待）。"""
         self._completed = 0.0
         self._active_start: float | None = None   # 确认进行中的 monotonic 起点
         self._lock = threading.Lock()
@@ -311,8 +412,23 @@ def _wrap_confirm_callback(orig, clock: _UserWaitClock):
 
     原回调(如 CLI 的 stdin 确认)语义不变——只加 begin/end 计时。finally 保证无论
     确认/拒绝/异常都停止计时,不把用户等待泄漏到后续工具的执行预算。
+
+    Args:
+        orig: 回调，原确认回调（如 CLI 的 stdin 确认）
+        clock: _UserWaitClock，等待计时器
+
+    Returns:
+        包装后的确认回调（语义不变，只在外面加 begin/end 计时）。
     """
     async def wrapped(cr):
+        """计时包装：进入前 begin、无论确认/拒绝/异常都在 finally 里 end。
+
+        Args:
+            cr: ConfirmRequired，待确认的工具调用
+
+        Returns:
+            原确认回调的布尔结果。
+        """
         clock.begin()
         try:
             return await orig(cr)
@@ -328,8 +444,23 @@ def _wrap_ask_user_callback(orig, clock: _UserWaitClock):
     直接调用,与 async 的 confirm_callback 契约不同,故单独一个同步包装)。语义与
     confirm 版一致:用户思考/输入是交互等待,不计入子 agent 执行预算——不排除会
     吃掉预算的相当比例,否则用户答得慢一点子任务就被误杀。
+
+    Args:
+        orig: 回调，原同步提问回调 Callable[[str], str]
+        clock: _UserWaitClock，等待计时器
+
+    Returns:
+        包装后的同步提问回调（用户思考/输入时长同样不计入执行预算）。
     """
     def wrapped(question):
+        """同步计时包装：进入前 begin、finally 里 end。
+
+        Args:
+            question: str，向用户提出的问题
+
+        Returns:
+            用户的回答文本。
+        """
         clock.begin()
         try:
             return orig(question)
@@ -350,9 +481,17 @@ async def _run_child_with_budget(coro, timeout: float, clock: _UserWaitClock):
     运行未取消;下一轮重算剩余再等。任务完成则返回其结果(异常原样上抛,如
     MaxTurnsExceeded 由调用方映射为 failed)。
 
-    取消级联(真实使用测试 P0-2):父任务被取消(Ctrl+C)时,把取消传播给子任务并等它
+    取消级联:父任务被取消(Ctrl+C)时,把取消传播给子任务并等它
     收尾后再抛——aexecute 在父事件循环上直接 await 本协程,级联取消即整棵 agent 树
     一起终止,不再留孤儿子 agent 继续跑、烧 token。
+
+    Args:
+        coro: 协程，子 agent 的 run()
+        timeout: float，基础执行超时（秒）
+        clock: _UserWaitClock，用户等待计时器（等待期间预算持续延长）
+
+    Returns:
+        子 agent 的结果；纯执行超时抛 asyncio.TimeoutError，取消沿 await 链级联传播。
     """
     loop = asyncio.get_running_loop()
     task = asyncio.ensure_future(coro)
@@ -388,19 +527,42 @@ def _make_child_stream_callback(parent) -> Callable[[StreamEvent], None] | None:
     （tool_start/tool_end）；渲染层按 ev.agent_type 统一加 [{agent}] 前缀
     （root 也带 supervisor）。父无 stream_callback（非 CLI 调用方）时返回
     None——子 agent 零流式，零开销。
+
+    Args:
+        parent: Agent，父实例（提供 stream_callback）
+
+    Returns:
+        子 agent 的流式回调（只透传 tool_start/tool_end）；父无回调时返回 None。
     """
     pcb = getattr(parent, "stream_callback", None)
     if pcb is None:
         return None
 
     def child_cb(ev: StreamEvent) -> None:
+        """只把结构化工具事件透传给父渲染器（前缀由渲染层统一加）。
+
+        Args:
+            ev: StreamEvent，子 agent 的流式事件
+        """
         if ev.kind in ("tool_start", "tool_end"):
             pcb(ev)          # 前缀由渲染器统一加，此处不再拼 agent_type
     return child_cb
 
 
 class SpawnSubAgentTool(Tool):
-    """派发单个子 agent,返回 SubAgentResult 的序列化结果。"""
+    """派发单个子 agent,返回 SubAgentResult 的序列化结果。
+
+    Attributes:
+        name: str，工具名 "spawn_sub_agent"
+        description: str，工具描述
+        parameters: dict，JSON Schema（agent_type/task/mode/intent）
+        needs_parent: bool，True（构造时只注入声明者）
+        risk_level: str，"low"
+        async_execute: bool，True（父事件循环上直接 await，取消沿链级联）
+        timeout: int，子 agent 超时的类默认（config.agents.timeouts 命中时被覆盖）
+        _agent_timeouts: dict[str, int]，按 agent 类型的超时覆盖表（config 注入）
+        _parent: Agent，父实例（门禁、去重、审计归属都取自它）
+    """
 
     name = "spawn_sub_agent"
     description = ("派发单个 SubAgent 执行子任务，返回结构化结果（status/summary/error_detail/"
@@ -429,7 +591,7 @@ class SpawnSubAgentTool(Tool):
     risk_level = "low"
     #: 异步工具：Agent 在父事件循环上直接 await aexecute——子 agent 与父同循环，
     #: 父被取消（Ctrl+C）时 CancelledError 沿 await 链传播进子 agent，整棵任务树
-    #: 级联终止（真实使用测试 P0-2 的根治）。execute 保留为同步兼容路径
+    #: 级联终止。execute 保留为同步兼容路径
     #: （asyncio.run 包装，供测试/无循环上下文调用）。
     async_execute = True
     #: 子 agent 超时秒数的类默认(config 的 agent_timeouts 命中时被覆盖)。
@@ -437,12 +599,24 @@ class SpawnSubAgentTool(Tool):
     timeout = 120
 
     def __init__(self, agent_timeouts: dict[str, int] | None = None):
+        """注入按 agent 类型的超时覆盖表（无表时回退到类属性 timeout）。
+
+        Args:
+            agent_timeouts: dict[str, int] | None，agent 类型 → 超时秒数
+        """
         # 按 agent 类型的超时覆盖表从 config 注入;无表(如测试直接构造)时
         # 回退到类属性 timeout,既有测例不被破坏。
         self._agent_timeouts = agent_timeouts or {}
 
     def _resolve_timeout(self, agent_type: str) -> int:
-        """解析该 agent 生效超时:配置命中优先,否则类默认。"""
+        """解析该 agent 生效超时:配置命中优先,否则类默认。
+
+        Args:
+            agent_type: str，目标子 agent 类型
+
+        Returns:
+            该类型生效的超时秒数（配置命中优先，否则类默认）。
+        """
         return self._agent_timeouts.get(agent_type, self.timeout)
 
     def execute(self, agent_type: str, task: str, mode: str | None = None,
@@ -451,6 +625,15 @@ class SpawnSubAgentTool(Tool):
 
         Agent 执行器对 async_execute 工具走 aexecute（父循环 await，级联取消）；
         本方法仅供测试/无事件循环上下文直接调用。
+
+        Args:
+            agent_type: str，目标子 agent 类型
+            task: str，子任务文本
+            mode: str | None，运行模式
+            intent: str | None，本次派发服务的意图（可覆盖误判）
+
+        Returns:
+            ToolResult，文本为 SubAgentResult 的 JSON；同步兼容路径（新建事件循环跑 aexecute）。
         """
         return asyncio.run(self.aexecute(agent_type, task, mode, intent))
 
@@ -466,6 +649,15 @@ class SpawnSubAgentTool(Tool):
         通过时返回 (任务指纹, 是否含路径)——调用方负责在执行完的 finally 里
         按 has_path 决定 done 缓存或清条目；拒绝时直接返回 denied/去重命中的
         ToolResult。审稿类 mode 的预算计数与注册同锁原子,拒绝路径不触碰注册表。
+
+        Args:
+            agent_type: str，目标子 agent 类型
+            task: str，子任务文本
+            mode: str | None，运行模式
+            intent: str | None，显式声明的意图
+
+        Returns:
+            通过时返回 (任务指纹, 是否含路径)；拒绝/去重命中时直接返回 denied 的 ToolResult。
         """
         parent = self._parent
         # ① 未知 agent 类型：最基础的一道闸，先于 mode/意图/spawn 白名单校验——给模型
@@ -624,6 +816,15 @@ class SpawnSubAgentTool(Tool):
 
         与同步路径同一套门禁与去重；子 agent 与父同循环——取消级联、流式事件、
         审计归属全部天然对齐，不再经工作线程 + 独立事件循环。
+
+        Args:
+            agent_type: str，目标子 agent 类型
+            task: str，子任务文本
+            mode: str | None，运行模式
+            intent: str | None，显式声明的意图
+
+        Returns:
+            ToolResult，文本为 SubAgentResult 的 JSON（门禁与去重同同步路径）。
         """
         admitted = self._admit(agent_type, task, mode, intent)
         if isinstance(admitted, ToolResult):
@@ -707,6 +908,14 @@ class SpawnSubAgentTool(Tool):
         取消语义:父任务被取消时 CancelledError 沿 await 链传入
         _run_child_with_budget（内部把取消传播给子任务）,再原样上抛——
         _exec_tool 不捕 BaseException,gather 与 run() 的历史自愈随后接力。
+
+        Args:
+            child: Agent，已构造的子 agent
+            agent_type: str，子 agent 类型
+            task: str，子任务文本
+
+        Returns:
+            ToolResult；异常映射为 timeout/denied/failed 的 SubAgentResult，取消原样上抛。
         """
         timeout = self._resolve_timeout(agent_type)
         # 用户确认等待不计入执行预算:包装子 agent 的确认回调记录等待时长,
@@ -721,6 +930,11 @@ class SpawnSubAgentTool(Tool):
             child.ask_user_callback = _wrap_ask_user_callback(child.ask_user_callback, clock)
 
         async def _run_and_extract():
+            """先带预算跑子 agent，再对其最终文本提取结构化摘要（摘要不消耗子任务预算）。
+
+            Returns:
+                (最终文本, 摘要 dict) 二元组。
+            """
             # 先跑子 agent(带预算),再对最终文本提取摘要——两段串在同一事件循环里,
             # 摘要提取不消耗子 agent 的执行预算(独立 30s 超时)。
             # 摘要 LLM 调用归属父:父在做摘要提取,归父的 trace/当前轮次;getattr

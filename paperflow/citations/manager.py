@@ -41,8 +41,8 @@ class ResolvedCitation:
     note_path: str | None = None
     pdf_path: str | None = None
     #: key 是否已落地在 references.bib（bib 真相源）。in_corpus 只说明语料标题
-    #: 索引命中——key 可能是现场生成、尚未入库的（真实使用测试 P1-5 的溯源链
-    #: 断裂根因）。in_bib=False 时标注 [来源:key§节] 属于无据声称，必须先
+    #: 索引命中——key 可能是现场生成、尚未入库的（溯源链断裂的根因）。in_bib=False
+    #: 时标注 [来源:key§节] 属于无据声称，必须先
     #: add_citation 成功或降级为 [⚠未入库]。
     in_bib: bool = False
 
@@ -56,6 +56,12 @@ def _shorttitle(title: str) -> str:
         3. 若所有词均为停用词，则回退返回第一个词；若无词则返回 "paper"。
 
     边界：标题 "A Study of ..." → 停用词 "a" 被过滤，返回 "study"。
+
+    Args:
+        title: str，论文全标题
+
+    Returns:
+        用于生成 key 的短标题（首个非停用词；全为停用词时取首词，无词则 "paper"）。
     """
     words = re.findall(r"[A-Za-z0-9]+", title.lower())
     for w in words:
@@ -116,7 +122,14 @@ def entry_text(key: str, title: str, biblio: dict, external: bool = False) -> st
 
 
 class CitationManager:
-    """引用管理门面；bib_path 来自 config（非 LLM 可控，无路径注入面）。"""
+    """引用管理门面；bib_path 来自 config（非 LLM 可控，无路径注入面）。
+
+    Attributes:
+        config: PaperFlowConfig，配置来源
+        bib_path: Path，references.bib 路径（config 指定，否则回退 workspace/citations/）
+        _index: CorpusIndex，语料标题索引（论文中心快照）
+        _lock: threading.RLock，保证「刷新索引 → 查 corpus → 查 bib」为原子快照
+    """
 
     def __init__(self, config, rag_service=None, title_extractor=None):
         """构造轻量（不读 bib、不建索引）；重状态首次使用时惰性加载。
@@ -151,6 +164,9 @@ class CitationManager:
         Returns:
             ResolvedCitation 对象。若命中，优先使用 bib 库中已存在的 key（若标题相同），
             否则按 gen_key 生成新 key（后续通过 add_from_pdf 落地）。
+
+        Args:
+            query: str，全标题或现存文件路径（脏输入按缺失处理）
         """
         q = (query or "").strip()
         # 空输入守卫：零开销早退（不进锁、不触发索引刷新），空查询无溯源意义
@@ -181,7 +197,7 @@ class CitationManager:
 
             # 第4步 命中 → 组装返回值。关键：两层事实分开查证——
             # corpus 命中只证明「语料里有这篇」（status=in_corpus）；
-            # 「bib 里登记没登记」（in_bib）是独立事实，P1-5 事故根因正是把前者当成了后者（语料命中被当成"引用已确认"）
+            # 「bib 里登记没登记」（in_bib）是独立事实，把前者当成后者会把「语料命中」误当"引用已确认"
             title = rec["title"]
             biblio = rec.get("biblio", {})
             # bib 户口本按标题查重：已有条目 → 沿用其 key（同一论文不重复登记）；
@@ -206,6 +222,12 @@ class CitationManager:
         gen_key 保持确定性，因此只能在落地时动态调整。
 
         边界：若 key 已存在，尝试 key2、key3... 直到找到空位。
+
+        Args:
+            key: str，按规则生成的预备 key
+
+        Returns:
+            与库中现有 key 不冲突的 key（冲突则追加数字直至唯一）。
         """
         candidate, n = key, 1
         while self.get(candidate) is not None:
@@ -227,6 +249,9 @@ class CitationManager:
                 - key: BibTeX key（若成功或已存在）；失败时为 None。
                 - created: bool，是否新创建了条目。
                 - note: 状态/提示信息。
+
+        Args:
+            pdf_path: str，语料库内 PDF 路径
         """
         with self._lock:
             title, biblio = self._index._pdf_meta(pdf_path)
@@ -234,7 +259,7 @@ class CitationManager:
                 return {"key": None, "created": False, "note": "PDF 标题提取失败，未入库"}
             # 严格校验：没有作者或年份的条目是废条目，拒绝写入
             if not biblio.get("authors") or not biblio.get("year"):
-                # 拒绝信息必须可行动（真实使用测试 P1-5：模型忽略了单纯一句 note）：
+                # 拒绝信息必须可行动（单纯一句 note 会被模型忽略）：
                 # 给出三条明确出路，任选其一，不允许带着「已确认」的假引用继续
                 return {"key": None, "created": False,
                         "note": "PDF 元数据不足（缺作者/年份），拒绝入库。三选一："
@@ -259,6 +284,12 @@ class CitationManager:
 
         Returns:
             同 add_from_pdf 的返回结构。
+
+        Args:
+            title: str，标题
+            authors: str，作者
+            year: str，年份
+            journal: str，期刊（可选）
         """
         with self._lock:
             if not title:
@@ -330,7 +361,14 @@ class CitationManager:
 
     # —— 查询 / 渲染 ——
     def get(self, key: str) -> BibEntry | None:
-        """按 key 查条目；无命中返回 None。"""
+        """按 key 查条目；无命中返回 None。
+
+        Args:
+            key: str，站点引用键
+
+        Returns:
+            命中的 BibEntry；无命中返回 None。
+        """
         for e in bibmod.parse_entries(self.bib_path):
             if e.key == key:
                 return e
@@ -340,6 +378,12 @@ class CitationManager:
         """模糊搜索（找候选）：标题/作者/key 的子串匹配。
 
         用于交互式候选选择（如用户输入 "attention" 列出所有相关条目）。
+
+        Args:
+            q: str，搜索词（标题/作者/key 的子串）
+
+        Returns:
+            命中的 BibEntry 列表（空串返回全部）。
         """
         q = q.strip().lower()
         hits = [e for e in bibmod.parse_entries(self.bib_path)
@@ -357,6 +401,12 @@ class CitationManager:
 
         冲突策略：仅当 bib 字段为空（`not fields.get(name)`）时才回填新值；
                    若两者都有且不同，以 bib 为准（不覆盖）。
+
+        Args:
+            e: BibEntry，bib 条目
+
+        Returns:
+            渲染用字段 dict：bib 空字段用当前 PDF 元数据回填，冲突以 bib 为准（不改文件）。
         """
         fields = dict(e.fields)
         rec = self._index.match(e.title)
@@ -379,6 +429,13 @@ class CitationManager:
             - "author-year": (默认) `(Author et al., Year) Title.`
 
         未知 key 会被静默跳过（不阻塞渲染），适用于部分引用未入库的草稿场景。
+
+        Args:
+            keys: list[str]，待渲染的引用键（未知 key 静默跳过）
+            style: str，渲染样式：bibtex / numbered / gbt7714 / author-year（默认）
+
+        Returns:
+            渲染后的参考文献字符串。
         """
         entries = [e for e in (self.get(k) for k in keys) if e is not None]
         if style == "bibtex":
@@ -415,6 +472,9 @@ class CitationManager:
         注意：此方法**只读**，绝不修改 bib 文件。
 
         Returns: {"backfilled": [字段], "conflicts": {字段: (bib值, PDF新值)}}
+
+        Args:
+            key: str，站点引用键
         """
         e = self.get(key)
         if e is None:

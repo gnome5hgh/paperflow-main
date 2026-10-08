@@ -14,6 +14,15 @@ _TEXT_SUFFIXES = (".md", ".txt", ".py", ".jsonl")
 
 
 class GrepTool(Tool):
+    """在文件/目录内按正则搜文本的只读工具（目录递归只搜文本文件）。
+
+    Attributes:
+        name: str，工具名 "grep"
+        description: str，工具描述
+        parameters: dict，JSON Schema（pattern/path）
+        risk_level: str，"low"（只读）
+        root_hints: list[str]，["note", "pdf", "memory"]
+    """
     name = "grep"
     description = ("在文件或目录内搜索文本（正则），返回 file:line 匹配行。"
                    "用于确认锚点文本、核对内容。目录递归搜索 md/txt 等文本文件。")
@@ -32,9 +41,13 @@ class GrepTool(Tool):
     def execute(self, pattern: str, path: str | None = None) -> ToolResult:
         """在文件或目录内按正则搜索文本,返回 file:line 匹配行(最多 30 条)。
 
-        :param pattern: 正则表达式
-        :param path: 文件路径或目录(目录递归,只搜文本文件,跳过二进制/PDF);缺省=语料库笔记根
-        :returns: 匹配行每行一条(file:line: 原文);无匹配返回"无匹配"
+        Args:
+            pattern: 正则表达式
+            path: 文件路径或目录(目录递归,只搜文本文件,跳过二进制/PDF);缺省=语料库笔记根
+
+        Returns:
+            匹配行每行一条(file:line: 原文);无匹配返回"无匹配"
+
         """
         try:
             regex = re.compile(pattern)

@@ -16,7 +16,12 @@ _BLOCK_TITLES = {
 
 
 def ensure_block(bm, block_label: str) -> None:
-    """目标块缺失时创建（append 的自动建块入口），清单类块预置标题行。"""
+    """目标块缺失时创建（append 的自动建块入口），清单类块预置标题行。
+
+    Args:
+        bm: BlockManager，块 CRUD 服务
+        block_label: str，清单块标签
+    """
     if bm.get_block_by_label(block_label) is None:
         bm.create_block(block_label, _BLOCK_TITLES.get(block_label, ""))
 
@@ -26,6 +31,14 @@ def append_line(bm, block_label: str, line: str) -> str:
 
     追加走 mutate_block：把「读旧值 → 拼新行 → 写回」收进一次持锁的原子操作，
     并发追加不会互相抹掉。
+
+    Args:
+        bm: BlockManager，块 CRUD 服务
+        block_label: str，清单块标签
+        line: str，待追加的行
+
+    Returns:
+        成功返回 "Appended to <label>"。
     """
     ensure_block(bm, block_label)
     bm.mutate_block(block_label,
@@ -39,13 +52,28 @@ def remove_line_by_key(bm, block_label: str, key: str) -> str:
     行形如 `- 标题 (来源)`，用 startswith 前缀匹配而非整行全等——行尾元数据
     （来源等）不受影响；无命中返回显式错误不静默。删行走 mutate_block：整段
     读-算-写持锁完成，且删行判定（未命中返回 None）与写入在同一次操作里。
+
+    Args:
+        bm: BlockManager，块 CRUD 服务
+        block_label: str，清单块标签
+        key: str，用于前缀匹配的标题
+
+    Returns:
+        成功返回 "Removed from <label>"；空 key/未命中/块缺失返回错误文本。
     """
     if not key.strip():
         return "Error: empty title for removal"
     prefix = f"- {key}"
 
     def _drop(v: str) -> str | None:
-        """去掉所有以 `- {key}` 开头的行；一行都没删掉时返回 None 表示未命中。"""
+        """去掉所有以 `- {key}` 开头的行；一行都没删掉时返回 None 表示未命中。
+
+        Args:
+            v: str，块的当前值（持锁内的最新值）
+
+        Returns:
+            去掉所有匹配行后的新值；一行都没删掉时返回 None（未命中）。
+        """
         lines = [ln for ln in v.splitlines() if ln.strip()]
         kept = [ln for ln in lines if not ln.startswith(prefix)]
         return None if len(kept) == len(lines) else "\n".join(kept)

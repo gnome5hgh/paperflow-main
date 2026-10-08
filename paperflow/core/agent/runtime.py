@@ -73,7 +73,7 @@ from paperflow.core.intent.routing.entities import extract_entities
 #: 模块级 logger:意图管线的网络异常/解析失败降级时在此留痕,供运维排查而不是静默吞掉。
 logger = logging.getLogger(__name__)
 
-#: 同路径写/编辑串行锁注册表（键 = 目标文件路径）。真实会话复验发现：同一 message
+#: 同路径写/编辑串行锁注册表（键 = 目标文件路径）。同一 message
 #: 并行发两个 edit_file 改同一文件时，双方都在对方决策前弹确认（「a」授权只覆盖
 #: 先到者），且并发读改写同一文件有丢写竞态——requires_confirm 的写类工具按路径
 #: 加锁串行化，后到者等前者完整走完确认+执行，授权键已入集合则不再弹框。
@@ -81,7 +81,14 @@ _path_locks: dict[str, asyncio.Lock] = {}
 
 
 def _path_lock(path: str) -> asyncio.Lock:
-    """取目标路径的串行锁（无则建；setdefault 原子，多循环场景安全）。"""
+    """取目标路径的串行锁（无则建；setdefault 原子，多循环场景安全）。
+
+    Args:
+        path: str，目标文件路径
+
+    Returns:
+        该路径的 asyncio.Lock（无则建；同一文件的并发调用拿到同一把锁）。
+    """
     # 键 = 目标文件路径
     # setdefault 原子地“无则建、有则取”，保证同一文件的所有并发调用拿到的是同一把锁。
     return _path_locks.setdefault(path, asyncio.Lock())
@@ -93,6 +100,12 @@ def _intent_block(intent) -> str:
     排除 clarification 与 prev_intent：澄清由 runtime 在本轮内同步问用户，不暴露给
     Supervisor（避免其用 AskUserQuestionTool 双问）；prev_intent 是 conversation 内部状态；
     clarify_candidates 是澄清回传锚点（运行时消费），对模型是噪声。
+
+    Args:
+        intent: IntentOutput，本轮意图产出
+
+    Returns:
+        注入 ReAct head 的 INTENT 块文本（排除 clarification/prev_intent/clarify_candidates）。
     """
     return "INTENT: " + intent.model_dump_json(
         exclude={"clarification", "prev_intent", "clarify_candidates"})
@@ -103,6 +116,12 @@ def _needs_ledger(agent) -> bool:
 
     单意图轮次不注入——`_recognized_steps` 现在恒含主意图，用「非空」判断会让
     每一轮都注入核对，所以判据是列表长度 ≥2。
+
+    Args:
+        agent: Agent，待检查的实例
+
+    Returns:
+        True 表示本轮需注入收尾核对账本（识别到 ≥2 个意图且尚未核对过）。
     """
     return len(getattr(agent, "_recognized_steps", []) or []) >= 2 \
         and not agent._steps_checked
@@ -114,6 +133,12 @@ def _render_ledger(agent) -> str:
     把三列事实拼成一段文本交给模型自查——代码不替它判断「有没有漏派、失败该不该
     汇报」，所以不会替模型说错话。意图名用 INTENT_LABELS_ZH 的中文标签；派发记录
     取自本次 run 的派发账本（无则「无」）；产物清单取自 run 状态容器的产物账本。
+
+    Args:
+        agent: Agent，账本数据来源（_recognized_steps 与 run 状态容器）
+
+    Returns:
+        收尾核对消息文本（识别到的意图 + 派发记录 + 产物清单，只摆事实不下结论）。
     """
     from paperflow.core.agent.state import get_run_state
     steps = "、".join(INTENT_LABELS_ZH.get(t, t.value) for t in agent._recognized_steps)
@@ -128,7 +153,7 @@ def _render_ledger(agent) -> str:
                 steps=steps, dispatched=dispatched, produced=produced)
 
 
-#: 取消路径合成的 tool 消息（历史自愈）。自解释措辞：真实会话复验发现，裸的
+#: 取消路径合成的 tool 消息（历史自愈）。用自解释措辞：裸的
 #: "cancelled" 会让模型把中断编造成「子任务失败/被外部打断」等错误叙述——
 #: 这里明确因果（用户主动 Ctrl+C）并禁止错误归因。
 _CANCELLED_TOOL_MSG = (
@@ -143,6 +168,12 @@ def _schema_to_wire(m) -> Message:
 
     持久化消息经 MessageManager.get_in_context_messages 加载后,须转回 ReAct 循环
     使用的 wire 格式;role 枚举转字符串,空 content 归一为空串。
+
+    Args:
+        m: schemas.Message，Recall 持久化视图
+
+    Returns:
+        wire llm.Message（role 转字符串，空 content 归一为空串）。
     """
     return Message(
         role=m.role.value,
@@ -153,8 +184,7 @@ def _schema_to_wire(m) -> Message:
 
 
 class MaxTurnsExceeded(Exception):
-    """
-    ReAct 循环在 max_turns 轮内未产生最终回答时抛出。
+    """ReAct 循环在 max_turns 轮内未产生最终回答时抛出。
 
     这是 Agent 内置的安全阀 —— 防止 LLM 陷入无限 tool-calling 循环
     （例如 LLM 反复调用同一个工具但不用其结果给出最终回答）。
@@ -169,6 +199,15 @@ class StreamEvent:
     结构化字段仅 tool_* 事件携带：tool_name/summary（start+end 都有）、
     duration_ms/diffstat（仅 end；diffstat=(path, added, removed)，仅写类工具）。
     全部带默认值：旧位置构造（content 事件）兼容不变。
+
+    Attributes:
+        kind: str，事件类型：content | tool_start | tool_end
+        text: str，文本片段（content 事件为增量内容）
+        agent_type: str，产出事件的 agent（root/child 区分）
+        tool_name: str | None，工具名（仅 tool_* 事件）
+        summary: str | None，活动行摘要（仅 tool_* 事件）
+        duration_ms: int | None，耗时毫秒（仅 tool_end）
+        diffstat: tuple | None，(path, added, removed)，仅写类工具的 tool_end
     """
     kind: str
     text: str
@@ -184,6 +223,12 @@ def _compact(v) -> str:
 
     路径(/ 开头)在行宽预算内也头尾截断——超长路径全展示会被终端宽度硬切
     (overflow 兜底见渲染层)，头尾各留一段可辨认。截断统一用 "…" 标记。
+
+    Args:
+        v: 任意参数值
+
+    Returns:
+        单行化的摘要文本（超长头尾截断并标注字符数）。
     """
     s = str(v).replace("\n", " ")
     n = len(s)
@@ -204,6 +249,13 @@ def _tool_summary(name: str, args: dict) -> str:
 
     path/pdf_path 取尾段（basename）——活动行只关心「哪个文件」，全路径太长；
     其余键原样。统一经 _compact 头尾截断。args 非法/为空返回 ""（调用方自行兜底）。
+
+    Args:
+        name: str，工具名（保留位，供扩展）
+        args: dict，已解析的工具参数
+
+    Returns:
+        活动行摘要（按优先级取第一个非空参数，路径取尾段）；无可用值时返回 ""。
     """
     if not isinstance(args, dict):
         return ""
@@ -218,7 +270,15 @@ def _tool_summary(name: str, args: dict) -> str:
 
 
 def _diffstat(old: str, new: str) -> tuple[int, int]:
-    """unified diff 行级统计 (added, removed)，不计 +++/--- 头。"""
+    """unified diff 行级统计 (added, removed)，不计 +++/--- 头。
+
+    Args:
+        old: str，旧的完整文本
+        new: str，新的完整文本
+
+    Returns:
+        (added, removed) 行级统计（不计 +++/--- 头）。
+    """
     added = removed = 0
     for line in difflib.unified_diff(old.splitlines(), new.splitlines(), n=0):
         if line.startswith("+") and not line.startswith("+++"):
@@ -229,7 +289,14 @@ def _diffstat(old: str, new: str) -> tuple[int, int]:
 
 
 def _read_text_or_none(path: str) -> str | None:
-    """读文件文本；不存在返回 ""（新写文件场景），IO/解码失败返回 None（无徽标）。"""
+    """读文件文本；不存在返回 ""（新写文件场景），IO/解码失败返回 None（无徽标）。
+
+    Args:
+        path: str，文件路径
+
+    Returns:
+        文件文本；不存在返回 ""（新写文件场景），IO/解码失败返回 None（不发徽标）。
+    """
     try:
         p = Path(path)
         return p.read_text(encoding="utf-8") if p.exists() else ""
@@ -245,6 +312,13 @@ def _format_tool_call(name: str, raw_args: str) -> str:
     _compact 头尾截断,超长自动标注字符数。含路径参数(值以 / 开头)的行豁免行宽
     预算:超长路径已头尾截断,再被 80 列切一刀会把文件名尾部切没——宽度交给渲染层
     overflow="fold" 兜底(见 _compact 与 terminal.render 的溢出说明)。
+
+    Args:
+        name: str，工具名
+        raw_args: str，LLM 给出的原始参数 JSON 串
+
+    Returns:
+        终端一行调用描述（参数非法 JSON 时只显示工具名）。
     """
     try:
         args = json.loads(raw_args) if (raw_args or "").strip() else {}
@@ -266,8 +340,7 @@ def _format_tool_call(name: str, raw_args: str) -> str:
 
 
 class Agent:
-    """
-    ReAct 循环的执行单元，Supervisor 和 SubAgent 共用。
+    """ReAct 循环的执行单元，Supervisor 和 SubAgent 共用。
 
     构造方式（pull 模式）::
 
@@ -292,6 +365,30 @@ class Agent:
     - ``confirm_callback``:确认决策回调,默认 fail-safe 拒绝
     - ``session_id``:跨多轮 run 的会话标识,未传入时自动生成
     - ``_trace_id``:每次 run 自动生成的追踪 ID,注入上下文供中间件审计
+
+    Attributes:
+        llm: LLMClient，对话客户端
+        agent_registry: AgentRegistry，按 agent_type 拉取配置
+        agent_type: str，Agent 类型标识
+        security_middleware: list[SecurityMiddleware]，before 顺序 / after 逆序 / on_finish 顺序执行
+        confirm_callback: 确认回调（None 时用 fail-safe 的 _default_confirm，始终拒绝）
+        session_id: str，会话标识（跨多轮 run 一致）
+        memory / block_manager / message_manager / agent_manager / compaction / structured: 记忆与结构化输出服务句柄（None 时相关路径零开销跳过）
+        intent_enabled / intent_pipeline / conversation / ask_user_callback: 意图识别装配（仅 CLI 构造的 supervisor 开启）
+        last_intent: IntentOutput | None，本轮意图（供 spawn 门禁与收尾核对读取）
+        max_turns: int，ReAct 循环轮次上限（超过抛 MaxTurnsExceeded）
+        stream_callback: 回调 | None，流式事件回调（None = 非流式路径）
+        skill_registry: SkillRegistry | None，skill 体系（L1 清单注入与工具并入）
+        tools: dict[str, Tool]，本 Agent 可调用的工具表
+        _messages / _message_ids: list，in-context 消息缓冲区与对应的持久化消息 id（并行维护）
+        _trace_id / _inherited_trace_id: str | None，本次 run 的追踪 ID / 构造时继承的父追踪 ID
+        _instance_id: str，实例唯一标识（按「父实例」键控的预算计数用，与 trace_id 区分）
+        _current_turn: int，当前 ReAct 轮次（spawn 摘要提取借此归属父轮次）
+        _tool_schemas: list[dict]，预计算的 function calling JSON Schema
+        _has_human_confirm: bool，是否有真实人工确认回调（区分 auto_denied 与 user_denied）
+        _recognized_steps: list[IntentType]，本轮识别出的意图列表（收尾核对的事实来源，非强制派发队列）
+        _run_dispatches: list[tuple[str, str]]，本轮派发账本（属性视图，直连 run 状态容器）
+        _steps_checked: bool，本轮是否已做过收尾核对（防重复注入）
     """
 
     def __init__(
@@ -318,43 +415,28 @@ class Agent:
         trace_id: str | None = None,   # 继承的追踪 ID；None = 每次 run 自行生成
     ):
         """
-        :param llm: LLM 客户端实例
-        :param agent_registry: Agent 注册表，从中按 agent_type 拉取配置
-        :param agent_type: Agent 类型标识符（对应 agents/<agent_type>/ 目录）
-        :param security_middleware: 安全中间件列表，按顺序执行 before /
-            逆序执行 after；每轮 run 结束时顺序执行 on_finish
-        :param confirm_callback: async 确认回调，接收 ConfirmRequired，
-            返回 bool；None 时使用 fail-safe 的 _default_confirm（始终拒绝）
-        :param intent_enabled: 意图识别门控:仅 CLI 构造的 Supervisor 置 True;
-            spawn 工具构造的子 agent 不传管线/会话 → 门控关闭
-        :param intent_pipeline: 意图识别管线实例(IntentPipeline | None),
-            run() 前置钩子消费;None 时跳过
-        :param conversation: 会话状态容器(ConversationState | None),提供跨轮 prev_intent/
-            prev_user_input 并在 run 结束后回写
-        :param ask_user_callback: 向用户提问的回调(Callable[[str], str] | None),
-            供 ask_user_question 工具消费;None 时该工具不可用
-        :param session_id: 会话标识,跨多次 run 保持一致,便于审计聚合;None 时
-            自动生成 8 位 hex
-        :param memory: Memory 实例(可选),compile() 输出 system 记忆块注入 head
-            (每轮重建);None 时跳过
-        :param agent_manager: AgentManager 实例(可选),当前仅持有供上层(CLI)取用
-        :param block_manager: BlockManager 实例(可选),记忆块 CRUD 的服务句柄
-            (记忆工具经它读写核心记忆)
-        :param message_manager: MessageManager 实例(可选),对话落盘(Recall) +
-            in-context 跨轮回放;None 时记忆相关路径零开销跳过
-        :param compaction: CompactionSettings 实例(可选),触发时只压缩 in-context
-            窗口(驱逐旧对话 + 插摘要),不删 SQL 原始消息
-        :param structured: StructuredOutput 实例(可选),compaction 摘要生成路径
-            消费;None 时压缩不触发(降级,CLI 接线后恢复)
-        :param max_turns: ReAct 循环最大轮数,防止死循环
-        :param stream_callback: 流式事件回调(CLI 渲染器消费);None = 非流式路径
-            ——run() 保持调 chat(),mock/无 UI 调用方零影响
-        :param skill_registry: Skill 注册表(可选)。提供时按 agent_type 计算 L1
-            <available_skills> 清单块注入 head(静态,每轮重建 head 时原样携带);
-            None 时整块省略零开销
-        :param trace_id: 继承的追踪 ID(可选)。spawn 工具传父 agent 的当前
-            trace_id,使子 agent 与父共享同一次用户任务的去重池与审计链;
-            None 时每次 run 自行生成新 trace_id(默认,行为不变)
+        Args:
+            llm: LLM 客户端实例
+            agent_registry: Agent 注册表，从中按 agent_type 拉取配置
+            agent_type: Agent 类型标识符（对应 agents/<agent_type>/ 目录）
+            security_middleware: 安全中间件列表，按顺序执行 before / 逆序执行 after；每轮 run 结束时顺序执行 on_finish
+            confirm_callback: async 确认回调，接收 ConfirmRequired，返回 bool；None 时使用 fail-safe 的 _default_confirm（始终拒绝）
+            intent_enabled: 意图识别门控:仅 CLI 构造的 Supervisor 置 True;spawn 工具构造的子 agent 不传管线/会话 → 门控关闭
+            intent_pipeline: 意图识别管线实例(IntentPipeline | None),run() 前置钩子消费;None 时跳过
+            conversation: 会话状态容器(ConversationState | None),提供跨轮 prev_intent/ prev_user_input 并在 run 结束后回写
+            ask_user_callback: 向用户提问的回调(Callable[[str], str] | None),供 ask_user_question 工具消费;None 时该工具不可用
+            session_id: 会话标识,跨多次 run 保持一致,便于审计聚合;None 时 自动生成 8 位 hex
+            memory: Memory 实例(可选),compile() 输出 system 记忆块注入 head (每轮重建);None 时跳过
+            agent_manager: AgentManager 实例(可选),当前仅持有供上层(CLI)取用
+            block_manager: BlockManager 实例(可选),记忆块 CRUD 的服务句柄 (记忆工具经它读写核心记忆)
+            message_manager: MessageManager 实例(可选),对话落盘(Recall) + in-context 跨轮回放;None 时记忆相关路径零开销跳过
+            compaction: CompactionSettings 实例(可选),触发时只压缩 in-context 窗口(驱逐旧对话 + 插摘要),不删 SQL 原始消息
+            structured: StructuredOutput 实例(可选),compaction 摘要生成路径 消费;None 时压缩不触发(降级,CLI 接线后恢复)
+            max_turns: ReAct 循环最大轮数,防止死循环
+            stream_callback: 流式事件回调(CLI 渲染器消费);None = 非流式路径 ——run() 保持调 chat(),mock/无 UI 调用方零影响
+            skill_registry: Skill 注册表(可选)。提供时按 agent_type 计算 L1 <available_skills> 清单块注入 head(静态,每轮重建 head 时原样携带);None 时整块省略零开销
+            trace_id: 继承的追踪 ID(可选)。spawn 工具传父 agent 的当前 trace_id,使子 agent 与父共享同一次用户任务的去重池与审计链;None 时每次 run 自行生成新 trace_id(默认,行为不变)
+
         """
         # Pull 模式:从唯一注册表按类型加载完整配置
         config = agent_registry.get_config(agent_type)
@@ -479,11 +561,22 @@ class Agent:
                 t.attach_agent(self)
 
     async def _default_confirm(self, cr: ConfirmRequired) -> bool:
-        """默认 fail-safe：无人值守时拒绝。"""
+        """默认 fail-safe：无人值守时拒绝。
+
+        Args:
+            cr: ConfirmRequired，待确认的工具调用
+
+        Returns:
+            恒 False（无人值守 fail-safe 拒绝）。
+        """
         return False
 
     def _emit(self, ev: StreamEvent) -> None:
-        """转发流式事件；无回调时零开销空操作（非 CLI 调用方完全不受影响）。"""
+        """转发流式事件；无回调时零开销空操作（非 CLI 调用方完全不受影响）。
+
+        Args:
+            ev: StreamEvent，待转发的事件
+        """
         cb = self.stream_callback
         if cb is not None:
             cb(ev)
@@ -500,7 +593,11 @@ class Agent:
 
     @_run_dispatches.setter
     def _run_dispatches(self, value) -> None:
-        """覆盖本次 run 的派发账本（原地改写容器列表，不留旧引用）。"""
+        """覆盖本次 run 的派发账本（原地改写容器列表，不留旧引用）。
+
+        Args:
+            value: list[tuple[str, str]]，新的派发账本内容（agent_type, status）。
+        """
         from paperflow.core.agent.state import get_run_state
         get_run_state(self._trace_id or "").spawn_dispatches[:] = list(value)
 
@@ -508,6 +605,11 @@ class Agent:
     #: 只读：外部（CLI/测试）可观察但不可改，写入统一走 _append_to_messages。
     @property
     def messages(self) -> list[dict]:
+        """in-context 消息的只读 wire 视图（外部可观察不可改）。
+
+        Returns:
+            OpenAI wire 格式的消息 dict 列表。
+        """
         return [_message_to_openai(m) for m in self._messages]
 
     def _append_to_messages(self, added_messages: "list[Message] | Message") -> None:
@@ -515,6 +617,9 @@ class Agent:
 
         接受单条 Message 或 Message 列表(run() 各分支混用两种风格,测试多用列表),
         统一归一为列表后追加。
+
+        Args:
+            added_messages: Message | list[Message]，待追加的消息（单条或列表）
         """
         # 判断 added_messages 这个变量是否是 Message 类（或其子类）的实例。
         if isinstance(added_messages, Message):
@@ -666,7 +771,15 @@ class Agent:
              绝不再问（单次问答，无循环）。
 
         返回 (最终意图, 最终任务文本)；澄清问题已问过即从意图上抹除（clarification
-        字段只承载「待问」状态，repl 不再挂起）。"""
+        字段只承载「待问」状态，repl 不再挂起）。
+
+        Args:
+            task: str，原始任务文本
+            intent: IntentOutput，管线产出的意图（含 clarification）
+
+        Returns:
+            (最终意图, 最终任务文本)；无回调时放弃澄清、按管线最佳猜测继续。
+        """
         cb = self.ask_user_callback
         question = intent.clarification
         if cb is None:
@@ -694,6 +807,9 @@ class Agent:
         有 block_manager 时在 ReAct 每轮开头重建记忆块并替换 head 中旧的
         <memory_blocks> 消息——同一轮里 memory_replace 改的块,下一轮 LLM 调用即见。
         无记忆装配（memory 或 block_manager 为 None）时零开销空操作。
+
+        Args:
+            head: list[Message]，本轮 head 消息列表（就地替换/插入记忆消息）
         """
         if self.memory is None or self.block_manager is None:
             return
@@ -779,6 +895,9 @@ class Agent:
 
         message_manager 为 None 时零开销跳过。agent_manager 存在时把落盘消息 id
         追加进 AgentState.message_ids（窗口即「当前 in-context 消息」的持久化视图）。
+
+        Args:
+            msgs: list[Message]，待落盘的对话消息
         """
         if self.message_manager is None:
             return
@@ -803,6 +922,9 @@ class Agent:
         Agent 是无记忆装配，压缩只改 in-memory 窗口，SQL 保持原样（兼容既有测试语义）。
         尾部消息来自压缩前的窗口（已落盘，id 在 _message_ids 里）；摘要消息是新生成
         的，先 add_message 取 id。被驱逐旧消息只移出窗口，不删 SQL（Recall 完整）。
+
+        Args:
+            new_window: list[Message]，压缩后的新 in-context 窗口
         """
         if self.agent_manager is None:
             return
@@ -830,6 +952,12 @@ class Agent:
         """in-context 消息是否超压缩阈值（只检查，执行在 run() 里）。
 
         依赖 message_manager 存在:无持久化层时压缩无从安置(摘要无处回放),跳过。
+
+        Args:
+            messages: list[Message]，当前 in-context 消息
+
+        Returns:
+            True 表示已超压缩阈值（无持久化层时恒 False）。
         """
         from paperflow.core.memory.compaction import should_compress
         if self.compaction is None or self.message_manager is None:
@@ -843,10 +971,15 @@ class Agent:
         这是 Agent 的唯一公共入口。调用方（CLI、Supervisor 的 SpawnSubAgentTool）
         只需要传入任务文本，等待返回结果。
 
-        :param task: 用户任务文本（对于 Supervisor 是原始用户输入；
-                     对于 SubAgent 是 Supervisor 拆分后的子任务）
-        :returns: LLM 的最终文本回答（经过所有中间件的 on_finish 钩子改写）
-        :raises MaxTurnsExceeded: 超过 max_turns 轮仍未停止
+        Args:
+            task: 用户任务文本（对于 Supervisor 是原始用户输入；对于 SubAgent 是 Supervisor 拆分后的子任务）
+
+        Returns:
+            LLM 的最终文本回答（经过所有中间件的 on_finish 钩子改写）
+
+        Raises:
+            MaxTurnsExceeded: 超过 max_turns 轮仍未停止
+
 
         ReAct 循环步骤::
 
@@ -1020,6 +1153,14 @@ class Agent:
 
             # 内部协程：每个工具调用受信号量限制，并传入确认锁和当前轮次。
             async def _run_one(tc: dict) -> ToolResult:
+                """受信号量约束执行单个工具调用并传入确认锁与当前轮次。
+
+                Args:
+                    tc: dict，一个工具调用（含 id 与 function）
+
+                Returns:
+                    该次工具调用的 ToolResult。
+                """
                 async with sem:
                     return await self._exec_tool(
                         tc, _confirm_lock=confirm_lock, turn=turn)
@@ -1108,6 +1249,12 @@ class Agent:
         每次调用传独立回调（而非共享属性）——同一轮多个 spawn 调用下多个子 agent 共享
         同一个 LLMClient，共享属性会互相覆盖导致归属错乱。实际 fan-out 逻辑在
         _emit_llm_call。
+
+        Args:
+            turn: int，当前 ReAct 轮次（绑定到回调，供归属）
+
+        Returns:
+            LLM 调用元数据回调（每次调用独立构造，避免并发下互相覆盖归属）。
         """
         return lambda data: self._emit_llm_call(turn, data)
 
@@ -1116,6 +1263,10 @@ class Agent:
 
         sync（LLM 回调可能跑在线程池线程）。spawn 摘要提取的 LLM 调用也复用
         此入口——父 agent 在做摘要提取,归属父的 trace/session/agent_type/turn。
+
+        Args:
+            turn: int，轮次
+            data: dict，LLM 客户端给出的元数据（model/tokens/duration 等）
         """
         fields = dict(data)
         fields.update(trace_id=self._trace_id, session_id=self.session_id,
@@ -1159,15 +1310,14 @@ class Agent:
         执行异常、中间件拦截)都转为 ToolResult(text="..."),作为正常对话流的一部分
         反馈给 LLM。LLM 在下一轮中看到错误文本后可自行决定重试、调整参数或放弃。
 
-        :param tool_call: LLM 返回的工具调用字典
-            {"id": str, "function": {"name": str, "arguments": str}}
-            其中 arguments 为 JSON 字符串，此方法负责 json.loads 解析
-        :param _confirm_lock: 并发确认串行锁(asyncio.Lock | None)。同一 message 的
-            多个工具调用并发执行时由 run() 传入同一个锁,把确认回调调用串行化
-            (CLI 标准输入并发读会竞态);None = 非并发路径,确认行为与现状一致
-        :param turn: ReAct 轮次,注入审计条目供跨轮回溯;run() 每轮透传,
-            直接调用 _exec_tool 时默认 0
-        :returns: ToolResult，始终返回（不抛异常）
+        Args:
+            tool_call: LLM 返回的工具调用字典 {"id": str, "function": {"name": str, "arguments": str}}其中 arguments 为 JSON 字符串，此方法负责 json.loads 解析
+            _confirm_lock: 并发确认串行锁(asyncio.Lock | None)。同一 message 的 多个工具调用并发执行时由 run() 传入同一个锁,把确认回调调用串行化 (CLI 标准输入并发读会竞态);None = 非并发路径,确认行为与现状一致
+            turn: ReAct 轮次,注入审计条目供跨轮回溯;run() 每轮透传,直接调用 _exec_tool 时默认 0
+
+        Returns:
+            ToolResult，始终返回（不抛异常）
+
         """
         name = tool_call["function"]["name"]
 
@@ -1207,14 +1357,25 @@ class Agent:
             return await self._exec_tool_parsed(tool_call, ctx, tool,
                                                 _confirm_lock, turn)
         finally:
-            # tool_end 恰好一条：正常/异常/拦截/解析失败都经 finally 收口（spec §4.1）
+            # tool_end 恰好一条：正常/异常/拦截/解析失败都经 finally 收口
             if self.stream_callback is not None:
                 self._emit(self._tool_end_event(ctx))
 
     async def _exec_tool_parsed(
         self, tool_call: dict, ctx: ToolContext, tool, _confirm_lock, turn
     ) -> ToolResult:
-        """_exec_tool 的解析后管道（原 3-8 步）；tool_end 收口在调用方 finally。"""
+        """_exec_tool 的解析后管道（原 3-8 步）；tool_end 收口在调用方 finally。
+
+        Args:
+            tool_call: dict，工具调用（含 function.arguments）
+            ctx: ToolContext，调用上下文
+            tool: Tool | None，命中的工具实例
+            _confirm_lock: asyncio.Lock | None，确认串行锁
+            turn: int，当前轮次
+
+        Returns:
+            该次工具调用的 ToolResult（解析失败/未知工具/被拦截都降级为结果文本）。
+        """
 
         # 3. 解析 JSON 参数
         # LLM 生成的 arguments 是 JSON 字符串，必须解析为 dict。
@@ -1260,7 +1421,17 @@ class Agent:
         return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
 
     async def _exec_tool_guarded(self, tool, ctx, _confirm_lock, turn) -> ToolResult:
-        """确认与执行段（_exec_tool 的 5-8 步）：同路径锁保护下运行。"""
+        """确认与执行段（_exec_tool 的 5-8 步）：同路径锁保护下运行。
+
+        Args:
+            tool: Tool | None，命中的工具实例
+            ctx: ToolContext，调用上下文
+            _confirm_lock: asyncio.Lock | None，确认串行锁
+            turn: int，当前轮次
+
+        Returns:
+            该次工具调用的 ToolResult（含 before 拦截结果与执行结果）。
+        """
 
         # 5. 处理未知工具（LLM 幻觉或 prompt injection）
         # 若工具不存在（tool is None），记录错误，执行 after 钩子，并返回可用工具列表，帮助 LLM 纠正。
@@ -1299,7 +1470,7 @@ class Agent:
             if getattr(tool, "async_execute", False):
                 # 异步工具（如 spawn）：在当前事件循环上直接 await——子 agent 与父
                 # 同循环，父被取消（Ctrl+C）时 CancelledError 沿 await 链级联传播，
-                # 整棵 agent 树一起终止（P0-2 根治），不再经 to_thread 留孤儿线程。
+                # 整棵 agent 树一起终止，不再经 to_thread 留孤儿线程。
                 raw = await tool.aexecute(**ctx.args)
 
             # 需要运行期状态的工具（搜索去重池 / 写盘产物登记）：注入本次 run 的容器。
@@ -1325,7 +1496,14 @@ class Agent:
         return ctx.result
 
     def _tool_end_event(self, ctx: ToolContext) -> StreamEvent:
-        """tool_end 事件：耗时 + 写类 diffstat + completion/错误兜底文本。"""
+        """tool_end 事件：耗时 + 写类 diffstat + completion/错误兜底文本。
+
+        Args:
+            ctx: ToolContext，本次工具调用上下文
+
+        Returns:
+            tool_end 流式事件（耗时 + 写类 diffstat + completion/错误兜底文本）。
+        """
         duration = (int((time.monotonic() - ctx.started_at) * 1000)
                     if ctx.started_at is not None else None)
         diffstat = None
@@ -1351,8 +1529,7 @@ class Agent:
                            duration_ms=duration, diffstat=diffstat)
 
     async def _run_before_hooks(self, ctx: ToolContext, confirm_lock: asyncio.Lock | None = None) -> ToolResult | None:
-        """
-        顺序执行所有安全中间件的 before 钩子。
+        """顺序执行所有安全中间件的 before 钩子。
         每个中间件可以：
           - 正常返回：放行，继续下一个中间件
           - 抛出 ConfirmRequired：需要用户确认（高风险操作）
@@ -1364,6 +1541,13 @@ class Agent:
         内部处理：
             - 捕获 ConfirmRequired → 调用确认回调（串行化），记录审批事件
             - 捕获 SecurityError → 直接返回策略拒绝的 ToolResult
+
+        Args:
+            ctx: ToolContext，调用上下文
+            confirm_lock: asyncio.Lock | None，确认串行锁
+
+        Returns:
+            None 表示全部通过可执行工具；否则返回拦截/拒绝的 ToolResult。
         """
         for mw in self.security_middleware:
             try:
@@ -1376,6 +1560,11 @@ class Agent:
 
                 # 定义异步决策函数，调用外部确认回调
                 async def _decide() -> bool:
+                    """调用外部确认回调获取用户决策。
+
+                    Returns:
+                        True 表示用户放行。
+                    """
                     return await self.confirm_callback(cr)
 
                 # 串行化确认（若提供了锁）
@@ -1386,7 +1575,7 @@ class Agent:
                     else:
                         confirmed = await _decide()
                 except asyncio.CancelledError:
-                    # 取消路径审计闭环（P0-3）：approval_requested 已发出但决策
+                    # 取消路径审计闭环：approval_requested 已发出但决策
                     # 未落——显式结算为 cancelled 后再抛，审计不再出现「有 requested
                     # 无 decided」的悬空；确认集合不加键（下次同路径仍会询问）。
                     for mw in self.security_middleware:
@@ -1434,12 +1623,14 @@ class Agent:
         return None
 
     async def _run_after_hooks(self, ctx: ToolContext) -> None:
-        """
-        逆序执行所有中间件的 after 钩子（洋葱模型）。
+        """逆序执行所有中间件的 after 钩子（洋葱模型）。
 
         无论工具是否执行成功、无论是否被 before 拦截，
         只要进入了管道（ctx 已构建）就会执行 after，
         保证审计等横切关注点在所有路径上都能记录。
+
+        Args:
+            ctx: ToolContext，调用上下文（含结果或异常）
         """
         for mw in reversed(self.security_middleware):
             try:

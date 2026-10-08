@@ -9,6 +9,15 @@ def _memory_insert(ctx, label: str, new_string: str, insert_line: int = -1) -> s
     块缺失返回显式「no block」——改既有块的意图不该被静默创建掩盖拼错。
     行号超出末尾时按末尾处理（splitlines 后 insert 会就地落在末尾）。读-算-写收进
     mutate_block 的 mutator，整段一次持锁。
+
+    Args:
+        ctx: MemoryToolsContext，记忆工具运行时上下文
+        label: str，目标块标签
+        new_string: str，待插入内容
+        insert_line: int，插入行号（-1=末尾）
+
+    Returns:
+        成功返回含实际插入行号的文本；块缺失/写入失败返回错误文本。
     """
     bm = ctx.block_manager
     # 回报实际插入行号：默认 -1 落末尾时报告末尾位置，不暴露 -1。mutator 每次调用都
@@ -16,7 +25,14 @@ def _memory_insert(ctx, label: str, new_string: str, insert_line: int = -1) -> s
     resolved_line = insert_line
 
     def _insert(v: str) -> str:
-        """在 v 的 insert_line 处插入一行；-1 表示末尾，超出末尾按末尾处理。"""
+        """在 v 的 insert_line 处插入一行；-1 表示末尾，超出末尾按末尾处理。
+
+        Args:
+            v: str，块的当前值（持锁内的最新值）
+
+        Returns:
+            插入一行后的新块值（超出末尾按末尾处理）。
+        """
         nonlocal resolved_line
         lines = v.splitlines()
         at = len(lines) if insert_line == -1 else insert_line
@@ -34,6 +50,14 @@ def _memory_insert(ctx, label: str, new_string: str, insert_line: int = -1) -> s
 
 
 class MemoryInsertTool(Tool):
+    """在记忆块指定行号后插入内容的工具。
+
+    Attributes:
+        name: str，工具名 "memory_insert"
+        description: str，工具描述
+        parameters: dict，JSON Schema（label/new_string/insert_line）
+        risk_level: str，"medium"
+    """
     name = "memory_insert"
     description = "在记忆块指定行插入内容"
     parameters = {
@@ -48,6 +72,16 @@ class MemoryInsertTool(Tool):
     risk_level = "medium"
 
     def execute(self, label: str, new_string: str, insert_line: int = -1) -> ToolResult:
+        """在记忆块指定行号后插入内容（-1=末尾）。
+
+        Args:
+            label: str，目标块标签
+            new_string: str，待插入内容
+            insert_line: int，插入行号（-1=末尾，0=开头）
+
+        Returns:
+            ToolResult；未装配记忆服务时返回不可用提示，其余异常降级为错误文本。
+        """
         ctx = get_memory_context()
         if ctx is None:
             return ToolResult(text="记忆服务未装配，记忆工具不可用")

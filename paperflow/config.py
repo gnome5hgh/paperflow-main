@@ -42,11 +42,21 @@ def _default_compaction():
 
 @dataclass
 class LLMConfig:
-    """
-    LLM 连接配置，封装 OpenAI-compatible API 所需的所有参数。
+    """LLM 连接配置，封装 OpenAI-compatible API 所需的所有参数。
 
     默认值指向 DeepSeek API（通过 OpenAI SDK 兼容层调用），
     修改 base_url 可切换到任意兼容服务（如 OpenAI、vLLM、Ollama 等）。
+
+    Attributes:
+        base_url: str，API 基础地址（默认 DeepSeek 兼容端点）
+        api_key: str，密钥（无硬编码默认值，留空由 LLMClient 报清晰错误）
+        model: str，模型名
+        max_tokens: int，单次响应输出上限（给足防长草稿被截断）
+        temperature: float，采样温度（0.0 = 确定性，适合工具调用）
+        timeout_connect: float，HTTP 连接超时（秒）
+        timeout_read: float，HTTP 读超时（秒，含流式 chunk 间隔）
+        max_retries: int，传输层自动重试次数（连接错误/5xx）
+        context_window: int，模型上下文窗口（压缩预算来源）
     """
 
     #: API 基础地址，默认为 DeepSeek 兼容端点
@@ -91,6 +101,17 @@ class VisionLLMConfig:
     端点/key）；可经 PAPERFLOW_VISION_MODEL/BASE_URL 换其他 OpenAI 兼容
     端点（如智谱 GLM-4V）。api_key 留空不崩启动，由 analyze_figures 工具
     调用时降级报错。
+
+    Attributes:
+        base_url: str，视觉端点地址
+        api_key: str，视觉模型密钥（留空不崩启动，调用时降级）
+        model: str，视觉模型名
+        max_tokens: int，单次视觉输出上限
+        timeout_connect: float，连接超时（秒）
+        timeout_read: float，读超时（秒）
+        max_retries: int，自动重试次数
+        temperature: float，采样温度
+        context_window: int，上下文窗口（token）
     """
 
     #: 视觉端点基础地址，默认 DeepSeek（与文本 LLM 同一端点/key）
@@ -127,7 +148,13 @@ class VisionLLMConfig:
 
 @dataclass
 class RuntimeConfig:
-    """运行时基础设施：工作区、agent 插件目录、会话风险阈值。"""
+    """运行时基础设施：工作区、agent 插件目录、会话风险阈值。
+
+    Attributes:
+        workspace: str，运行时数据根目录（milvus/memory/audit/templates 等）
+        agents_dir: str，Agent 插件扫描目录
+        max_risk: str，会话风险阈值（超过即被 PolicyEngine 拦截）
+    """
 
     #: 运行时数据根目录，存放 milvus、memory、audit、templates 等
     workspace: str = "data"
@@ -142,7 +169,14 @@ class RuntimeConfig:
 
 @dataclass
 class CorpusConfig:
-    """语料库与产物路径。个人绝对路径，经 config.yaml / env 提供，留空走各自回退。"""
+    """语料库与产物路径。个人绝对路径，经 config.yaml / env 提供，留空走各自回退。
+
+    Attributes:
+        note_dir: str，笔记目录（RAG 索引源）
+        pdf_dir: str，PDF 目录（RAG 索引源）
+        research_dir: str，研究产物目录（空则回退 workspace/research）
+        citations_bib_path: str，references.bib 路径（引用库真相源；空则回退默认）
+    """
 
     #: 语料库笔记目录（RAG 索引源,note/）——留空则文件类工具无可用根。
     note_dir: str = ""
@@ -161,11 +195,19 @@ class CorpusConfig:
 
 @dataclass
 class IntentEncoderConfig:
-    """意图路由独立稠密编码器（与 RAG 解耦，为换编码器实验留口）。
+    """意图路由独立稠密编码器（与 RAG 解耦，为更换编码器留口）。
 
     base_url/api_key 留空 = 继承 rag.embedding 同名字段，from_env 阶段解析完毕，
     装配侧拿到的是已合并值。传输参数（batch_size/timeout/max_retries）与
     rag.embedding 同形同默认——独立实例，互不共享。
+
+    Attributes:
+        base_url: str，编码端点（留空继承 rag.embedding）
+        api_key: str，密钥（留空继承 rag.embedding）
+        model: str，编码模型名（不继承，须显式配置）
+        batch_size: int，单批嵌入文本条数
+        timeout: float，读超时（秒）
+        max_retries: int，可恢复错误重试次数
     """
     base_url: str = ""
     api_key: str = ""
@@ -180,7 +222,12 @@ class IntentEncoderConfig:
 
 @dataclass
 class RouterConfig:
-    """混合路由器装配参数。"""
+    """混合路由器装配参数。
+
+    Attributes:
+        alpha: float，稠密分支权重（稀疏分支为 1-alpha）
+        top_k: int，每次查询检索的示例句条数
+    """
 
     #: 稠密分支权重 alpha（稀疏路权重 1-alpha）。
     alpha: float = 0.4
@@ -191,7 +238,12 @@ class RouterConfig:
 
 @dataclass
 class IntentConfig:
-    """意图识别子系统配置：独立编码器 + 路由器。"""
+    """意图识别子系统配置：独立编码器 + 路由器。
+
+    Attributes:
+        encoder: IntentEncoderConfig，意图路由独立编码器
+        router: RouterConfig，混合路由器参数
+    """
 
     encoder: IntentEncoderConfig = field(default_factory=IntentEncoderConfig)
     router: RouterConfig = field(default_factory=RouterConfig)
@@ -208,6 +260,14 @@ class EmbeddingConfig:
 
     batch_size/timeout/max_retries 是 CloudEmbedder 传输参数（改它们不改变
     向量结果，无需重建索引）。精排连接在 rag.rerank，本段只负责嵌入。
+
+    Attributes:
+        base_url: str，嵌入端点地址
+        api_key: str，密钥（缺失不阻塞启动，降级处理）
+        embed_model: str，嵌入模型名
+        batch_size: int，单批文本条数
+        timeout: float，读超时（秒）
+        max_retries: int，可恢复错误重试次数
     """
     base_url: str = "https://api.siliconflow.cn/v1"
     api_key: str = ""
@@ -227,6 +287,13 @@ class RerankConfig:
     base_url/api_key 留空 = 继承 rag.embedding 同名字段，from_env 阶段解析完毕，
     装配侧拿到的是已合并值（增量继承语义与 intent.encoder 一致）。
     timeout/max_retries 与 embedding 的同名字段解耦，改精排超时不牵动嵌入。
+
+    Attributes:
+        base_url: str，精排端点（留空继承 rag.embedding）
+        api_key: str，密钥（留空继承 rag.embedding）
+        model: str，精排模型名
+        timeout: float，读超时（秒；与嵌入解耦）
+        max_retries: int，可恢复错误重试次数
     """
     base_url: str = ""
     api_key: str = ""
@@ -239,7 +306,15 @@ class RerankConfig:
 
 @dataclass
 class RetrieverConfig:
-    """混合检索参数（改动需重评检索质量）。"""
+    """混合检索参数（改动需重评检索质量）。
+
+    Attributes:
+        top_k: int，默认返回块数
+        bm25_topk: int，BM25 粗召回数
+        vector_topk: int，向量粗召回数
+        rerank_candidates: int，重排候选池下限（实际池 = max(top_k*2, 本值)）
+        rrf_k: int，RRF 融合常数 k（越大分数差越小、融合越平滑）
+    """
 
     #: 默认返回块数（条）。
     top_k: int = 5
@@ -258,6 +333,15 @@ class QueryRewriteConfig:
     """query 改写模型连接与行为参数。
 
     base_url/api_key 留空逐项继承 llm 同名字段；model 留空沿用主模型。
+
+    Attributes:
+        base_url: str，改写模型端点（留空继承 llm）
+        api_key: str，密钥（留空继承 llm）
+        model: str，模型名（留空沿用主模型）
+        history_messages: int，喂给 condense 的最近对话条数
+        rewrite_num: int，prompt 要求的改写变体条数
+        max_queries: int，最终查询集封顶（含原 query）
+        max_query_chars: int，单条改写查询字符上限（超限丢弃）
     """
     base_url: str = ""
     api_key: str = ""
@@ -274,7 +358,12 @@ class QueryRewriteConfig:
 
 @dataclass
 class ChunkerConfig:
-    """切块参数（改动改变切块结果 → 配方哈希自动触发全量重索引）。"""
+    """切块参数（改动改变切块结果 → 配方哈希自动触发全量重索引）。
+
+    Attributes:
+        max_tokens: int，每块最大 token 数
+        overlap_tokens: int，相邻块重叠 token 数
+    """
 
     #: 每块最大 token 数（token，按 core.tokenization 近似计数）。
     max_tokens: int = 512
@@ -284,7 +373,11 @@ class ChunkerConfig:
 
 @dataclass
 class IndexerConfig:
-    """索引器参数。"""
+    """索引器参数。
+
+    Attributes:
+        table_text_limit: int，表格块文本截断上限（字符）
+    """
 
     #: 表格块文本截断上限（字符；Milvus text 字段 65535 的防御性截断）。
     table_text_limit: int = 8000
@@ -292,7 +385,13 @@ class IndexerConfig:
 
 @dataclass
 class StorageConfig:
-    """Milvus 向量库连接配置。"""
+    """Milvus 向量库连接配置。
+
+    Attributes:
+        uri: str，Milvus 连接地址（本地路径走 Lite，http 走 Standalone）
+        collection: str，集合名
+        batch_size: int，分页遍历每页行数
+    """
 
     #: Milvus 连接地址。本地文件路径 → Milvus Lite（内嵌，单测用）；
     #: ``http://host:19530`` → Milvus Standalone（生产默认）。
@@ -307,7 +406,12 @@ class StorageConfig:
 
 @dataclass
 class GrobidConfig:
-    """GROBID PDF 解析服务配置。"""
+    """GROBID PDF 解析服务配置。
+
+    Attributes:
+        endpoint: str，GROBID 服务地址（解析与标题提取共用）
+        timeout: float，请求超时（秒）
+    """
 
     #: GROBID 服务地址——RAG PDF 解析与 TitleExtractor 标题提取共用同一端点
     endpoint: str = "http://localhost:8070"
@@ -318,7 +422,11 @@ class GrobidConfig:
 
 @dataclass
 class RagToolsConfig:
-    """RAG 工具输出参数。"""
+    """RAG 工具输出参数。
+
+    Attributes:
+        excerpt_chars: int，单条命中正文摘录上限（字符）
+    """
 
     #: 单条命中正文摘录上限（字符）。
     excerpt_chars: int = 400
@@ -326,7 +434,19 @@ class RagToolsConfig:
 
 @dataclass
 class RagConfig:
-    """RAG 检索栈配置（按子模块分区，与 config.yaml ``rag:`` 段同构）。"""
+    """RAG 检索栈配置（按子模块分区，与 config.yaml ``rag:`` 段同构）。
+
+    Attributes:
+        embedding: EmbeddingConfig，嵌入连接
+        rerank: RerankConfig，精排连接
+        retriever: RetrieverConfig，混合检索参数
+        query_rewrite: QueryRewriteConfig，query 改写
+        chunker: ChunkerConfig，切块参数（改动触发配方哈希全量重索引）
+        indexer: IndexerConfig，索引器参数
+        storage: StorageConfig，向量库连接
+        grobid: GrobidConfig，GROBID 解析服务
+        tools: RagToolsConfig，检索工具输出参数
+    """
 
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     rerank: RerankConfig = field(default_factory=RerankConfig)
@@ -343,7 +463,12 @@ class RagConfig:
 
 @dataclass
 class MemoryConfig:
-    """记忆系统配置。"""
+    """记忆系统配置。
+
+    Attributes:
+        sleeptime_enable: bool，Sleeptime 后台整合开关
+        sleeptime_agent_frequency: int，每 N 条新消息检查一次
+    """
 
     #: Sleeptime 后台整合开关
     sleeptime_enable: bool = True
@@ -354,7 +479,12 @@ class MemoryConfig:
 
 @dataclass
 class SessionConfig:
-    """会话恢复配置。"""
+    """会话恢复配置。
+
+    Attributes:
+        resume_replay: bool，--resume 时是否把历史回放进终端滚动区
+        resume_replay_limit: int，回放条数上限（0 = 整窗）
+    """
 
     #: 会话恢复时把历史对话回放进终端滚动区。--resume 恢复的是模型上下文，
     #: 屏幕上否则不留任何痕迹（用户会以为恢复失败）；见 terminal/resume.py。
@@ -374,6 +504,9 @@ class AgentsConfig:
     端到端，searcher 覆盖大批量新颖性检索，reviewer 覆盖全文审阅，researcher
     覆盖完整研究链路，qa-agent 覆盖精读问答。某 agent 反复撞帽说明任务时长
     需要重新评估，而不是继续调大。
+
+    Attributes:
+        timeouts: dict[str, int]，agent 类型 → 超时秒数（仅 YAML 可配；按各 agent 完整任务典型时长留余量）
     """
 
     timeouts: dict[str, int] = field(
@@ -393,6 +526,21 @@ class McpServerConfig:
     过滤顺序 allowed → disabled →
     风险分级；写类工具默认禁用，write_tools 显式开启；uvx 冷启动可能下载包，
     connect_timeout 默认高于业界 5s。
+
+    Attributes:
+        transport: str，传输方式：stdio | http
+        command: str，stdio 必填：可执行文件
+        args: list[str]，stdio 启动参数
+        env: dict[str, str]，stdio 子进程环境变量
+        url: str，http 必填
+        headers: dict[str, str]，http 请求头
+        enabled: bool，是否启用该 server
+        agents: list[str]，可注入的 agent 类型名单
+        connect_timeout: float，连接超时（秒）
+        call_timeout: float，单次调用超时（秒）
+        disabled_tools: list[str]，显式屏蔽的工具名
+        allowed_tools: list[str] | None，白名单（None = 不限制）
+        write_tools: list[str]，预批准写入的工具（免逐次确认）
     """
 
     transport: str = "stdio"            # "stdio" | "http"
@@ -410,6 +558,11 @@ class McpServerConfig:
     write_tools: list[str] = field(default_factory=list)
 
     def validate(self, name: str) -> None:
+        """校验单个 server 配置：名字格式、transport 取值、以及各 transport 的必填项。
+
+        Args:
+            name: str，server 名（用于错误信息与格式校验）
+        """
         if not _SERVER_NAME_RE.fullmatch(name):
             raise ValueError(f"MCP server 名非法: '{name}'（须匹配 [a-zA-Z0-9_-]+）")
         if self.transport not in ("stdio", "http"):
@@ -421,9 +574,16 @@ class McpServerConfig:
 
 
 def parse_mcp_servers(raw: dict | None) -> dict[str, McpServerConfig]:
-    """yaml 原始 dict → 校验后的 McpServerConfig 表；未知键忽略（同仓库 hasattr 守卫精神）。"""
+    """yaml 原始 dict → 校验后的 McpServerConfig 表；未知键忽略（同仓库 hasattr 守卫精神）。
+
+    Args:
+        raw: dict | None，YAML 里 mcp_servers 段的原始值
+
+    Returns:
+        server 名 → 校验通过的 McpServerConfig；raw 为 None 返回空表。
+    """
     # 顶层类型守卫：用户写成 mcp_servers: [a, b]（列表）或字符串时，直接
-    # .items() 会抛裸 AttributeError——改为干净的 ValueError（finding 4）。
+    # .items() 会抛裸 AttributeError——改为干净的 ValueError。
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -448,6 +608,12 @@ def _is_scalar(val) -> bool:
     非 dataclass、非 dict/list 的自定义对象（如 ``compaction`` 的
     ``CompactionSettings`` 普通类实例）没有通用覆写语义：把 YAML/env 值直接
     setattr 成裸 dict/str 会静默破坏其行为，必须跳过。
+
+    Args:
+        val: 任意字段当前值
+
+    Returns:
+        True 表示是可被 YAML/env 覆写的标量（str/int/float/bool/None）。
     """
     return val is None or isinstance(val, (str, int, float, bool))
 
@@ -459,6 +625,13 @@ def _coerce(current, val):
     - int / float：直接转换；
     - str：原样保留；
     - 其余（dict/list 等）：原样。
+
+    Args:
+        current: 字段当前值（提供目标类型）
+        val: YAML/env 来的新值（env 恒为字符串）
+
+    Returns:
+        转换到与 current 同类型的值（dict/list 等原样返回）。
     """
     if isinstance(current, bool):
         return val.lower() in ("1", "true", "yes") if isinstance(val, str) else bool(val)
@@ -477,6 +650,10 @@ def _merge(node, raw) -> None:
     - 标量 → 按目标字段当前类型转换（``_coerce``）；
     - 其余自定义对象（``compaction``）→ 跳过（见 ``_is_scalar``）；
     - raw 里的未知键被忽略（沿用现有 hasattr 守卫精神，运行期不因陌生键崩）。
+
+    Args:
+        node: 任意 dataclass 实例（被就地覆写）
+        raw: dict，YAML 覆盖值（非 dict 直接返回）
     """
     if not isinstance(raw, dict):
         return
@@ -497,10 +674,22 @@ def _merge(node, raw) -> None:
 
 @dataclass
 class PaperFlowConfig:
-    """
-    项目全局配置,聚合所有子系统的配置项。
+    """项目全局配置,聚合所有子系统的配置项。
 
     ``runtime.workspace`` 是运行时数据根目录,各子系统的数据写入统一走此路径。
+
+    Attributes:
+        llm: LLMConfig，LLM 连接
+        vision: VisionLLMConfig，视觉模型连接
+        runtime: RuntimeConfig，运行时基础设施
+        corpus: CorpusConfig，语料库与产物路径
+        intent: IntentConfig，意图识别
+        rag: RagConfig，RAG 检索栈
+        memory: MemoryConfig，记忆系统
+        session: SessionConfig，会话恢复
+        agents: AgentsConfig，子 agent 配置
+        compaction: CompactionSettings，上下文压缩
+        mcp_servers: dict[str, McpServerConfig]，MCP server 接入表（仅 YAML）
     """
 
     #: LLM 连接配置
@@ -538,10 +727,15 @@ class PaperFlowConfig:
 
     @classmethod
     def from_env(cls, config_path: str | None = None) -> "PaperFlowConfig":
-        """
-        工厂方法：依次加载 .env 兜底、可选 YAML、环境变量覆盖。
+        """工厂方法：依次加载 .env 兜底、可选 YAML、环境变量覆盖。
 
         返回值保证所有字段有值（至少为 dataclass 默认值）。
+
+        Args:
+            config_path: str | None，config.yaml 路径；None 用默认 "config.yaml"（不存在则跳过）
+
+        Returns:
+            加载完成的配置（.env → YAML → env 覆盖，并解析留空继承与绝对化 workspace）。
         """
         # 加载 .env 文件（不覆盖已有环境变量，即 OS 环境优先于 .env）
         load_dotenv()
@@ -570,12 +764,14 @@ class PaperFlowConfig:
         return config
 
     def _load_yaml(self, config_path: str | None) -> None:
-        """
-        从可选的 config.yaml 读取配置并覆盖默认值。
+        """从可选的 config.yaml 读取配置并覆盖默认值。
 
         顶层键与 dataclass 字段同名（``llm`` / ``runtime`` / ``rag`` …），
         经通用递归合并 ``_merge`` 下行，任意深度；不存在的文件静默跳过，
         未知键忽略。``mcp_servers`` 需校验+转换，单独分支。
+
+        Args:
+            config_path: str | None，config.yaml 路径；文件不存在时静默跳过
         """
         path = Path(config_path or "config.yaml")
         if not path.exists():
@@ -606,7 +802,12 @@ class PaperFlowConfig:
 
 
 def _apply_env(node, prefix: tuple[str, ...]) -> None:
-    """按路径约定递归派生 env 并覆盖：仅标量字段消费 env，dict/list 跳过。"""
+    """按路径约定递归派生 env 并覆盖：仅标量字段消费 env，dict/list 跳过。
+
+    Args:
+        node: 任意 dataclass 实例（被就地覆写）
+        prefix: tuple[str, ...]，当前路径前缀（拼 PAPERFLOW_* env 名）
+    """
     for f in fields(node):
         cur = getattr(node, f.name)
         path = prefix + (f.name,)

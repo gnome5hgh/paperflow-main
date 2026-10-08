@@ -81,6 +81,13 @@ class _FileContent:
     source: "pdf" | "note"；
     title: 文档标题（PDF=GROBID 主标题，笔记=H1，取不到为空串）；
     tables/figures: GROBID 提取的表格文本与图注（笔记与 PyMuPDF 回退路径为空）。
+
+    Attributes:
+        source: str，来源类型："pdf" | "note"
+        title: str，文档标题（PDF=GROBID 主标题，笔记=首个 H1；取不到为空串）
+        sections: list[tuple[str, str]]，(章节标题, 正文) 列表
+        tables: list[str]，GROBID 提取的表格文本（笔记与 PyMuPDF 回退路径为空）
+        figures: list[str]，GROBID 提取的图注（同上为空）
     """
     source: str
     title: str
@@ -99,6 +106,10 @@ class RagIndexer:
     - 维护索引状态文件（rag/index_state.json，带配方哈希版本），保证跨进程的增量一致性；
       配方哈希不符时放弃旧状态走全量重扫（切块参数/逻辑升级后的自愈机制）。
       状态文件另带旁挂的 `parsers` 诊断映射（PDF 实际解析器），不参与门控。
+
+    Attributes:
+        service: RAGService 单例，与检索器共享底层组件
+        _state_path: Path，索引状态文件路径（workspace/rag/index_state.json，带配方哈希）
     """
 
     def __init__(self, service):

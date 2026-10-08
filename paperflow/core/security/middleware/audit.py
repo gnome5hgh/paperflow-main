@@ -64,7 +64,37 @@ _span_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar("audit_s
 class AuditEntry:
     """一条审计事件的可序列化快照：五类事件（tool_started / tool_ended /
     approval_requested / approval_decided / llm_call）共用同一结构，按事件
-    类型取用不同字段组。写盘时整体 json.dumps 为一行 JSONL。"""
+    类型取用不同字段组。写盘时整体 json.dumps 为一行 JSONL。
+
+    Attributes:
+        event_type: str，事件类型：tool_started / tool_ended / approval_requested / approval_decided / llm_call
+        span_id: str，本次调用/事件的审计 span ID（构建调用树）
+        trace_id: str，一次 Agent.run() 的唯一追踪 ID
+        session_id: str，会话标识（按对话线程分组）
+        agent_type: str，发起调用的 Agent 类型
+        tool_name: str，被调用工具名（llm_call 事件为空）
+        risk_level: str，工具风险等级（未知工具或 llm_call 为 "unknown"）
+        params: dict，脱敏后的调用参数
+        parent_id: str | None，父 span ID（None 表示根节点）
+        depth: int，调用树深度（根为 0）
+        turn: int，ReAct 轮次（从 0 起）
+        started_at: str | None，事件开始时间（ISO）
+        ended_at: str | None，事件结束时间（ISO）
+        policy_decision: str，策略最终决策（auto_allowed/user_confirmed/policy_denied/security_blocked/user_denied/error）
+        result_status: str，结果状态（success/policy_blocked/security_blocked/user_denied/error）
+        duration_ms: int，执行耗时（毫秒）
+        security_scan: dict | None，安全扫描违规明细（仅 SecurityBlocked 场景）
+        error: str | None，格式化的错误信息（类型名 + 消息，截断 200 字符）
+        result_summary: dict | str | None，结果摘要（优先 summary dict，否则 text 截断 200 字符）
+        policy_rules: dict | None，策略评估快照（checked/fired/reason/policy_context）
+        approval_outcome: str | None，人工审批结果（user_confirmed/user_denied/auto_denied）
+        causation_id: str | None，因果回溯 span ID（decided 指向对应的 requested）
+        model: str | None，LLM 模型名（仅 llm_call）
+        prompt_tokens: int | None，提示词 token 数（仅 llm_call）
+        completion_tokens: int | None，生成 token 数（仅 llm_call）
+        total_tokens: int | None，总 token 数（仅 llm_call）
+        finish_reason: str | None，结束原因（stop/length 等，仅 llm_call）
+    """
     #: 事件类型标识。可选值："tool_started"、"tool_ended"、"approval_requested"、
     #: "approval_decided"、"llm_call"。决定哪些其他字段有效。
     event_type: str
@@ -141,7 +171,14 @@ class AuditEntry:
 
 
 def _sanitize(args: dict) -> dict:
-    """按敏感键名模式表脱敏调用参数：密钥/内容类替换，路径类保留原值。"""
+    """按敏感键名模式表脱敏调用参数：密钥/内容类替换，路径类保留原值。
+
+    Args:
+        args: dict，LLM 给出的原始调用参数（非 dict 时按空处理）
+
+    Returns:
+        脱敏后的参数字典（敏感键替换为占位，路径类键保留原值）。
+    """
     # 防御：大模型可能返回非 dict 的 JSON（如数组/字符串），脱敏不应崩溃
     if not isinstance(args, dict):
         return {}
@@ -168,6 +205,12 @@ def _derive_decision(ctx: ToolContext) -> str:
     语义是「未确认即未发生」：抛 ConfirmRequired 的调用无论最终是否放行，
     只要走到这里（错误路径）一律记为 user_denied；只有通过确认分支、置了
     user_confirmed 并成功执行（无异常）的调用才记为 user_confirmed。
+
+    Args:
+        ctx: ToolContext，本次工具调用上下文
+
+    Returns:
+        策略决策字符串（未确认即未发生：异常路径一律记为 user_denied）。
     """
     if ctx.error is None:
         # 无异常：根据用户确认标志区分自动允许与用户确认
@@ -184,7 +227,14 @@ def _derive_decision(ctx: ToolContext) -> str:
 
 
 def _result_status(ctx: ToolContext) -> str:
-    """从异常类型推导结果状态：无异常为成功，否则按异常种类归为被拦截或出错。"""
+    """从异常类型推导结果状态：无异常为成功，否则按异常种类归为被拦截或出错。
+
+    Args:
+        ctx: ToolContext，本次工具调用上下文
+
+    Returns:
+        结果状态字符串（success/policy_blocked/security_blocked/user_denied/error）。
+    """
     if ctx.error is None:
         return "success"
     if isinstance(ctx.error, PolicyDenied):
@@ -197,7 +247,14 @@ def _result_status(ctx: ToolContext) -> str:
 
 
 def _extract_violations(ctx: ToolContext) -> dict | None:
-    """安全拦截时取出违规明细写入审计；非拦截场景返回 None。"""
+    """安全拦截时取出违规明细写入审计；非拦截场景返回 None。
+
+    Args:
+        ctx: ToolContext，本次工具调用上下文
+
+    Returns:
+        违规明细 dict（仅 SecurityBlocked 场景）；其余情况 None。
+    """
     # 如果 ctx.error 是 SecurityBlocked 类的实例，则执行后续操作
     if isinstance(ctx.error, (SecurityBlocked,)):
         return {"violations": ctx.error.violations}
@@ -205,13 +262,27 @@ def _extract_violations(ctx: ToolContext) -> dict | None:
 
 
 def _format_error(e: Exception) -> str:
-    """错误详情：类型名 + 消息，截断 200 字符，供运维直接定位（超时/404/IO）。"""
+    """错误详情：类型名 + 消息，截断 200 字符，供运维直接定位（超时/404/IO）。
+
+    Args:
+        e: Exception，捕获到的异常
+
+    Returns:
+        「类型名: 消息」形式的文本，截断 200 字符。
+    """
     s = f"{type(e).__name__}: {e}"
     return s[:200]
 
 
 def _derive_fired(ctx: ToolContext) -> str | None:
-    """命中规则：策略引擎显式标注优先；否则按异常类型兜底推断。"""
+    """命中规则：策略引擎显式标注优先；否则按异常类型兜底推断。
+
+    Args:
+        ctx: ToolContext，本次工具调用上下文
+
+    Returns:
+        命中的策略规则名；无命中返回 None。
+    """
     if ctx.policy_fired:
         return ctx.policy_fired
     if isinstance(ctx.error, SecurityBlocked):
@@ -220,7 +291,14 @@ def _derive_fired(ctx: ToolContext) -> str | None:
 
 
 def _build_policy_rules(ctx: ToolContext) -> dict | None:
-    """组装策略依据快照：记录「当前配置输入」而非版本号，便于 replay 当时决策。"""
+    """组装策略依据快照：记录「当前配置输入」而非版本号，便于 replay 当时决策。
+
+    Args:
+        ctx: ToolContext，本次工具调用上下文
+
+    Returns:
+        策略依据快照 dict（checked/fired/reason/policy_context）；无策略信息时 None。
+    """
     fired = _derive_fired(ctx)
     if ctx.policy_context is None and fired is None:
         return None
@@ -233,7 +311,14 @@ def _build_policy_rules(ctx: ToolContext) -> dict | None:
 
 
 def _result_summary(result) -> dict | str | None:
-    """结果副作用摘要：优先 summary dict（脱敏），否则取 text 截断 200 字符。"""
+    """结果副作用摘要：优先 summary dict（脱敏），否则取 text 截断 200 字符。
+
+    Args:
+        result: ToolResult | None，工具执行结果
+
+    Returns:
+        副作用摘要：优先脱敏后的 summary dict，否则 text 去换行截断 200 字符；无结果 None。
+    """
     if result is None:
         return None
     if getattr(result, "summary", None):
@@ -243,13 +328,21 @@ def _result_summary(result) -> dict | str | None:
 
 
 class AuditMiddleware(SecurityMiddleware):
-    """审计中间件：把工具调用与审批/LLM 事件追加写入当日 JSONL 文件。"""
+    """审计中间件：把工具调用与审批/LLM 事件追加写入当日 JSONL 文件。
+
+    Attributes:
+        audit_dir: str，审计日志目录（当日文件 audit_YYYYMMDD.jsonl）
+        _lock: threading.Lock，JSONL 追加写锁（保证逐行原子写入）
+    """
 
     def __init__(self, audit_dir: str = "data/security/audit"):
         """指定审计日志目录；默认落在工作区 data/security/audit 下。
 
         初始化时建好线程写锁——子 agent 的工具调用可能在不同线程并发写入，
         后面每次追加写都在锁内完成。
+
+        Args:
+            audit_dir: str，审计日志目录；默认 "data/security/audit"
         """
         self.audit_dir = audit_dir
         # 并发写锁：多个子代理的工具调用可能在不同线程并发写入，JSONL 追加写
@@ -262,7 +355,14 @@ class AuditMiddleware(SecurityMiddleware):
         return Path(self.audit_dir) / f"audit_{datetime.now():%Y%m%d}.jsonl"
 
     def _write_event(self, entry: AuditEntry) -> None:
-        """把一条事件追加写入当日 JSONL 文件；失败降级为 stderr 告警，不抛异常。"""
+        """把一条事件追加写入当日 JSONL 文件；失败降级为 stderr 告警，不抛异常。
+
+        Args:
+            entry: AuditEntry，待落盘的审计事件
+
+        Returns:
+            无返回值；写盘失败降级为 stderr 告警，不抛异常。
+        """
         # 跨日滚动：mkdir 与 open 共用同一次路径解析，避免跨零点时两者解析出不同文件名
         path = self._current_path()
         try:
@@ -283,6 +383,9 @@ class AuditMiddleware(SecurityMiddleware):
         """工具执行前：为本次调用建立审计 span 并落盘 tool_started 起始事件。
 
         只观察不拦截，是管道里最先执行的一层——后续任何中间件拦截，调用已留痕。
+
+        Args:
+            ctx: ToolContext，本次工具调用上下文（写入 span 树字段）
         """
         # 1. 获取当前 contextvar 中存储的父 span（若有）
         # span 类似于 {"span_id": "span_xxx", "depth": 1}
@@ -320,6 +423,9 @@ class AuditMiddleware(SecurityMiddleware):
         before 正常执行过则弹栈；early-return 路径（JSON 解析失败 / 未知工具）
         只走 after，此处防御性补建 span 并补写 tool_started，保住「每个 span
         必有起始事件」的树不变量。
+
+        Args:
+            ctx: ToolContext，本次工具调用上下文（含结果或异常）
         """
         # ---- 防御性处理：若 before 未执行（如参数解析失败提前返回），则补建 span ----
         if ctx.span_id is None:
@@ -382,6 +488,11 @@ class AuditMiddleware(SecurityMiddleware):
 
         请求与决策是两条事件，decided 通过 causation_id 回溯到 requested
         （合规要求：请求 ≠ 决策）。
+
+        Args:
+            ctx: ToolContext，工具调用上下文
+            phase: str，"requested" 或 "decided"
+            approval_outcome: str | None，仅 decided 阶段有效（user_confirmed/user_denied/auto_denied）
         """
         # 审批生命周期：requested（发起确认时）与 decided（决策后）是两条独立事件，
         # decided 通过 causation_id 回溯 requested（合规要求：请求≠决策）。
@@ -428,6 +539,19 @@ class AuditMiddleware(SecurityMiddleware):
         """记录一次 LLM 调用元数据（模型 / token 数 / 耗时），不记 content。
 
         同步方法——LLM 流式回调可能跑在线程池线程，不能 await。
+
+        Args:
+            trace_id: str，本次 run 的追踪 ID
+            session_id: str，会话标识
+            agent_type: str，发起调用的 Agent 类型
+            turn: int，ReAct 轮次
+            model: str，模型名
+            prompt_tokens: int，提示词 token 数
+            completion_tokens: int，生成 token 数
+            total_tokens: int，总 token 数
+            started_at: str，调用开始时间（ISO）
+            duration_ms: int，耗时（毫秒）
+            finish_reason: str，结束原因（stop/length 等）
         """
         # 计算 ended_at：优先用 started_at + duration_ms 推算，否则兜底为当前时间
         ended_at = datetime.now().isoformat()

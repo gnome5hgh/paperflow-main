@@ -68,7 +68,13 @@ def _row_to_schema(row: dict) -> Message:
 
 
 class MessageManager:
-    """对话消息的落盘与查询单点：负责清洗、记录与 in-context 回放。"""
+    """对话消息的落盘与查询单点：负责清洗、记录与 in-context 回放。
+
+    Attributes:
+        db: MemoryDB，messages 表的连接
+        embedder: 可选嵌入模型（语义检索预留，当前未使用）
+        agent_manager: AgentManager | None，用于读取 AgentState.message_ids 确定 in-context 窗口
+    """
 
     def __init__(self, db: MemoryDB, embedder=None, agent_manager=None):
         """初始化消息管理器。
@@ -122,6 +128,14 @@ class MessageManager:
             包装后的 ask 函数，与原接口一致（question -> answer）。
         """
         def ask(question: str) -> str:
+            """包装后的 ask：取答案并把该轮 Q&A 落盘为一条 user 消息（记录失败不阻断提问）。
+
+            Args:
+                question: str，向用户提出的问题
+
+            Returns:
+                用户的回答文本（原样透传 base_ask 的结果）。
+            """
             # 1. 调用原始 ask_user 获取答案
             answer = base_ask(question)
             # 2. 尝试将问答记录为一条 user 消息（带前缀标识，便于后续识别）

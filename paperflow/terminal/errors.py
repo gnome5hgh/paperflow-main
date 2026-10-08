@@ -1,7 +1,7 @@
 # paperflow/terminal/errors.py
-"""错误 → 用户语言翻译：API 错误原文不再是唯一呈现（真实使用测试 P3-2）。
+"""错误 → 用户语言翻译：API 错误原文不再是唯一呈现。
 
-此前 REPL 把异常原样打印（"Error code: 402 - Insufficient Balance"），用户
+REPL 若把异常原样打印（"Error code: 402 - Insufficient Balance"），用户
 看到的是 API 原文而不是「余额不足，请充值」这类可行动指引。translate_error
 把常见错误映射为用户语言，并保留一行 dim 原文便于报障（cli 的 key 守卫与
 repl 的异常兜底共用）。
@@ -30,6 +30,12 @@ def translate_error(e: BaseException) -> str:
     """把异常翻译成用户语言 + 一行原文（dim 呈现由调用方处理）。
 
     无规则命中时给出通用提示；原文恒保留一行，便于贴给维护者排查。
+
+    Args:
+        e: BaseException，捕获到的异常
+
+    Returns:
+        用户语言提示 + 一行原文（截断 200 字符）；无规则命中时给通用提示 + 原文。
     """
     raw = str(e)
     low = raw.lower()

@@ -18,7 +18,14 @@ class HybridLocalIndex:
     融合查询 = 稠密余弦相似度（sim_d）+ 稀疏点积（sim_s），
     用 argpartition 取 top_k（不排序全量，O(n) 复杂度取前 k）。
     稀疏索引存 {token_id: weight} 字典列表，点积时逐 doc 求和——
-    稀疏向量维度远大于稠密 dim，字典表示避免零值浪费。"""
+    稀疏向量维度远大于稠密 dim，字典表示避免零值浪费。
+
+    Attributes:
+        index: np.ndarray | None，示例句稠密向量矩阵 (n, dim)，已乘 alpha
+        sparse_index: list[dict] | None，示例句稀疏向量 [{token_id: weight}]，已乘 (1-alpha)
+        routes: np.ndarray | None，每行的路由名标签 (n,)
+        utterances: np.ndarray | None，原始示例句 (n,)，仅供调试/追溯
+    """
 
     def __init__(self):
         """初始化空索引，各属性为 None 表示未填充。"""

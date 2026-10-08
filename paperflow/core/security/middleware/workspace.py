@@ -8,7 +8,7 @@
 ② 敏感路径黑名单（``denied_path``）——审计目录、依赖服务数据卷、.git/.claude/.zcode、
    密钥与凭证文件、shell 配置、系统目录前缀，命中即拒绝。
 
-白名单机制已退役（spec 2026-09-30）：path 工具统一「任意绝对路径 + 黑名单」，
+path 工具统一「任意绝对路径 + 黑名单」：
 产物落盘类参数的默认目录由 factory 装配时按 agent 注入，不在此层强制。
 """
 
@@ -22,7 +22,7 @@ def _is_relative_to_ci(resolved: Path, prefix: Path) -> bool:
     """大小写不敏感的前缀归属判断：双侧路径部件小写后按部件边界比较。
 
     macOS 默认大小写不敏感文件系统（APFS）上 ``resolve()`` 不改写路径大小写
-    （已实测：/USR/local/x -> /USR/local/x）——/USR 与 /usr、~/.SSH 与 ~/.ssh
+    （如 /USR/local/x -> /USR/local/x）——/USR 与 /usr、~/.SSH 与 ~/.ssh
     是同一目录，若前缀比较区分大小写即可绕过黑名单。与第二段「parts 小写」
     同一防绕过思路。按部件比较保证前缀语义精确：/usr 匹配 /usr/local，
     但不匹配 /usrlocal（裸字符串 startswith 会误伤/漏判）。
@@ -75,7 +75,7 @@ def is_denied_path(resolved: Path, workspace: str) -> bool:
 
     # ----- 第一段：工作区内的系统运行时数据目录（前缀匹配，大小写不敏感） -----
     # 前缀判断 resolved 是否落在 ws/security 或 ws/infra 之下：审计目录与依赖
-    # 服务数据卷按模块归位到这两个前缀（spec 2026-10-05-data-layout-by-module）。
+    # 服务数据卷按模块归位到这两个前缀。
     # 大小写不敏感：APFS 上 workspace/SECURITY 与 workspace/security 同目录（防绕过）。
     if _is_relative_to_ci(resolved, ws / "security"):
         return True
@@ -147,7 +147,11 @@ class WorkspacePolicy:
 
 
 class WorkspacePolicyMiddleware(SecurityMiddleware):
-    """工作区路径边界中间件：工具执行前校验路径类参数为绝对路径且不触黑名单。"""
+    """工作区路径边界中间件：工具执行前校验路径类参数为绝对路径且不触黑名单。
+
+    Attributes:
+        workspace: str，工作区根目录路径（相对路径参数一律拒绝）
+    """
 
     def __init__(self, workspace: str):
         """指定工作区根目录；相对路径参数一律拒绝，绝对路径过黑名单。

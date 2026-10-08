@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 
 #: TitleExtractor 回退层级中可信任的来源：只有这些层级产出的标题可入索引/建条目。
-#: pymupdf 字体启发式会把期刊名/页眉/arXiv 头当标题（GROBID 挂时实测污染 corpus
+#: pymupdf 字体启发式会把期刊名/页眉/arXiv 头当标题（GROBID 不可用时会污染 corpus
 #: 与 bib），宁缺毋滥——提取不可靠就返回空，让调用方不索引/不建条目。
 _TRUSTED_TITLE_SOURCES = frozenset({"grobid", "pdftitle"})
 
@@ -22,6 +22,15 @@ class CorpusIndex:
 
     一篇论文可同时有笔记与 PDF（同全标题合并成一条记录）。biblio 仅当 PDF
     解析出书目元数据时存在；笔记只贡献 note_path + title。
+
+    Attributes:
+        config: PaperFlowConfig，语料目录与 GROBID 端点来源
+        _rag_service: RAGService | None，惰性获取（提供 parse_pdf_cached）
+        _title_extractor: TitleExtractor | None，惰性获取（PDF 无标题时的 5 级链兜底）
+        _lock: threading.RLock，保护索引重建与查询
+        _cache_path: Path，语料标题缓存文件（workspace/citations/corpus_titles.json）
+        _records: dict[str, dict]，归一化标题 → 论文记录
+        _mtime: dict[str, int]，文件路径 → mtime_ns（增量重建判据）
     """
 
     def __init__(self, config, rag_service=None, title_extractor=None):
@@ -29,6 +38,11 @@ class CorpusIndex:
 
         rag_service 提供 parse_pdf_cached（复用 GROBID 解析）；
         title_extractor 是 TitleExtractor（PDF 解析无标题时的 5 级链兜底）。
+
+        Args:
+            config: PaperFlowConfig，配置来源
+            rag_service: RAGService | None，可注入桩（缺省惰性获取）
+            title_extractor: TitleExtractor | None，可注入桩（缺省惰性获取）
         """
         self.config = config
         self._rag_service = rag_service
@@ -64,7 +78,14 @@ class CorpusIndex:
 
     @staticmethod
     def normalize(title: str) -> str:
-        """标题归一化（与 bib._normalize 同规则：小写+去标点+折叠空白）。"""
+        """标题归一化（与 bib._normalize 同规则：小写+去标点+折叠空白）。
+
+        Args:
+            title: str，待归一化标题
+
+        Returns:
+            与 bib._normalize 同规则的小写去标点折叠空白串。
+        """
         import re
         return re.sub(r"[\s\W_]+", "", title.lower())
 
@@ -174,10 +195,13 @@ class CorpusIndex:
             2. 若 GROBID 返回空标题或抛出异常，则回退到 TitleExtractor（5 级链）。
             3. **关键过滤**：TitleExtractor 的结果中，只接受 source 为 "grobid" 或 "pdftitle"
                的层级。pymupdf 等字体启发式层级容易将期刊名、页眉、arXiv 头误识别为标题，
-               实测会严重污染索引与 bib，因此宁缺毋滥——不可靠来源直接返回空串。
+               会严重污染索引与 bib，因此宁缺毋滥——不可靠来源直接返回空串。
 
         Returns:
             (title, biblio)。若无法提取可靠标题，title 返回空字符串，调用方将不索引该 PDF。
+
+        Args:
+            path: str，PDF 文件路径
         """
         # 1. 首选 GROBID 解析（RAG 服务内部有缓存）
         try:
@@ -214,6 +238,9 @@ class CorpusIndex:
 
         Returns:
             提取出的标题字符串，若无法提取则返回空字符串。
+
+        Args:
+            path: str，笔记文件路径
         """
         try:
             lines = Path(path).read_text(encoding="utf-8").splitlines()
@@ -244,11 +271,25 @@ class CorpusIndex:
             return [dict(rec) for rec in self._records.values() if rec.get("pdf_path")]
 
     def match(self, title: str) -> dict | None:
-        """按全标题归一化精确匹配；无命中返回 None。"""
+        """按全标题归一化精确匹配；无命中返回 None。
+
+        Args:
+            title: str，论文全标题
+
+        Returns:
+            该标题对应的论文记录 dict；无命中返回 None。
+        """
         return self._records.get(self.normalize(title))
 
     def record_by_path(self, path: str) -> dict | None:
-        """按 note/pdf 路径反查论文记录（source path 兜底入口）。"""
+        """按 note/pdf 路径反查论文记录（source path 兜底入口）。
+
+        Args:
+            path: str，note/pdf 文件路径
+
+        Returns:
+            命中该路径的论文记录 dict；无命中返回 None。
+        """
         p = str(Path(path).resolve())
         for rec in self._records.values():
             if rec.get("pdf_path") == p or rec.get("note_path") == p:
@@ -256,5 +297,12 @@ class CorpusIndex:
         return None
 
     def record_by_title(self, title: str) -> dict | None:
-        """按标题查询记录（同 match 的别名，保持接口语义一致性）。"""
+        """按标题查询记录（同 match 的别名，保持接口语义一致性）。
+
+        Args:
+            title: str，论文全标题
+
+        Returns:
+            该标题对应的论文记录 dict；无命中返回 None。
+        """
         return self.match(title)

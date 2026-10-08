@@ -1,11 +1,9 @@
 # paperflow/core/llm/embedding.py
 """稠密编码：Embedder 协议与云端实现（OpenAI 兼容 /v1/embeddings）。
 
-协议原在 rag/encoders/embedder.py，随本地 sentence-transformers 退役上收至此
-（spec 2026-10-05-embedding-cloud-startup §3）——core 定义接口，rag/services
-与 cli 向下依赖。云端 only：构造不碰网络、不校验 api_key（软依赖），失败在
-调用时以 RuntimeError 暴露，由调用方按各自降级语义处理（路由退稀疏、检索跳
-稠密路、索引明确报错）。
+core 定义接口，rag/services 与 cli 向下依赖。云端 only：构造不碰网络、不校验
+api_key（软依赖），失败在调用时以 RuntimeError 暴露，由调用方按各自降级语义
+处理（路由退稀疏、检索跳稠密路、索引明确报错）。
 """
 import logging
 import time
@@ -29,10 +27,20 @@ class Embedder(Protocol):
     """稠密编码协议：文本批次 → L2 归一化向量矩阵。
 
     与原 rag 协议逐字一致——调用方（索引器/路由器/检索器）无需感知实现更换。
+
+    Attributes:
+        dim: int，模型输出的向量维度（只读静态表，不发网络探测）
     """
 
     def __call__(self, texts: list[str]) -> np.ndarray:
-        """把一批文本编码成 (len(texts), dim) 的归一化向量矩阵。"""
+        """把一批文本编码成 (len(texts), dim) 的归一化向量矩阵。
+
+        Args:
+            texts: list[str]，待编码的文本批次
+
+        Returns:
+            (len(texts), dim) 的 L2 归一化向量矩阵；空输入返回零行矩阵。
+        """
         ...
 
     @property
@@ -51,9 +59,14 @@ class CloudEmbedder:
     """OpenAI 兼容 /v1/embeddings 云端编码器（默认端点：硅基流动）。
 
     重试语义与主 LLM 客户端对齐：连接错误/5xx 指数退避重试 max_retries 次，
-    耗尽抛 RuntimeError("云端嵌入不可用: …")。L2 归一化在客户端做——与
-    退役前的本地编码器（normalize_embeddings=True）输出语义一致，下游余弦相似度
-    与既有 Milvus 向量可比。
+    耗尽抛 RuntimeError("云端嵌入不可用: …")。L2 归一化在客户端做，保证下游
+    余弦相似度与 Milvus 既有向量可比。
+
+    Attributes:
+        model_name: str，嵌入模型名
+        _max_retries: int，可恢复错误的最大重试次数
+        _batch_size: int，单批请求的文本条数
+        _client: httpx.Client，云端 /v1/embeddings 客户端
     """
 
     def __init__(self, base_url: str, api_key: str, model: str, *,
@@ -98,6 +111,14 @@ class CloudEmbedder:
         return _EMBED_DIMS.get(self.model_name)
 
     def __call__(self, texts: list[str]) -> np.ndarray:
+        """把一批文本分批发往云端编码并做 L2 归一化。
+
+        Args:
+            texts: list[str]，待编码文本批次（自动清洗 surrogate）
+
+        Returns:
+            (len(texts), dim) 的归一化向量矩阵；空输入返回零行矩阵。
+        """
         if not texts:
             return np.zeros((0, self.dim))
         # surrogate 字符会炸远端 tokenizer（本地版同款教训）
@@ -112,8 +133,13 @@ class CloudEmbedder:
         只对**可恢复**错误退避重试：连接错误 / 超时 / 5xx（以及 408/429）。
         4xx（认证/参数错误）与客户端请求构造错误（如空 api_key 产生的非法
         Authorization header）重试必然同样失败——立即中止，避免冷启动/索引在
-        必败请求上空耗退避。回归背景：api_key 为空时一次全量路由编码白等 ~1.5s
-        退避，直接把 spec §1「冷启动 ≤2s」顶出预算。
+        必败请求上空耗退避（否则把冷启动延迟预算顶出预期）。
+
+        Args:
+            batch: list[str]，单批文本（条数 ≤ _batch_size）
+
+        Returns:
+            该批的向量矩阵 (len(batch), dim)，float32；重试耗尽抛 RuntimeError。
         """
         last_err: Exception | None = None
         for attempt in range(self._max_retries + 1):
@@ -155,7 +181,14 @@ _PROBE_TEXT = "dim"
 
 
 def _l2_normalize(v: np.ndarray) -> np.ndarray:
-    """逐行 L2 归一化；零向量（空输入占位）除零保护返回原值。"""
+    """逐行 L2 归一化；零向量（空输入占位）除零保护返回原值。
+
+    Args:
+        v: np.ndarray，待归一化的向量矩阵（每行一个向量）
+
+    Returns:
+        逐行 L2 归一化后的矩阵；零向量行保持原值（除零保护）。
+    """
     norms = np.linalg.norm(v, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     return v / norms

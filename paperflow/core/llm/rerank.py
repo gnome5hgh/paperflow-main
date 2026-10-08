@@ -1,9 +1,7 @@
 # paperflow/core/llm/rerank.py
 """精排：Reranker 协议与云端实现（硅基流动 /v1/rerank，Jina/Cohere 风格）。
 
-协议原在 rag/encoders/reranker.py，随本地 CrossEncoder 退役上收至此
-（spec 2026-10-05-embedding-cloud-startup §3）。返回值契约与退役前的本地实现
-一致：按相关度降序的文档下标列表（长度 ≤ top_k），调用方零适配。
+返回值契约：按相关度降序的文档下标列表（长度 ≤ top_k），调用方零适配。
 """
 import time
 from typing import Protocol
@@ -18,6 +16,16 @@ class Reranker(Protocol):
     """精排协议：query + 候选文档 → 按相关度降序的下标列表。"""
 
     def __call__(self, query: str, docs: list[str], top_k: int) -> list[int]:
+        """按相关度对候选文档排序。
+
+        Args:
+            query: str，查询文本
+            docs: list[str]，候选文档列表
+            top_k: int，最多返回的下标个数
+
+        Returns:
+            按相关度降序的文档下标列表（长度 ≤ top_k）。
+        """
         ...
 
 
@@ -26,6 +34,11 @@ class CloudReranker:
 
     服务端返回 {"results": [{"index": int, "relevance_score": float}]}；
     客户端防御性按分数降序重排（不信任服务端有序承诺），再截断 top_k。
+
+    Attributes:
+        model_name: str，精排模型名
+        _max_retries: int，可恢复错误的最大重试次数
+        _client: httpx.Client，云端 /v1/rerank 客户端
     """
 
     def __init__(self, base_url: str, api_key: str, model: str, *,
@@ -47,6 +60,16 @@ class CloudReranker:
         self._client = httpx.Client(**kwargs)
 
     def __call__(self, query: str, docs: list[str], top_k: int) -> list[int]:
+        """调用云端 /v1/rerank 并防御性重排截断。
+
+        Args:
+            query: str，查询文本（自动清洗 surrogate）
+            docs: list[str]，候选文档列表
+            top_k: int，最多返回的下标个数
+
+        Returns:
+            按相关度降序的文档下标列表（越界下标被丢弃，长度 ≤ top_k）；docs 为空返回 []。
+        """
         if not docs:
             return []
         payload = {"model": self.model_name,

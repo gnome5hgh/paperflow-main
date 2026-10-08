@@ -13,7 +13,14 @@ from paperflow.tools.file.write_file import WriteFileTool
 
 
 def _root_map(config: PaperFlowConfig) -> dict[str, str]:
-    """语义根名 → 绝对路径(语料库目录为外部绝对路径,memory 随 workspace)。"""
+    """语义根名 → 绝对路径(语料库目录为外部绝对路径,memory 随 workspace)。
+
+    Args:
+        config: PaperFlowConfig，路径来源
+
+    Returns:
+        语义根名 → 绝对路径的映射（note/pdf/research/memory/templates/scratch）。
+    """
     return {
         "note": config.corpus.note_dir,
         "pdf": config.corpus.pdf_dir,
@@ -34,6 +41,14 @@ def make_tools(config: PaperFlowConfig, tool_items: list[type[Tool] | Tool],
     TypeError)直接复用同一实例。isinstance(item, type) 判定类为"可实例化",
     否则视为现成实例。default_write_root 语义根名（"note"/"research"/…）非 None
     时,盖章到 WriteFileTool 实例的 _default_write_root（filename 模式缺省落点）。
+
+    Args:
+        config: PaperFlowConfig，注入给工具的配置
+        tool_items: list[type[Tool] | Tool]，工具类或已实例化工具
+        default_write_root: str | None，装配注入的默认写根（语义根名）
+
+    Returns:
+        装配好的 Tool 实例列表（已注入 [目录] 提示、默认写根与 _config）。
     """
     roots = _root_map(config)
     tools = []

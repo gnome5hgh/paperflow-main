@@ -1,7 +1,7 @@
 # paperflow/terminal/confirm_center.py
-"""确认中心——全进程确认/提问的唯一消费者（真实使用测试 P0-1/P0-3 的根治方案）。
+"""确认中心——全进程确认/提问的唯一消费者。
 
-背景：确认此前在 asyncio.to_thread 工作线程里各自跑 prompt_toolkit 临时
+背景：确认若在 asyncio.to_thread 工作线程里各自跑 prompt_toolkit 临时
 prompt，靠线程级锁串行化；并行多 agent 场景下另一 agent 的渲染事件会重启
 rich Live 盖掉确认框，持锁线程被 Ctrl+C 卡死后锁永久死锁——确认框永不渲染、
 agent 树无限挂起。
@@ -12,9 +12,9 @@ agent 树无限挂起。
 1. **跨事件循环桥接**：子 agent 可能跑在主循环（spawn 改 async 工具后）或
    工作线程的独立循环（遗留路径/测试），统一经 run_coroutine_threadsafe 把
    请求调度到主循环排队，再 wrap_future 回到调用方循环 await——用户按键永远
-   回到「活的」await，不再有结果丢弃（P0-3 根治）。
+   回到「活的」await，不再有结果丢弃。
 2. **渲染互斥**：消费者弹框期间在渲染器上置抑制标志，其他 agent 的流式事件
-   不得重启 Live/打印行把确认框盖掉（P0-1 根治）。
+   不得重启 Live/打印行把确认框盖掉。
 3. **看门狗**：确认请求超过 watchdog_s 无输入 → 自动拒绝，兜底「用户确认等待
    不计入子任务超时」留下的永不超时缺口；方向必须是拒绝（自动同意等于绕过
    安全门）。
@@ -33,11 +33,17 @@ DEFAULT_WATCHDOG_S = 300.0
 
 
 def _confirm_prompt(cr) -> str:
-    """确认框一行提示（spec §5.3 卡片观感）：左边条 + 图标动词 + 目标 + 键提示。
+    """确认框一行提示：左边条 + 图标动词 + 目标 + 键提示。
 
     图标动词复用活动行的 activity_label；目标取 params 里的 path 尾段
     （basename），取不到 path（如 spawn_sub_agent）就只显示工具名。
     键绑定不变：y=本次放行 / a=本会话放行 / n=拒绝。
+
+    Args:
+        cr: ConfirmRequired，待确认的工具调用
+
+    Returns:
+        确认框一行提示文本（左边条 + 图标动词 + 目标 + 键提示）。
     """
     tool_name = getattr(cr, "tool_name", "") or ""
     verb, _ = activity_label(tool_name)
@@ -50,7 +56,13 @@ def _confirm_prompt(cr) -> str:
 
 @dataclass
 class _Request:
-    """一次确认/提问请求：payload + 回传 future（绑定主循环）。"""
+    """一次确认/提问请求：payload + 回传 future（绑定主循环）。
+
+    Attributes:
+        kind: str，请求类型："confirm" | "ask"
+        payload: object，ConfirmRequired 或提问字符串
+        fut: asyncio.Future，主循环上的回传槽
+    """
     kind: str                 # "confirm" | "ask"
     payload: object           # ConfirmRequired | str（question）
     fut: asyncio.Future
@@ -58,9 +70,25 @@ class _Request:
 
 class ConfirmCenter:
     """确认/提问的唯一消费者。start() 在主事件循环上启动；confirm()/ask()
-    可从任意线程、任意事件循环安全调用。"""
+    可从任意线程、任意事件循环安全调用。
+
+    Attributes:
+        _io: InputIO，终端输入适配
+        _renderer: StreamRenderer，渲染通道（弹框期间被子抑制）
+        _watchdog_s: float，看门狗时限（秒），超时自动拒绝
+        _loop: asyncio.AbstractEventLoop | None，主事件循环（None = 未启动，直连 io 兜底）
+        _queue: asyncio.Queue | None，请求队列（唯一消费者逐个处理）
+        _task: asyncio.Task | None，常驻消费者协程
+    """
 
     def __init__(self, io, renderer, *, watchdog_s: float = DEFAULT_WATCHDOG_S):
+        """记录终端依赖与看门狗时限（此时尚未启动消费者）。
+
+        Args:
+            io: InputIO，终端输入适配
+            renderer: StreamRenderer，渲染通道
+            watchdog_s: float，请求超时自动拒绝的时限（秒）
+        """
         self._io = io
         self._renderer = renderer
         self._watchdog_s = watchdog_s
@@ -94,6 +122,12 @@ class ConfirmCenter:
         cr: ConfirmRequired（携带工具名与参数，供 diff 预览）。
         可在任意事件循环 await；主循环自身的调用也走队列，与跨线程请求
         同一串行化路径。
+
+        Args:
+            cr: ConfirmRequired，待确认的工具调用（携带工具名与参数供 diff 预览）
+
+        Returns:
+            "y"（本次放行）/ "a"（本会话同路径放行）/ "n"（拒绝）。
         """
         return await self._bridge("confirm", cr)
 
@@ -102,6 +136,12 @@ class ConfirmCenter:
 
         仅允许从工作线程调用（AskUserQuestionTool 在 to_thread 里执行）；
         主线程绝不能调（会死锁事件循环）。EOF/中断/超时返回空串（fail-safe）。
+
+        Args:
+            question: str，向用户提出的问题
+
+        Returns:
+            用户回答；EOF/中断/超时返回空串（fail-safe）。仅允许工作线程调用。
         """
         if self._loop is None:
             try:
@@ -116,7 +156,15 @@ class ConfirmCenter:
             return ""
 
     async def _bridge(self, kind: str, payload) -> str:
-        """把请求桥接到主循环的消费者；wrap_future 回到调用方循环 await。"""
+        """把请求桥接到主循环的消费者；wrap_future 回到调用方循环 await。
+
+        Args:
+            kind: str，请求类型（confirm/ask）
+            payload: object，ConfirmRequired 或提问字符串
+
+        Returns:
+            消费者结算的决策；未启动消费者时直连 io 兜底。
+        """
         if self._loop is None:
             # 未启动（无 REPL 装配，如测试/程序化调用）：直连 io 兜底
             if kind == "confirm":
@@ -131,7 +179,15 @@ class ConfirmCenter:
     # ---------- 主循环侧 ----------
 
     async def _serve(self, kind: str, payload) -> str:
-        """（主循环）入队并等待结算。fut 挂在主循环，取消时消费者侧感知。"""
+        """（主循环）入队并等待结算。fut 挂在主循环，取消时消费者侧感知。
+
+        Args:
+            kind: str，请求类型
+            payload: object，请求载荷
+
+        Returns:
+            该请求的决策字符串（在主循环上入队并等待）。
+        """
         fut = self._loop.create_future()
         await self._queue.put(_Request(kind=kind, payload=payload, fut=fut))
         return await fut
@@ -157,7 +213,14 @@ class ConfirmCenter:
                     req.fut.set_result("n" if req.kind == "confirm" else "")
 
     async def _render_and_read_confirm(self, cr) -> str:
-        """渲染 diff 预览 → 抑制渲染 → 三态读输入（带看门狗）。"""
+        """渲染 diff 预览 → 抑制渲染 → 三态读输入（带看门狗）。
+
+        Args:
+            cr: ConfirmRequired，待确认的工具调用
+
+        Returns:
+            "y"/"a"/"n"；看门狗超时或读输入异常一律返回 "n"（fail-safe 拒绝）。
+        """
         from paperflow.terminal.repl import _confirm_diff_preview
         preview = _confirm_diff_preview(cr.tool_name, getattr(cr, "params", None))
         self._renderer.suspend()
@@ -185,8 +248,14 @@ class ConfirmCenter:
     async def _render_and_read_ask(self, question: str) -> str:
         """渲染问题 → 抑制渲染 → 读开放答案（带看门狗，超时按空回答）。
 
-        回答模式横幅（真实会话复验发现）：提问期间用户输入的新任务指令会被
+        回答模式横幅：提问期间用户输入的新任务指令会被
         当成回答吞掉——弹框前明确「此刻输入 = 对提问的回答」，降低误归属。
+
+        Args:
+            question: str，向用户提出的问题
+
+        Returns:
+            用户回答；超时/EOF/中断返回空串。
         """
         self._renderer.print(
             "⌨️ [回答模式] 子任务向你提问——此刻输入将作为对下面问题的回答，"

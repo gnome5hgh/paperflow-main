@@ -121,6 +121,10 @@ class IntentUnit(BaseModel):
     confidence 允许为空，两个产出路径的填法不同：路由面逐项填自己的融合分数
     （真实值，clip 到 [0,1]）；LLM 兜底面**整列留空**——该路径不产置信度（见
     IntentionResult）。留空表示「该路径没有产置信度」，不是低置信。
+
+    Attributes:
+        intent_type: IntentType，本项意图
+        confidence: float | None，置信度 [0,1]；路由面填自己的融合分数，LLM 兜底面为 None（该路径不产置信度）
     """
 
     #: 意图类型
@@ -192,6 +196,15 @@ class IntentOutput(_IntentListRules, BaseModel):
 
     轮级字段（entities / rewritten_query / source / clarification / clarify_candidates）
     属于整轮而非某一项：实体抽取与查询改写都是一轮产出一次，澄清问的是「这一句我没听懂」。
+
+    Attributes:
+        intents: list[IntentUnit]，本轮的意图列表（唯一真相源；单意图即长度 1，首项即主意图）
+        entities: dict，实体提取阶段产出的实体
+        rewritten_query: str，管线输入原文；LLM 兜底改写时为其改写结果
+        source: IntentStep，产出阶段（审计/监控可观测）
+        prev_intent: IntentType | None，上一轮意图（追问检测阶段填充）
+        clarification: str | None，歧义澄清问题；非空时由调用方在本轮内同步问用户
+        clarify_candidates: list[IntentType]，澄清候选（业务候选 top2，澄清回路的代码级回传锚点；不进 INTENT 块）
     """
 
     #: 意图列表（单意图即长度 1），唯一真相源
@@ -255,6 +268,10 @@ class ArbitrationChoice(BaseModel):
 
     与 IntentionResult（兜底全解析）不同，仲裁只回答「二选一」——候选集由
     管线按路由分差圈定，模型只在候选内表态；越出候选的选择由管线作废回落。
+
+    Attributes:
+        intent_type: IntentType，两个候选中更符合用户意图的那个
+        confidence: float，模型对这个选择的把握 [0,1]
     """
 
     #: 两个候选中更符合用户意图的那个（枚举值原样输出）
@@ -281,6 +298,11 @@ class IntentionResult(_IntentListRules, BaseModel):
     列出，模型若无视说明照填，护栏照样清空。
     底层结构化输出机制只校验类型不校验数值范围，因此 confidence 的 pydantic 范围
     约束继续保留（构造期越界值照旧被拦，不因清空而放松）。
+
+    Attributes:
+        intents: list[IntentUnit]，按执行顺序排列的意图列表（首项即主意图）
+        query_rewrite: str，模型改写后的查询（缺省空串，管线用原文）
+        clarification: str | None，无法在意图间取舍时写给用户的澄清问题
     """
 
     #: 意图列表（单意图即长度 1），按执行顺序排列——首项即主意图。

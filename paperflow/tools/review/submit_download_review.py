@@ -9,6 +9,15 @@ from paperflow.tools.review._validate import VERDICTS, enum_check
 
 
 class SubmitDownloadReviewTool(Tool):
+    """汇总下载审查裁决的终止型工具（reviewer 下载审查模式返回）。
+
+    Attributes:
+        name: str，工具名 "submit_download_review"
+        description: str，工具描述
+        parameters: dict，JSON Schema（verdict/items）
+        risk_level: str，"low"（只读格式化，无副作用）
+        terminal: bool，True（提交成功即终结本轮任务）
+    """
     name = "submit_download_review"
     description = ("汇总对候选论文清单的下载审查裁决（reviewer 下载审查模式返回）。"
                    "pass = 存在可下载/推荐项；fail = 无任何合格项。"
@@ -41,6 +50,13 @@ class SubmitDownloadReviewTool(Tool):
         但 pass + 空 items、pass 却无 pass 条目、fail 却含 pass 条目都判自相矛盾;
         fail + 空 items 合法(空清单正是「无任何合格项」的极端情况)。校验通过后渲染
         verdict 行 + 每条目 PASS/FAIL 标签。
+
+        Args:
+            verdict: str，"pass"（存在可下载/推荐项）或 "fail"（无任何合格项）
+            items: list[dict]，每条含 title/decision/reasons/source_link（可选 venue_rank）
+
+        Returns:
+            ToolResult；非法或自相矛盾输入返回可行动报错文本，通过时回渲染后的裁决。
         """
         # ① verdict 枚举校验（enum_check 共享，同 submit_review）
         bad = enum_check(verdict, VERDICTS, "verdict")

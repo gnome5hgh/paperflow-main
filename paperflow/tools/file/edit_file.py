@@ -15,6 +15,18 @@ from paperflow.tools.file.atomic import atomic_write
 
 
 class EditFileTool(Tool):
+    """定向修改既有笔记的工具（search-replace，小范围改动）。
+
+    Attributes:
+        name: str，工具名 "edit_file"
+        description: str，工具描述
+        parameters: dict，JSON Schema（path/old_text/new_text）
+        risk_level: str，"medium"（与 write_file 对齐）
+        requires_confirm: bool，True（写操作需用户确认）
+        root_hints: list[str]，NOTE_HINTS（笔记类根名）
+        side_effects: list[str]，["write_file"]
+        wants_run_state: bool，True（写盘后登记产物账本）
+    """
     name = "edit_file"
     description = "修改既有笔记（定向替换 search-replace；小范围改动，须精确匹配 old_text）"
     parameters = {
@@ -40,6 +52,15 @@ class EditFileTool(Tool):
         查找用 str.count 判断唯一性——锚点必须唯一,避免替换错位置。
         _run_state 为本次 run 的状态容器（未注入时为 None）：替换落盘成功后把路径
         登记进产物账本；索引失败不影响登记。
+
+        Args:
+            path: str，目标文件绝对路径
+            old_text: str，待替换的原文（须唯一命中）
+            new_text: str，替换后的文本
+            _run_state: RunState | None，本次 run 的状态容器（登记产物）
+
+        Returns:
+            ToolResult；未命中/多次命中都返回可行动错误文本。
         """
         # 空 old_text 守卫:str.count("") 恒大于 1,会误入"多命中"分支报出令人困惑的错,
         # 直接明示参数错误。

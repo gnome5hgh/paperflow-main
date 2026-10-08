@@ -24,6 +24,18 @@ class AgentState(BaseModel):
            从 block_manager 动态构建，保证始终反映块表最新状态。
         2. `message_ids` 持久化到数据库，是「当前 in-context 窗口」的显式记录；
            压缩时只从该列表移除旧 id，不物理删除 messages 表行（Recall 可追溯全部历史）。
+
+    Attributes:
+        agent_id: str，唯一标识符（agent_state 表主键）
+        name: str | None，可读名称
+        description: str | None，描述（展示/索引用）
+        system: str | None，系统提示词（可选，覆盖默认）
+        model: str | None，指定模型名
+        memory: Memory，核心记忆块容器；不持久化，每次由 AgentManager 从块表动态构建
+        tools: list[Any]，运行时工具列表；不持久化，由 Agent 装配注入
+        context_window_limit: int | None，上下文窗口上限（压缩判定的预算来源）
+        message_ids: list[str]，当前 in-context 窗口的消息 id（顺序即对话顺序）；空列表表示回退为加载全部持久化消息
+        created_at: datetime | None，创建时间（由 DB 或调用方赋值）
     """
 
     # 允许 Memory 容器类（普通 Python 类，非 Pydantic 模型）作为字段类型

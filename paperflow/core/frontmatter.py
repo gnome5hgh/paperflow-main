@@ -22,12 +22,13 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(?:(.*?)\n)?---\s*\n?(.*)", re.DOTALL)
 def parse_frontmatter(text: str) -> tuple[dict, str]:
     """分离文件开头的 YAML frontmatter 与 Markdown 正文。
 
-    :param text: 文件全文
-    :returns: (frontmatter 字典, body 文本)。无 frontmatter 时 frontmatter 为空字典、
-              body 为原文；frontmatter 为空段时返回空字典
-              （group(1) 未参与匹配或为空串，归一为空串 → yaml.safe_load('') → None
-              → or {} → {}；注意 safe_load(None) 在本环境会抛 AttributeError，故先归一）。
-    :注意: 使用 safe_load 只解析基本类型，不执行任意代码。
+    Args:
+        text: 文件全文
+
+    Returns:
+        (frontmatter 字典, body 文本)。无 frontmatter 时 frontmatter 为空字典、body 为原文；frontmatter 为空段时返回空字典 （group(1) 未参与匹配或为空串，归一为空串 → yaml.safe_load('') → None → or {} → {}；注意 safe_load(None) 在本环境会抛 AttributeError，故先归一）。
+
+    Note: 使用 safe_load 只解析基本类型，不执行任意代码。
     """
     m = _FRONTMATTER_RE.match(text)
     if not m:

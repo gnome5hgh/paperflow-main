@@ -49,6 +49,15 @@ class SkillConfig:
                           supervisor 仅在显式列入时可见
         tools           ← tools.py 模块级 TOOLS 列表（可选，装配期并入 agent 工具表）
         path            ← skill 目录路径（load_resource 读取资源的围栏根）
+
+    Attributes:
+        name: str，skill 名（须等于目录名）
+        description: str，做什么 + 何时触发（L1 清单消费）
+        instructions: str，SKILL.md 正文（L2 按需加载）
+        metadata: dict，frontmatter metadata（version/author 等）
+        allowed_agents: list[str]，可见性白名单（空 = 全部子 agent 可见，supervisor 仅显式列入可见）
+        tools: list[Tool]，tools.py 的 TOOLS（装配期并入 agent 工具表）
+        path: Path | None，skill 目录（L3 资源读取的围栏根）
     """
 
     name: str
@@ -71,20 +80,23 @@ class SkillRegistry:
     使用方式::
 
         registry = SkillRegistry("<root>/.paperflow/skills")
-        block = registry.skills_block("noter")     # L1 清单（见 Task 4）
-        tools = registry.get_tools_for("noter")    # 并入 agent 工具表（见 Task 4/7）
+        block = registry.skills_block("noter")     # L1 清单
+        tools = registry.get_tools_for("noter")    # 并入 agent 工具表
 
-    :副作用: 构造时动态导入各 skill 的 tools.py 并校验 Tool 元数据，非法值抛
-             ValueError 终止构造。进程内构造一次，由装配层持有传给所有 Agent。
+    Note: 构造有副作用——动态导入各 skill 的 tools.py 并校验 Tool 元数据，非法值抛
+        ValueError 终止构造。进程内构造一次，由装配层持有传给所有 Agent。
+
+    Attributes:
+        _skills: dict[str, SkillConfig]，skill 名 → 配置
+        _disabled: set[str]，停用名单（扫描期整体跳过，全线不可见）
     """
 
     def __init__(self, skills_dir: str | None = None, disabled: set[str] | None = None):
         """
-        :param skills_dir: skill 根目录（<项目根>/.paperflow/skills/）；
-                           None 或不存在则空注册表
-        :param disabled: 停用名单（lock 中 enabled=false 的 skill，enabledPlugins
-                         语义）；扫描期跳过——L1 清单/L2 load_skill/L3 资源与
-                         工具并入全线不可见，单点收口
+        Args:
+            skills_dir: skill 根目录（<项目根>/.paperflow/skills/）；None 或不存在则空注册表
+            disabled: 停用名单（lock 中 enabled=false 的 skill）；扫描期跳过——L1 清单/L2 load_skill/L3 资源与 工具并入全线不可见，单点收口
+
         """
         self._skills: dict[str, SkillConfig] = {}
         self._disabled = set(disabled or ())
@@ -92,7 +104,11 @@ class SkillRegistry:
             self._discover(Path(skills_dir))
 
     def _discover(self, skills_dir: Path) -> None:
-        """遍历目录下含 SKILL.md 的一级子目录，解析并注册（停用名单先跳过）。"""
+        """遍历目录下含 SKILL.md 的一级子目录，解析并注册（停用名单先跳过）。
+
+        Args:
+            skills_dir: Path，skills 根目录
+        """
         if not skills_dir.is_dir():
             return
         # 按目录名排序，保证加载顺序可预测（与 AgentRegistry 同一约定）
@@ -106,7 +122,13 @@ class SkillRegistry:
             self._register(skill_path, meta, body)
 
     def _register(self, skill_path: Path, meta: dict, body: str) -> None:
-        """校验 frontmatter 并注册单个 skill（fail-fast）。"""
+        """校验 frontmatter 并注册单个 skill（fail-fast）。
+
+        Args:
+            skill_path: Path，skill 目录
+            meta: dict，frontmatter 解析结果
+            body: str，SKILL.md 正文
+        """
         name = meta.get("name")
         if not name:
             raise ValueError(f"Skill '{skill_path.name}': frontmatter 缺少必填字段 'name'")
@@ -141,7 +163,15 @@ class SkillRegistry:
     def _import_tools(self, tools_path: Path) -> list[Tool]:
         """importlib 动态加载 tools.py 的 TOOLS 列表（与 AgentRegistry._import_tools 同款）。
 
-        :raises ValueError: Tool 安全元数据非法时抛出，终止构造。
+
+        Raises:
+            ValueError: Tool 安全元数据非法时抛出，终止构造。
+
+        Args:
+            tools_path: Path，skill 目录下的 tools.py
+
+        Returns:
+            该文件导出的 Tool 列表；文件不存在返回 []。
         """
         if not tools_path.exists():
             return []
@@ -159,7 +189,14 @@ class SkillRegistry:
     # ----- 查询接口 -----
 
     def get_skill(self, name: str) -> SkillConfig:
-        """:raises KeyError: skill 未注册时抛出。"""
+        """skill 未注册时抛出 KeyError。
+
+        Args:
+            name: str，skill 名
+
+        Returns:
+            对应的 SkillConfig；未注册时抛 KeyError。
+        """
         skill = self._skills.get(name)
         if skill is None:
             raise KeyError(f"Unknown skill: {name}")
@@ -171,7 +208,14 @@ class SkillRegistry:
 
     def list_for(self, agent_type: str) -> list[SkillConfig]:
         """按可见性过滤：子 agent 默认全可见（allowed_agents 为空）或命中白名单；
-        supervisor 仅当 allowed_agents 显式包含它时可见（权限最小化）。"""
+        supervisor 仅当 allowed_agents 显式包含它时可见（权限最小化）。
+
+        Args:
+            agent_type: str，目标 agent 类型
+
+        Returns:
+            该 agent 可见的 SkillConfig 列表。
+        """
         visible = []
         for skill in self._skills.values():
             if agent_type == "supervisor":
@@ -181,13 +225,19 @@ class SkillRegistry:
                 visible.append(skill)
         return visible
 
-    # ----- 能力面：工具并入 / L1 清单 / L2/L3 按需加载（Task 4） -----
+    # ----- 能力面：工具并入 / L1 清单 / L2/L3 按需加载 -----
 
     def get_tools_for(self, agent_type: str) -> list[Tool]:
         """agent_type 可加载的 skill 工具并集（装配期并入 AgentConfig.tools）。
 
         supervisor 恒返回空——权限最小化红线：Supervisor 不拥有执行类 Tool，
         skill 捆绑的代码能力不得突破该原则。
+
+        Args:
+            agent_type: str，目标 agent 类型
+
+        Returns:
+            该 agent 可加载的 skill 工具并集；supervisor 恒为空列表。
         """
         if agent_type == "supervisor":
             return []
@@ -200,6 +250,12 @@ class SkillRegistry:
         """L1 渐进披露清单（注入 system head 的 <available_skills> 块）。
 
         无可见 skill 时返回空串——调用方据此整块省略，零开销。
+
+        Args:
+            agent_type: str，目标 agent 类型
+
+        Returns:
+            注入 system head 的 <available_skills> 清单；无可见 skill 返回空串。
         """
         skills = self.list_for(agent_type)
         if not skills:
@@ -218,23 +274,43 @@ class SkillRegistry:
         return "\n".join(lines)
 
     def _visible_skill(self, name: str, agent_type: str) -> SkillConfig:
-        """取对 agent_type 可见的 skill；不存在或不可见统一 KeyError（不泄露存在性）。"""
+        """取对 agent_type 可见的 skill；不存在或不可见统一 KeyError（不泄露存在性）。
+
+        Args:
+            name: str，skill 名
+            agent_type: str，目标 agent 类型
+
+        Returns:
+            对该 agent 可见的 SkillConfig；不存在或不可见统一抛 KeyError（不泄露存在性）。
+        """
         skill = self._skills.get(name)
         if skill is None or name not in {s.name for s in self.list_for(agent_type)}:
             raise KeyError(f"skill '{name}' 不存在或对 agent '{agent_type}' 不可见")
         return skill
 
     def load_body(self, name: str, agent_type: str) -> str:
-        """L2：返回 skill 指令正文。:raises KeyError: 不存在或不可见。"""
+        """L2：返回 skill 指令正文；不存在或不可见时抛出 KeyError。
+
+        Args:
+            name: str，skill 名
+            agent_type: str，目标 agent 类型
+
+        Returns:
+            skill 指令正文；不存在或不可见时抛 KeyError。
+        """
         return self._visible_skill(name, agent_type).instructions
 
     def load_resource(self, name: str, agent_type: str, resource: str) -> str:
         """L3：返回 skill 目录内资源文件内容。
 
-        :param resource: 相对 skill 目录的路径（如 references/fmt.md）
-        :raises KeyError: skill 不存在或不可见
-        :raises ValueError: resource 解析后越出 skill 目录（路径围栏）
-        :raises FileNotFoundError: 资源文件不存在
+        Args:
+            resource: 相对 skill 目录的路径（如 references/fmt.md）
+
+        Raises:
+            KeyError: skill 不存在或不可见
+            ValueError: resource 解析后越出 skill 目录（路径围栏）
+            FileNotFoundError: 资源文件不存在
+
         """
         skill = self._visible_skill(name, agent_type)
         root = skill.path.resolve()

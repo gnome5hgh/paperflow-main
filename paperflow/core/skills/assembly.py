@@ -11,8 +11,12 @@ from paperflow.core.tool import Tool
 def merge_tools(*groups: tuple[str, list[Tool]]) -> list[Tool]:
     """按组顺序合并工具列表，工具名全局唯一，冲突即抛 ValueError（fail-fast）。
 
-    :param groups: (来源标签, 工具列表) 序列，如 ("agent", ...), ("skill", ...), ("framework", ...)
-    :raises ValueError: 任一工具名重复（skill 夹带 load_skill 等框架名在此被拦）
+    Args:
+        groups: (来源标签, 工具列表) 序列，如 ("agent", ...), ("skill", ...), ("framework", ...)
+
+    Raises:
+        ValueError: 任一工具名重复（skill 夹带 load_skill 等框架名在此被拦）
+
     """
     merged: list[Tool] = []
     seen: dict[str, str] = {}

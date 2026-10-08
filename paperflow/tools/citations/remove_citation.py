@@ -3,6 +3,17 @@ from paperflow.core.tool import Tool, ToolResult
 
 
 class RemoveCitationTool(Tool):
+    """从 references.bib 删除一条引用的工具（需用户确认）。
+
+    Attributes:
+        name: str，工具名 "remove_citation"
+        description: str，工具描述
+        parameters: dict，JSON Schema（key_or_title）
+        risk_level: str，"medium"（写类形态，删除不可逆但影响面有限）
+        requires_confirm: bool，True（经策略引擎第 3 级询问用户）
+        side_effects: list[str]，["delete_file"]
+        manager: CitationManager，注入的引用库门面
+    """
     name = "remove_citation"
     description = ("从 references.bib 删除一条引用（传 bib key 或论文标题）。"
                    "多条标题命中时返回候选列表——必须先让用户选择，不得擅自删。")
@@ -22,9 +33,22 @@ class RemoveCitationTool(Tool):
     side_effects = ["delete_file"]
 
     def __init__(self, manager):
+        """注入引用库门面。
+
+        Args:
+            manager: CitationManager，引用库读写入口
+        """
         self.manager = manager
 
     def execute(self, key_or_title: str) -> ToolResult:
+        """按 key 或标题删除；多条命中时返回候选交用户选择。
+
+        Args:
+            key_or_title: str，bib key 或论文标题
+
+        Returns:
+            ToolResult，文本为删除结果/候选列表/未找到提示。
+        """
         r = self.manager.remove(key_or_title)
         if r["status"] == "ambiguous":
             lines = "\n".join(f"- {c['key']}: {c['title']}" for c in r["candidates"])

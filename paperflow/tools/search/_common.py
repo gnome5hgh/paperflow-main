@@ -16,5 +16,12 @@ from paperflow.core.agent.state import get_run_state   # noqa: F401  （兼容�
 
 
 def _norm_title(title: str) -> str:
-    """规范化标题:去非字母数字,转小写——跨源同论文的兜底去重键。"""
+    """规范化标题:去非字母数字,转小写——跨源同论文的兜底去重键。
+
+    Args:
+        title: str | None，待归一化的标题
+
+    Returns:
+        小写、去非字母数字字符后的标题键（搜索去重池共用）。
+    """
     return re.sub(r"[^\w]", "", title).lower()

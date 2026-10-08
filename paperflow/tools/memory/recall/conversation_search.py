@@ -4,6 +4,14 @@ from paperflow.tools.memory.runtime_context import get_memory_context
 
 
 class ConversationSearchTool(Tool):
+    """检索完整对话历史（Recall）的工具，默认过滤 tool 消息防递归。
+
+    Attributes:
+        name: str，工具名 "conversation_search"
+        description: str，工具描述
+        parameters: dict，JSON Schema（query/roles/limit）
+        risk_level: str，"low"（纯只读检索）
+    """
     name = "conversation_search"
     description = "检索完整对话历史（Recall）"
     parameters = {
@@ -23,6 +31,14 @@ class ConversationSearchTool(Tool):
 
         默认过滤 tool 消息是为了防递归：agent 看到自己的工具结果会形成回声/
         递归放大，检索历史时只关心真实对话轮。
+
+        Args:
+            query: str，检索词
+            roles: list[str] | None，限定角色（缺省 user/assistant）
+            limit: int，返回条数上限
+
+        Returns:
+            ToolResult，文本为命中的对话内容；无命中返回固定提示。
         """
         ctx = get_memory_context()
         if ctx is None:

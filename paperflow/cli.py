@@ -75,11 +75,18 @@ _COMPOSE_TIMEOUT_S = 600.0   # docker compose up -d 上限（首启可能拉镜�
 _DEGRADE_NOTE = "RAG/PDF 解析功能降级，REPL 仍可正常使用"
 _NO_DOCKER_WARN = f"未检测到 docker，无法自动拉起依赖服务（Milvus/GROBID）；{_DEGRADE_NOTE}"
 _NO_COMPOSE_WARN = f"未找到 docker-compose.yml（当前目录与安装目录均无），无法自动拉起依赖服务；{_DEGRADE_NOTE}"
-_GROBID_RUNBOOK_HINT = "若为首次启动，需先初始化 grobid-home，见 docs/测试指南/问题排查手册.md"
+_GROBID_RUNBOOK_HINT = "若为首次启动，需先初始化 grobid-home（见 docker-compose.yml 首部注释）"
 
 
 def _host_port(url: str) -> tuple[str, int]:
-    """从服务 URL 提取 (host, port)；未显式写端口时按 http/https 语义补全。"""
+    """从服务 URL 提取 (host, port)；未显式写端口时按 http/https 语义补全。
+
+    Args:
+        url: str，服务 URL
+
+    Returns:
+        (host, port)；未显式写端口时按 http/https 语义补全（80/443）。
+    """
     parsed = urlparse(url)
     host = parsed.hostname or "localhost"
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -87,7 +94,16 @@ def _host_port(url: str) -> tuple[str, int]:
 
 
 def _port_open(host: str, port: int, timeout: float = _PROBE_TIMEOUT_S) -> bool:
-    """TCP 连通探测：不假设 HTTP 健康路径，端口能建立连接即视为服务在。"""
+    """TCP 连通探测：不假设 HTTP 健康路径，端口能建立连接即视为服务在。
+
+    Args:
+        host: str，主机名
+        port: int，端口
+        timeout: float，连接超时（秒）
+
+    Returns:
+        True 表示 TCP 连接可建立（不假设 HTTP 健康路径）。
+    """
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -107,7 +123,14 @@ def _find_compose_dir() -> Path | None:
 
 def _compose_up(compose_dir: Path) -> str | None:
     """执行 docker compose up -d。成功返回 None；失败返回带原因的描述
-    （取 stderr 尾部几行——compose 的报错信息都在输出末尾）。"""
+    （取 stderr 尾部几行——compose 的报错信息都在输出末尾）。
+
+    Args:
+        compose_dir: Path，docker-compose.yml 所在目录
+
+    Returns:
+        成功返回 None；失败返回带原因的描述文本（取 stderr 尾部几行）。
+    """
     try:
         proc = subprocess.run(
             ["docker", "compose", "up", "-d"],
@@ -128,7 +151,16 @@ def _compose_up(compose_dir: Path) -> str | None:
 def _wait_healthy(endpoints: list[tuple[str, str, int]],
                   timeout_s: float, poll_interval_s: float
                   ) -> list[tuple[str, str, int]]:
-    """轮询直至全部端口可达或超时，返回仍未就绪的 (名称, host, port) 列表。"""
+    """轮询直至全部端口可达或超时，返回仍未就绪的 (名称, host, port) 列表。
+
+    Args:
+        endpoints: list[tuple[str, str, int]]，(名称, host, port) 端点表
+        timeout_s: float，总等待上限（秒）
+        poll_interval_s: float，轮询间隔（秒）
+
+    Returns:
+        超时后仍未就绪的 (名称, host, port) 列表（全就绪为空列表）。
+    """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         pending = [(n, h, p) for n, h, p in endpoints if not _port_open(h, p)]
@@ -139,15 +171,18 @@ def _wait_healthy(endpoints: list[tuple[str, str, int]],
 
 
 def _probe_app_layer(endpoints: list[tuple[str, str, int]]) -> list[str]:
-    """端口可达之后的应用层探活（真实使用测试 P1-4/P3-6 的应用侧互补）。
+    """端口可达之后的应用层探活（TCP 连通探测的应用侧互补）。
 
-    此前 bootstrap 只做 TCP 连通探测——容器「端口开了随即 Exited(1)」（etcd TSO
-    超时崩溃）与「半健康栈」都能通过预检，RAG 静默降级 3.5 小时无人知晓。
+    只做 TCP 连通探测会漏掉两类故障：容器「端口开了随即 Exited(1)」（etcd TSO
+    超时崩溃）与「半健康栈」都能通过预检，此后 RAG 静默降级而无人察觉。
     Milvus 用 pymilvus 语义级连接（list_collections），GROBID 用 /api/isalive。
     任何异常只产出警告、绝不抛出——软依赖语义不变。
 
     Returns:
         警告文本列表（空 = 应用层全部健康）。
+
+    Args:
+        endpoints: list[tuple[str, str, int]]，(名称, host, port) 端点表
     """
     warnings: list[str] = []
     for name, host, port in endpoints:
@@ -260,12 +295,14 @@ def _select_resume_session(agent_manager: AgentManager, io) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int | None:
-    """
-    装配全部依赖并启动 REPL。
+    """装配全部依赖并启动 REPL。
 
-    :returns: 无参 REPL 路径返回 None（REPL 正常退出即成功）。
 
-    命令行参数（argparse，P2-5）：
+    Returns:
+        无参 REPL 路径返回 None（REPL 正常退出即成功）。
+
+
+    命令行参数（argparse）：
         --help：用法。
         --resume [SESSION_ID]：恢复历史会话；不带 id 时列出历史会话供选择。
         --skip-bootstrap：跳过依赖服务启动预检（等价 PAPERFLOW_SKIP_BOOTSTRAP=1）。
@@ -287,6 +324,9 @@ def main(argv: list[str] | None = None) -> int | None:
         - AgentManager 依赖 BlockManager 和 MessageManager；MessageManager 需要 AgentManager 来获取 in-context 窗口，
           因此创建顺序为：先建 AgentManager，再回填 MessageManager.agent_manager。
         - 记忆工具上下文需要 TitleExtractor，它依赖 GrobidClient 和 StructuredOutput。
+
+    Args:
+        argv: list[str] | None，命令行参数（None 时读 sys.argv）
     """
     import argparse
 
@@ -318,7 +358,7 @@ def main(argv: list[str] | None = None) -> int | None:
         notify=(lambda msg: console.print(msg, style="dim")) if console else None)
     for w in service_warnings:
         (console.print(w, style="yellow") if console else print(w))
-    # api_key 缺失提示（spec §5）：CloudEmbedder 构造不校验 api_key——此处只提示
+    # api_key 缺失提示：CloudEmbedder 构造不校验 api_key——此处只提示
     # 不阻断，降级路径由 router/retriever 各自消化。
     if not config.rag.embedding.api_key or not config.intent.encoder.api_key:
         _msg = ("未配置云端嵌入 api_key（config.yaml rag.embedding / intent.encoder 段）："
@@ -328,7 +368,7 @@ def main(argv: list[str] | None = None) -> int | None:
     try:
         llm = LLMClient(config.llm)
     except RuntimeError as e:
-        # 未配置 API key（P2-4）：用户语言的红字提示，不再是裸 traceback
+        # 未配置 API key：用户语言的红字提示，不再是裸 traceback
         (console.print(f"[red]{e}[/red]") if console else print(f"错误：{e}"))
         sys.exit(1)
     # agents 插件目录：配置路径不存在时回退安装根（从非仓库目录启动也能找到插件；
@@ -427,7 +467,7 @@ def main(argv: list[str] | None = None) -> int | None:
     else:
         agent_state = agent_manager.create_agent(session_id)
 
-    # 会话恢复的历史回放（P2-3 观感补齐）：--resume 恢复的是模型上下文，屏幕上
+    # 会话恢复的历史回放：--resume 恢复的是模型上下文，屏幕上
     # 否则不留任何痕迹，用户会以为恢复失败。这里把**同一个** in-context 窗口投影成
     # 回放载荷（数据源与模型一致），由 _repl 在横幅之后渲染进滚动区。
     # 必须在此处（message_manager.agent_manager 回填之后）构建：否则
@@ -458,9 +498,9 @@ def main(argv: list[str] | None = None) -> int | None:
     # 安全管道：四中间件（经验记忆中间件已移除——工具调用经验不再注入 prompt，
     # 改由 Sleeptime 后台整合进核心记忆块）。
     middlewares = [
-        # 审计目录从 workspace 派生（真实会话复验发现：默认 cwd 相对导致
-        # PAPERFLOW_RUNTIME_WORKSPACE 重定向时审计仍写进仓库 data/security/audit，与真实会话混写；
-        # 且 cwd 下的 data/security/audit 在 WorkspacePolicy 的 ws/security 保护约定之外）
+        # 审计目录从 workspace 派生：默认按 cwd 相对定位会让
+        # PAPERFLOW_RUNTIME_WORKSPACE 重定向时审计仍写进仓库 data/security/audit，与其他会话的审计混写；
+        # 且 cwd 下的 data/security/audit 落在 WorkspacePolicy 的 ws/security 保护约定之外)
         AuditMiddleware(audit_dir=str(Path(config.runtime.workspace) / "security" / "audit")),
         WorkspacePolicyMiddleware(workspace=config.runtime.workspace),
         SecurityScanMiddleware(),
@@ -468,10 +508,9 @@ def main(argv: list[str] | None = None) -> int | None:
     ]
 
     # 意图管线:真实混合路由器 + LLM 兜底。意图编码器为云端实例(intent_encoder
-    # 段,与 RAG 的编码器互不共享);各意图阈值已由标定脚本写回 routes.yaml——
-    # 这里只读已标定阈值,不做训练或阈值搜索。alpha 是稠密/稀疏信号的融合权重,
-    # 与标定脚本保持一致;alpha/top_k 生产值读 config.intent.router(唯一声明点
-    # config.py,标定脚本 apply_calibration 就地改写)。
+    # 段,与 RAG 的编码器互不共享);各意图阈值由离线标定写回 routes.yaml——
+    # 这里只读阈值,不做训练或阈值搜索。alpha 是稠密/稀疏信号的融合权重;
+    # alpha/top_k 读 config.intent.router(唯一声明点 config.py)。
     # 路由向量缓存锚安装根（与 routes.yaml 同锚，语料源自那里，不随 workspace
     # 重定向）。命中即零网络启动；未命中现算回写；断网降级零向量见 _encode_dense。
     router = HybridRouter(
@@ -479,7 +518,7 @@ def main(argv: list[str] | None = None) -> int | None:
         routes=load_routes(), alpha=config.intent.router.alpha,
         top_k=config.intent.router.top_k,
         vector_cache_path=str(VECTOR_CACHE_PATH))
-    # spec §5：启动期意图路由降级必须可见（黄字），不能只写 logger。缓存命中
+    # 启动期意图路由降级必须可见（黄字），不能只写 logger。缓存命中
     # 时 add() 不走编码、dense_degraded 仍为 False——此时路由是全功能的，无告警。
     if router.dense_degraded:
         _msg = ("意图路由已降级为纯 BM25/稀疏：云端稠密编码不可用。"
@@ -491,7 +530,7 @@ def main(argv: list[str] | None = None) -> int | None:
 
     # 确认中心：确认/提问的唯一消费者，跑在 REPL 主事件循环上（启动/收尾在
     # _repl 内）。confirm/ask 回调经它跨线程桥接，弹框期间渲染抑制——并行多
-    # agent 的确认框不再被其他 agent 的渲染事件盖掉（真实使用测试 P0-1/P0-3）。
+    # agent 的确认框不再被其他 agent 的渲染事件盖掉。
     from paperflow.terminal.confirm_center import ConfirmCenter
     center = ConfirmCenter(io, renderer)
 

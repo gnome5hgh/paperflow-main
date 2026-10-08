@@ -6,8 +6,16 @@ class ConcurrentUpdateError(Exception):
 
     出现即说明有人绕过了 BlockManager 的原子入口（跨进程写、或直接调 orm）。
     进程内所有写路径都经 mutate_block 的单次持锁，正常情况下不会触发。
+
+    Attributes:
+        resource_id: str，被并发推进的块标识（供调用方定位冲突目标）
     """
 
     def __init__(self, resource_id: str) -> None:
+        """构造并发写冲突异常。
+
+        Args:
+            resource_id: str，发生并发冲突的块标识，写入异常消息并留存为属性
+        """
         super().__init__(f"resource {resource_id} was updated concurrently")
         self.resource_id = resource_id

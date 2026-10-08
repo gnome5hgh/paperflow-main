@@ -23,9 +23,16 @@ RUN_STATE_TTL_S = 3600
 
 
 class SessionState:
-    """同一会话内跨 run 存活的运行期状态。"""
+    """同一会话内跨 run 存活的运行期状态。
+
+    Attributes:
+        spawn_registry: dict[str, dict]，任务指纹 → {state: running|done, result, started_at}（spawn 去重）
+        failure_counts: dict[str, int]，agent_type → 连续失败次数（成功即清零）
+        failure_counts_at: dict[str, float]，失败计数最近写入时刻（TTL 清扫依据）
+    """
 
     def __init__(self) -> None:
+        """初始化空会话状态（各注册表与计数为空）。"""
         #: spawn 去重：任务指纹 -> {"state": "running"|"done", "result", "started_at"}
         self.spawn_registry: dict[str, dict] = {}
         #: 连续失败计数：agent_type -> 次数（成功即清零）
@@ -35,9 +42,21 @@ class SessionState:
 
 
 class RunState:
-    """一次用户任务（一个 trace）内的运行期状态。"""
+    """一次用户任务（一个 trace）内的运行期状态。
+
+    Attributes:
+        failed_urls: dict[str, str]，失败 URL → 失败原因（搜索负缓存）
+        downloaded: dict[str, str]，URL 或规范化标题 → 落盘路径（搜索成功短路）
+        spawn_dispatches: list[tuple[str, str]]，supervisor 自身派发账本 (agent_type, status)
+        turn_spawn_counts: dict[int, int]，轮次 → 该轮派发次数（每轮上限用）
+        review_counts: dict[tuple[str, str], int]，(父实例 id, mode) → 审稿次数（预算用）
+        in_flight_paths: dict[str, set[str]]，父实例 id → 在途写盘目标路径集（同路径互斥用）
+        artifacts: dict[str, str]，落盘路径 → 生产者工具名（产物账本）
+        last_touched_at: float，最后一次取用时刻（TTL 滑动窗口清扫依据）
+    """
 
     def __init__(self) -> None:
+        """初始化空 run 状态（各账本与缓存为空，取用时刻记为当前）。"""
         #: 搜索负缓存：失败 URL -> 失败原因（拒绝重复尝试）
         self.failed_urls: dict[str, str] = {}
         #: 搜索成功短路：URL 或规范化标题 -> 落盘路径
@@ -72,7 +91,15 @@ _LOCK = threading.RLock()
 
 
 def _sweep_session(st: SessionState, now: float) -> None:
-    """剔除过窗的 done 缓存与失败计数（running 条目不动——可能正被另一线程执行）。"""
+    """剔除过窗的 done 缓存与失败计数（running 条目不动——可能正被另一线程执行）。
+
+    Args:
+        st: SessionState，待清扫的会话容器
+        now: float，当前单调时钟时刻
+
+    Returns:
+        无返回值（就地剔除过窗的 done 缓存与失败计数；running 条目不动）。
+    """
     stale = [fp for fp, e in st.spawn_registry.items()
              if e.get("state") == "done"
              and now - e.get("started_at", now) > SPAWN_REUSE_WINDOW_S]
@@ -85,7 +112,14 @@ def _sweep_session(st: SessionState, now: float) -> None:
 
 
 def get_session_state(session_id: str) -> SessionState:
-    """取该会话的状态容器（不存在则建），取用时顺手清扫过期条目。"""
+    """取该会话的状态容器（不存在则建），取用时顺手清扫过期条目。
+
+    Args:
+        session_id: str，会话标识
+
+    Returns:
+        该会话的状态容器（不存在则建；取用时顺手清扫过期条目）。
+    """
     with _LOCK:
         now = time.monotonic()
         st = _SESSION_STATES.get(session_id)
@@ -101,6 +135,12 @@ def get_run_state(trace_id: str) -> RunState:
     回收按滑动窗口：命中已存在的容器先刷新它的取用时刻，再做清扫——若先扫后取，一个
     存活超过窗口的活跃任务会在自己的取用调用里被删掉又立刻重建，中途积累的搜索负缓存
     与成功短路会被静默清空。
+
+    Args:
+        trace_id: str，本次用户任务的追踪标识
+
+    Returns:
+        该次任务的状态容器（不存在则建；取用时顺手回收闲置过久的整份 run 状态）。
     """
     with _LOCK:
         now = time.monotonic()

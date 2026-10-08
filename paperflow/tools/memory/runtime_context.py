@@ -14,7 +14,14 @@ __all__ = ["MemoryToolsContext", "set_memory_context", "get_memory_context"]
 
 @dataclass
 class MemoryToolsContext:
-    """记忆工具共享上下文（各工具 execute 时经 get_memory_context() 取得）。"""
+    """记忆工具共享上下文（各工具 execute 时经 get_memory_context() 取得）。
+
+    Attributes:
+        agent_id: str，归属会话标识（消息检索/落盘按它键控）
+        block_manager: BlockManager，块 CRUD 服务句柄
+        message_manager: MessageManager，对话落盘与检索句柄
+        title_extractor: TitleExtractor，权威标题提取句柄（extract_title 用）
+    """
 
     agent_id: str = ""
     block_manager: object = None
@@ -26,7 +33,11 @@ _memory_context: MemoryToolsContext | None = None
 
 
 def set_memory_context(ctx: MemoryToolsContext | None) -> None:
-    """绑定/清空运行时上下文（CLI 装配后调用；测试传 None 隔离）。"""
+    """绑定/清空运行时上下文（CLI 装配后调用；测试传 None 隔离）。
+
+    Args:
+        ctx: MemoryToolsContext | None，要绑定的上下文；None 清空（测试隔离用）
+    """
     global _memory_context
     _memory_context = ctx
 

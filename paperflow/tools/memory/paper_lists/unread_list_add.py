@@ -5,6 +5,14 @@ from paperflow.tools.memory.paper_lists._common import append_line
 
 
 class UnreadListAddTool(Tool):
+    """把论文加入未读清单的工具（title 须来自提取链或用户，禁用文件名）。
+
+    Attributes:
+        name: str，工具名 "unread_list_add"
+        description: str，工具描述
+        parameters: dict，JSON Schema（title/source）
+        risk_level: str，"medium"
+    """
     name = "unread_list_add"
     description = "把一篇论文加入未读清单，追加 `- 标题 (来源)` 行"
     parameters = {
@@ -18,7 +26,15 @@ class UnreadListAddTool(Tool):
     risk_level = "medium"
 
     def execute(self, title: str = "", source: str = "") -> ToolResult:
-        """追加 `- 标题 (来源)` 行到 unread_list 块；title 为空直接拒绝（禁文件名）。"""
+        """追加 `- 标题 (来源)` 行到 unread_list 块；title 为空直接拒绝（禁文件名）。
+
+        Args:
+            title: str，论文标题（空则拒绝）
+            source: str，来源标注（可选）
+
+        Returns:
+            ToolResult，文本为追加结果或错误说明。
+        """
         if not title or not title.strip():
             return ToolResult(text="Error: title is required (extract from paper, not filename)")
         ctx = get_memory_context()

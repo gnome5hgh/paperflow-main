@@ -52,10 +52,25 @@ def _make_print_fn(console):
     """
     if console is None:
         def _plain(*args, style=None, **kwargs):
+            """非 TTY 打印：走内置 print（忽略 style，不产生 ANSI 转义）。
+
+            Args:
+                args: 任意位置参数，原样转给 print
+                style: str | None，rich 样式名（此处忽略）
+                kwargs: dict，其余 print 关键字参数（end/flush 等）
+            """
             print(*args, **kwargs)
         return _plain
 
     def _rich(*args, style=None, end="\n", flush=False):
+        """TTY 打印：走 rich console.print，支持样式与长行折行。
+
+        Args:
+            args: 任意位置参数，原样转给 console.print
+            style: str | None，rich 样式名
+            end: str，行尾字符
+            flush: bool，是否立即刷新（rich 由 console 管理）
+        """
         # overflow="fold"：长行自动换行而非截断
         console.print(*args, style=style, end=end, overflow="fold")
     return _rich
@@ -129,6 +144,14 @@ def _make_confirm_callback(io: InputIO, renderer: StreamRenderer, center=None):
     center = center or ConfirmCenter(io, renderer)
 
     async def _confirm(cr) -> bool:
+        """确认回调：把三态选择折叠为放行/拒绝，并把会话级授权记入已确认集合。
+
+        Args:
+            cr: ConfirmRequired，待确认的工具调用
+
+        Returns:
+            True 表示放行；EOF/Ctrl+C 与拒绝都返回 False。
+        """
         try:
             choice = await center.confirm(cr)
         except (EOFError, KeyboardInterrupt):
@@ -136,7 +159,7 @@ def _make_confirm_callback(io: InputIO, renderer: StreamRenderer, center=None):
             return False
         if choice == "a":
             # 会话级授权：提前把 (tool, path) 记入已确认集合——同一文件本会话内
-            # 后续写/编辑不再询问（对齐 Claude Code 编辑类批准仅会话有效）
+            # 后续写/编辑不再询问（批准仅本会话有效）
             cr.confirm()
             return True
         return choice == "y"
@@ -161,6 +184,14 @@ def _make_ask_callback(io: InputIO, renderer: StreamRenderer, center=None):
     center = center or ConfirmCenter(io, renderer)
 
     def _ask(question: str) -> str:
+        """提问回调：经确认中心读取开放答案。
+
+        Args:
+            question: str，向用户提出的问题
+
+        Returns:
+            用户回答；EOF/Ctrl+C 返回空串。
+        """
         try:
             return center.ask(question)
         except (EOFError, KeyboardInterrupt):
@@ -169,7 +200,14 @@ def _make_ask_callback(io: InputIO, renderer: StreamRenderer, center=None):
 
 
 def _shorten_path(p: str) -> str:
-    """将路径中的 home 目录缩写为 '~'，用于 banner 显示。"""
+    """将路径中的 home 目录缩写为 '~'，用于 banner 显示。
+
+    Args:
+        p: str，绝对路径
+
+    Returns:
+        home 目录前缀替换为 "~" 的路径（用于横幅显示）。
+    """
     home = str(Path.home())
     return "~" + p[len(home):] if str(p).startswith(home) else str(p)
 
@@ -272,8 +310,9 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
         CommandContext(io=io, renderer=renderer, mcp_manager=mcp_manager))
 
     def _cancel_run():
+        """SIGINT handler：只取消当前 run 任务，REPL 本身继续存活（回到输入框）。"""
         # SIGINT handler：只取消当前 run_task，REPL 本身活着（回到输入框，不是退出）。
-        # 只 cancel 主循环任务——子 agent 树的级联取消由 spawn 异步化保证（ADR 0003）。
+        # 只 cancel 主循环任务——子 agent 树的级联取消由 spawn 异步化保证。
         # run_task 是 create_task 建立的句柄，.cancel() 会在其下一个 await 点抛
         # CancelledError，被下方主循环接住。
         if run_task is not None and not run_task.done():
@@ -309,7 +348,7 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 continue
             read_failures = 0
             if not raw.strip():
-                # 纯空白输入（真实使用测试 P3-2）：直接忽略，不进意图管线——
+                # 纯空白输入：直接忽略，不进意图管线——
                 # 否则一次完整 LLM 调用后才被兜底拒绝，白烧 token。轻提示一次，
                 # 避免用户以为卡死。
                 renderer.print("（空输入已忽略）", style="dim")
@@ -322,7 +361,7 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 break
             if outcome.consumed:
                 continue
-            # 用户回显（spec §6）：每轮的翻历史锚点
+            # 用户回显：每轮的翻历史锚点
             renderer.print_raw(f"❯ {raw}")
             query = raw
             # 每轮清残留：异常路径不消费 should_print，
@@ -355,7 +394,7 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
                 renderer.print("Task exceeded max turns. Please rephrase and retry.")
                 continue
             except Exception as e:
-                # 错误 → 用户语言翻译（真实使用测试 P3-2）：API 原文不直接当唯一呈现
+                # 错误 → 用户语言翻译：API 原文不直接当唯一呈现
                 renderer.print(translate_error(e), style="red")
                 continue
             finally:

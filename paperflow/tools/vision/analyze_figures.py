@@ -20,6 +20,19 @@ MAX_FIGURES = 12
 
 
 class AnalyzeFiguresTool(Tool):
+    """提取并分析 PDF 图表的工具（视觉模型看图，可选把图存进笔记目录）。
+
+    Attributes:
+        name: str，工具名 "analyze_figures"
+        description: str，工具描述
+        parameters: dict，JSON Schema（path/figure/embed_dir）
+        risk_level: str，"low"
+        root_hints: list[str]，["note", "pdf"]
+        output_scan: str，"mark"（图表分析结果属外部内容）
+        side_effects: list[str]，["read_file", "write_file"]
+        needs_parent: bool，True（视觉调用归属父 agent 轮次进审计）
+        _vision_llm: 视觉模型客户端（可注入；None 时按配置惰性构造）
+    """
     name = "analyze_figures"
     description = ("提取并分析 PDF 中的图表：视觉模型看图，返回每张图的分析"
                    "（核心内容/图表类型/新颖之处/适用场景/制作工具推测/配色布局标注）。"
@@ -164,6 +177,13 @@ async def _analyze_all(analyzer: FigureAnalyzer, figures: list) -> list:
     return_exceptions=True：单图视觉调用失败（网络断/5xx/限流/key 无效——
     StructuredOutput 只兜 JSON 解析与校验错误，LLM 调用异常会穿出）不短路整批，
     该图异常项随列表返回，由 execute 逐图降级标注。
+
+    Args:
+        analyzer: FigureAnalyzer，单图分析器
+        figures: list，待分析图表
+
+    Returns:
+        与输入顺序一致的分析结果列表；单图异常项以异常对象形式返回（不短路整批）。
     """
     return await asyncio.gather(*[analyzer.analyze(f) for f in figures],
                                 return_exceptions=True)
@@ -174,9 +194,17 @@ def _save_figure(fig, embed_dir: Path, pdf_stem: str) -> str:
 
     文件名以图号原始串 fig.name 为键（非解析出的 int number）——"3.1"/"III"/"S1"
     这类非整数图号的 number 都归 0，按 number 命名会静默互覆成同一文件；name 为空
-    时回退 number。文件名做安全化（/、\\、空格等替换为 _）。扩展名按 mime 取
+    时回退 number。文件名做安全化（/、\、空格等替换为 _）。扩展名按 mime 取
     （png→.png / jpeg→.jpg / 其余 .img）；落盘失败不抛——返回嵌入标记即使文件
     没写上也保持流程不断（调用方据文件存在性判断）。
+
+    Args:
+        fig: 图表对象（含 name/number/mime/image_bytes）
+        embed_dir: Path，图保存目录（按需创建）
+        pdf_stem: str，PDF 文件名主干（构成图文件名）
+
+    Returns:
+        Obsidian 嵌入标记 "![[<name>]]"；落盘失败不抛，标记照常返回。
     """
     ext = {"image/png": "png", "image/jpeg": "jpg"}.get(fig.mime, "img")
     label = re.sub(r"[/\\\s]+", "_", fig.name or str(fig.number))

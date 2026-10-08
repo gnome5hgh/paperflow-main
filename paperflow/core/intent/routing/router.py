@@ -67,7 +67,19 @@ class HybridRouter:
     alpha 为稠密路权重（稀疏权重 1-alpha）；生产值由 CLI 装配传
     config.intent.router.alpha（唯一声明点 config.py），fit 只调阈值、不调 alpha。
     打分完全确定（无随机性）——路由未命中时，管线会把本路由器的近失候选分数
-    注入 LLM 兜底 prompt，让 LLM 在路由先验上确认或改判，而非盲猜。"""
+    注入 LLM 兜底 prompt，让 LLM 在路由先验上确认或改判，而非盲猜。
+
+    Attributes:
+        encoder: 稠密编码器（实现 __call__ 返回向量列表）
+        sparse_encoder: BM25Encoder，稀疏路编码器
+        index: HybridLocalIndex，双路融合索引
+        routes: list[Route]，已加载的路由表
+        top_k: int，路由聚合时取 top_k 条候选示例句
+        alpha: float，稠密分支权重（稀疏分支为 1-alpha）
+        score_threshold: float | None，全局通过阈值（可被路由自身覆盖）
+        vector_cache_path: str | None，路由语料稠密向量 npz 缓存路径；命中则零网络启动
+        _dense_degraded: bool，稠密路是否已降级为纯稀疏（只告警一次）
+    """
 
     def __init__(self, encoder, top_k: int, alpha: float,
                  sparse_encoder: BM25Encoder | None = None,

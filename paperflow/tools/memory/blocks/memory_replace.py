@@ -10,11 +10,27 @@ def _memory_replace(ctx, label: str, old_string: str, new_string: str) -> str:
     LLM 补足上下文。块缺失返回显式「no block」——改既有块的意图不该被静默
     创建掩盖拼错（与 append 的自动建块刻意不对称）。读-算-写收进 mutate_block
     的 mutator；未命中返回 None（不写），多次命中抛 ValueError 由外层转错误文本。
+
+    Args:
+        ctx: MemoryToolsContext，记忆工具运行时上下文
+        label: str，目标块标签
+        old_string: str，待替换的旧子串（须唯一出现）
+        new_string: str，新子串
+
+    Returns:
+        成功返回替换说明文本；未命中（返回 None）与多次命中（ValueError）都转为错误文本。
     """
     bm = ctx.block_manager
 
     def _replace(v: str) -> str | None:
-        """唯一命中才替换；0 次返回 None（未命中），>1 次抛 ValueError。"""
+        """唯一命中才替换；0 次返回 None（未命中），>1 次抛 ValueError。
+
+        Args:
+            v: str，块的当前值（持锁内的最新值）
+
+        Returns:
+            唯一命中时返回替换后的新值；0 次返回 None（未命中）；>1 次抛 ValueError。
+        """
         occurrences = v.count(old_string)
         if occurrences == 0:
             return None
@@ -34,6 +50,14 @@ def _memory_replace(ctx, label: str, old_string: str, new_string: str) -> str:
 
 
 class MemoryReplaceTool(Tool):
+    """替换记忆块中精确子串的工具（old_string 必须唯一）。
+
+    Attributes:
+        name: str，工具名 "memory_replace"
+        description: str，工具描述
+        parameters: dict，JSON Schema（label/old_string/new_string）
+        risk_level: str，"medium"
+    """
     name = "memory_replace"
     description = "替换记忆块中的精确子串（old_string 必须唯一）"
     parameters = {
@@ -48,6 +72,16 @@ class MemoryReplaceTool(Tool):
     risk_level = "medium"
 
     def execute(self, label: str, old_string: str, new_string: str) -> ToolResult:
+        """替换记忆块中的精确子串（old_string 必须唯一）。
+
+        Args:
+            label: str，目标块标签
+            old_string: str，待替换的旧子串（须唯一）
+            new_string: str，新子串
+
+        Returns:
+            ToolResult；未装配记忆服务时返回不可用提示，其余异常降级为错误文本。
+        """
         ctx = get_memory_context()
         if ctx is None:
             return ToolResult(text="记忆服务未装配，记忆工具不可用")

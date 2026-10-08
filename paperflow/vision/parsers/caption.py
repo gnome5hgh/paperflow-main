@@ -38,6 +38,17 @@ class CaptionStart:
 
     - line_end: 图号词是否占满行尾——"Figure 3." 是，而 "Figure 3 shows..." 不是。
     - paragraph_start: 是否为所在段落的首行（保底消歧用的弱信号）。
+
+    Attributes:
+        header: str，图注起始词（如 Figure / Fig. / TABLE）
+        name: str，图号（如 1 / 3.1 / III）
+        fig_type: FigureType，图注类型（Figure / Table）
+        number_syntax: str，图号后的分隔符：":" / "." / ""（行尾）
+        line: Line，起始行对象
+        next_line: Line | None，同段内的下一行（左对齐检查用）
+        page: int，页码（0 起）
+        paragraph_start: bool，该行是否为其所在段落的首行
+        line_end: bool，图号词是否占满行尾（后面无其他词）
     """
 
     header: str          # 图注起始词（如 "Figure", "Fig.", "TABLE"）
@@ -52,28 +63,42 @@ class CaptionStart:
 
     @property
     def colon_match(self) -> bool:
+        """图号后是否跟冒号。"""
         return self.number_syntax == ":"
 
     @property
     def period_match(self) -> bool:
+        """图号后是否跟句点。"""
         return self.number_syntax == "."
 
     @property
     def all_caps_fig(self) -> bool:
+        """起始词是否全大写 FIG 形式。"""
         return self.header.startswith("FIG")
 
     @property
     def all_caps_table(self) -> bool:
+        """起始词是否为全大写 TABLE。"""
         return self.header == "TABLE"
 
     @property
     def fig_abbreviated(self) -> bool:
+        """起始词是否为缩写 Fig.。"""
         return self.header == "Fig."
 
 
 @dataclass(frozen=True)
 class CaptionParagraph:
-    """一页内的一个完整图注段落（起始行 + 扩展出的后续行）。"""
+    """一页内的一个完整图注段落（起始行 + 扩展出的后续行）。
+
+    Attributes:
+        name: str，图号
+        fig_type: FigureType，图注类型
+        page: int，页码
+        paragraph: Paragraph，构成该图注的段落
+        boundary: Box，派生：段落外接矩形
+        text: str，派生：段落全文
+    """
 
     name: str
     fig_type: FigureType
@@ -82,16 +107,26 @@ class CaptionParagraph:
 
     @property
     def boundary(self) -> Box:
+        """图注段落的外接矩形。"""
         return self.paragraph.boundary
 
     @property
     def text(self) -> str:
+        """图注段落的完整文本。"""
         return self.paragraph.text
 
 
 @dataclass(frozen=True)
 class Caption:
-    """精简版图注：正文文本 + 边界，供下游（FigureDetector 的失败图注）使用。"""
+    """精简版图注：正文文本 + 边界，供下游（FigureDetector 的失败图注）使用。
+
+    Attributes:
+        fig_type: FigureType，图注类型
+        name: str，图号
+        page: int，页码
+        text: str，图注正文
+        boundary: Box，图注边界
+    """
 
     fig_type: FigureType
     name: str
@@ -101,7 +136,14 @@ class Caption:
 
     @classmethod
     def from_paragraph(cls, caption_paragraph: CaptionParagraph) -> "Caption":
-        """从 CaptionParagraph 派生精简版（对应 Figure.scala 的 Caption.apply）。"""
+        """从 CaptionParagraph 派生精简版（对应 Figure.scala 的 Caption.apply）。
+
+        Args:
+            caption_paragraph: CaptionParagraph，完整图注段落
+
+        Returns:
+            由该段落派生的精简版 Caption。
+        """
         return cls(
             caption_paragraph.fig_type,
             caption_paragraph.name,
@@ -205,17 +247,38 @@ def find_caption_candidates(pages: list[Page]) -> list[CaptionStart]:
 # 过滤器按顺序组成一个 sieve，每轮挑一个可裁掉一些候选但不会整组裁掉的过滤器应用。
 
 def _colon_only(cc: CaptionStart) -> bool:
-    """保留图号后跟冒号的候选（如 "Figure 1:"）。"""
+    """保留图号后跟冒号的候选（如 "Figure 1:"）。
+
+    Args:
+        cc: CaptionStart，待过滤候选
+
+    Returns:
+        True 表示保留（图号后跟冒号）。
+    """
     return cc.colon_match
 
 
 def _all_caps_fig_only(cc: CaptionStart) -> bool:
-    """保留全大写 FIG 开头的图注；表注不受此限制。"""
+    """保留全大写 FIG 开头的图注；表注不受此限制。
+
+    Args:
+        cc: CaptionStart，待过滤候选
+
+    Returns:
+        True 表示保留（全大写 FIG 形式）。
+    """
     return cc.all_caps_fig or cc.fig_type == FigureType.Table
 
 
 def _all_caps_table_only(cc: CaptionStart) -> bool:
-    """保留全大写 TABLE 的表注；图注不受此限制。"""
+    """保留全大写 TABLE 的表注；图注不受此限制。
+
+    Args:
+        cc: CaptionStart，待过滤候选
+
+    Returns:
+        True 表示保留（全大写 TABLE 形式）。
+    """
     return cc.all_caps_table or cc.fig_type == FigureType.Figure
 
 
@@ -232,6 +295,14 @@ def _non_standard_font(
         过滤器函数，接受 CaptionStart 返回 bool。
     """
     def accept(cc: CaptionStart) -> bool:
+        """字体过滤器：目标类型的图注首字符字体非标准字体则剔除。
+
+        Args:
+            cc: CaptionStart，待过滤候选
+
+        Returns:
+            True 表示保留。
+        """
         return (
             cc.fig_type not in types
             or cc.line.words[0].positions[0].font_name != standard_font
@@ -240,17 +311,38 @@ def _non_standard_font(
 
 
 def _abbreviated_fig_only(cc: CaptionStart) -> bool:
-    """保留缩写 "Fig." 的图注；表注不受限制。"""
+    """保留缩写 "Fig." 的图注；表注不受限制。
+
+    Args:
+        cc: CaptionStart，待过滤候选
+
+    Returns:
+        True 表示保留（缩写 Fig.，或表注不受限）。
+    """
     return cc.fig_abbreviated or cc.fig_type == FigureType.Table
 
 
 def _figure_has_following_text_only(cc: CaptionStart) -> bool:
-    """图注要求图号词不在行尾（即后面有正文）；表注直接放行。"""
+    """图注要求图号词不在行尾（即后面有正文）；表注直接放行。
+
+    Args:
+        cc: CaptionStart，待过滤候选
+
+    Returns:
+        True 表示保留（图号不在行尾，或表注直接放行）。
+    """
     return cc.fig_type == FigureType.Table or not cc.line_end
 
 
 def _period_only(cc: CaptionStart) -> bool:
-    """保留图号后跟句点的候选（如 "Figure 3."）。"""
+    """保留图号后跟句点的候选（如 "Figure 3."）。
+
+    Args:
+        cc: CaptionStart，待过滤候选
+
+    Returns:
+        True 表示保留（图号后跟句点）。
+    """
     return cc.period_match
 
 
@@ -261,6 +353,14 @@ def _left_aligned_only(figure_only: bool) -> Callable[[CaptionStart], bool]:
         figure_only: 若为 True，则只对 Figure 类型应用此过滤，Table 直接放行。
     """
     def accept(cc: CaptionStart) -> bool:
+        """左对齐过滤器：起始行与下一行左缘对齐（±1pt）才放行。
+
+        Args:
+            cc: CaptionStart，待过滤候选
+
+        Returns:
+            True 表示保留（无下一行时放行）。
+        """
         if figure_only and cc.fig_type == FigureType.Table:
             return True
         if cc.next_line is None:
@@ -270,7 +370,14 @@ def _left_aligned_only(figure_only: bool) -> Callable[[CaptionStart], bool]:
 
 
 def _line_end_only(cc: CaptionStart) -> bool:
-    """保留图号词在行尾的候选。"""
+    """保留图号词在行尾的候选。
+
+    Args:
+        cc: CaptionStart，待过滤候选
+
+    Returns:
+        True 表示保留（图号词在行尾）。
+    """
     return cc.line_end
 
 
@@ -441,6 +548,12 @@ def _get_line_font(line: Line) -> str | None:
     """整行是否同一种字体：全行各字符 font_name 都相同才返回该字体，否则 None。
 
     用于检测图注后续行是否换了字体（换字体通常意味着图注到此结束）。
+
+    Args:
+        line: Line，待检查的行
+
+    Returns:
+        全行统一字体名；字体不一致或空行返回 None。
     """
     fonts = [pos.font_name for w in line.words for pos in w.positions]
     if not fonts:
@@ -450,7 +563,14 @@ def _get_line_font(line: Line) -> str | None:
 
 @dataclass
 class _CaptionBuilder:
-    """扩展中的图注：已并入的行 + 边界 + 字体 + 是否仍保持居中。"""
+    """扩展中的图注：已并入的行 + 边界 + 字体 + 是否仍保持居中。
+
+    Attributes:
+        lines: list[Line]，已并入图注的行
+        boundary: Box，当前图注外接矩形
+        font: str | None，图注整体字体（所有行同一字体时）
+        centered: bool，是否仍保持居中
+    """
 
     lines: list[Line]
     boundary: Box
@@ -463,7 +583,16 @@ class _CaptionBuilder:
         return abs(self.boundary.x2 - self.lines[-1].boundary.x2) < 2.0
 
     def add_line(self, line: Line, new_boundary: Box, line_font: str | None) -> "_CaptionBuilder":
-        """添加一行并更新状态。"""
+        """添加一行并更新状态。
+
+        Args:
+            line: Line，新并入的行
+            new_boundary: Box，并入后新的整体边界
+            line_font: str | None，该行的统一字体（不一致为 None）
+
+        Returns:
+            并入该行后的新 _CaptionBuilder（不修改原实例）。
+        """
         # 新旧字体一致才延续「图注字体」标记，否则置 None（后续行换字体可据此停手）
         if self.font is not None and line_font is not None and self.font == line_font:
             new_font = line_font
@@ -482,6 +611,12 @@ def _prune_caption_paragraph(paragraph: Paragraph) -> Paragraph:
 
     PDFBox 对非常规字符常把行高估得离谱，而图注首词是 ASCII 文本、高度可靠，
     故用首词顶缘重定段落上界（照 CaptionBuilder.scala 的 pruneCaptionParagraph）。
+
+    Args:
+        paragraph: Paragraph，待裁剪的图注段落
+
+    Returns:
+        把上界重定为首词顶缘后的新段落。
     """
     pruned = paragraph.boundary.copy(y1=paragraph.lines[0].words[0].boundary.y1)
     return Paragraph(paragraph.lines, pruned)
@@ -634,7 +769,7 @@ def build_captions(
 
     Args:
         starts: 该页的 CaptionStart 列表（来自 find_captions）。
-        graphics: 该页的图形区包围盒列表（GraphicsExtractor 产物，Task 14 提供）。
+        graphics: 该页的图形区包围盒列表（GraphicsExtractor 产物）。
         page: 该页 Page——须与 find_captions 传入的是同一批对象，行对象身份才能对齐。
         median_line_spacing: 文档中位行距（DocumentLayout.median_line_spacing）。
 

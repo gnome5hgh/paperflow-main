@@ -11,6 +11,15 @@ from paperflow.core.tool import Tool, ToolResult
 
 
 class GlobTool(Tool):
+    """按 glob 模式在语料库内定位文件的只读工具。
+
+    Attributes:
+        name: str，工具名 "glob"
+        description: str，工具描述（含 root 说明）
+        parameters: dict，JSON Schema（pattern/root）
+        risk_level: str，"low"（只读）
+        root_hints: list[str]，["note", "pdf", "memory"]
+    """
     name = "glob"
     description = ("按 glob 模式列出文件路径（如 **/*.pdf、**/*Disentangled*.pdf）。"
                    "用于定位文件、检查文件是否已存在。root 指定搜索根（缺省=语料库笔记根，可传任意绝对路径）。")
@@ -29,9 +38,13 @@ class GlobTool(Tool):
     def execute(self, pattern: str, root: str | None = None) -> ToolResult:
         """按 glob 模式列出匹配的文件路径(最多 50 条);根目录可显式指定。
 
-        :param pattern: glob 模式(** 递归匹配子目录)
-        :param root: 搜索根目录绝对路径;缺省用配置的笔记目录,可传任意绝对路径
-        :returns: 命中路径每行一条;无匹配返回"无匹配"
+        Args:
+            pattern: glob 模式(** 递归匹配子目录)
+            root: 搜索根目录绝对路径;缺省用配置的笔记目录,可传任意绝对路径
+
+        Returns:
+            命中路径每行一条;无匹配返回"无匹配"
+
         """
         # 通过 _config 取默认根(make_tools 注入);root 显式传入则覆盖默认。
         # config 读取用防御式 getattr——测试与裸构造时可能没有 _config。

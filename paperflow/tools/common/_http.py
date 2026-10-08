@@ -12,6 +12,10 @@ class _HttpClientMixin:
 
     arxiv/openalex 的搜索 client 与 venue-rank 的抓取 client 都混入此 mixin——
     "Http" 而非 "Search" 指其通用性（rank 查询不是搜索）。
+
+    Attributes:
+        client: httpx.Client，实际发起请求的客户端（由混入方装配）
+        ssrf_check: 回调，URL 目标校验（resolve_url_target 或测试桩）
     """
 
     def _get(self, url: str):
@@ -19,6 +23,12 @@ class _HttpClientMixin:
 
         重定向前后各校验一次:先查原始 URL,再用 resolve_url_target 把重定向链逐跳
         解析并校验,最终 URL 再校验一次——防 3xx 跳转到私网/内网地址。
+
+        Args:
+            url: str，请求目标 URL
+
+        Returns:
+            httpx 响应对象；重定向前后各做一次 SSRF 校验。
         """
         self.ssrf_check(url)
         url = resolve_url_target(url)          # 重定向逐跳校验（httpx 已是硬依赖）

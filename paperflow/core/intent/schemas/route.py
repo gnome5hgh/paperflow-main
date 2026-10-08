@@ -19,6 +19,12 @@ class Route:
     """一条意图路由：意图名 + 示例句集合 + 该路由专属阈值。
 
     ``score_threshold`` 覆盖路由器的全局阈值；为 None 时使用路由器的全局阈值。
+
+    Attributes:
+        name: str，路由名（对应 IntentType 枚举值）
+        utterances: list[str]，该意图的示例句（稀疏与稠密编码共用）
+        score_threshold: float | None，本路由专属阈值；None 时用路由器全局阈值
+        steps_threshold: float | None，多标签拆分分支的专属阈值；None 时回落 score_threshold
     """
 
     #: 路由名，对应 IntentType 的枚举值（如 "search_paper"）
@@ -44,6 +50,10 @@ class RouteChoice:
 
     name=None + similarity_score=None 表示未命中任何路由，供管线区分
     "无路由命中"而走 LLM 兜底分支。
+
+    Attributes:
+        name: str | None，命中的路由名；未命中为 None
+        similarity_score: float | None，命中的融合分数（clip 后非概率）；未命中为 None
     """
 
     #: 命中的路由名；未命中时为 None

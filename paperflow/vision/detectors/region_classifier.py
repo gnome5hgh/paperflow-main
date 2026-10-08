@@ -1,7 +1,7 @@
 """正文/图内文本分类：RegionClassifier（pdffigures2 的 RegionClassifier.scala 移植）。
 
 把一页文本按「是否图内文本」分类成正文段（body_text）与图内段（other_text），供
-FigureDetector（Task 16）划定图边界、给 proposal 打分。
+FigureDetector 划定图边界、给 proposal 打分。
 
 核心是两层：
 - splitAroundCaptions：段落外接矩形与图注重叠时按行拆成子段——图注常被 PDFBox
@@ -97,11 +97,11 @@ def classify_regions(
     """把一页文本分类为正文/图内文本，并检测图形包围盒（照 classifyRegions）。
 
     Args:
-        page: 该页文本（Task 11 的 Page，含按阅读顺序排列的段落）。
-        captions: 该页图注（Task 13 的 CaptionParagraph 列表）。
-        graphics: 该页图形区包围盒（Task 14 extract_graphics 的 graphics）。
-        non_figure_graphics: 该页非图侧栏/色带（Task 14 的 nonFigureGraphics）。
-        layout: 文档级布局统计（Task 12 的 DocumentLayout）。
+        page: 该页文本（含按阅读顺序排列的段落）。
+        captions: 该页图注（CaptionParagraph 列表）。
+        graphics: 该页图形区包围盒（extract_graphics 的 graphics）。
+        non_figure_graphics: 该页非图侧栏/色带（nonFigureGraphics）。
+        layout: 文档级布局统计（DocumentLayout）。
 
     Returns:
         分类后的页：body_text/other_text 分别为正文与图内文本段；
@@ -257,7 +257,15 @@ def _split_around_captions(
 
 
 def _intersects_any(box: Box, boxes: list[Box]) -> bool:
-    """box 是否与列表中任一框相交（容差 0，对应 Box.scala 的 intersectsAny）。"""
+    """box 是否与列表中任一框相交（容差 0，对应 Box.scala 的 intersectsAny）。
+
+    Args:
+        box: Box，待检查的矩形
+        boxes: list[Box]，候选矩形集合
+
+    Returns:
+        True 表示 box 与 boxes 中任一矩形相交。
+    """
     return any(box.intersects(b) for b in boxes)
 
 

@@ -18,7 +18,19 @@ from paperflow.tools.search._common import _norm_title
 
 
 class FetchPdfTool(Tool):
-    """下载 PDF 工具：带 SSRF 校验的网络抓取 + 写盘 + 索引热更新。"""
+    """下载 PDF 工具：带 SSRF 校验的网络抓取 + 写盘 + 索引热更新。
+
+    Attributes:
+        name: str，工具名 "fetch_pdf"
+        description: str，工具描述
+        parameters: dict，JSON Schema（url/download_to/title）
+        risk_level: str，"medium"（写操作，只读会话不应触碰本地资料库）
+        root_hints: list[str]，["pdf"]
+        side_effects: list[str]，["network", "write_file"]
+        output_scan: str | None，None（返回本地路径与状态，无外部内容，不打横幅）
+        wants_run_state: bool，True（注入失败 URL 负缓存与已下载短路池）
+        _client: tuple | None，惰性构造的 (httpx.Client, ssrf_check)
+    """
 
     name = "fetch_pdf"
     # description 与行为对齐:纯下载,url 取检索结果（含 MCP 工具结果）中的 PDF 链接(LLM 据此传参)
@@ -45,6 +57,7 @@ class FetchPdfTool(Tool):
     wants_run_state = True
 
     def __init__(self):
+        """初始化工具；下载客户端留待实际下载时才懒建（缓存命中或短路时无需走网络）。"""
         super().__init__()
         # 懒建 (httpx.Client, ssrf_check)：缓存命中或短路时无需走网络，
         # 测试经 _make_client 注入 MockTransport 与 SSRF 桩
@@ -52,13 +65,28 @@ class FetchPdfTool(Tool):
 
     @classmethod
     def _make_client(cls, transport=None, ssrf_check=None):
-        """构造下载客户端；测试经 transport/ssrf_check 注入 MockTransport 与 SSRF 桩。"""
+        """构造下载客户端；测试经 transport/ssrf_check 注入 MockTransport 与 SSRF 桩。
+
+        Args:
+            transport: HTTPTransport | None，测试注入的 MockTransport
+            ssrf_check: 回调 | None，URL 校验桩
+
+        Returns:
+            (httpx.Client, ssrf_check 回调) 二元组。
+        """
         return httpx.Client(transport=transport, timeout=30.0), (ssrf_check or validate_url_target)
 
     @staticmethod
     def _default_download_name(url: str) -> str:
         """从 URL 尾段推导保存文件名：取 path 末段（去 query/fragment），
-        非 .pdf 结尾（大小写不敏感）补 .pdf；空尾段或 '..' 抛 ValueError。"""
+        非 .pdf 结尾（大小写不敏感）补 .pdf；空尾段或 '..' 抛 ValueError。
+
+        Args:
+            url: str，PDF 下载地址
+
+        Returns:
+            推导出的文件名（非 .pdf 结尾则补 .pdf）；空尾段或 ".." 时抛 ValueError。
+        """
         tail = urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
         if not tail or tail == "..":
             raise ValueError(f"无法从 URL 推导文件名: {url}——请显式传 download_to")
@@ -67,12 +95,21 @@ class FetchPdfTool(Tool):
     def _fetch(self, client, ssrf_check, url: str, dest: Path) -> None:
         """真实 GET 上逐跳跟随重定向，每跳做 SSRF 校验，绝不把 3xx 或非 PDF 响应体写盘。
 
-        背景（真实使用测试 P1-2）：此前先以 HEAD 预解析重定向链、再对最终 URL 做
-        禁跟随的 GET——Springer/DOI 直链的 HEAD 与 GET 重定向路径分叉（cookie/URL
-        编码差异），HEAD 预解析结果对 GET 无效，「重定向未解析完整」100% 失败。
+        背景：先以 HEAD 预解析重定向链、再对最终 URL 做
+        禁跟随的 GET 会失败——Springer/DOI 直链的 HEAD 与 GET 重定向路径分叉（cookie/URL
+        编码差异），HEAD 预解析结果对 GET 无效，「重定向未解析完整」必然失败。
         现改为在真实 GET 上逐跳跟随：每一跳的目标 URL 都过 ssrf_check（校验的是
         真实请求链，安全性不弱于 HEAD 方案），最多 5 跳防循环。响应缺 %PDF magic
         bytes（服务器 200 但返回 HTML/登录墙）一律抛错，宁可失败也不写脏数据。
+
+        Args:
+            client: httpx.Client，下载客户端
+            ssrf_check: 回调，URL 目标校验
+            url: str，下载地址
+            dest: Path，落盘目标
+
+        Returns:
+            无返回值（就地写盘）；每跳 SSRF 校验，非 PDF 响应体或不完整重定向抛错。
         """
         ssrf_check(url)                         # 起始 URL 校验（validate_url_target 要求公网 IP）
         current = url
@@ -97,12 +134,21 @@ class FetchPdfTool(Tool):
                 _run_state=None) -> ToolResult:
         """下载 PDF 到本地并触发索引热更新；失败返回可行动报错文本。
 
-        查重三道闸（spec §7.1，均在写盘之前）：
+        查重三道闸（均在写盘之前）：
         1. 本任务内已下载过（URL 或规范化标题命中 downloaded）→ 成功性短路；
         2. 语料库已有该论文（title 传入时查语料标题索引）→ 提示无需下载；
         3. 目标文件已存在 → 跳过下载。
         负缓存（现状语义不变）：同 URL 本任务内 4xx 永久失败即拒绝重试。
         download_to 缺省时落语料库 pdf 根（config.corpus.pdf_dir），文件名按 URL 尾段推导。
+
+        Args:
+            url: str，PDF 下载地址
+            download_to: str | None，保存绝对路径（缺省落 pdf 根）
+            title: str | None，论文标题（用于语料库查重）
+            _run_state: RunState | None，本次 run 的状态容器（负缓存与成功短路）
+
+        Returns:
+            ToolResult，文本含落盘路径与状态；失败返回可行动报错文本。
         """
         if _run_state is not None and url in getattr(_run_state, "failed_urls", {}):
             return ToolResult(

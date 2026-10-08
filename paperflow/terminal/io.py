@@ -59,11 +59,16 @@ class InputIO:
         raise NotImplementedError
 
     def confirm_choice(self, text: str) -> str:
-        """
-        三态确认：返回 "y"（本次放行）/ "a"（本会话同路径放行）/ "n"（拒绝）。
+        """三态确认：返回 "y"（本次放行）/ "a"（本会话同路径放行）/ "n"（拒绝）。
 
         默认实现基于 confirm() 折叠为二态（"y"/"n"）；TTY 实现识别 a 键。
         EOF/中断返回 "n"（fail-safe 拒绝）。
+
+        Args:
+            text: str，确认提示文本
+
+        Returns:
+            "y"（本次放行）/ "a"（本会话同路径放行）/ "n"（拒绝）；基类默认折叠为二态。
         """
         return "y" if self.confirm(text) else "n"
 
@@ -192,16 +197,31 @@ def _session_key_bindings() -> KeyBindings:
     # Enter：把当前输入交给 validate_and_handle 提交（multiline 下必须显式绑定）
     @kb.add("enter")
     def _accept(event):
+        """Enter：提交当前输入（多行模式下必须显式绑定）。
+
+        Args:
+            event: KeyPressEvent，键绑定回调注入的按键事件
+        """
         event.current_buffer.validate_and_handle()
 
     # prompt_toolkit 没有 Shift+Enter 键（Keys 枚举缺该键），换行用 Alt+Enter 等价代替
     @kb.add("escape", "enter")
     def _newline(event):
+        """Alt+Enter：插入换行（prompt_toolkit 无 Shift+Enter 键）。
+
+        Args:
+            event: KeyPressEvent，键绑定回调注入的按键事件
+        """
         event.current_buffer.insert_text("\n")
 
     # Ctrl+C：有内容先清空输入框（与常见 REPL 一致），空框才抛 KeyboardInterrupt 退出
     @kb.add("c-c")
     def _cancel(event):
+        """Ctrl+C：有内容先清空输入框，空框才抛 KeyboardInterrupt 退出。
+
+        Args:
+            event: KeyPressEvent，键绑定回调注入的按键事件
+        """
         if event.current_buffer.text:
             event.current_buffer.reset()
         else:
@@ -210,6 +230,11 @@ def _session_key_bindings() -> KeyBindings:
     # Ctrl+D：空框抛 EOFError 退出；有内容只删光标前一个字符（标准行编辑语义）
     @kb.add("c-d")
     def _eof(event):
+        """Ctrl+D：空框抛 EOFError 退出，有内容只删光标前一个字符。
+
+        Args:
+            event: KeyPressEvent，键绑定回调注入的按键事件
+        """
         if not event.current_buffer.text:
             raise EOFError
         event.current_buffer.delete_before_cursor()
@@ -239,23 +264,43 @@ def _confirm_key_bindings():
     @kb.add("y")
     @kb.add("Y")
     def _yes(event):
+        """y/Y：立即接受本次放行。
+
+        Args:
+            event: KeyPressEvent，键绑定回调注入的按键事件
+        """
         event.app.exit(result="y")
 
     # 键入 a/A：本会话同 (工具,路径) 放行
     @kb.add("a")
     @kb.add("A")
     def _all(event):
+        """a/A：本会话同 (工具, 路径) 放行。
+
+        Args:
+            event: KeyPressEvent，键绑定回调注入的按键事件
+        """
         event.app.exit(result="a")
 
     # 键入 n/N 立即拒绝
     @kb.add("n")
     @kb.add("N")
     def _no(event):
+        """n/N：立即拒绝。
+
+        Args:
+            event: KeyPressEvent，键绑定回调注入的按键事件
+        """
         event.app.exit(result="n")
 
     # Enter 默认拒绝：误按回车不误放行（写盘等高危操作保守处理）
     @kb.add("enter")
     def _accept(event):
+        """Enter：默认拒绝（防误按回车即放行高危写操作）。
+
+        Args:
+            event: KeyPressEvent，键绑定回调注入的按键事件
+        """
         event.app.exit(result="n")
     return kb
 
@@ -272,6 +317,9 @@ class PromptToolkitIO(InputIO):
     并发安全：confirm 和 ask 方法使用 _confirm_lock 串行化，避免多个线程同时弹出提示。
     此外，每个 confirm/ask 使用独立的 prompt 会话，不与主输入 session 共享，避免多线程下
     的 session 状态污染。
+
+    Attributes:
+        _session: PromptSession，主输入会话（confirm/ask 另起临时会话，避免与它共享状态）
     """
 
     def __init__(self, history_path: str, session=None):
@@ -292,7 +340,7 @@ class PromptToolkitIO(InputIO):
             # 提交后擦掉输入框 UI（含已打文本）——否则提交内容残留在滚动区，
             # 与 repl 的 `❯ ` 回显叠成两份。参数在构造处而非 prompt() 调用处：
             # app 在 __init__ 一次性创建（erase_when_done 是构造参数，
-            # PromptSession.prompt() 不接受它——prompt_toolkit 3.0.53 实测），
+            # PromptSession.prompt() 不接受它——该参数只在构造处生效），
             # prompt() 复用该 app。
             erase_when_done=True,
         )

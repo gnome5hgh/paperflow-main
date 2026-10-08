@@ -20,7 +20,17 @@ from paperflow.core.tool import Tool, ToolResult
 
 
 class LoadSkillTool(Tool):
-    """按需加载已安装 skill 的正文或资源（只读，低风险，全 agent 可用）。"""
+    """按需加载已安装 skill 的正文或资源（只读，低风险，全 agent 可用）。
+
+    Attributes:
+        name: str，工具名 "load_skill"
+        description: str，工具描述（含指令位阶预期）
+        parameters: dict，JSON Schema（name/resource）
+        risk_level: str，"low"（只读）
+        side_effects: list[str]，空（无副作用）
+        output_scan: str，"mark"（正文是外部内容，扫描并打读入标记）
+        needs_parent: bool，True（可见性按发起调用的 agent_type 门控）
+    """
 
     #: 工具名称
     name = "load_skill"
@@ -61,7 +71,9 @@ class LoadSkillTool(Tool):
 
     def __init__(self, skill_registry: SkillRegistry):
         """
-        :param skill_registry: 装配层构造的共享 SkillRegistry 实例
+        Args:
+            skill_registry: 装配层构造的共享 SkillRegistry 实例
+
         """
         self._skills = skill_registry
 
@@ -72,9 +84,13 @@ class LoadSkillTool(Tool):
         为该 agent 实例（不可跨 agent type 共享实例，否则可见性门控读到别的
         agent 的类型）。
 
-        :param name: skill 名称
-        :param resource: 可选资源相对路径；缺省加载 SKILL.md 正文
-        :returns: ToolResult；失败时 is_error=True + 用户语言错误文本
+        Args:
+            name: skill 名称
+            resource: 可选资源相对路径；缺省加载 SKILL.md 正文
+
+        Returns:
+            ToolResult；失败时 is_error=True + 用户语言错误文本
+
         """
         agent_type = self._parent.agent_type
         try:

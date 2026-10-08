@@ -9,6 +9,17 @@ from paperflow.core.tool import Tool, ToolResult
 
 
 class ReadFileTool(Tool):
+    """读取语料库内文本文件的只读工具。
+
+    Attributes:
+        name: str，工具名 "read_file"
+        description: str，工具描述
+        parameters: dict，JSON Schema（path）
+        risk_level: str，"low"（只读）
+        root_hints: list[str]，["note", "pdf", "memory", "templates", "scratch", "research"]
+        output_scan: str，"mark"（外部文件内容打未校验横幅）
+        side_effects: list[str]，["read_file"]
+    """
     name = "read_file"
     description = "读取笔记/论文 PDF 路径/记忆目录下的文本文件内容"
     parameters = {
@@ -25,5 +36,12 @@ class ReadFileTool(Tool):
     side_effects = ["read_file"]
 
     def execute(self, path: str) -> ToolResult:
-        """读取 path 指向的文本文件并原样返回(编码固定为 UTF-8)。"""
+        """读取 path 指向的文本文件并原样返回(编码固定为 UTF-8)。
+
+        Args:
+            path: str，文件绝对路径
+
+        Returns:
+            ToolResult，文本为文件内容；不可读时返回错误文本。
+        """
         return ToolResult(text=Path(path).read_text(encoding="utf-8"))

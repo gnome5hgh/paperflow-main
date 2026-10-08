@@ -36,8 +36,7 @@ from paperflow.config import LLMConfig
 
 @dataclass
 class Message:
-    """
-    ReAct 循环中的一条消息，等价于 OpenAI Chat Completion 的一条 message。
+    """ReAct 循环中的一条消息，等价于 OpenAI Chat Completion 的一条 message。
 
     不同角色的 message 使用不同的字段组合：
 
@@ -47,6 +46,13 @@ class Message:
 
     content 为 str 或 OpenAI content parts 列表——视觉调用用 list 携带图
     （image_url base64 data URL），ReAct 对话恒为 str。
+
+    Attributes:
+        role: str，消息角色：system | user | assistant | tool
+        content: str | list[dict]，消息正文；视觉调用时为 OpenAI content parts 列表（tool_calls 消息可为空串）
+        tool_calls: list[dict] | None，LLM 返回的工具调用（仅 assistant 有值）
+        tool_call_id: str | None，关联的工具调用 ID（仅 tool 消息有值）
+        truncated: bool，响应因输出长度被截断（finish_reason==length），Agent 据此续写而非交付半截内容
     """
 
     #: 消息角色："system" | "user" | "assistant" | "tool"
@@ -69,8 +75,7 @@ class Message:
 
 
 class LLMClient:
-    """
-    OpenAI-compatible API 的异步客户端封装。
+    """OpenAI-compatible API 的异步客户端封装。
 
     使用 OpenAI Python SDK 进行底层 HTTP 通信，
     通过 asyncio.to_thread 将同步调用转为 async，
@@ -81,13 +86,23 @@ class LLMClient:
         config = LLMConfig(api_key="sk-xxx")
         client = LLMClient(config)
         response = await client.chat(messages, tools=schema_list)
+
+    Attributes:
+        client: OpenAI，SDK 客户端实例（底层 httpx 连接池，线程安全）
+        model: str，模型名
+        max_tokens: int，单次请求最大输出 token
+        temperature: float，采样温度（0.0 = 确定性）
+        context_window: int | None，模型上下文窗口（压缩时推导预算）
     """
 
     def __init__(self, config: LLMConfig):
         """
-        :param config: LLMConfig 实例，包含 base_url / api_key / model 等参数
-        :raises RuntimeError: api_key 为空时 fail-fast——留空会触发 SDK 晦涩报错，
-            这里提前抛出带配置指引的可行动错误（密钥不从代码硬编码默认值）
+        Args:
+            config: LLMConfig 实例，包含 base_url / api_key / model 等参数
+
+        Raises:
+            RuntimeError: api_key 为空时 fail-fast——留空会触发 SDK 晦涩报错，这里提前抛出带配置指引的可行动错误（密钥不从代码硬编码默认值）
+
         """
         #: key 守卫:api_key 不再有代码默认值,留空时 OpenAI(api_key="") 抛晦涩的
         #: SDK 错误——此处提前 fail-fast,给出可行动的配置指引。
@@ -97,8 +112,8 @@ class LLMClient:
                 "（或在 .env 文件设置同名变量），或在 config.yaml 的 llm.api_key 提供"
             )
         #: OpenAI SDK 客户端实例（底层 httpx 连接池，线程安全）。
-        #: 显式超时（真实使用测试 P3-1）：SDK 默认 read 600s，一次 HTTP 挂死曾让
-        #: UI 空转 20+ 分钟。read 超时同时约束流式相邻 chunk 的间隔——首包超时
+        #: 显式超时：SDK 默认 read 600s，一次 HTTP 挂死会让 UI 长时间空转。
+        #: read 超时同时约束流式相邻 chunk 的间隔——首包超时
         #: 天然覆盖，无需另写逻辑；write/pool 对齐 read/connect 的量级。
         self.client = OpenAI(
             base_url=config.base_url,
@@ -138,18 +153,21 @@ class LLMClient:
         单次非流式 LLM 调用，返回 assistant message（可能包含 tool_calls）。
         流式变体见 chat_stream()。
 
-        :param messages: 对话历史，第一条通常为 system prompt
-        :param tools: 可用的 Tool 定义列表（JSON Schema 格式），None 表示不传 tools 参数
-        :param tool_choice: "auto" 由 LLM 决定是否调用工具，"none" 禁止，"required" 强制
-        :param json_mode: True 时传 response_format="json_object" 强制 JSON 输出
-        :param temperature: 单次调用温度覆盖，None 表示用 config 默认值
-        :param extra_body: 附加请求体参数（如 DeepSeek 的 enable_thinking），
-            端点为不支持时自动降级重试一次
-        :param telemetry_callback: 调用结束后同步回调元数据 dict
-            （model/prompt_tokens/completion_tokens/total_tokens/duration_ms/
-            started_at/finish_reason），供审计 replay 使用；不含消息正文。None 时零开销跳过
-        :returns: 封装后的 assistant Message
-        :raises: SDK 异常直接向上抛，由 Agent 自行决定是否 recover
+        Args:
+            messages: 对话历史，第一条通常为 system prompt
+            tools: 可用的 Tool 定义列表（JSON Schema 格式），None 表示不传 tools 参数
+            tool_choice: "auto" 由 LLM 决定是否调用工具，"none" 禁止，"required" 强制
+            json_mode: True 时传 response_format="json_object" 强制 JSON 输出
+            temperature: 单次调用温度覆盖，None 表示用 config 默认值
+            extra_body: 附加请求体参数（如 DeepSeek 的 enable_thinking），端点为不支持时自动降级重试一次
+            telemetry_callback: 调用结束后同步回调元数据 dict （model/prompt_tokens/completion_tokens/total_tokens/duration_ms/ started_at/finish_reason），供审计 replay 使用；不含消息正文。None 时零开销跳过
+
+        Returns:
+            封装后的 assistant Message
+
+        Raises:
+            SDK 异常直接向上抛，由 Agent 自行决定是否 recover
+
         """
         # 计时起点：duration_ms 覆盖从入参到返回的完整调用耗时（含降级重试），
         # started_at 记调用起点墙钟，供审计 replay 推算 ended_at（mtime 不可写审计）
@@ -255,12 +273,10 @@ class LLMClient:
         """流式版 chat()：stream=True + 边收边回调 on_delta，返回完整 Message。
 
         仅 Agent（ReAct）消费；StructuredOutput 等要完整 JSON 的调用方继续用 chat()。
-        :param on_delta: 每段 content 片段同步回调（跑在 to_thread 流线程内——
-            非主事件循环线程，回调只能做追加/打印，别碰事件循环）
-        :param telemetry_callback: 与 chat() 同语义的元数据回调，token 数来自
-            最后一个带 usage 的 chunk；端点不支持流式 usage 时 tokens 记 None。
-            流式 token 归因依赖 stream_options={"include_usage": True}（OpenAI 兼容
-            端点默认不返回流式 usage）；老端点不支持该参数时自动降级重试一次
+        Args:
+            on_delta: 每段 content 片段同步回调（跑在 to_thread 流线程内—— 非主事件循环线程，回调只能做追加/打印，别碰事件循环）
+            telemetry_callback: 与 chat() 同语义的元数据回调，token 数来自 最后一个带 usage 的 chunk；端点不支持流式 usage 时 tokens 记 None。流式 token 归因依赖 stream_options={"include_usage": True}（OpenAI 兼容 端点默认不返回流式 usage）；老端点不支持该参数时自动降级重试一次
+
         """
         # 计时起点：duration_ms 覆盖整个流式接收过程；started_at 记调用起点墙钟
         _started = time.monotonic()
@@ -280,6 +296,11 @@ class LLMClient:
             kwargs["tool_choice"] = tool_choice
 
         def _do_stream() -> Message:
+            """在同一个线程内创建流并迭代收齐结果（Stream 是同步迭代器，交回事件循环会阻塞 loop）。
+
+            Returns:
+                累加完成后的 Message（含 truncated 标记）。
+            """
             # create 与 iterate 必须同线程：Stream 是同步迭代器，逐 chunk 阻塞在
             # httpx 读取上；不能把 Stream 交回事件循环再迭代（否则阻塞 loop，
             # 杀死并发子 agent 的并行调用）。
@@ -320,6 +341,13 @@ def _accumulate_stream_chunks(chunks, on_delta):
     finish_reason 取最后一个带值的 chunk 的（多为尾部收尾 chunk）。
     usage 取最后一个带 usage 的 chunk（部分端点仅在收尾 chunk 附带用量），
     无则 None——调用方据此将 tokens 元数据留空。
+
+    Args:
+        chunks: 可迭代的 OpenAI 流式 chunk 序列
+        on_delta: 回调 | None，每收到一段 content 片段即同步调用（跑在流线程内，须线程安全）
+
+    Returns:
+        (content, tool_calls, role, finish_reason, usage) 五元组；usage 无则 None。
     """
     content_parts: list[str] = []
     tool_acc: dict[int, dict] = {}
@@ -386,23 +414,33 @@ _UNSUPPORTED_PARAM_PATTERNS = [
 
 
 def _looks_like_unsupported_param(e: Exception) -> bool:
-    """
-    判断异常是否由"端点不支持某参数"引起。
+    """判断异常是否由"端点不支持某参数"引起。
 
     不同兼容端点（OpenAI / DeepSeek / vLLM / Ollama）对不支持参数的
     报错措辞各异，用正则模式匹配常见说法（如 response_format、
     enable_thinking、unknown parameter 等），命中则允许 chat 降级重试。
+
+    Args:
+        e: Exception，SDK 抛出的异常
+
+    Returns:
+        True 表示异常由「端点不支持某参数」引起（可降级去掉该参数重试）。
     """
     text = str(e)
     return any(p.search(text) for p in _UNSUPPORTED_PARAM_PATTERNS)
 
 
 def _message_to_openai(m: Message) -> dict:
-    """
-    将内部 Message 转为 OpenAI API 接受的 dict 格式。
+    """将内部 Message 转为 OpenAI API 接受的 dict 格式。
 
     只有非 None 的字段才会出现在输出中 ——
     OpenAI API 拒绝 null tool_call_id 或空 tool_calls 字段。
+
+    Args:
+        m: Message，内部消息对象
+
+    Returns:
+        OpenAI wire 格式 dict（None 字段不出现；content 经 surrogate 清洗后随消息角色给出）。
     """
     # 出站边界清洗未配对 surrogate（PDF 提取/工具结果可能携带）——否则 openai
     # SDK UTF-8 编码消息时抛 UnicodeEncodeError: surrogates not allowed，
@@ -426,6 +464,12 @@ def _sanitize_content_part(part: dict) -> dict:
     """清洗单个 content part 里的文本 surrogate；非 text part 原样返回。
 
     返回新 dict（不动调用方对象），图片 part 无需清洗直接透传。
+
+    Args:
+        part: dict，一个 content part（text / image_url）
+
+    Returns:
+        清洗后的新 dict（仅 text part 被改写，图片 part 原样透传）。
     """
     from paperflow.core.security.text import sanitize_surrogates
     if part.get("type") == "text" and isinstance(part.get("text"), str):
@@ -438,8 +482,12 @@ def tool_to_openai_schema(t) -> dict:
     """
     将 Tool 实例转为 OpenAI function calling JSON Schema。
 
-    :param t: Tool 子类实例
-    :returns: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+    Args:
+        t: Tool 子类实例
+
+    Returns:
+        {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+
 
     这个函数是 Tool 抽象层到 LLM API 的桥接 ——
     Tool 开发者只需定义类的 name/description/parameters 属性，

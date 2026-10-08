@@ -1,7 +1,7 @@
 """文档级布局统计：双栏检测、标准字号/行宽、词距、左边距信任度、中位行距。
 
-pdffigures2 的 DocumentLayout.scala 移植。CaptionDetector（Task 13）用它做字体过滤、
-RegionClassifier（Task 15）做字号/间距/边距分类、FigureDetector（Task 16）做双栏中心线
+pdffigures2 的 DocumentLayout.scala 移植。CaptionDetector 用它做字体过滤、
+RegionClassifier 做字号/间距/边距分类、FigureDetector 做双栏中心线
 判断，故统计口径与 Scala 逐项一致，常量照抄。
 
 输入是 text_extractor 抽出的 Page（word/line/paragraph 结构），信息不足（词距/字体/

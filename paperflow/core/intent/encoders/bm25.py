@@ -65,7 +65,12 @@ class JiebaTokenizer:
     token_id 会漂移（旧索引 {3:"论文"} vs 新向量 {3:"下载"}），稀疏索引数据
     全部作废。故首次 build_vocab 后冻结，后续 fit 只重算语料统计量
     （corpus_size/avg_doc_len/df），token_id 语义稳定。未登录词归 0
-    （丢失该词的贡献）——可接受，语义稳定优先。"""
+    （丢失该词的贡献）——可接受，语义稳定优先。
+
+    Attributes:
+        vocab: dict[str, int]，词 → token id；id=0 固定为 <pad>/<unk>
+        vocab_size: int，当前词表大小；>1 表示词表已冻结（不再重建）
+    """
 
     def __init__(self):
         """初始化词表，固定 id=0 为填充/未知词。"""
@@ -115,6 +120,14 @@ class BM25Encoder:
     query 编码 = IDF（文档频率倒数取对数后行归一化），doc 编码 = TF 归一化，
     两者点积 = BM25 分数。fit 在意图示例句语料上训练归一化参数；
     每次 fit 重算语料统计量（vocab 已冻结，token_id 不变）。
+
+    Attributes:
+        tokenizer: JiebaTokenizer，分词与 id 映射
+        k1: float，BM25 词频饱和度超参
+        b: float，BM25 文档长度归一化超参
+        corpus_size: int | None，fit 后确定的语料规模
+        _avg_doc_len: float | None，平均文档长度（fit 时算出）
+        _documents_containing_word: np.ndarray | None，各 token 的文档频率计数
     """
 
     def __init__(self, tokenizer: JiebaTokenizer | None = None,

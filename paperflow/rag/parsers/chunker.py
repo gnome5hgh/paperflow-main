@@ -69,7 +69,16 @@ def context_prefix(title: str, heading: str, body: str) -> str:
 
 @dataclass
 class Chunk:
-    """一个检索块：由切块器产出，包含文本、所属文档路径与章节信息。"""
+    """一个检索块：由切块器产出，包含文本、所属文档路径与章节信息。
+
+    Attributes:
+        id: str，块唯一标识 sha1(相对路径 + 块序号)[:16]；与内容无关，同位置重复切分得到相同 id（写入幂等）
+        text: str，块文本（首行含「标题 > 章节」前缀）
+        path: str，文档相对知识库根的路径（兼作文档 id 与元数据，跨机器稳定）
+        source: str，来源类型："note"（Markdown 笔记）| "pdf"
+        heading: str，所属章节标题（可能为空）
+        chunk_index: int，块在文档中的全局序号（从 0 起）
+    """
 
     id: str            # 块唯一标识符，由 `sha1(相对路径 + 块序号 chunk_index)[:16]` 生成，
                        # 该 ID 与内容无关，同一文档位置重复切分得到相同 ID，编辑同一位置会得到同 id，保证了索引写入的幂等性（覆盖而非追加）。
@@ -89,6 +98,11 @@ class AcademicChunker:
     太小语义碎片化；overlap 让相邻块重叠一部分，重叠让跨块语义连贯。token
     计数用 ``core.tokenization.TOKEN_ENCODING``（与 core.memory 压缩共用）
     近似即可，不必精确。
+
+    Attributes:
+        max_tokens: int，每个块的最大 token 数（检索粒度选择，非模型硬约束）
+        overlap_tokens: int，相邻块的重叠 token 数（保持跨块语义连贯）
+        _enc: token 计数器（core.tokenization 单点共享，近似计数即可）
     """
 
     def __init__(self, max_tokens: int, overlap_tokens: int):
