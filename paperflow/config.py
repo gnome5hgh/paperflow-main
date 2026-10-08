@@ -525,7 +525,7 @@ class AgentsConfig:
     timeouts: dict[str, int] = field(
         default_factory=lambda: {
             "noter": 900, "searcher": 420, "reviewer": 300,
-            "researcher": 1800, "qa-agent": 180,
+            "researcher": 1800, "qa-agent": 180, "indexer": 900,
         })
 
 

@@ -8,7 +8,7 @@ metadata:
   role: 学术论文检索
   related_agents: [reviewer]
 allowed_agents: []
-allowed_spawns: [reviewer]
+allowed_spawns: [reviewer, indexer]
 ---
 
 # Searcher — 学术论文检索 Agent

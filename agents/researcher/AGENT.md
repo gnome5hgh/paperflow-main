@@ -8,7 +8,7 @@ metadata:
   role: 选题发现/研究计划生成
   related_agents: [searcher, reviewer]
 allowed_agents: []
-allowed_spawns: [searcher, reviewer]
+allowed_spawns: [searcher, reviewer, indexer]
 ---
 
 # Researcher — 选题发现 Agent

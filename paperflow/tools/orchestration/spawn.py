@@ -184,6 +184,23 @@ class QaAgentDigest(BaseModel):
     needs_attention: bool = False
 
 
+class IndexerDigest(BaseModel):
+    """indexer 的结果摘要：入库/跳过/清理篇数与失败清单。
+
+    Attributes:
+        indexed: int，成功入库的篇数
+        skipped: int，未入库的篇数（路径不在语料根下、文件不存在、切块后无内容）
+        removed: int，清理掉的已删除文档篇数
+        chunks: int，本次写入的块数合计
+        failed: list[str]，失败的文件路径
+    """
+    indexed: int = 0
+    skipped: int = 0
+    removed: int = 0
+    chunks: int = 0
+    failed: list[str] = []
+
+
 class GenericDigest(BaseModel):
     """未注册摘要 schema 的兜底:抽出简短摘要与关键条目,supervisor 不致无从下手。
 
@@ -216,6 +233,7 @@ def digest_schema_for(agent_type: str) -> type[BaseModel]:
         "researcher": ResearcherDigest,
         "librarian": LibrarianDigest,
         "qa-agent": QaAgentDigest,
+        "indexer": IndexerDigest,
     }.get(agent_type, GenericDigest)
 
 

@@ -8,7 +8,7 @@ metadata:
   role: 论文笔记生成
   related_agents: [reviewer]
 allowed_agents: []
-allowed_spawns: [reviewer]
+allowed_spawns: [reviewer, indexer]
 ---
 
 # Noter — 论文笔记生成 Agent
