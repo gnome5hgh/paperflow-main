@@ -12,7 +12,7 @@ from paperflow.tools.citations import (LookupCitationTool, AddCitationTool,
 from paperflow.tools.rag import RagRetrieveTool
 from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
 from paperflow.tools import (
-    ReadFileTool, ReadPdfTool, WriteFileTool, EditFileTool,
+    ReadFileTool, ReadPdfTool, WriteFileTool, EditFileTool, DeleteFileTool,
     GlobTool, GrepTool, AskUserQuestionTool,
 )
 from paperflow.tools.common.factory import make_tools
@@ -22,7 +22,7 @@ _cm = CitationManager(PaperFlowConfig.from_env())
 
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
-    ReadPdfTool, ReadFileTool, WriteFileTool, EditFileTool,
+    ReadPdfTool, ReadFileTool, WriteFileTool, EditFileTool, DeleteFileTool,
     RagRetrieveTool, GlobTool, GrepTool, AskUserQuestionTool,
     SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts),
     LookupCitationTool(_cm), AddCitationTool(_cm),

@@ -12,10 +12,10 @@ from paperflow.tools.memory import ExtractTitleTool, UnreadListAddTool
 from paperflow.tools.common.factory import make_tools
 from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
 from paperflow.tools import (
-    FetchPdfTool, GlobTool, GrepTool, AskUserQuestionTool,
+    FetchPdfTool, DeleteFileTool, GlobTool, GrepTool, AskUserQuestionTool,
 )
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
-    FetchPdfTool, GlobTool, GrepTool, AskUserQuestionTool,
+    FetchPdfTool, DeleteFileTool, GlobTool, GrepTool, AskUserQuestionTool,
     ExtractTitleTool, UnreadListAddTool,
 ]) + [SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts)]
