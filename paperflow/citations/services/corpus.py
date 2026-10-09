@@ -1,10 +1,12 @@
-"""语料标题索引：PDF 解析标题 → 论文中心索引（易变投影）。
+"""语料标题索引：PDF 标题 + 书目 → 论文中心索引（易变投影）。
 
 corpus_titles.json 是「语料里有哪些论文」的快照，供引用解析做全标题精确
 匹配。标题与书目都来自既有实现：标题走 RAG 解析器的轻路径标题出口（元数据 +
 首页版面，判据宁空勿错），书目走首页书目提取器（一次 LLM 调用）。索引按
-(path, mtime_ns) 增量重建：只对新增/变更文件重提标题，删除的文件从索引移除。
+(path, mtime_ns) 增量重建：只对新增/变更的 PDF 重提标题，删除的从索引移除。
 索引是易变投影——bib 才是稳定真相源。
+
+**只跟踪 PDF**：溯源的对象是外部论文，笔记是 agent 自己的产物、不参与引用解析。
 """
 from __future__ import annotations
 
@@ -14,10 +16,9 @@ from pathlib import Path
 
 
 class CorpusIndex:
-    """论文中心索引：`{norm_title: {title, note_path, pdf_path, biblio}}`。
+    """论文中心索引：`{norm_title: {title, pdf_path, biblio}}`。
 
-    一篇论文可同时有笔记与 PDF（同全标题合并成一条记录）。biblio 仅当 PDF
-    解析出书目元数据时存在；笔记只贡献 note_path + title。
+    biblio 仅当首页读得出书目元数据时存在。
 
     Attributes:
         config: PaperFlowConfig，语料目录来源
@@ -81,22 +82,18 @@ class CorpusIndex:
         with self._lock:
             self.ensure_loaded()
 
-            # 1. 分别遍历笔记目录（*.md）与 PDF 目录（*.pdf），收集当前所有文件的绝对路径与 mtime。
+            # 1. 遍历论文目录，收集当前所有 PDF 的绝对路径与 mtime。
             current: dict[str, int] = {}
-            for root, pattern, kind in ((self.config.corpus.note_dir, "*.md", "note"),
-                                        (self.config.corpus.pdf_dir, "*.pdf", "pdf")):
-                if not root:
-                    continue
-
-                for p in Path(root).rglob(pattern):
+            root = self.config.corpus.pdf_dir
+            if root:
+                for p in Path(root).rglob("*.pdf"):
                     st = p.stat()
                     path = str(p)
                     current[path] = st.st_mtime_ns
 
-                    # 2. 若某路径不在 _mtime 中，或其 mtime 发生变化，则调用 _upsert 重新提取标题。
-                    # 仅当文件新增或内容变更时才重新提取，未变更的文件直接沿用缓存
+                    # 2. 新增或 mtime 变了才重提标题；未变更的沿用缓存。
                     if self._mtime.get(path) != st.st_mtime_ns:
-                        self._upsert(path, kind)
+                        self._upsert(path)
 
             # 3. 对 _mtime 中存在但当前扫描未出现的路径，调用 _remove 摘除其引用。
             # 移除在 current 中不存在的文件（即被删除或移出的文件）
@@ -147,41 +144,33 @@ class CorpusIndex:
         self._cache_path.write_text(json.dumps(
             {"records": self._records, "mtime": self._mtime}, ensure_ascii=False), encoding="utf-8")
 
-    def _upsert(self, path: str, kind: str) -> None:
-        """更新或插入一条记录：根据 kind 提取标题，写入或合并到 _records。
+    def _upsert(self, path: str) -> None:
+        """更新或插入一条 PDF 记录：提标题 + 书目，写入或合并到 _records。
 
         关键算法/边界处理（Ghost Record 防御）：
-            文件路径和标题都可能发生变化。若某 PDF 文件之前属于标题 A，现在标题变为 B，
-            在更新 B 的记录前，必须先将该路径从标题 A 的记录中移除（置为 None），
-            否则同一文件路径会同时出现在 A 和 B 两条记录中，形成幽灵记录。
-            具体做法：遍历所有现有记录，若记录的 field（pdf_path/note_path）等于当前路径，
-            则先将该字段置空，再写入新记录。
+            文件路径和标题都可能发生变化。若某个 PDF 之前属于标题 A，现在标题变为 B，
+            在写 B 的记录前必须先把该路径从标题 A 的记录里解绑，否则同一路径会同时
+            出现在两条记录中，形成幽灵记录。
 
         Args:
-            path: 文件绝对路径（字符串）。
-            kind: "pdf" 或 "note"，决定提取方式与写入的字段。
+            path: PDF 文件绝对路径（字符串）。
         """
-        if kind == "pdf":
-            title, biblio = self._pdf_meta(path)
-        else:
-            title, biblio = self._note_title(path), {}
-        # 若提不出有效标题，则不索引该文件（避免损坏文件或空标题污染索引）
+        title, biblio = self._pdf_meta(path)
+        # 提不出标题就不索引（避免损坏文件或空标题污染索引）
         if not title:
-            return  # 提不出标题的不索引（如损坏 PDF）
+            return
         norm = self.normalize(title)
-        field = "pdf_path" if kind == "pdf" else "note_path"
 
-        # 幽灵记录清理：将该路径从其他记录的相同字段引用中解绑
+        # 幽灵记录清理：把该路径从其他记录里解绑
         for other in self._records.values():
-            if other.get(field) == path:
-                other[field] = None
+            if other.get("pdf_path") == path:
+                other["pdf_path"] = None
 
-        # 获取或创建归一化标题对应的记录，合并路径与书目元数据
-        rec = self._records.setdefault(norm, {"title": title, "note_path": None,
-                                              "pdf_path": None, "biblio": {}})
-        rec["title"] = title # 更新标题为最新提取值（标题也可能修正）
-        rec[field] = path
-        if kind == "pdf" and biblio:
+        rec = self._records.setdefault(norm, {"title": title, "pdf_path": None,
+                                              "biblio": {}})
+        rec["title"] = title    # 标题也可能被修正，更新为最新值
+        rec["pdf_path"] = path
+        if biblio:
             rec["biblio"] = biblio
 
     def _remove(self, path: str) -> None:
@@ -193,12 +182,8 @@ class CorpusIndex:
         for norm, rec in list(self._records.items()):
             if rec.get("pdf_path") == path:
                 rec["pdf_path"] = None
-
-            if rec.get("note_path") == path:
-                rec["note_path"] = None
-
-            # 记录中既无 PDF 也无笔记时，移除该记录（避免空壳占用归一化标题 key）
-            if not rec.get("pdf_path") and not rec.get("note_path"):
+            # 记录不再指向任何 PDF 时移除（避免空壳占用归一化标题 key）
+            if not rec.get("pdf_path"):
                 del self._records[norm]
 
     def _pdf_meta(self, path: str) -> tuple[str, dict]:
@@ -233,49 +218,12 @@ class CorpusIndex:
             biblio = {}
         return title, biblio
 
-    @staticmethod
-    def _note_title(path: str) -> str:
-        """从笔记文件中提取第一个一级标题（H1，即以 `# ` 开头的行）。
-
-        边界/兼容性处理（针对 Obsidian Frontmatter）：
-            Obsidian 笔记常以 YAML frontmatter 块开头（`---` 起始，`---` 闭合）。
-            旧版实现直接读取首行，若首行为 `---`，归一化后变为空串，导致所有
-            带 frontmatter 的笔记全部塌缩到同一空 key 记录，造成数据污染。
-            改进后的逻辑：
-                1. 若文件首行为 `---`，则扫描至下一个单独的 `---` 行，跳过该块。
-                2. 跳过 frontmatter 后，取第一个以 `#` 开头的非空行，去掉 `#` 前缀返回。
-                3. 无 frontmatter 的笔记（如 paperFlow 自动生成，首行即 `# 标题`）行为保持不变。
-
-        Returns:
-            提取出的标题字符串，若无法提取则返回空字符串。
-
-        Args:
-            path: str，笔记文件路径
-        """
-        try:
-            lines = Path(path).read_text(encoding="utf-8").splitlines()
-        except Exception:
-            return ""
-        if lines and lines[0].strip() == "---":
-            # 首行是 frontmatter 起始：找到闭合 `---`，其后才是正文
-            for i in range(1, len(lines)):
-                if lines[i].strip() == "---":
-                    lines = lines[i + 1:]
-                    break
-        # 遍历正文行，找第一个 H1 标题行
-        for line in lines:
-            line = line.strip()
-            if line.startswith("#"):
-                return line.lstrip("#").strip()
-        return ""
-
     # —— 查询 ——
     def pdf_records(self) -> list[dict]:
         """返回带 PDF 的论文记录（批量入库用）；调用方负责先 refresh()。
 
         Returns:
-            记录 dict 的副本列表，每条含 title/pdf_path/note_path/biblio；
-            纯笔记记录（pdf_path 为空）不返回。
+            记录 dict 的副本列表，每条含 title/pdf_path/biblio。
         """
         with self._lock:
             return [dict(rec) for rec in self._records.values() if rec.get("pdf_path")]
@@ -292,17 +240,17 @@ class CorpusIndex:
         return self._records.get(self.normalize(title))
 
     def record_by_path(self, path: str) -> dict | None:
-        """按 note/pdf 路径反查论文记录（source path 兜底入口）。
+        """按 PDF 路径反查论文记录（source path 兜底入口）。
 
         Args:
-            path: str，note/pdf 文件路径
+            path: str，PDF 文件路径
 
         Returns:
             命中该路径的论文记录 dict；无命中返回 None。
         """
         p = str(Path(path).resolve())
         for rec in self._records.values():
-            if rec.get("pdf_path") == p or rec.get("note_path") == p:
+            if rec.get("pdf_path") == p:
                 return rec
         return None
 

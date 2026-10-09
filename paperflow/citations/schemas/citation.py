@@ -8,14 +8,15 @@ from paperflow.citations.constants import CitationStatus
 
 @dataclass
 class ResolvedCitation:
-    """引用解析结果：key + 语料状态 + 相关路径。
+    """引用解析结果：key + 语料状态 + PDF 路径。
+
+    溯源只跟踪 PDF：笔记是 agent 自己的产物，不参与引用解析。
 
     Attributes:
         key: BibTeX 条目的键，若 status=MISSING 则为 None。
         status: CitationStatus，IN_CORPUS（语料库内）或 MISSING（库外/未找到）。
         title: 论文全标题。
         year: 发表年份。
-        note_path: 关联的笔记文件路径（若有）。
         pdf_path: 关联的 PDF 文件路径（若有）。
     """
 
@@ -23,7 +24,6 @@ class ResolvedCitation:
     status: CitationStatus
     title: str = ""
     year: str = ""
-    note_path: str | None = None
     pdf_path: str | None = None
     #: key 是否已落地在 references.bib（bib 真相源）。in_corpus 只说明语料标题
     #: 索引命中——key 可能是现场生成、尚未入库的（溯源链断裂的根因）。in_bib=False

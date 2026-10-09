@@ -197,7 +197,7 @@ class FetchPdfTool(Tool):
             try:
                 resolved = get_citation_manager(self._config).resolve(title)
                 if resolved.status == "in_corpus":
-                    loc = resolved.pdf_path or resolved.note_path or resolved.key or "语料库"
+                    loc = resolved.pdf_path or resolved.key or "语料库"
                     return ToolResult(text=f"语料库已有该论文（{loc}），无需下载。")
             except Exception:
                 pass    # 查重失败不挡下载（索引未就绪等），保守放行

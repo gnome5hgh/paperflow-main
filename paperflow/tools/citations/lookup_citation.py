@@ -10,7 +10,7 @@ class LookupCitationTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（title/path）
         risk_level: str，"low"
-        root_hints: list[str]，["note", "pdf"]（path 可能是笔记或 PDF 源路径）
+        root_hints: list[str]，["pdf"]（path 是语料内 PDF 路径）
         manager: CitationManager，注入的引用库门面
     """
     name = "lookup_citation"
@@ -20,13 +20,13 @@ class LookupCitationTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "title": {"type": "string", "description": "论文干净全标题（来自笔记 H1 / read_pdf 标题 / 用户）"},
+            "title": {"type": "string", "description": "论文干净全标题（来自 extract_title / read_pdf / 用户）"},
             "path": {"type": "string", "format": "path", "description": "语料内文件绝对路径（可选，兜底入口）"},
         },
         "required": [],
     }
     risk_level = "low"
-    root_hints = ["note", "pdf"]   # path 可能是笔记或 PDF 源路径
+    root_hints = ["pdf"]           # path 是语料内 PDF 路径（溯源只跟踪 PDF）
 
     def __init__(self, manager):
         """注入 CitationManager（引用库路径来自 config，非 LLM 可控）。
@@ -44,7 +44,7 @@ class LookupCitationTool(Tool):
             path: str | None，语料内文件绝对路径（兜底入口）
 
         Returns:
-            ToolResult，文本含 status/key/in_bib/title/year/note/pdf 与标注指引；summary 带结构化三项。
+            ToolResult，文本含 status/key/in_bib/title/year/pdf 与标注指引；summary 带结构化三项。
         """
         r = self.manager.resolve(path or title or "")
         text = (f"status: {r.status}\n"
@@ -52,7 +52,6 @@ class LookupCitationTool(Tool):
                 f"in_bib: {r.in_bib}\n"
                 f"title: {r.title or '（未命中）'}\n"
                 f"year: {r.year or '（未知）'}\n"
-                f"note: {r.note_path or '无'}\n"
                 f"pdf: {r.pdf_path or '无'}\n")
         if r.status == "in_corpus" and r.in_bib:
             text += "（已入库 → 可标 [来源:key§节]）"

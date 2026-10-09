@@ -104,7 +104,6 @@ class CitationManager:
             # status 恒为 "in_corpus"（走到这里必已命中）；in_bib 区分"已在库"与"现场生成待落地"，lookup_citation 据此分级提示
             return ResolvedCitation(key=key, status=CitationStatus.IN_CORPUS, title=title,
                                     year=biblio.get("year", ""),
-                                    note_path=rec.get("note_path"),
                                     pdf_path=rec.get("pdf_path"),
                                     in_bib=existing is not None)
 
