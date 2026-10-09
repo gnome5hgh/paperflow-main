@@ -28,7 +28,7 @@ tools/
 - **`__init__.py` 统一再导出**：消费方从 `paperflow.tools` 导入，符号名稳定、内部路径随便拆。
 - **装配经 `make_tools`**：按 `root_hints` 生成目录提示、`default_write_root` 盖章到写工具、注入 `_config`；agent 拿到什么工具由 `cli.py` 装配层决定，不在工具内自作主张。
 - **安全元数据必填**：每个 Tool 声明 `risk_level`/`side_effects`/`requires_confirm` 等，注册表加载时校验合法值；覆盖/删除类写操作 `requires_confirm=True` 逐次确认（可重入的批量追加不强求，如 add_citation/sync_citations）。
-- **spawn 是唯一子 agent 通道**：未知类型 → spawn 白名单 → 同批同指纹去重（只拦同一批内的机械重复）→ 审稿预算 → 每轮派发总量，**五道闸**按此顺序都在 `orchestration/spawn.py` 的 `_admit`；去重注册表、失败计数、派发与预算账本、在途写占用由 `paperflow/core/agent/state.py` 的 session/run 容器持有，轮数预算与每轮上限下沉代码不靠 LLM 自律（意图只作信号，顺序与并行归 supervisor）。同路径写互斥不在闸里——写工具按真实写目标在 `RunState.writing_paths` 登记写占用、跨实例当场拒绝，判定在 runtime 执行层。
+- **spawn 是唯一子 agent 通道**：未知类型 → spawn 白名单 → 同批同指纹去重（只拦同一批内的机械重复）→ 审稿预算 → 每轮派发总量，**五道闸**按此顺序都在 `orchestration/spawn.py` 的 `_admit`；去重注册表、失败计数、预算计数、产物账本、在途写占用由 `paperflow/core/agent/state.py` 的 session/run 容器持有，轮数预算与每轮上限下沉代码不靠 LLM 自律（意图只作信号，顺序与并行归 supervisor）。同路径写互斥不在闸里——写工具按真实写目标在 `RunState.writing_paths` 登记写占用、跨实例当场拒绝，判定在 runtime 执行层。
 - **失败降级为文本**：工具异常转错误 ToolResult 回传 LLM 自行决策；ask_user 回调缺失时 fail-safe 返回提示，绝不挂起。
 
 ## Key Entry Points

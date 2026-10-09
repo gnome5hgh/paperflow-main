@@ -111,7 +111,7 @@ class WriteFileTool(Tool):
         """解析双入口 → 黑名单兜底 → 写盘 + 登记产物。
 
         _run_state 为本次 run 的状态容器（未注入时为 None）：写盘成功后把落盘路径
-        登记进产物账本，供后续收尾核对。入库不在本工具：调用方据返回文本派发 rag-agent。
+        登记进产物账本。入库不在本工具：调用方据返回文本派发 rag-agent。
 
         Args:
             content: str，待写入的完整文本

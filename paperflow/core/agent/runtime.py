@@ -372,7 +372,7 @@ class Agent:
             security_middleware: 安全中间件列表，按顺序执行 before / 逆序执行 after；每轮 run 结束时顺序执行 on_finish
             confirm_callback: async 确认回调，接收 ConfirmRequired，返回 bool；None 时使用 fail-safe 的 _default_confirm（始终拒绝）
             intent_service: 意图识别集成适配器（可选预处理层）。提供时 ReAct 循环在
-                开头调 begin、收尾调 finish、需要时注入账本；None 时整套意图层不存在
+                开头调 begin、收尾调 finish；None 时整套意图层不存在
                 （纯 ReAct，无 INTENT 块、无澄清、无追问继承）。
             ask_user_callback: 向用户提问的回调(Callable[[str], str] | None),供 ask_user_question 工具消费;None 时该工具不可用
             session_id: 会话标识,跨多次 run 保持一致,便于审计聚合;None 时 自动生成 8 位 hex

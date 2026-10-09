@@ -390,7 +390,7 @@ class IntentPipeline:
             return None
 
         # 4. 至少两个业务意图都过线 → query 是一句复合请求，直接在路由层拆开短路返回，不进 LLM 兜底。
-        # 主意图是列表第一项，完整意图列表随 INTENT 块注入，作收尾核对的事实来源。
+        # 主意图是列表第一项，完整意图列表随 INTENT 块注入。
         return self._router_intent(top_name, top_score, entities,
                                    prev_intent, query,
                                    extra_intents=extra)

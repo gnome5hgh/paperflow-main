@@ -16,7 +16,7 @@ import threading
 import time
 from typing import Callable
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, StreamEvent
@@ -49,23 +49,6 @@ class SubAgentResult(BaseModel):
     error_detail: str = ""
     needs_attention: bool = False
     digest: dict = {}
-
-    @model_validator(mode="after")
-    def _reject_dispatch_only_value(self) -> "SubAgentResult":
-        """拒绝只属于派发账本的 DEDUPED——去重意味着子任务没跑，没有结果可报。
-
-        去重命中时回传的是 denied（supervisor 统一按 status 判读各路结果），
-        账本另记 deduped。这道校验把「deduped 不进结果」从注释约定变成代码约束。
-
-        Returns:
-            校验通过的自身。
-
-        Raises:
-            ValueError: status 为 DEDUPED。
-        """
-        if self.status is SubAgentStatus.DEDUPED:
-            raise ValueError("DEDUPED 只描述派发被拦下，不是子任务结果状态")
-        return self
 
 
 class PaperAgentDigest(BaseModel):
@@ -613,8 +596,7 @@ class SpawnSubAgentTool(Tool):
         - ④⑤ 只判不记：计数自增与 ③ 的注册收敛在同一个临界区——否则被后续闸拒绝的
           派发会白吃额度。
 
-        顺序与并行由 supervisor 自主决定；每条被拒/去重的尝试都记入派发账本
-        （denied/deduped），供收尾核对看到「想派但没派成」。
+        顺序与并行由 supervisor 自主决定；被拒/去重的尝试只作为结果返回，不再记账。
 
         Args:
             agent_type: str，目标子 agent 类型
