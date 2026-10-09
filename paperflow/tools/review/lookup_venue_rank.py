@@ -14,7 +14,7 @@ import httpx
 from paperflow.core.security.network import validate_url_target
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.tools.common._http import _HttpClientMixin
-from paperflow.tools.rank._venue_rank import lookup_local, normalize_venue, RANK_CACHE, RANK_CACHE_MAX
+from paperflow.tools.review._venue_rank import lookup_local, normalize_venue, RANK_CACHE, RANK_CACHE_MAX
 
 
 class _VenueClient(_HttpClientMixin):
@@ -219,7 +219,7 @@ class LookupVenueRankTool(Tool):
         local = lookup_local(venue)
         if local:
             self._cache_put(ckey, local)
-            return ToolResult(text=self._rank_text(local, "本地映射表", "paperflow/tools/_venue_rank.py"))
+            return ToolResult(text=self._rank_text(local, "本地映射表", "paperflow/tools/review/_venue_rank.py"))
         # ③ LetPub 在线（优先按 ISSN 精确查，避开同名期刊歧义）
         client = self._client or self._make_client()
         try:
@@ -264,5 +264,5 @@ def _venue_passes(rank: dict) -> bool:
     Returns:
         True 表示达到「≥Q2」（本地再导 passes_q2 以避免循环 import）。
     """
-    from paperflow.tools.rank._venue_rank import passes_q2
+    from paperflow.tools.review._venue_rank import passes_q2
     return passes_q2(rank)
