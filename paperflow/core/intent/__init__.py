@@ -8,6 +8,7 @@ from paperflow.core.intent.constants import (
     INTENT_META, IntentCategory, IntentStep, IntentType,
 )
 from paperflow.core.intent.entities import extract_entities
+from paperflow.core.intent.jev import JevClient, JevDecision, JevUnavailable
 from paperflow.core.intent.schemas import IntentOutput
 from paperflow.core.intent.service import IntentService, Turn
 from paperflow.core.intent.taxonomy import (
@@ -17,5 +18,6 @@ from paperflow.core.intent.taxonomy import (
 __all__ = [
     "INTENT_META", "INTENT_CLASSES", "IntentCategory", "IntentClass",
     "IntentOutput", "IntentService", "IntentStep", "IntentType",
+    "JevClient", "JevDecision", "JevUnavailable",
     "Rule", "Taxonomy", "TaxonomyError", "Turn", "extract_entities", "load_taxonomy",
 ]

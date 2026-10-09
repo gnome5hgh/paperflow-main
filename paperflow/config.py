@@ -194,13 +194,46 @@ class CorpusConfig:
 # ── intent ──────────────────────────────────────────────────────────────────
 
 @dataclass
+class IntentJevConfig:
+    """判定服务（经 Vercel AI Gateway 调决策模型）配置。
+
+    网关是托管 API：账户**必须先绑定信用卡**才服务请求（连免费额度也要先绑），
+    未完成验证的账户一律 403。因此启用意图层要求启动探测通过，见 `cli.py`。
+
+    Attributes:
+        base_url: str，网关地址（Decision 模态走 `/v1/evaluate`）
+        api_key: str，网关 key（`vck_` 前缀）；留空则该层不可用
+        model: str，模型名（`<厂商>/<模型>`）。同一请求形态下有多家可选实现，
+            换实现只改这一项
+        timeout: float，单次调用读超时（秒）
+        max_retries: int，可恢复错误（429/5xx/超时）的重试次数
+        zero_data_retention: bool，请求零数据保留。本层会把**用户对话史**发出去，
+            因此默认开启；被服务端拒绝时按「该层不可用」处理，**不静默摘掉**这一项
+        only_provider: str，钉住服务提供方（避免被路由到别的实现）；留空不钉
+    """
+
+    base_url: str = "https://ai-gateway.vercel.sh/v1"
+    api_key: str = ""
+    model: str = "typesafe-ai/jev"
+    #: 单次调用读超时（秒）
+    timeout: float = 5.0
+    #: 可恢复错误的重试次数（次）
+    max_retries: int = 1
+    #: 零数据保留（默认开启：本层发送的是用户对话史）
+    zero_data_retention: bool = True
+    #: 钉住的服务提供方（空串 = 不钉，由网关路由）
+    only_provider: str = "typesafe-ai"
+
+
+@dataclass
 class IntentConfig:
-    """意图识别子系统配置：总开关 + 判定用的历史窗口。
+    """意图识别子系统配置：总开关 + 判定用的历史窗口 + 判定服务。
 
     Attributes:
         enabled: bool，意图识别总开关（关时整套意图层不装配：不装载知识库、
             Agent 走纯 ReAct，提示词不含意图规则）
         history_messages: int，判定时参考的最近对话条数（运行时按它截历史切片）
+        jev: IntentJevConfig，判定服务配置（规则层不命中时才用得上）
     """
 
     #: 意图识别总开关（默认关：系统默认形态是纯 ReAct；显式开启才挂载意图层）
@@ -208,6 +241,8 @@ class IntentConfig:
 
     #: 判定时参考的最近若干轮对话（只取 user/assistant 文本，不含工具结果）
     history_messages: int = 6
+
+    jev: IntentJevConfig = field(default_factory=IntentJevConfig)
 
 
 # ── rag ─────────────────────────────────────────────────────────────────────

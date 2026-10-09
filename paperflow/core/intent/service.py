@@ -66,38 +66,72 @@ class IntentService:
         "- `source` — `rule` 是确定性模式命中(可信度高),`jev` 是判定服务给的(参考即可)。"
     )
 
-    def __init__(self, taxonomy: Taxonomy, history_messages: int = 6):
-        """绑定知识库与历史窗口。
+    def __init__(self, taxonomy: Taxonomy, judge=None, history_messages: int = 6):
+        """绑定知识库、判定服务与历史窗口。
 
         Args:
             taxonomy: Taxonomy，类别知识库（描述/示例句）与规则模式
+            judge: 判定服务客户端（`JevClient`）或 None——None 时只有规则层，
+                规则不命中就不产块（测试与「不加判定服务」的用法）
             history_messages: int，判定时最多参考的最近对话条数
         """
         self.taxonomy = taxonomy
+        self.judge = judge
         self.history_messages = history_messages
         self.last_intent: IntentOutput | None = None
 
     async def begin(self, task: str, history: list[tuple[str, str]] | None = None) -> Turn:
         """跑判定，产出要注入的块与任务文本。
 
-        规则层命中即定类；不命中即**放行**（交给判定服务，由后续实现接上）——两层
-        都没有结果时本轮不产块，绝不硬猜一个类别塞给 supervisor。
+        规则层命中即定类；不命中且装配了判定服务时交给它（`source=jev`）。
+        **两层都没有结果时不产块**——绝不硬猜一个类别塞给 supervisor。
 
         Args:
             task: str，本轮原始任务文本
             history: list[tuple[str, str]] | None，最近若干轮对话文本 [(role, content)]，
                 由运行时在构建 head 之前截好递进来（**含 assistant 侧文本**，指代类输入
-                如「再下载一篇」要靠它才读得懂）。当前只有规则层，尚未消费它。
+                如「再下载一篇」要靠它才读得懂）。
 
         Returns:
             Turn：head_block 为本轮 INTENT 块（无判定结果时为 None），task 为可用任务文本。
         """
         entities = extract_entities(task)
         matched = self.taxonomy.match(task)
-        if matched is None:
-            self.last_intent = None
-            return Turn(head_block=None, task=task)
-        self.last_intent = IntentOutput(
-            intent=IntentType(matched), confidence=1.0,
-            entities=entities, source=IntentStep.RULE)
+        if matched is not None:
+            return self._turn(IntentType(matched), 1.0, entities, IntentStep.RULE, task)
+        if self.judge is not None:
+            decision = await self.judge.decide(
+                state=self.render_state(history, task),
+                criteria=self.taxonomy.criteria())
+            if decision is not None:
+                return self._turn(IntentType(decision.choice), decision.confidence,
+                                  entities, IntentStep.JEV, task)
+        self.last_intent = None
+        return Turn(head_block=None, task=task)
+
+    def _turn(self, intent: IntentType, confidence: float | None, entities: dict,
+              source: IntentStep, task: str) -> Turn:
+        """记下本轮产出并渲染成要注入的那一行。"""
+        self.last_intent = IntentOutput(intent=intent, confidence=confidence,
+                                        entities=entities, source=source)
         return Turn(head_block="INTENT: " + self.last_intent.model_dump_json(), task=task)
+
+    @staticmethod
+    def render_state(history: list[tuple[str, str]] | None, task: str) -> str:
+        """把对话史与本轮输入拼成判定服务读的共享状态文本。
+
+        **本轮输入放在最后一行**，判定口径写明「判最后一条用户消息」——否则模型会
+        去总结整段对话。assistant 侧留着：指代类输入（「再下载一篇」）的目标就是
+        它上一轮说的话。
+
+        Args:
+            history: list[tuple[str, str]] | None，[(role, content)]，正序。
+            task: str，本轮用户输入。
+
+        Returns:
+            str，逐行「用户：…／助手：…」，末行为本轮输入。
+        """
+        lines = [f"{'用户' if role == 'user' else '助手'}：{text}"
+                 for role, text in (history or [])]
+        lines.append(f"用户：{task}")
+        return "\n".join(lines)

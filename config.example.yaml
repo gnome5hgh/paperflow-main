@@ -25,9 +25,20 @@ corpus:
 # 意图识别（可选预处理层）：默认关——关掉即整套意图层不挂载，系统走纯 ReAct
 # （不装载知识库、不注入 INTENT 块与规则块）。判定层是「规则层（data/intent/ 的
 # 高精度模式）+ 判定服务（结合对话史，尚未接入）」，不再有编码器/路由器配置。
+# 判定服务经 Vercel AI Gateway 调决策模型（Decision 模态）。启用意图层要求启动
+# 探测通过——网关是托管 API，**账户须先绑定信用卡**，否则一律 403。探测不通过则
+# 整套意图层不装配（supervisor 走纯 ReAct）。
 # intent:
 #   enabled: true
 #   history_messages: 6                # 判定时参考的最近对话条数（只取 user/assistant 正文）
+#   jev:
+#     base_url: https://ai-gateway.vercel.sh/v1
+#     api_key: ""                      # 网关 key（vck_ 前缀）；留空则该层不可用
+#     model: typesafe-ai/jev           # 同一请求形态下有多家可选，换实现只改这里
+#     timeout: 5.0
+#     max_retries: 1
+#     zero_data_retention: true        # 本层发送的是用户对话史，默认要求零保留
+#     only_provider: typesafe-ai       # 钉住提供方；留空则由网关路由
 
 # RAG 检索栈：嵌入/精排端点、检索参数、切块、存储等的默认值见 paperflow/config.py
 rag:

@@ -44,8 +44,9 @@ from paperflow.tools.memory import set_memory_context, MemoryToolsContext
 from paperflow.core.memory.services.title_extractor import TitleExtractor
 from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.sleeptime import Sleeptime
+from paperflow.core.intent.jev import JevClient, JevUnavailable
 from paperflow.core.intent.service import IntentService
-from paperflow.core.intent.taxonomy import load_taxonomy
+from paperflow.core.intent.taxonomy import TaxonomyError, load_taxonomy
 from paperflow.rag.parsers.grobid_client import GrobidClient
 from paperflow.terminal.io import make_input_io
 from paperflow.terminal.render import make_renderer
@@ -494,11 +495,38 @@ def main(argv: list[str] | None = None) -> int | None:
     # 意图识别装配（可选预处理层）：关时整段跳过——不装载知识库、不构造适配器，
     # supervisor 走纯 ReAct。启用的前提是知识库能装载：类别缺条目、规则指向未知
     # 类别这类问题在这里就炸掉（fail-closed），不许跑到某一轮才静默走偏。
+    # 意图识别装配（可选预处理层）：关时整段跳过——不装载知识库、不探测判定服务，
+    # supervisor 走纯 ReAct。开启要过两道：① 知识库能装载（类别缺条目、规则指向未知
+    # 类别这类问题在这里就炸掉，fail-closed）；② 判定服务可达（网关是托管 API，
+    # 账户未绑卡一律 403）。**判定服务不可达则整套意图层不装配**——只有规则层能判的
+    # 那一小部分不值得挂着一个「大部分请求没有提示」的半层。
     intent_service = None
     if config.intent.enabled:
-        intent_service = IntentService(
-            taxonomy=load_taxonomy(),
-            history_messages=config.intent.history_messages)
+        try:
+            taxonomy = load_taxonomy()
+        except TaxonomyError as exc:
+            # 知识库坏了是配置/数据错误（类别与枚举对不上、规则写错），
+            # 必须人去改——fail-closed 拒绝启动，但给一行能读懂的话而不是 traceback。
+            _msg = f"意图识别已启用，但知识库装载失败：{exc}"
+            (console.print(_msg, style="red") if console else print(_msg))
+            sys.exit(1)
+        judge = JevClient(config.intent.jev.base_url, config.intent.jev.api_key,
+                          config.intent.jev.model,
+                          timeout=config.intent.jev.timeout,
+                          max_retries=config.intent.jev.max_retries,
+                          zero_data_retention=config.intent.jev.zero_data_retention,
+                          only_provider=config.intent.jev.only_provider)
+        try:
+            asyncio.run(judge.probe())
+        except JevUnavailable as exc:
+            _msg = (f"意图识别已启用，但判定服务不可用：{exc.reason}\n"
+                    "  本轮起意图层不装配（supervisor 走纯 ReAct，行为与关闭意图一致）。"
+                    "改好配置或恢复网络后重启生效。")
+            (console.print(_msg, style="yellow") if console else print(_msg))
+        else:
+            intent_service = IntentService(
+                taxonomy=taxonomy, judge=judge,
+                history_messages=config.intent.history_messages)
 
     # 确认中心：确认的唯一消费者，跑在 REPL 主事件循环上（启动/收尾在
     # _repl 内）。confirm 回调经它跨线程桥接，弹框期间渲染抑制——并行多
