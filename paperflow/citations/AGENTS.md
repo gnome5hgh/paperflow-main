@@ -14,7 +14,7 @@ citations/
 │   └─ bib.py   # 原文解析（parse_entries/find_*）+ 条目文本生成（entry_text）+ append 追加 + 按条目原文块删除
 └─ services/    # 业务层
     ├─ keys.py    # 引用键生成规则：{一作姓氏}{年份}{短标题}
-    ├─ corpus.py  # 语料标题索引（易变投影）：note H1 + PDF 解析标题 → 全标题精确匹配，按 (path, mtime_ns) 增量重建
+    ├─ corpus.py  # 语料标题索引（易变投影）：note H1 + PDF 解析标题 → 全标题精确匹配，按 (path, mtime_ns) 增量重建（磁盘缓存读回）
     └─ manager.py # 编排：引用解析 → 入库 → 去重 → 渲染 → 调和
 ```
 
@@ -23,6 +23,7 @@ citations/
 ## Core Rules
 
 - **references.bib 是唯一真相源，追加 + 按条目原文块删除**：写入只有 append 追加与按 key 删除命中条目原文块两种原语，都不重新序列化其余内容——用户手工维护的分节注释与未触碰条目逐字节保留（删除接缝两侧多余空行收敛为一个）；corpus 索引只是投影，可随时重建。
+- **corpus 投影的磁盘缓存必须读回**：`corpus_titles.json` 的 mtime 表是「哪几篇已经索引过」的唯一判据，`refresh()` 首步读回（缺失/损坏按冷启动）；不读回就每次启动重解析整库 PDF（走 GROBID，单篇数秒）。无变更不重写缓存文件。
 - **懒加载单例**：外部只经 `get_citation_manager()` 访问，重组件（corpus 索引、TitleExtractor）首次使用才构造。
 - **渲染不回写**：author-year/numbered/bibtex/gbt7714 四种格式渲染生成的视图可回填空字段（调和），但 bib 文件本身不动。
 - **溯源标注契约**：笔记头部 `**论文引用**: [key]`，节级标注 `[来源:§X]`；reviewer 沿 `[来源:key§节]` 回溯时用 `lookup_citation` 核验 key 真实存在，不信任标注本身。

@@ -50,11 +50,12 @@ rag:
   #                           # 一次检索白等几十秒——要动这个值先想清楚代价
   #   write_timeout: 60.0     # 写路径截止（秒），批量入库本身耗时故比读路径宽松，默认见 config.py
 
-# 子代理超时（秒，仅 YAML）；默认值见 config.py AgentsConfig，撞帽即需重估
+# 子代理超时（秒，仅 YAML）；默认值见 config.py AgentsConfig（表内每个角色都有值，撞帽即需重估）
 # agents:
 #   timeouts:
 #     note-agent: 900
 #     research-agent: 1800
+#     citation-agent: 300
 
 # MCP server 接入（工具前缀 mcp__paper-search__*；详见 docs/learning/11-MCP客户端.md）
 mcp_servers:

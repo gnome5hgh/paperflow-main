@@ -33,6 +33,7 @@ class CorpusIndex:
         _cache_path: Path，语料标题缓存文件（workspace/citations/corpus_titles.json）
         _records: dict[str, dict]，归一化标题 → 论文记录
         _mtime: dict[str, int]，文件路径 → mtime_ns（增量重建判据）
+        _loaded: bool，是否已尝试读回磁盘缓存（首次 refresh 读一次，之后不再读）
     """
 
     def __init__(self, config, rag_service=None, title_extractor=None):
@@ -53,6 +54,7 @@ class CorpusIndex:
         self._cache_path = Path(config.runtime.workspace) / "citations" / "corpus_titles.json"
         self._records: dict[str, dict] = {}   # norm_title -> 论文记录
         self._mtime: dict[str, int] = {}      # path -> mtime_ns（增量判据）
+        self._loaded = False                  # 磁盘缓存只读回一次
 
     # —— 惰性依赖（RAG 式，首次访问才构造重组件）——
     def _rag(self):
@@ -93,8 +95,14 @@ class CorpusIndex:
 
     # —— 索引生命周期 ——
     def refresh(self) -> None:
-        """增量重建：扫描语料库目录，只对新增/变更文件重提标题，删除的移除。"""
+        """增量重建：扫描语料库目录，只对新增/变更文件重提标题，删除的移除。
+
+        先读回上次的磁盘缓存再扫描，否则进程每次启动都会把语料库里每一篇 PDF
+        重新解析一遍（解析走 GROBID，单篇数秒）。
+        """
         with self._lock:
+            self.ensure_loaded()
+
             # 1. 分别遍历笔记目录（*.md）与 PDF 目录（*.pdf），收集当前所有文件的绝对路径与 mtime。
             current: dict[str, int] = {}
             for root, pattern, kind in ((self.config.corpus.note_dir, "*.md", "note"),
@@ -118,16 +126,42 @@ class CorpusIndex:
                 if path not in current:
                     self._remove(path)
 
-            # 4. 更新 _mtime 为当前快照，并将 _records 持久化到磁盘缓存。
+            # 4. 更新 _mtime 为当前快照；快照没变就不写盘——引用解析每次都调 refresh，
+            # 语料没动就不该反复重写这个文件。比对快照而不是逐条标记变更：提不出标题的
+            # 文件（损坏 PDF）也算改动，它的 mtime 得存下来，否则每次启动都要重试解析。
+            changed = current != self._mtime
             self._mtime = current
-            self.save()
+            if changed or not self._cache_path.exists():
+                self.save()
+
+    def ensure_loaded(self) -> None:
+        """确保磁盘缓存已读回（幂等；refresh 内部调用，接入方不必手动调）。"""
+        if self._loaded:
+            return
+        self._loaded = True
+        self.load()
 
     def load(self) -> None:
-        """从磁盘载入缓存（refresh 前调用则复用上次索引）。"""
-        if self._cache_path.exists():
+        """从磁盘载入缓存；缺失或损坏时保持空状态（按冷启动重建，不抛异常）。
+
+        缓存文件是随时可重建的投影，读它不该把调用方拖下水：文件被写坏一半
+        （进程中断、手工编辑）时下一次查引用必须照常工作，代价只是重扫一遍。
+        """
+        try:
             data = json.loads(self._cache_path.read_text(encoding="utf-8"))
-            self._records = data.get("records", {})
-            self._mtime = {k: int(v) for k, v in data.get("mtime", {}).items()}
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        records, mtime = data.get("records"), data.get("mtime")
+        if not isinstance(records, dict) or not isinstance(mtime, dict):
+            return
+        self._records = records
+        try:
+            self._mtime = {k: int(v) for k, v in mtime.items()}
+        except (TypeError, ValueError):
+            # mtime 表读不出来就只丢它——记录仍可用，下次扫描按「全部已变更」重提
+            self._mtime = {}
 
     def save(self) -> None:
         """将当前内存索引持久化到 JSON 缓存文件。"""
