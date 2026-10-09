@@ -1,4 +1,4 @@
-# paperflow/terminal/resume.py
+# paperflow/terminal/repl/resume.py
 """会话恢复的历史回放：把 --resume 拿到的 in-context 窗口重新渲染进终端滚动区。
 
 为什么需要：``--resume`` 恢复的是模型上下文（SQL 里 AgentState.message_ids 指的
@@ -12,8 +12,8 @@
 只读契约（关键）：回放只渲染，不 ``add_message``、不 ``update_agent``。任何一次
 落盘都会把 message_ids 撑大，导致模型下一轮看到重复消息。
 
-与同层 diff.py / errors.py 一样，本模块是聚焦的纯工具：不进包级 __init__ 导出，
-数据投影在此完成，repl.py 因此不必依赖 memory 层的 schema 类型。
+数据投影在此完成，主循环因此不必依赖 memory 层的 schema 类型；回放是 REPL 开场
+的一次性动作，故随 repl 包分发给 loop.py 的装配点。
 """
 from __future__ import annotations
 

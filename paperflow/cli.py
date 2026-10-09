@@ -52,7 +52,7 @@ from paperflow.terminal.confirm import ConfirmCenter, _make_confirm_callback
 from paperflow.terminal.io import make_input_io
 from paperflow.terminal.render import make_renderer
 from paperflow.terminal.repl import _repl, _make_print_fn
-from paperflow.terminal.resume import build_resume_replay
+from paperflow.terminal.repl import build_resume_replay
 
 
 # ── 启动预检（bootstrap）─────────────────────────────────────────────────────
