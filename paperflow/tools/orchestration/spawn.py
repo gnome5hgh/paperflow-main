@@ -274,14 +274,15 @@ _SPAWN_LOCK = threading.Lock()
 TURN_SPAWN_BUDGET = 8
 
 #: 失败升级:同会话同 agent_type 连续 N 次非 success(timeout/failed)后,
-#: 在结果文本追加强指令「勿再派发,改用 ask_user」——若重试预算用尽仍不升级,模型会一直自动重试;
+#: 在结果文本追加强指令「勿再派发,改用向用户请示」——若重试预算用尽仍不升级,模型会一直自动重试;
 #: 本项目每次重试是分钟级多工具子任务,故取较紧的 2。
-#: 仅对supervisor 生效(子 agent 无 ask_user 工具,升级无从谈起);
+#: 仅对该派发的父 agent 是 supervisor 时生效（下面按 parent.agent_type 代码级判定）
+#: ——升级的语义是把「要不要继续重试」的决策权交回用户，只有对用户负责的编排层适用；
 #: 成功即清零,不按任务文本指纹化。
 _FAILURE_ESCALATION_THRESHOLD = 2
 _FAILURE_ESCALATION_NOTE = (
     "\n\n⚠️ 该类型子任务已连续 {n} 次失败。请勿再次派发同类型子任务——"
-    "改用 ask_user_question 向用户说明失败情况并请示（放弃 / 换思路 / 坚持重试）。"
+    "改用向用户说明失败情况并请示（把问题写进你的回答，本轮就此结束；放弃 / 换思路 / 坚持重试）。"
 )
 
 #: 审稿预算门:同一父实例内同类审稿 spawn 的次数上限。值取自旧的「审稿循环最多3 轮」约定——
@@ -384,38 +385,6 @@ def _wrap_confirm_callback(orig, clock: _UserWaitClock):
         clock.begin()
         try:
             return await orig(cr)
-        finally:
-            clock.end()
-    return wrapped
-
-
-def _wrap_ask_user_callback(orig, clock: _UserWaitClock):
-    """包装问用户回调(同步契约):同款 begin/end 计时,把用户思考时间记入 clock。
-
-    ask_user_callback 是同步 Callable[[str], str](AskUserQuestionTool 在线程池里
-    直接调用,与 async 的 confirm_callback 契约不同,故单独一个同步包装)。语义与
-    confirm 版一致:用户思考/输入是交互等待,不计入子 agent 执行预算——不排除会
-    吃掉预算的相当比例,否则用户答得慢一点子任务就被误杀。
-
-    Args:
-        orig: 回调，原同步提问回调 Callable[[str], str]
-        clock: _UserWaitClock，等待计时器
-
-    Returns:
-        包装后的同步提问回调（用户思考/输入时长同样不计入执行预算）。
-    """
-    def wrapped(question):
-        """同步计时包装：进入前 begin、finally 里 end。
-
-        Args:
-            question: str，向用户提出的问题
-
-        Returns:
-            用户的回答文本。
-        """
-        clock.begin()
-        try:
-            return orig(question)
         finally:
             clock.end()
     return wrapped
@@ -688,11 +657,11 @@ class SpawnSubAgentTool(Tool):
 
         result = None
         try:
-            # 构造子 agent(非闸):继承父的安全中间件、会话 ID(同一审计链)、确认回调与
-            #    问用户回调——确认回调是关键:note-agent 的写盘工具要求用户确认,不传则
-            #    默认回调始终拒绝,spawn 出的 note-agent 永远写不出笔记;问用户回调同理,
-            #    note-agent 与 paper-agent 靠它中途向用户提问。不传意图管线/会话 → 子 agent 不做
-            #    意图识别(子任务是结构化任务,非用户意图)。
+            # 构造子 agent(非闸):继承父的安全中间件、会话 ID(同一审计链)与确认回调——
+            #    确认回调是关键:note-agent 的写盘工具要求用户确认,不传则默认回调始终拒绝,
+            #    spawn 出的 note-agent 永远写不出笔记。不传意图管线/会话 → 子 agent 不做
+            #    意图识别(子任务是结构化任务,非用户意图);「问用户」也不是工具,子 agent 需要
+            #    用户给信息时把问题写进自己的最终回答,由上级决定是否转达。
             # 流式统一：子 agent 只透传工具行（前缀由渲染器统一加）、不流 content——
             # 与并行场景同一代码路径（多路并发不串字）。
             child = Agent(
@@ -700,7 +669,6 @@ class SpawnSubAgentTool(Tool):
                 skill_registry=getattr(parent, "skill_registry", None),
                 agent_type=agent_type, security_middleware=parent.security_middleware,
                 session_id=parent.session_id, confirm_callback=parent.confirm_callback,
-                ask_user_callback=parent.ask_user_callback,
                 stream_callback=_make_child_stream_callback(parent),
                 # 继承父 trace_id：去重池（get_run_state 按 trace_id 键控）在
                 # 一次用户任务内跨 agent 共享——子 agent 因此不重复下载/抓取父任务
@@ -754,10 +722,6 @@ class SpawnSubAgentTool(Tool):
         # 此处只外包计时。
         clock = _UserWaitClock()
         child.confirm_callback = _wrap_confirm_callback(child.confirm_callback, clock)
-        # 问用户回调同款计时:用户思考/输入也是交互等待,不计入执行预算
-        # (callback 可为 None——程序化/测试环境无交互,零开销跳过)。
-        if child.ask_user_callback is not None:
-            child.ask_user_callback = _wrap_ask_user_callback(child.ask_user_callback, clock)
 
         async def _run_and_extract():
             """先带预算跑子 agent，再对其最终文本提取结构化摘要（摘要不消耗子任务预算）。

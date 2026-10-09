@@ -539,8 +539,9 @@ def main(argv: list[str] | None = None) -> int | None:
     from paperflow.terminal.confirm_center import ConfirmCenter
     center = ConfirmCenter(io, renderer)
 
-    # 问询回调：ask_user_question 工具与意图层的同步澄清共用同一个——两者都在
-    # worker 线程里读 stdin，指向同一份记录器才能让子 agent 的问答也落盘。
+    # 问询回调：只服务意图层的同步澄清（「问用户」本身不是工具——需要用户给信息时
+    # 把问题写进最终回答即可）。它与确认共用同一个消费者（都在 worker 线程里读 stdin），
+    # 并经记录器落盘，使澄清问答也进对话历史、可被后台记忆整合读到。
     _ask_cb = message_manager.make_ask_recorder(
         _make_ask_callback(io, renderer, center), session_id)
     intent_service = (
@@ -558,7 +559,6 @@ def main(argv: list[str] | None = None) -> int | None:
         security_middleware=middlewares,
         intent_service=intent_service,
         confirm_callback=_make_confirm_callback(io, renderer, center),
-        ask_user_callback=_ask_cb,
         session_id=session_id,
     )
     sleeptime = Sleeptime(

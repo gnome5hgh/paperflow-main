@@ -7,8 +7,7 @@
 澄清不走跨轮状态：管线判定该问时由 runtime 在本轮内直接调
 ask 回调同步问用户（routing.confirm 原语解析、意图代码级落地），不再挂起到下一轮
 ——旧机制（PendingClarification / _merge_pending / MAX_ROUNDS / force_dispatch）
-随之退役。agent 执行中途问用户走 ask_user_question 工具（intent_options 参数），
-同一原语、同一落地代码。
+随之退役。
 """
 from dataclasses import dataclass
 

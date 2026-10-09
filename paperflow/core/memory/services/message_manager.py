@@ -111,11 +111,12 @@ class MessageManager:
         return m
 
     def make_ask_recorder(self, base_ask, agent_id):
-        """包装 ask_user 回调：读答案同时把 Q&A 记进 messages 表（role=user）。
+        """包装问询回调：读答案同时把 Q&A 记进 messages 表（role=user）。
 
-        子 agent（note-agent / paper-agent）无独立 message_manager，其 ask_user 问答本会随
-        spawn 结束丢失；统一在此记录 → Sleeptime 可整合进 profile 块。记录失败
-        fail-safe（不阻断提问），answer 原样透传。
+        目前唯一的使用方是意图层的同步澄清（问用户本身不是工具，需要用户给信息时把
+        问题写进最终回答即可）——澄清发生在 ReAct 之外，问答不会自动进对话历史；
+        统一在此记录 → Sleeptime 可整合进 profile 块。记录失败 fail-safe（不阻断提问），
+        answer 原样透传。
 
         Args:
             base_ask: 原始的用户提问回调函数，接受 question 字符串返回 answer 字符串。
@@ -133,7 +134,7 @@ class MessageManager:
             Returns:
                 用户的回答文本（原样透传 base_ask 的结果）。
             """
-            # 1. 调用原始 ask_user 获取答案
+            # 1. 调用原始问询回调获取答案
             answer = base_ask(question)
             # 2. 尝试将问答记录为一条 user 消息（带前缀标识，便于后续识别）
             try:

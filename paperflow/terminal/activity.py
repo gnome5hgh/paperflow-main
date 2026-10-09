@@ -12,7 +12,7 @@ SLOW_MS = 2000
 
 #: 工具名 → (emoji+动词, 计数词)。未知工具走 _DEFAULT。
 #: 完整性由测试守护：遍历 paperflow.tools 包全部 Tool 子类，注册名必须都在表内或有豁免
-#: （ask_user_question 走确认中心弹框不出活动行；mcp__* 前缀动态解析）。
+#: （mcp__* 前缀动态解析）。
 ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
     # ── 文件与检索 ──
     "read_file": ("🔍 查阅", "文件"),

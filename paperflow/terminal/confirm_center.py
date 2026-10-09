@@ -132,9 +132,9 @@ class ConfirmCenter:
         return await self._bridge("confirm", cr)
 
     def ask(self, question: str) -> str:
-        """同步提问（ask_user 回调契约）：阻塞至消费者读到答案或 EOF/超时。
+        """同步提问（问询回调契约）：阻塞至消费者读到答案或 EOF/超时。
 
-        仅允许从工作线程调用（AskUserQuestionTool 在 to_thread 里执行）；
+        仅允许从工作线程调用（意图层的同步澄清在 asyncio.to_thread 里执行）；
         主线程绝不能调（会死锁事件循环）。EOF/中断/超时返回空串（fail-safe）。
 
         Args:

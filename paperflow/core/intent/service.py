@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from paperflow.core.intent.constants import IntentStep, IntentType
 from paperflow.core.intent.conversation_state import ConversationState
-from paperflow.core.intent.routing.confirm import format_intent_options, match_option_choice
+from paperflow.core.intent.routing.confirm import match_option_choice
 from paperflow.core.intent.routing.entities import extract_entities
 from paperflow.core.intent.schemas.intent import IntentOutput, IntentUnit
 
@@ -53,8 +53,8 @@ class IntentService:
         "### 这些意图各有固定动作(无需按能力选型)\n\n"
         "| 意图 | 类别 | 你的动作 |\n"
         "|------|------|---------|\n"
-        "| `menu_selection` | 对话管理 | 用户在回复你上一轮给出的编号菜单。对照你上轮菜单内容，把所选选项转成对应动作/派发（如选项是「科研发现」→ 派 research-agent 并拼入课题）；菜单已过时或无法对应选项 → 先 ask_user_question 确认，不猜 |\n"
-        "| `record_user_info` | 业务 | 用户陈述自己的信息(研究方向/专业/偏好)：派 memory-agent 写进核心块,再由你 ask_user_question 引导下一步;方向过宽(如\"课题是AI\")→ 先追问细分。**不派发领域 agent**(没有领域工作要做) |\n"
+        "| `menu_selection` | 对话管理 | 用户在回复你上一轮给出的编号菜单。对照你上轮菜单内容，把所选选项转成对应动作/派发（如选项是「科研发现」→ 派 research-agent 并拼入课题）；菜单已过时或无法对应选项 → 先向用户问清（把问题写进你的回答），不猜 |\n"
+        "| `record_user_info` | 业务 | 用户陈述自己的信息(研究方向/专业/偏好)：派 memory-agent 写进核心块,再由你在回答里引导下一步;方向过宽(如\"课题是AI\")→ 先追问细分。**不派发领域 agent**(没有领域工作要做) |\n"
         "| `manage_memory` | 业务 | 查询(读过哪些/未读清单)、加入未读、移出未读等记忆与清单操作:派 memory-agent 执行,子任务写明具体动作与标题或路径 |\n"
         "| `chitchat` | 系统 | 轻量回复 + 温和引导回学术场景。不派发 |\n"
         "| `out_of_scope` | 系统 | 明确拒绝 + 说明能力边界(代写论文属学术不端,必须拦截)。不派发 |\n"
@@ -63,7 +63,7 @@ class IntentService:
         "### 字段语义\n\n"
         "| 情形 | 语义 |\n"
         "|------|------|\n"
-        "| `source=user` | 用户已确认的意图(澄清编号选择 / ask_user 带 intent_options),代码级落地,直接按该意图调度;不要怀疑或再次向用户确认意图 |\n"
+        "| `source=user` | 用户已确认的意图（澄清编号选择），代码级落地,直接按该意图调度;不要怀疑或再次向用户确认意图 |\n"
         "| `entities` | pdf_path / arxiv_id / doi / note_path / figure 已提取,直接拼进子任务文本(不要重新解析) |\n\n"
         "### INTENT 块字段各自的作用\n\n"
         "- `intents` — 意图列表,**首项即主意图**:对请求性质的判断,说明用户在做什么。"
@@ -134,47 +134,6 @@ class IntentService:
         self.conversation.prev_intent = (
             intents[0].intent_type if len(intents) == 1 else None)
         self.conversation.prev_user_input = task
-
-    def record_confirmed(self, intent_name: str) -> None:
-        """落地用户确认的意图（供 ask_user 的 intent_options 路径调用）。
-
-        Args:
-            intent_name: str，确认的意图枚举值
-
-        Returns:
-            无返回值；就地更新 last_intent 与 conversation.prev_intent。
-        """
-        confirmed = IntentType(intent_name)
-        self.last_intent = IntentOutput(
-            intents=[IntentUnit(intent_type=confirmed, confidence=1.0)],
-            source=IntentStep.USER)
-        self.conversation.prev_intent = confirmed
-
-    def format_options(self, names: list[str]) -> str:
-        """把候选意图名格式化为带编号的选项行（供 ask_user 展示）。
-
-        Args:
-            names: list[str]，候选意图枚举值
-
-        Returns:
-            编号选项行文本。
-        """
-        options = [IntentType(n) for n in names if n in {t.value for t in IntentType}]
-        return format_intent_options(options)
-
-    def parse_choice(self, answer: str, names: list[str]) -> str | None:
-        """把用户回复解析为候选之一（供 ask_user 落地）。
-
-        Args:
-            answer: str，用户回复原文
-            names: list[str]，候选意图枚举值
-
-        Returns:
-            命中的候选枚举值；解析不出返回 None。
-        """
-        options = [IntentType(n) for n in names if n in {t.value for t in IntentType}]
-        confirmed = match_option_choice(answer, options)
-        return confirmed.value if confirmed is not None else None
 
     async def _resolve_clarification(self, task: str, intent) -> tuple:
         """同步澄清：把管线的澄清问题问出去，答案在代码层落地为意图。

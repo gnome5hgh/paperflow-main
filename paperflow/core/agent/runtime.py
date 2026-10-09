@@ -329,7 +329,7 @@ class Agent:
         confirm_callback: 确认回调（None 时用 fail-safe 的 _default_confirm，始终拒绝）
         session_id: str，会话标识（跨多轮 run 一致）
         memory / block_manager / message_manager / agent_manager / compaction / structured: 记忆与结构化输出服务句柄（None 时相关路径零开销跳过）
-        intent_service / ask_user_callback: 意图识别集成适配器与问询回调（None = 意图层不存在；仅 CLI 构造的 supervisor 装配）
+        intent_service: IntentService | None，意图识别集成适配器（None = 意图层不存在；仅 CLI 构造的 supervisor 装配）
         last_intent: IntentOutput | None，本轮意图（只读委托给 intent_service，供跨轮回写读取）
         max_turns: int，ReAct 循环轮次上限（超过抛 MaxTurnsExceeded）
         stream_callback: 回调 | None，流式事件回调（None = 非流式路径）
@@ -351,7 +351,6 @@ class Agent:
         security_middleware: list[SecurityMiddleware] | None = None,
         confirm_callback: Callable[[ConfirmRequired], bool] | None = None,
         intent_service: "IntentService | None" = None,
-        ask_user_callback=None,    # Callable[[str], str] | None
         session_id: str | None = None,
         memory=None,                # Memory | None
         agent_manager=None,         # AgentManager | None
@@ -374,7 +373,6 @@ class Agent:
             intent_service: 意图识别集成适配器（可选预处理层）。提供时 ReAct 循环在
                 开头调 begin、收尾调 finish；None 时整套意图层不存在
                 （纯 ReAct，无 INTENT 块、无澄清、无追问继承）。
-            ask_user_callback: 向用户提问的回调(Callable[[str], str] | None),供 ask_user_question 工具消费;None 时该工具不可用
             session_id: 会话标识,跨多次 run 保持一致,便于审计聚合;None 时 自动生成 8 位 hex
             memory: Memory 实例(可选),compile() 输出 system 记忆块注入 head (每轮重建);None 时跳过
             agent_manager: AgentManager 实例(可选),当前仅持有供上层(CLI)取用
@@ -479,7 +477,6 @@ class Agent:
         # 意图识别（可选预处理层）：只持一个适配器引用，None 即「关」——ReAct
         # 循环对意图的内部一无所知，几个钩子点全走它。
         self.intent_service = intent_service
-        self.ask_user_callback = ask_user_callback
         #: 实例唯一标识：跨 run 稳定，供按「父实例」键控的预算计数使用（如审稿预算），
         #: 与按 run 生成的 _trace_id 区分——子 agent 继承父 trace_id，用 trace_id 键控
         #: 会把同一轮里多个同类父实例的预算混在一起。构造即固定，不再变化。

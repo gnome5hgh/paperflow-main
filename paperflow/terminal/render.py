@@ -26,8 +26,8 @@ SAFE_PROMPT 替换）。三态逻辑两种模式共用：直答 shown==result �
 worker 并发调用（spawn 子 agent 的 tool 事件经上层加前缀透传），_lock 串行化
 渲染——同一事件的多段输出整体原子，避免并行子 agent 的工具行交错串字。
 should_print / reset / finalize / interrupt 只在主线程调用；suspend 例外——
-AskUserQuestionTool.execute 在工具执行器的线程池 worker 里经 ask_user 回调
-（terminal.repl 的 _make_ask_callback）也会调它，内部持 _lock 与并发 on_event 串行化，
+意图层的同步澄清经 ask 回调（terminal.repl 的 _make_ask_callback）在
+asyncio.to_thread 的工作线程里也会调它，内部持 _lock 与并发 on_event 串行化，
 线程安全。
 """
 import threading
@@ -171,7 +171,6 @@ class StreamRenderer:
           _shown_buffer；此后 content 全部静默；tool_start 聚合为活动行
           （同动词+同 agent 的连续调用合并计数，live 区 spinner 一体显示）；
           tool_end 记录耗时并累积 diffstat；活动行在键切换/收尾时以完成态落屏。
-          ask_user_question 的 tool 事件不出活动行（走确认中心弹框）。
 
     中断处理：
         - interrupt() 设置 _cancelled 标志，后续 on_event 直接丢弃事件（无法真正取消
@@ -395,8 +394,7 @@ class StreamRenderer:
     def _on_tool_start(self, ev) -> None:
         """处理 tool_start 事件（活动流）：聚合进当前活动行或开新行。
 
-        - ask_user_question 直接 return（走确认中心弹框，不出活动行）。
-        - 否则先 _end_block()（提交已流 prose）→ _commit_pending()（键切换时落屏
+        - 先 _end_block()（提交已流 prose）→ _commit_pending()（键切换时落屏
           上一活动行）→ _started_tools=True（此后 root content 静默）。
         - 同动词+同 agent 的连续调用合并计数；live 区显示
           format_activity(..., done=False) + "…"（block.show，spinner 一体）。
@@ -404,8 +402,6 @@ class StreamRenderer:
         Args:
             ev: StreamEvent，tool_start 事件（同动词同 agent 连续调用合并计数）
         """
-        if ev.tool_name == "ask_user_question":
-            return
         self._end_block()
         verb, count_word = activity_label(ev.tool_name)
         if (self._pending is not None and self._pending["verb"] == verb
@@ -430,7 +426,6 @@ class StreamRenderer:
     def _on_tool_end(self, ev) -> None:
         """处理 tool_end 事件（活动流）：记录耗时、累积 diffstat。
 
-        - ask_user_question 直接 return。
         - pending 同键（动词+agent）→ 记 duration_ms（落屏时 ≥SLOW_MS 才标注）。
         - 键不匹配（或 pending 为 None）→ 先 commit 现有 pending，再直接落屏该
           end 事件的完成行。并行子 agent 交错时 root 的 tool_end 可能晚于子 agent
@@ -440,8 +435,6 @@ class StreamRenderer:
         Args:
             ev: StreamEvent，tool_end 事件（记录耗时、累积写类 diffstat）
         """
-        if ev.tool_name == "ask_user_question":
-            return
         if ev.diffstat is not None:
             path, added, removed = ev.diffstat
             prev_added, prev_removed = self._changed.get(path, (0, 0))
@@ -541,7 +534,7 @@ class StreamRenderer:
         弹输入框/确认框前调用：终态渲染当前块、停 live。
 
         确保输入提示不会绘制在未完成的 live 块之上，避免混淆。
-        该方法可能被工作线程调用（如 AskUserQuestionTool），内部持锁保证线程安全。
+        该方法可能被工作线程调用（如意图层的同步澄清经 ask 回调），内部持锁保证线程安全。
         """
         with self._lock:
             self._end_block()

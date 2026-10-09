@@ -1,10 +1,10 @@
 # paperflow/core/intent/routing/confirm.py
 """意图确认原语——「用户从候选里选定意图」的格式化与解析。
 
-两条澄清通道（管线澄清 / agent 的 ask_user_question）共用本模块——问题文本末尾
-由代码追加编号选项（format_intent_options），用户回复由代码解析回意图
-（match_option_choice），命中即代码级写会话意图、不经路由器复判（同一句话复判
-只会复现同一误判——路径污染死锁的机理）。未命中一律回退保守路径，绝不猜测。
+澄清通道用本模块：问题文本末尾由代码追加编号选项（format_intent_options），
+用户回复由代码解析回意图（match_option_choice），命中即代码级写会话意图、
+不经路由器复判（同一句话复判只会复现同一误判——路径污染死锁的机理）。
+未命中一律回退保守路径，绝不猜测。
 """
 import re
 
