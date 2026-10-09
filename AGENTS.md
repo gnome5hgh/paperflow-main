@@ -237,9 +237,9 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 阈值与常量标定（`scripts/intent/` 下，gitignored；每个实验目录自成 `goldens/`（题集）+ `results/`（存档与报告），题集**不放在 `data/intent/`**——那里只留生产知识库 `routes.yaml` 与路由向量缓存）：`scripts/intent/calibration/`（2026-10-05 完成：编码器模型 + BM25 k1/b/idf + top_k + alpha + 12 条路由阈值 + 判据三常量 + 拟合超参 + 结构常量的分层序贯标定，交付值已写回；报告 `results/report.md`）；`scripts/intent/eval/`（计划中：用指标反映模块可用性）。
 
-产出 `IntentOutput`（`intents` 列表 + 轮级 entities/rewritten_query/source，另含 prev_intent/clarification/clarify_candidates）注入 ReAct head 的 `INTENT:` 块——`intents` 每项自带 `intent_type` 与可空 `confidence`（路由面逐项带融合分数；LLM 兜底面整列为空 = 该阶段不产置信度，不是低置信；仲裁轮同为 `source=llm` 但带一个模型自报数，判定仍看 `confidence < 0.5 或 source=llm` 那条规则），**主意图是列表首项**（只读派生属性 `intent_type`，不进序列化，单意图即长度 1 的列表）；块内只序列化 intents/entities/rewritten_query/source，prev_intent/clarification/clarify_candidates 被排除。识别到**两个以上**意图（`intents` 长度 ≥2）时注入收尾核对账本，把「识别到的意图 + 派发记录 + 新落盘产物」摆给 supervisor 自查；单意图轮次不注入。`INTENT_META` 是意图元数据的**单一真相源**：18 个 `IntentType` 值分 3 类（业务 business / 会话状态 dialogue / 直接回答 system）。收敛与新增史：switch_topic 并入用户信息记录（该值现名 `record_user_info`，2026-10-09 由 `set_research_topic` 改名——它记的是画像/偏好，不只是选题方向）、refine_query 并入 search_paper；2026-10-09 新增 `manage_index` / `delete_note` / `delete_research` / `delete_pdf` 四条业务路由。`dispatch_allowed` 决定 spawn 门禁（chitchat/out_of_scope 等永远不能 spawn，`feedback` 例外——它是 system 类但可派发，反馈要落到记忆块）。**意图是信号不是选型依据**：supervisor 读 system 里的 `<available_agents>` 清单（各 agent 的 description 即其职责与边界说明），按能力挑角色、自行决定顺序与并行，不按意图名对号入座；`menu_selection`（选项答复，对话管理可派发）由 supervisor 对照上轮菜单转换成对应动作/派发，无法对应先 ask_user 确认。
+产出 `IntentOutput`（`intents` 列表 + 轮级 entities/rewritten_query/source，另含 prev_intent/clarification/clarify_candidates）注入 ReAct head 的 `INTENT:` 块——`intents` 每项自带 `intent_type` 与可空 `confidence`（路由面逐项带融合分数；LLM 兜底面整列为空 = 该阶段不产置信度，不是低置信；仲裁轮同为 `source=llm` 但带一个模型自报数，判定仍看 `confidence < 0.5 或 source=llm` 那条规则），**主意图是列表首项**（只读派生属性 `intent_type`，不进序列化，单意图即长度 1 的列表）；块内只序列化 intents/entities/rewritten_query/source，prev_intent/clarification/clarify_candidates 被排除。识别到**两个以上**意图（`intents` 长度 ≥2）时注入收尾核对账本，把「识别到的意图 + 派发记录 + 新落盘产物」摆给 supervisor 自查；单意图轮次不注入。`INTENT_META` 是意图元数据的**单一真相源**：18 个 `IntentType` 值分 3 类（业务 business / 会话状态 dialogue / 直接回答 system）。收敛与新增史：switch_topic 并入用户信息记录（该值现名 `record_user_info`，2026-10-09 由 `set_research_topic` 改名——它记的是画像/偏好，不只是选题方向）、refine_query 并入 search_paper；2026-10-09 新增 `manage_index` / `delete_note` / `delete_research` / `delete_pdf` 四条业务路由。`dispatch_allowed` 标注意图是否为可派发的领域动作（chitchat/out_of_scope 等非领域意图不进拆分列表、不派生领域子任务；`feedback` 例外——它是 system 类但可派发，反馈要落到记忆块）。**意图是信号不是选型依据**：supervisor 读 system 里的 `<available_agents>` 清单（各 agent 的 description 即其职责与边界说明），按能力挑角色、自行决定顺序与并行，不按意图名对号入座；`menu_selection`（选项答复，对话管理可派发）由 supervisor 对照上轮菜单转换成对应动作/派发，无法对应先 ask_user 确认。
 
-澄清（2026-10-04 统一为单通道）：触发权在代码（`_ambiguous` 的 S1 贴线/S2 竞争分数判据）→ runtime `_resolve_clarification` 同步调 ask 回调问用户（问题文本由强制澄清 LLM 调用生成、末尾代码追加编号选项行）→ `routing.confirm.match_option_choice` 解析回复，命中候选 → 合成 `source=USER` 的确认意图（跳过路由复判），未命中 → 答案附录进任务按最佳猜测继续（单次问答、无循环）。`prev_intent`/`prev_user_input` 供追问判别——上一轮是单一意图才继承，多意图轮的 `prev_intent` 置 `None`（追问判别随即返回 False）。agent 执行中途问用户走 `ask_user_question(intent_options=...)`——同一 confirm 原语、同一落地代码（父 agent 的 last_intent/prev_intent 立即更新）。spawn 门禁声明优先：显式声明的可派发意图即放行（会话意图误判时本轮唯一申诉通道），声明的不可派发意图明确拒绝。
+澄清（2026-10-04 统一为单通道）：触发权在代码（`_ambiguous` 的 S1 贴线/S2 竞争分数判据）→ runtime `_resolve_clarification` 同步调 ask 回调问用户（问题文本由强制澄清 LLM 调用生成、末尾代码追加编号选项行）→ `routing.confirm.match_option_choice` 解析回复，命中候选 → 合成 `source=USER` 的确认意图（跳过路由复判），未命中 → 答案附录进任务按最佳猜测继续（单次问答、无循环）。`prev_intent`/`prev_user_input` 供追问判别——上一轮是单一意图才继承，多意图轮的 `prev_intent` 置 `None`（追问判别随即返回 False）。agent 执行中途问用户走 `ask_user_question(intent_options=...)`——同一 confirm 原语、同一落地代码（父 agent 的 last_intent/prev_intent 立即更新）。
 
 ### RAG
 
@@ -286,14 +286,13 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 ### Orchestration
 
-`paperflow/tools/orchestration/spawn.py` — **SpawnSubAgentTool**（`spawn_sub_agent`，`needs_parent=True`）。`aexecute(agent_type, task, intent=None)` 先过 `_admit` 的**六道闸**（按判定顺序，前三道是纯判定、后三道查共享状态），全过才构造并运行子 agent：
+`paperflow/tools/orchestration/spawn.py` — **SpawnSubAgentTool**（`spawn_sub_agent`，`needs_parent=True`）。`aexecute(agent_type, task)` 先过 `_admit` 的**五道闸**（按判定顺序，前两道是纯判定、后三道查共享状态），全过才构造并运行子 agent：
 
 1. **未知 agent 类型** — 不在 `list_agents()` 内 → denied（附可选清单）
-2. **意图派发门禁** — 显式声明的 `intent` 优先按声明校验，未声明看本轮会话意图；`dispatch_allowed=False`（chitchat/out_of_scope/help/unclassified 等，含声明的不可派发意图）→ denied。**意图只作信号，不决定派发顺序**
-3. **spawn 权限** — `_check_spawn_allowed`：supervisor 硬编码放行；其余 agent 查自己的 `AgentConfig.allowed_spawns` 白名单
-4. **同批同指纹去重**（指纹 = sha256(规范化任务文本)；注册表在 run 状态容器，键 `(父实例 id, 任务指纹)`）：只登记正在执行中的派发、完成即清除、不缓存结果——只拦同一批工具调用内的机械重复，跨轮重派会真跑
-5. **审稿预算** — 同一父实例内派发给 `review-agent` ≤3 次（计数键 `(父实例 id, agent_type)`；审稿的三种形态由「加载哪份审查流程 skill」区分，不再是 mode 字段），超限 denied（轮数预算下沉代码，LLM 不数轮次）
-6. **每轮派发上限** — supervisor 每次 ReAct 迭代内自身派发 ≤8 路，超限 denied（下一轮重新起算）。
+2. **spawn 权限** — `_check_spawn_allowed`：supervisor 硬编码放行；其余 agent 查自己的 `AgentConfig.allowed_spawns` 白名单
+3. **同批同指纹去重**（指纹 = sha256(规范化任务文本)；注册表在 run 状态容器，键 `(父实例 id, 任务指纹)`）：只登记正在执行中的派发、完成即清除、不缓存结果——只拦同一批工具调用内的机械重复，跨轮重派会真跑
+4. **审稿预算** — 同一父实例内派发给 `review-agent` ≤3 次（计数键 `(父实例 id, agent_type)`；审稿的三种形态由「加载哪份审查流程 skill」区分，不再是 mode 字段），超限 denied（轮数预算下沉代码，LLM 不数轮次）
+5. **每轮派发上限** — supervisor 每次 ReAct 迭代内自身派发 ≤8 路，超限 denied（下一轮重新起算）。
 
 闸门状态（去重注册表、失败计数、派发账本、审稿与每轮预算计数、在途写占用、产物账本）统一由 `core/agent/state.py` 的 session/run 两个状态容器持有（见 Agent and ReAct loop）。**顺序与并行由 supervisor 自主决定**，框架不做限制（契约里的「一个对象一路」是提示层的编排期望，不是闸门——闸门只兜上限：每轮 8 路，超出靠分轮补齐）；每条被拒/去重/完成的派发尝试记入 supervisor 的**派发账本**，收尾核对时把「识别到的意图 + 实际派发记录 + 新落盘产物」摆给模型自查（代码只摆账本、不下结论）。**同路径写互斥不在 spawn 闸里**：写工具按真实写目标在 `RunState.writing_paths` 登记写占用、跨实例当场拒绝（见 Agent and ReAct loop 的运行期状态容器与 ADR 0003）。
 
@@ -364,7 +363,7 @@ mcp_servers                     # 保留顶层（本身即映射）
 - **No deterministic pipeline.** Everything — routing, tool selection, task decomposition — is driven by the LLM's ReAct loop. Tools are just JSON Schema definitions fed to the model
 - **`ToolResult.summary: dict`** (default empty) — 结构化摘要通道：决策结果（policy_denied/user_denied）、spawn digest、记忆工具结构化数据都经它承载
 - **`risk_level` 已强制**：PolicyEngineMiddleware 按 `max_risk` 阈值拦截 + `requires_confirm` 确认（键 = (工具名, 目标路径)）；Tool 安全元数据由注册表加载时校验
-- **`allowed_agents` / `allowed_spawns` 已强制**：spawn 工具运行时校验白名单 + 意图派发门禁（supervisor 硬编码放行）
+- **`allowed_agents` / `allowed_spawns` 已强制**：spawn 工具运行时校验白名单（supervisor 硬编码放行）
 - **安全是中间件洋葱**：before（可拒绝/要求确认）→ 执行 → 逆序 after；每轮 run 结束 on_finish 可改写最终回答。所有拦截降级为 ToolResult 文本，只有 `MaxTurnsExceeded` 向上抛
 - **SQL 是记忆真相源，markdown 是投影**；压缩/窗口驱逐永不删 SQL 行（Recall 完整）；记忆工具**全装给 `memory-agent`、其余 agent 一件不装**——要记账或查记忆就派发它，supervisor 也不直接执行清单操作
 - **编排归 supervisor，代码只摆账本**：意图只作信号、不决定派发顺序——选型按 `<available_agents>` 的能力说明，顺序与并行由 supervisor 自主决定；多意图轮次代码只把「识别到的意图 + 派发账本 + 产物清单」摆给模型自查，不下结论、不强制队列。契约里写明「**一个对象一路**」：批量同类对象（目录 / glob 结果 / 清单 / 「这几篇」）先枚举成逐项子任务，再一头一个 `spawn_sub_agent`，不让一个子 agent 承包整批——单个子 agent 只有一份预算，整批压在它身上时预算先被串行处理耗光，中途超时则整批都拿不到结果
