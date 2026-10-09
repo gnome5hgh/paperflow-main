@@ -359,10 +359,13 @@ def main(argv: list[str] | None = None) -> int | None:
     for w in service_warnings:
         (console.print(w, style="yellow") if console else print(w))
     # api_key 缺失提示：CloudEmbedder 构造不校验 api_key——此处只提示
-    # 不阻断，降级路径由 router/retriever 各自消化。
-    if not config.rag.embedding.api_key or not config.intent.encoder.api_key:
+    # 不阻断，降级路径由 router/retriever 各自消化。触发只看 RAG 嵌入：意图
+    # 编码器留空会继承 rag.embedding 的 key，二者不会独立缺失；而「意图路由
+    # 退化」这半句只在意图识别开启时才有意义，故做成条件文案。
+    if not config.rag.embedding.api_key:
+        _intent_clause = "意图路由退化为纯 BM25，" if config.intent.enabled else ""
         _msg = ("未配置云端嵌入 api_key（config.yaml rag.embedding / intent.encoder 段）："
-                "意图路由退化为纯 BM25，RAG 检索无稠密路与精排。"
+                f"{_intent_clause}RAG 检索无稠密路与精排。"
                 "注册 siliconflow.cn 获取（含实名认证）。")
         (console.print(_msg, style="yellow") if console else print(_msg))
     try:
@@ -507,26 +510,26 @@ def main(argv: list[str] | None = None) -> int | None:
         PolicyEngineMiddleware(max_risk=config.runtime.max_risk),
     ]
 
-    # 意图管线:真实混合路由器 + LLM 兜底。意图编码器为云端实例(intent_encoder
-    # 段,与 RAG 的编码器互不共享);各意图阈值由离线标定写回 routes.yaml——
-    # 这里只读阈值,不做训练或阈值搜索。alpha 是稠密/稀疏信号的融合权重;
-    # alpha/top_k 读 config.intent.router(唯一声明点 config.py)。
-    # 路由向量缓存锚安装根（与 routes.yaml 同锚，语料源自那里，不随 workspace
-    # 重定向）。命中即零网络启动；未命中现算回写；断网降级零向量见 _encode_dense。
-    router = HybridRouter(
-        encoder=intent_encoder,
-        routes=load_routes(), alpha=config.intent.router.alpha,
-        top_k=config.intent.router.top_k,
-        vector_cache_path=str(VECTOR_CACHE_PATH))
-    # 启动期意图路由降级必须可见（黄字），不能只写 logger。缓存命中
-    # 时 add() 不走编码、dense_degraded 仍为 False——此时路由是全功能的，无告警。
-    if router.dense_degraded:
-        _msg = ("意图路由已降级为纯 BM25/稀疏：云端稠密编码不可用。"
-                "网络恢复后自动回到混合路由，无需重启。")
-        (console.print(_msg, style="yellow") if console else print(_msg))
-    pipeline = IntentPipeline(router=router, structured=structured)
-
-    conversation = ConversationState()
+    # 意图识别装配（可选预处理层）：总开关关时整段跳过——不构造路由器/管线/
+    # 会话，supervisor 走纯 ReAct。意图编码器是流程内首次需要时才用的实例，
+    # 关闭时不构造也不打告警（见上）。
+    router = None
+    pipeline = None
+    conversation = None
+    if config.intent.enabled:
+        router = HybridRouter(
+            encoder=intent_encoder,
+            routes=load_routes(), alpha=config.intent.router.alpha,
+            top_k=config.intent.router.top_k,
+            vector_cache_path=str(VECTOR_CACHE_PATH))
+        # 启动期意图路由降级必须可见（黄字），不能只写 logger。缓存命中
+        # 时 add() 不走编码、dense_degraded 仍为 False——此时路由是全功能的，无告警。
+        if router.dense_degraded:
+            _msg = ("意图路由已降级为纯 BM25/稀疏：云端稠密编码不可用。"
+                    "网络恢复后自动回到混合路由，无需重启。")
+            (console.print(_msg, style="yellow") if console else print(_msg))
+        pipeline = IntentPipeline(router=router, structured=structured)
+        conversation = ConversationState()
 
     # 确认中心：确认/提问的唯一消费者，跑在 REPL 主事件循环上（启动/收尾在
     # _repl 内）。confirm/ask 回调经它跨线程桥接，弹框期间渲染抑制——并行多
@@ -543,7 +546,7 @@ def main(argv: list[str] | None = None) -> int | None:
         compaction=config.compaction,
         structured=structured,
         security_middleware=middlewares,
-        intent_enabled=True, intent_pipeline=pipeline, conversation=conversation,
+        intent_enabled=config.intent.enabled, intent_pipeline=pipeline, conversation=conversation,
         confirm_callback=_make_confirm_callback(io, renderer, center),
         ask_user_callback=message_manager.make_ask_recorder(_make_ask_callback(io, renderer, center),
                                                             session_id),

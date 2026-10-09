@@ -238,12 +238,17 @@ class RouterConfig:
 
 @dataclass
 class IntentConfig:
-    """意图识别子系统配置：独立编码器 + 路由器。
+    """意图识别子系统配置：总开关 + 独立编码器 + 路由器。
 
     Attributes:
+        enabled: bool，意图识别总开关（关时整套意图层不装配：不构造编码器/
+            路由器/管线，Agent 走纯 ReAct，提示词不含意图规则）
         encoder: IntentEncoderConfig，意图路由独立编码器
         router: RouterConfig，混合路由器参数
     """
+
+    #: 意图识别总开关（False 时整套意图层不挂载）
+    enabled: bool = True
 
     encoder: IntentEncoderConfig = field(default_factory=IntentEncoderConfig)
     router: RouterConfig = field(default_factory=RouterConfig)
