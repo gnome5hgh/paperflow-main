@@ -1,27 +1,21 @@
 # paperflow/core/intent/__init__.py
-"""
-意图识别框架服务——包级统一导出。
+"""意图识别（可选预处理层）的统一导出点。
 
-本包包含意图识别所需的全部组件：路由契约与输出契约（schemas）、编码器与
-混合索引（encoders）、路由器与输入判别（routing）、级联管线（pipeline）、
-跨轮会话状态（conversation_state）。这里集中导出公开接口，供外部调用方从
-单一入口导入。
+集成缝是 `IntentService`（Agent 只持一个可选的它，`None` 即「关」）；类别与规则
+来自知识库 `data/intent/`，由 `taxonomy.load_taxonomy` 装载并做 fail-closed 校验。
 """
-from paperflow.core.intent.constants import IntentType, IntentStep
-from paperflow.core.intent.schemas.intent import IntentUnit, IntentOutput, IntentionResult
-from paperflow.core.intent.schemas.route import Route, RouteChoice
-from paperflow.core.intent.encoders.bm25 import JiebaTokenizer, BM25Encoder
-from paperflow.core.intent.encoders.index import HybridLocalIndex
-from paperflow.core.intent.routing.router import HybridRouter
-from paperflow.core.intent.pipeline import IntentPipeline
-from paperflow.core.intent.routing.route_loader import load_routes
-from paperflow.core.intent.conversation_state import ConversationState
+from paperflow.core.intent.constants import (
+    INTENT_META, IntentCategory, IntentStep, IntentType,
+)
+from paperflow.core.intent.entities import extract_entities
+from paperflow.core.intent.schemas import IntentOutput
+from paperflow.core.intent.service import IntentService, Turn
+from paperflow.core.intent.taxonomy import (
+    INTENT_CLASSES, IntentClass, Rule, Taxonomy, TaxonomyError, load_taxonomy,
+)
 
 __all__ = [
-    "IntentType", "IntentStep", "IntentUnit", "IntentOutput", "IntentionResult",
-    "Route", "RouteChoice",
-    "JiebaTokenizer", "BM25Encoder",
-    "HybridLocalIndex", "HybridRouter",
-    "IntentPipeline", "load_routes",
-    "ConversationState",
+    "INTENT_META", "INTENT_CLASSES", "IntentCategory", "IntentClass",
+    "IntentOutput", "IntentService", "IntentStep", "IntentType",
+    "Rule", "Taxonomy", "TaxonomyError", "Turn", "extract_entities", "load_taxonomy",
 ]

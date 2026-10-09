@@ -8,13 +8,13 @@
     3. 环境变量（最高优先级，按 ``PAPERFLOW_`` + 配置路径大写派生）
 
 配置结构与 config.yaml 同构：
-``runtime`` / ``corpus`` / ``intent{encoder, router}`` / ``rag{embedding, rerank,
+``runtime`` / ``corpus`` / ``intent`` / ``rag{embedding, rerank,
 retriever, query_rewrite, chunker, indexer, storage, grobid, tools}`` / ``memory`` /
 ``session`` / ``agents{timeouts}``，外加保留的顶层 ``llm`` / ``vision`` / ``mcp_servers``。
 
 env 名约定：字段路径以 ``_`` 连接并大写，前缀 ``PAPERFLOW_``。例如
 ``rag.storage.uri`` → ``PAPERFLOW_RAG_STORAGE_URI``，
-``intent.router.alpha`` → ``PAPERFLOW_INTENT_ROUTER_ALPHA``。无例外表；
+``rag.query_rewrite.model`` → ``PAPERFLOW_RAG_QUERY_REWRITE_MODEL``。无例外表；
 ``agents.timeouts`` 与 ``mcp_servers`` 是自由 dict，仅 YAML 可配（不派生 env）。
 
 使用方式::
@@ -194,57 +194,12 @@ class CorpusConfig:
 # ── intent ──────────────────────────────────────────────────────────────────
 
 @dataclass
-class IntentEncoderConfig:
-    """意图路由独立稠密编码器（与 RAG 解耦，为更换编码器留口）。
-
-    base_url/api_key 留空 = 继承 rag.embedding 同名字段，from_env 阶段解析完毕，
-    装配侧拿到的是已合并值。传输参数（batch_size/timeout/max_retries）与
-    rag.embedding 同形同默认——独立实例，互不共享。
-
-    Attributes:
-        base_url: str，编码端点（留空继承 rag.embedding）
-        api_key: str，密钥（留空继承 rag.embedding）
-        model: str，编码模型名（不继承，须显式配置）
-        batch_size: int，单批嵌入文本条数
-        timeout: float，读超时（秒）
-        max_retries: int，可恢复错误重试次数
-    """
-    base_url: str = ""
-    api_key: str = ""
-    model: str = "Qwen/Qwen3-Embedding-8B"
-    #: 单批嵌入请求的文本条数（条）
-    batch_size: int = 32
-    #: 嵌入 HTTP 读超时（秒）
-    timeout: float = 60.0
-    #: 可恢复错误（连接错误/超时/5xx）的重试次数（次）
-    max_retries: int = 2
-
-
-@dataclass
-class RouterConfig:
-    """混合路由器装配参数。
-
-    Attributes:
-        alpha: float，稠密分支权重（稀疏分支为 1-alpha）
-        top_k: int，每次查询检索的示例句条数
-    """
-
-    #: 稠密分支权重 alpha（稀疏路权重 1-alpha）。
-    alpha: float = 0.4
-
-    #: 路由器每次查询检索的 utterances 条数（条）。
-    top_k: int = 3
-
-
-@dataclass
 class IntentConfig:
-    """意图识别子系统配置：总开关 + 独立编码器 + 路由器 + 判定用的历史窗口。
+    """意图识别子系统配置：总开关 + 判定用的历史窗口。
 
     Attributes:
-        enabled: bool，意图识别总开关（关时整套意图层不装配：不构造编码器/
-            路由器/管线，Agent 走纯 ReAct，提示词不含意图规则）
-        encoder: IntentEncoderConfig，意图路由独立编码器
-        router: RouterConfig，混合路由器参数
+        enabled: bool，意图识别总开关（关时整套意图层不装配：不装载知识库、
+            Agent 走纯 ReAct，提示词不含意图规则）
         history_messages: int，判定时参考的最近对话条数（运行时按它截历史切片）
     """
 
@@ -253,9 +208,6 @@ class IntentConfig:
 
     #: 判定时参考的最近若干轮对话（只取 user/assistant 文本，不含工具结果）
     history_messages: int = 6
-
-    encoder: IntentEncoderConfig = field(default_factory=IntentEncoderConfig)
-    router: RouterConfig = field(default_factory=RouterConfig)
 
 
 # ── rag ─────────────────────────────────────────────────────────────────────
@@ -294,7 +246,7 @@ class RerankConfig:
     """精排模型独立连接配置——与 embedding 的传输参数解耦。
 
     base_url/api_key 留空 = 继承 rag.embedding 同名字段，from_env 阶段解析完毕，
-    装配侧拿到的是已合并值（增量继承语义与 intent.encoder 一致）。
+    装配侧拿到的是已合并值（与 intent 的继承解析同一阶段完成）。
     timeout/max_retries 与 embedding 的同名字段解耦，改精排超时不牵动嵌入。
 
     Attributes:
@@ -765,12 +717,9 @@ class PaperFlowConfig:
         config = cls()
         config._load_yaml(config_path)  # 第一步：YAML 文件（优先级最低）
         config._load_env()               # 第二步：环境变量（覆盖 YAML 值）
-        # 留空继承：intent.encoder ← rag.embedding、rag.query_rewrite ← llm。
+        # 留空继承：rag.query_rewrite ← llm、rag.rerank ← rag.embedding。
         # 必须在 YAML/env 全部加载后做——否则 env 覆盖会被继承值抢先顶掉。
-        enc = config.intent.encoder
         emb = config.rag.embedding
-        enc.base_url = enc.base_url or emb.base_url
-        enc.api_key = enc.api_key or emb.api_key
         # rag.rerank 留空逐项继承 rag.embedding（端点/key），与上面同一阶段。
         rr = config.rag.rerank
         rr.base_url = rr.base_url or emb.base_url
@@ -817,7 +766,7 @@ class PaperFlowConfig:
 
         env 名 = ``PAPERFLOW_`` + 配置路径（``.`` 换 ``_``）大写，如
         ``PAPERFLOW_LLM_API_KEY`` / ``PAPERFLOW_RAG_STORAGE_URI`` /
-        ``PAPERFLOW_INTENT_ROUTER_ALPHA``。自由 dict/list 字段
+        ``PAPERFLOW_RAG_QUERY_REWRITE_MODEL``。自由 dict/list 字段
         （``agents.timeouts``、``mcp_servers``）不派生 env。
         """
         _apply_env(self, ())

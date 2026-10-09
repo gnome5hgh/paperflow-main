@@ -23,8 +23,6 @@ from paperflow.core.security.text import sanitize_surrogates
 
 __all__ = ["ResumeReplay", "build_resume_replay", "render_resume_replay"]
 
-#: ask_recorder 写入的问答消息前缀（见 MessageManager.make_ask_recorder）
-_ASK_PREFIX = "[ask_user] "
 #: 参与回放的角色。tool 被排除：窗口里的 tool 消息只带工具结果 content，没有
 #: agent_type，而 live 的工具行是 ``[supervisor] xxx`` 形态——重建出来是编造的。
 #: system 被排除：它是 head 内部物（AGENT/SKILLS/记忆/INTENT 块），从未上过屏。
@@ -109,12 +107,7 @@ def render_resume_replay(renderer, replay: ResumeReplay) -> None:
 
     for role, text in replay.entries:
         if role == "user":
-            if text.startswith(_ASK_PREFIX):
-                question, _, answer = text[len(_ASK_PREFIX):].partition("\n")
-                renderer.print_raw(question)
-                renderer.print_raw(f"[回答模式] > {answer}", style="dim")
-            else:
-                renderer.print_raw(f"❯ {text}")
+            renderer.print_raw(f"❯ {text}")
         else:
             renderer.print_markdown(text)
 

@@ -72,17 +72,7 @@ class InputIO:
         """
         return "y" if self.confirm(text) else "n"
 
-    def ask(self, question: str) -> str:
-        """
-        读取一个开放问题的答案（自由文本输入）。
 
-        Args:
-            question (str): 问题文本。
-
-        Returns:
-            str: 用户输入的回答（去除首尾空白）。若遇到 EOF（Ctrl-D）或中断，返回空字符串。
-        """
-        raise NotImplementedError
 
 
 class FallbackIO(InputIO):
@@ -153,28 +143,6 @@ class FallbackIO(InputIO):
             if raw in {"a", "all", "全部"}:
                 return "a"
             return "n"
-
-    def ask(self, question: str) -> str:
-        """
-        使用内置 input() 读取开放问题的答案。
-
-        Args:
-            question (str): 问题文本。
-
-        Returns:
-            str: 用户输入（去除首尾空白），若 EOF 则返回空字符串。
-
-        Notes:
-            - 持锁串行化，避免并发提示交错。
-            - EOF 返回空字符串，由上层回调决定如何处理（如重试或忽略）。
-        """
-        with _confirm_lock:
-            print(question)
-            try:
-                return input("[回答模式] > ").strip()
-            except EOFError:
-                # EOF/Ctrl-D：返回空串而非抛错，上层（ask_user 回调）自行处理
-                return ""
 
 
 def _session_key_bindings() -> KeyBindings:
@@ -405,28 +373,6 @@ class PromptToolkitIO(InputIO):
             except (EOFError, KeyboardInterrupt):
                 return "n"
             return result if result in ("y", "a") else "n"
-
-    def ask(self, question: str) -> str:
-        """
-        使用 prompt_toolkit 临时提示读取开放问题的答案。
-
-        Args:
-            question (str): 问题文本。
-
-        Returns:
-            str: 用户输入（去除首尾空白）。
-
-        Notes:
-            - 使用独立的 prompt，不混入主输入历史。
-            - 持锁 _confirm_lock 串行化，避免并发问题。
-            - 此方法不捕获 EOF，由上层调用者（ask_user 回调）处理异常并返回空串。
-        """
-        with _confirm_lock:
-            print(question)
-            from prompt_toolkit.shortcuts import prompt as _pt_prompt
-            # 前缀明示输入归属（配合回答模式横幅）：此刻输入是回答，不是新任务
-            return _pt_prompt("[回答模式] > ")
-
 
 def make_input_io(config) -> InputIO:
     """

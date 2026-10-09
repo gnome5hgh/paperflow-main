@@ -26,9 +26,8 @@ SAFE_PROMPT 替换）。三态逻辑两种模式共用：直答 shown==result �
 worker 并发调用（spawn 子 agent 的 tool 事件经上层加前缀透传），_lock 串行化
 渲染——同一事件的多段输出整体原子，避免并行子 agent 的工具行交错串字。
 should_print / reset / finalize / interrupt 只在主线程调用；suspend 例外——
-意图层的同步澄清经 ask 回调（terminal.repl 的 _make_ask_callback）在
-asyncio.to_thread 的工作线程里也会调它，内部持 _lock 与并发 on_event 串行化，
-线程安全。
+确认弹框经确认中心在 asyncio.to_thread 的工作线程里也会调它，内部持 _lock 与
+并发 on_event 串行化，线程安全。
 """
 import threading
 import time

@@ -165,39 +165,6 @@ def _make_confirm_callback(io: InputIO, renderer: StreamRenderer, center=None):
     return _confirm
 
 
-def _make_ask_callback(io: InputIO, renderer: StreamRenderer, center=None):
-    """
-    构造 ask_user 回调：读取开放问题的答案。
-
-    Args:
-        io: 输入适配器（center 为 None 时的兜底路径）。
-        renderer: 渲染器（用于暂停 live）。
-        center: ConfirmCenter——提问与确认共用同一消费者串行化，避免并行场景
-                下确认框与提问框互抢 stdin。
-
-    Returns:
-        callable: 接受 question 字符串，返回答案字符串。
-                  遇到 EOF/Ctrl+C 返回空串（fail-safe）。
-    """
-    from paperflow.terminal.confirm_center import ConfirmCenter
-    center = center or ConfirmCenter(io, renderer)
-
-    def _ask(question: str) -> str:
-        """提问回调：经确认中心读取开放答案。
-
-        Args:
-            question: str，向用户提出的问题
-
-        Returns:
-            用户回答；EOF/Ctrl+C 返回空串。
-        """
-        try:
-            return center.ask(question)
-        except (EOFError, KeyboardInterrupt):
-            return ""
-    return _ask
-
-
 def _shorten_path(p: str) -> str:
     """将路径中的 home 目录缩写为 '~'，用于 banner 显示。
 

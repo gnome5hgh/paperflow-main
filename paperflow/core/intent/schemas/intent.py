@@ -1,273 +1,30 @@
 # paperflow/core/intent/schemas/intent.py
-"""意图识别输出契约——识别管线各阶段产出的统一数据结构。
+"""意图判定的输出契约。
 
-这是"输出契约"：定义识别结果的形态，与 schemas/route.py 的"路由契约"（路由器
-输入/输出）职责不同。识别管线分五级：实体提取 / 选项答复检测 / 追问检测 / 混合路由 /
-LLM 兜底，本模块定义的几个类型是它们共同使用的产出契约：
-
-- ``IntentType``: 14 类意图枚举（含业务意图引用库管理 manage_citations；枚举值即路由名，
-  对应 routes.yaml 的 route 名集合）。
-- ``IntentCategory``: 意图类别（business/dialogue/system）——消费分组，非路由层级。
-- ``INTENT_META``: intent → (category, dispatch_allowed) 单一真相源映射。
-- ``IntentStep``: 产出阶段枚举——审计/监控据此区分"这条意图是路由层定的
-  还是 LLM 兜底定的"（从而统计路由命中率、LLM 兜底率）。
-- ``IntentUnit``: 一轮里的一项意图（类型 + 置信度），构成意图列表的元素。
-- ``IntentOutput``: 管线逐级产出的结构化意图（意图列表 + 轮级信息），
-  供上层调用方直接消费。
-- ``IntentionResult``: LLM 兜底阶段的结构化输出契约——与 IntentOutput 同形
-  （意图列表 + 轮级字段），只含模型能产出的那部分。
+判定结果是**单个类别**（不是列表）：判定服务的选项表是单选，而「一轮里提了几件
+事」这种信息本来就在用户原句里，supervisor 自己读得出来——为了把它变成结构化字段
+而引入一条阈值（多标签需要）不划算。
 """
+from pydantic import BaseModel, Field
 
-from pydantic import BaseModel, Field, model_validator
+from paperflow.core.intent.constants import IntentStep, IntentType
 
-from paperflow.core.intent.constants import INTENT_META, IntentStep, IntentType
-from paperflow.core.security.text import sanitize_surrogates
+__all__ = ["IntentOutput"]
 
 
-class IntentUnit(BaseModel):
-    """一轮里的一项意图。
-
-    confidence 允许为空，两个产出路径的填法不同：路由面逐项填自己的融合分数
-    （真实值，clip 到 [0,1]）；LLM 兜底面**整列留空**——该路径不产置信度（见
-    IntentionResult）。留空表示「该路径没有产置信度」，不是低置信。
+class IntentOutput(BaseModel):
+    """一轮判定的产出：类别 + 把握 + 实体 + 来源。
 
     Attributes:
-        intent_type: IntentType，本项意图
-        confidence: float | None，置信度 [0,1]；路由面填自己的融合分数，LLM 兜底面为 None（该路径不产置信度）
+        intent: IntentType，本轮类别（11 值之一）。
+        confidence: float | None，判定把握。规则命中是确定性的，记 1.0；判定服务给的
+            是它选中项的概率。**没有判定消费者**，只作展示与排查线索。
+        entities: dict[str, str]，确定性抽取的实体（pdf_path / arxiv_id / doi /
+            note_path / figure），供 supervisor 直接拼进子任务文本。
+        source: IntentStep，本轮判定来自规则层还是判定服务。
     """
 
-    #: 意图类型
-    intent_type: IntentType
-
-    #: 置信度，范围约束在 [0,1]（LLM 可能输出越界值，pydantic 强制约束）。
-    #: 路由面逐项填融合分数（真实值）；LLM 兜底面整列为 None。
-    #: description 会经 StructuredOutput 的 schema 展开进兜底提示词——那里必须点名
-    #: 「本路径不产置信度、填了也会被忽略」，否则模型看到的是一个可填但无说明的字段，
-    #: 填了又被静默清掉（路由路径不展开 schema、INTENT 块是纯值序列化，这条说明不会
-    #: 出现在别处）。
-    confidence: float | None = Field(
-        default=None, ge=0.0, le=1.0,
-        description=(
-            "该意图的置信度：只有路由层能给出真实分数（每条候选各自过了自己的拆分"
-            "阈值）；LLM 兜底路径不产置信度，这里不用填——填了也会被忽略。"
-        ),
-    )
-
-
-class _IntentListRules:
-    """意图列表的共用校验规则——承载面与 LLM 兜底面的列表语义必须逐字一致。
-
-    `IntentOutput`（管线逐级产出的承载类型）与 `IntentionResult`（LLM 兜底的结构化
-    输出契约）是同一件事的两个落点，结构同形（意图列表 + 轮级字段）。列表的合法性
-    规则只能有一份实现：各写一份的话，改了一边、另一边就静默接受本不该放行的拆分。
-    """
-
-    def _normalize_intent_list(self) -> None:
-        """按类型保序去重 + 剔除非业务的「额外」成员 + 列表与澄清互斥。
-
-        去重按 intent_type 保留首次出现、维持原顺序：同一件事在一轮里说两遍仍是
-        一件事。路由路径的每条候选本就互不相同（收集时已跳过主意图），这层对它是
-        空操作；LLM 兜底面才是需要它的地方——模型可能把主意图重复写进列表，重复项
-        会让列表虚长到 ≥2，从而在收尾回写时把上一轮意图清空（丢掉追问继承）。
-
-        首要项（intents[0]）恒保留：它是这一轮的分类结论，整轮闲聊时也必须还是
-        chitchat——supervisor 的「非派发意图的处理」按类型分派回话方式，兜底成
-        UNCLASSIFIED 会让「闲聊该温和引导」与「越界该明确拒绝」变得不可区分。
-        首要项之外的非可派发成员（多意图句里混进来的系统意图）不是动作，剔掉——
-        留着只会让注入的意图清单多出无法执行的非动作项。
-
-        列表长度 ≥2 说明输入已被拆解执行，无需再澄清；两者同时产出属模型违命，
-        澄清让位。单意图 + 澄清是澄清轮的正常形态，必须保留——无条件清空会把
-        澄清整条链路杀掉。
-        """
-        business = {t for t, (_, allowed) in INTENT_META.items() if allowed}
-        seen: set[IntentType] = set()
-        deduped: list[IntentUnit] = []
-        for unit in self.intents:
-            if unit.intent_type in seen:
-                continue
-            seen.add(unit.intent_type)
-            deduped.append(unit)
-        head, *rest = deduped
-        object.__setattr__(self, "intents",
-                           [head] + [u for u in rest if u.intent_type in business])
-        if len(self.intents) > 1 and self.clarification:
-            object.__setattr__(self, "clarification", None)
-
-
-class IntentOutput(_IntentListRules, BaseModel):
-    """一整轮的意图产出：意图列表 + 轮级信息。
-
-    意图列表是唯一真相源：单意图 = 长度 1 的列表，多意图 = 多个元素。主意图不再
-    单独存一份，而是 intents[0] 的只读派生属性——这样「主意图」与「列表首项」不可能
-    不一致，也让既有读取点（会话落地等）无需改动。属性不是 pydantic 字段，
-    因此不会进 INTENT 块的序列化结果，模型看到的是列表本身。
-
-    轮级字段（entities / rewritten_query / source / clarification / clarify_candidates）
-    属于整轮而非某一项：实体抽取与查询改写都是一轮产出一次，澄清问的是「这一句我没听懂」。
-
-    Attributes:
-        intents: list[IntentUnit]，本轮的意图列表（唯一真相源；单意图即长度 1，首项即主意图）
-        entities: dict，实体提取阶段产出的实体
-        rewritten_query: str，管线输入原文；LLM 兜底改写时为其改写结果
-        source: IntentStep，产出阶段（审计/监控可观测）
-        prev_intent: IntentType | None，上一轮意图（追问检测阶段填充）
-        clarification: str | None，歧义澄清问题；非空时由调用方在本轮内同步问用户
-        clarify_candidates: list[IntentType]，澄清候选（业务候选 top2，澄清回路的代码级回传锚点；不进 INTENT 块）
-    """
-
-    #: 意图列表（单意图即长度 1），唯一真相源
-    intents: list[IntentUnit] = Field(min_length=1)
-
-    #: 实体提取阶段得到的实体（由管线填充）
-    entities: dict = Field(default_factory=dict)
-
-    #: 管线输入原文；LLM 兜底改写时为其改写结果（缺省为原文）
-    rewritten_query: str = ""
-
-    #: 产出阶段——审计/监控可观测
+    intent: IntentType
+    confidence: float | None = None
+    entities: dict[str, str] = Field(default_factory=dict)
     source: IntentStep
-
-    #: 上一轮意图（追问检测阶段填充，来自会话上下文）
-    prev_intent: IntentType | None = None
-
-    #: 歧义澄清问题（LLM 兜底阶段填充；非空时由调用方在本轮内同步问用户）
-    clarification: str | None = None
-
-    #: 澄清的候选意图（仅 clarification 非空时填充，业务候选 top2，按展示顺序）。
-    #: 澄清回路的代码级回传锚点：调用方问用户后带走，用户回复经
-    #: routing.confirm.match_option_choice 解析回其中之一，直接落地会话意图——
-    #: 不进 INTENT 块（对模型是噪声，序列化时排除）。
-    clarify_candidates: list["IntentType"] = []
-
-    @property
-    def intent_type(self) -> IntentType:
-        """主意图 = 列表首项（只读派生，不进序列化）。"""
-        return self.intents[0].intent_type
-
-    @model_validator(mode="after")
-    def _normalize_and_sanitize(self) -> "IntentOutput":
-        """应用共用的列表规则 + 清洗 surrogate 字符。
-
-        列表规则（按类型保序去重 / 首要项恒保留 / 主意图之外的非业务成员剔除 /
-        列表与澄清互斥）见 `_IntentListRules._normalize_intent_list`——与 LLM 兜底面的
-        同形契约共用一套实现，不复制两份。
-
-        清洗未配对的 surrogate 字符（PDF 提取 / LLM 兜底输出可能携带）——若不清洗，
-        后续 model_dump_json 会抛 PydanticSerializationError（输入含 '\\udce5' 这类
-        未配对代理项时触发）。
-
-        Returns:
-            校验后的自身实例（model_validator 契约）。
-        """
-        self._normalize_intent_list()
-        self.rewritten_query = sanitize_surrogates(self.rewritten_query)
-        if self.clarification:
-            self.clarification = sanitize_surrogates(self.clarification)
-        if self.entities:
-            self.entities = {
-                k: sanitize_surrogates(v) if isinstance(v, str) else v
-                for k, v in self.entities.items()
-            }
-        return self
-
-
-class ArbitrationChoice(BaseModel):
-    """边界仲裁的 LLM 输出契约：在两个贴近的业务候选中二选一。
-
-    与 IntentionResult（兜底全解析）不同，仲裁只回答「二选一」——候选集由
-    管线按路由分差圈定，模型只在候选内表态；越出候选的选择由管线作废回落。
-
-    Attributes:
-        intent_type: IntentType，两个候选中更符合用户意图的那个
-        confidence: float，模型对这个选择的把握 [0,1]
-    """
-
-    #: 两个候选中更符合用户意图的那个（枚举值原样输出）
-    intent_type: IntentType
-
-    #: 对这个选择的把握 [0,1]
-    confidence: float = Field(ge=0.0, le=1.0)
-
-
-class IntentionResult(_IntentListRules, BaseModel):
-    """LLM 兜底阶段的结构化输出契约。
-
-    与 IntentOutput 同形：意图列表（按执行顺序，首项即主意图，单意图 = 长度 1）
-    + 轮级字段。只含 LLM 能产出的那部分——entities 由确定性抽取器给出，不经模型，
-    故不在此契约里。
-
-    列表规则与 IntentOutput 共用 `_IntentListRules`；差异只在置信度：本路径
-    **整列不产置信度**，校验器把每一项的 confidence 都清空（见 `_intents_guard`）。
-    路由面逐项填的是自己算出的融合分数（真实值），模型写的数字与之不是同一尺度，
-    且本路径的判定由 `source` 短路（消费方见 source=llm 即先确认），那个数字没有
-    消费方——把没根据的数字混进统一字段，只会让两条路径产出的列表难以分辨。
-    这一点也写进了字段说明（`IntentUnit.confidence` 的 description 随 schema 展开进
-    兜底提示词），契约对模型是明说的，不只靠事后静默清掉——字段名在字段清单里恒被
-    列出，模型若无视说明照填，护栏照样清空。
-    底层结构化输出机制只校验类型不校验数值范围，因此 confidence 的 pydantic 范围
-    约束继续保留（构造期越界值照旧被拦，不因清空而放松）。
-
-    Attributes:
-        intents: list[IntentUnit]，按执行顺序排列的意图列表（首项即主意图）
-        query_rewrite: str，模型改写后的查询（缺省空串，管线用原文）
-        clarification: str | None，无法在意图间取舍时写给用户的澄清问题
-    """
-
-    #: 意图列表（单意图即长度 1），按执行顺序排列——首项即主意图。
-    #: description 会经 StructuredOutput 展开进提示词，是模型判断「何时拆」的唯一依据
-    #: （`#:` 注释进不了提示词）。填写条件：仅当输入包含 ≥2 个相互独立、分属不同意图的
-    #: 业务动作时才拆成多项，按执行顺序排列，首项是主意图；单一动作或拿不准时只填一项
-    #: （宁缺勿滥——列表只是复合请求的信号，误拆会误导选型）。
-    #: 引导只给原则（什么算相互独立），不写数字化上限：长度不是本字段的约束，模型的
-    #: 过度拆分由路由层阈值判据兜住，提示词不承担限长职责。
-    intents: list[IntentUnit] = Field(
-        min_length=1,
-        description=(
-            "按执行顺序排列的意图列表，首项是主意图：仅当输入包含 ≥2 个相互独立、分属不同"
-            "意图的业务动作时才拆成多项，每一项都是可派发的业务意图枚举值，按执行顺序排列；"
-            "单一动作或拿不准时只填一项"
-            "（宁缺勿滥——列表只是复合请求的信号，误拆会误导选型）。"
-        ),
-    )
-
-    #: LLM 改写后的查询（缺省为空串，管线使用原文）
-    query_rewrite: str = ""
-
-    #: 歧义澄清问题（非空时由调用方在本轮内同步问用户）
-    #: 这个 description 与上面的 #: 注释重复是有意的：#: 只给读代码的人看，
-    #: description 会经 StructuredOutput 的 schema 展开进提示词，是模型判断
-    #: 「什么时候该填这个字段」的依据——缺了它澄清几乎不会被产出。
-    clarification: str | None = Field(
-        default=None,
-        description=(
-            "输入意图不明确、无法在意图间取舍时，写给用户的一句简短澄清问题；"
-            "能推断出合理意图时留空，用意图列表本身表达你的判断。"
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _intents_guard(self) -> "IntentionResult":
-        """应用共用的列表规则 + 整列清空置信度。
-
-        列表规则（按类型保序去重 / 首要项恒保留 / 主意图之外的非业务成员剔除 /
-        列表与澄清互斥）见 `_IntentListRules._normalize_intent_list`，与 IntentOutput
-        共用同一套实现。
-
-        置信度整列留空：本路径不产置信度——模型写的数字与路由面的融合分数不是同一
-        尺度，且本路径的判定由 `source` 短路（消费方见 source=llm 即先确认），那个
-        数字没有消费方。两条路径产出的列表长得一样，读者无法从元素上分辨哪个数字是
-        算出来的、哪个是模型随手写的，所以干脆整列留空、字段含义在两条路径上都干净。
-        这条**只作用于本类型**：IntentOutput 走路由路径，每条候选填的是自己算出的
-        融合分数（真实值），绝不能在那里清空。
-
-        违规不做半截修正，也不抛校验错误——解析失败的兜底路径（fallback=UNCLASSIFIED）
-        不该因护栏再炸一次。
-
-        Returns:
-            校验后的自身实例（model_validator 契约）。
-        """
-        self._normalize_intent_list()
-        object.__setattr__(self, "intents", [
-            u.model_copy(update={"confidence": None}) for u in self.intents])
-        return self

@@ -1,7 +1,4 @@
-"""意图识别契约子包：路由契约与输出契约。"""
-from paperflow.core.intent.schemas.route import Route, RouteChoice
-from paperflow.core.intent.constants import INTENT_META, IntentCategory, IntentStep, IntentType
-from paperflow.core.intent.schemas.intent import IntentOutput, IntentionResult
+"""意图层契约的统一导出点。"""
+from paperflow.core.intent.schemas.intent import IntentOutput
 
-__all__ = ["Route", "RouteChoice", "IntentType", "IntentCategory", "INTENT_META",
-           "IntentStep", "IntentOutput", "IntentionResult"]
+__all__ = ["IntentOutput"]

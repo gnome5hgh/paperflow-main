@@ -17,14 +17,11 @@ from pathlib import Path
 
 import yaml
 
-#: 类别词汇的唯一声明点：11 个类别按**产物主人**划分——一个类别对应一类产物/
-#: 事务的责任人，而不是一个具体动作。动作（读/写/删/查）能从用户原句读出来，
-#: 单列只会制造误差；值得单列的只有「supervisor 的动作确实不同」且「从原句读
-#: 不出来」的区别。工作去向见 ADR 0007。
-INTENT_CLASSES: tuple[str, ...] = (
-    "paper", "note", "research", "citation", "index",
-    "memory", "question", "chitchat", "out_of_scope", "help", "feedback",
-)
+from paperflow.core.intent.constants import IntentType
+
+#: 类别词汇：**由枚举派生**（枚举是唯一声明点，知识库必须与它逐项一致）。
+#: 顺序即枚举声明顺序，规则表按自己的声明顺序匹配，与本元组无关。
+INTENT_CLASSES: tuple[str, ...] = tuple(t.value for t in IntentType)
 
 #: 仓库安装根（本文件位于 paperflow/core/intent/，向上三级即仓库根）。
 #: 随仓库发布的知识资产恒锚此处，不随 PAPERFLOW_RUNTIME_WORKSPACE 重定向。

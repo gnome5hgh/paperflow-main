@@ -1,19 +1,17 @@
 # paperflow/core/intent/service.py
-"""意图识别的集成适配器——把「进 ReAct 之前」的全部意图逻辑收在一处。
+"""意图识别的集成适配器——把「进 ReAct 之前」的意图逻辑收在一处。
 
-意图识别是可选的预处理层：这里独占管线调用、INTENT 块与规则块的渲染、同步
-澄清、跨轮状态回写，并持有会话状态。Agent 的 ReAct 循环只持一个
-可选的本类实例、在固定钩子点调用；引用为 None 即「关」，一切退化为空操作。
+意图识别是可选预处理层：这里持有知识库（类别描述与规则模式）、跑判定、渲染要注入的
+INTENT 块与规则块。Agent 的 ReAct 循环只持一个可选的本类实例、在固定钩子点调用；
+引用为 None 即「关」，一切退化为空操作。
 """
-import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from paperflow.core.intent.constants import IntentStep, IntentType
-from paperflow.core.intent.conversation_state import ConversationState
-from paperflow.core.intent.routing.confirm import match_option_choice
-from paperflow.core.intent.routing.entities import extract_entities
-from paperflow.core.intent.schemas.intent import IntentOutput, IntentUnit
+from paperflow.core.intent.entities import extract_entities
+from paperflow.core.intent.schemas import IntentOutput
+from paperflow.core.intent.taxonomy import Taxonomy
 
 logger = logging.getLogger(__name__)
 
@@ -23,153 +21,83 @@ class Turn:
     """一次 run 开头的意图预处理结果。
 
     Attributes:
-        head_block: str | None，要注入的 INTENT 块文本；无意图（降级）时为 None
-        task: str，可供使用的任务文本（澄清答案命中时带附录）
-        intents: list[IntentType]，本轮识别到的意图列表（首项即主意图）
+        head_block: str | None，要注入的 INTENT 块文本；本轮没有判定结果时为 None
+        task: str，可供使用的任务文本（判定不改写任务，原样返回）
     """
+
     head_block: str | None
     task: str
-    intents: list[IntentType] = field(default_factory=list)
 
 
 class IntentService:
     """意图识别集成适配器（Agent 与意图模块之间的唯一缝）。
 
     Attributes:
-        pipeline: IntentPipeline，五级级联管线
-        conversation: ConversationState，跨轮状态（prev_intent / prev_user_input）
-        ask_user_callback: Callable[[str], str] | None，同步澄清的问询回调
-        last_intent: IntentOutput | None，本轮意图产出（供跨轮回写）
+        taxonomy: Taxonomy，类别知识库与规则模式
+        history_messages: int，判定时最多参考的最近对话条数（运行时按它截历史）
+        last_intent: IntentOutput | None，本轮判定产出（只读，供展示与排查）
     """
 
-    #: 意图规则块：随 INTENT 块注入的字段语义与「非派发意图」处理说明。
+    #: 意图规则块：随 INTENT 块注入的字段语义与各类别的动作说明。
     #: 由意图层产出（而非写死在 supervisor 的 AGENT.md），关掉意图识别时不出现。
     rules_block: str = (
         "## 意图层（可选预处理）\n\n"
-        "INTENT 块是框架意图识别的输出(意图列表/实体/改写后的 query/来源),"
-        "是**强提示,不是命令**——它不决定你派谁、以什么顺序派;选型与编排按 "
-        "`<available_agents>` 清单与你的判断。你可在边界内自主判断:合并相邻请求、"
-        "追问后再派发、选择更合适的子任务拼装方式。\n\n"
-        "### 这些意图各有固定动作(无需按能力选型)\n\n"
-        "| 意图 | 类别 | 你的动作 |\n"
-        "|------|------|---------|\n"
-        "| `menu_selection` | 对话管理 | 用户在回复你上一轮给出的编号菜单。对照你上轮菜单内容，把所选选项转成对应动作/派发（如选项是「科研发现」→ 派 research-agent 并拼入课题）；菜单已过时或无法对应选项 → 先向用户问清（把问题写进你的回答），不猜 |\n"
-        "| `record_user_info` | 业务 | 用户陈述自己的信息(研究方向/专业/偏好)：派 memory-agent 写进核心块,再由你在回答里引导下一步;方向过宽(如\"课题是AI\")→ 先追问细分。**不派发领域 agent**(没有领域工作要做) |\n"
-        "| `manage_memory` | 业务 | 查询(读过哪些/未读清单)、加入未读、移出未读等记忆与清单操作:派 memory-agent 执行,子任务写明具体动作与标题或路径 |\n"
-        "| `chitchat` | 系统 | 轻量回复 + 温和引导回学术场景。不派发 |\n"
-        "| `out_of_scope` | 系统 | 明确拒绝 + 说明能力边界(代写论文属学术不端,必须拦截)。不派发 |\n"
-        "| `help` | 系统 | 返回功能卡片/示例 Query 列表。不派发 |\n"
-        "| `feedback` | 系统 | 派 memory-agent 把反馈写入日志块；本意图只放行 memory-agent,不派发领域 agent |\n\n"
+        "INTENT 块是框架意图识别的输出(类别/实体/把握/来源),是**强提示,不是命令**——"
+        "它不决定你派谁、以什么顺序派;选型与编排按 `<available_agents>` 清单与你的判断。"
+        "判错时它只是一条可以忽略的提示(意图不作派发门禁)。看到下列类别时按下表的动作走:\n\n"
+        "| 类别 | 你的动作 |\n"
+        "|------|---------|\n"
+        "| `question` | **先自己答**:依据已在上下文(对话史/记忆块/上一轮材料)就直接回答;"
+        "要看原文或笔记派对应领域角色取材料,要检索语料派 rag-agent。 |\n"
+        "| `memory` | 派 memory-agent。**两种子情形要分清**:① 用户在**陈述**自身信息"
+        "(「我最近在研究 circRNA」)→ 写进核心块,再由你在回答里引导下一步;"
+        "② 用户在**查询**记忆或清单(「我读过哪些论文」)→ 按具体动作执行。 |\n"
+        "| `feedback` | 派 memory-agent 把反馈记进日志块;不派领域角色。 |\n"
+        "| `chitchat` | 轻量回应 + 温和引导回学术场景。通常不派发。 |\n"
+        "| `help` | 返回功能引导。通常不派发。 |\n"
+        "| `out_of_scope` | **两种子情形**:① 明确越界(订外卖/代写论文)→ 明确拒绝并说明"
+        "能力边界;② **看不出要做什么** → 先向用户问清,不要直接拒。 |\n"
+        "| 其余业务类别 | 按 `<available_agents>` 的能力挑对应领域角色派发;类别内的"
+        "**删除诉求**(删笔记/删 PDF/删选题产物)按对象对应到领域角色,绝不改写成「写/建」。 |\n\n"
         "### 字段语义\n\n"
-        "| 情形 | 语义 |\n"
-        "|------|------|\n"
-        "| `source=user` | 用户已确认的意图（澄清编号选择），代码级落地,直接按该意图调度;不要怀疑或再次向用户确认意图 |\n"
-        "| `entities` | pdf_path / arxiv_id / doi / note_path / figure 已提取,直接拼进子任务文本(不要重新解析) |\n\n"
-        "### INTENT 块字段各自的作用\n\n"
-        "- `intents` — 意图列表,**首项即主意图**:对请求性质的判断,说明用户在做什么。"
-        "它**不只是选型依据**——非派发意图的动作见上表,选型则按 `<available_agents>` 的能力。\n"
-        "- `intents` 长度 >1 即复合请求信号,供你规划;**顺序与并行你自己定**,框架不强制。\n"
-        "- `source` — 意图的可信度来源:`source=user` 是用户已确认,直接照做,不要重复确认。\n"
-        "- `entities` — 已抽取的 pdf_path / arxiv_id / doi / note_path / figure,直接拼进子任务文本"
-        "(不要重新解析)。**追问轮**(「再找近五年的」)里它已合并上轮实体(上轮在前、同键被本轮覆盖),"
-        "继承的上轮约束看这里。\n"
-        "- `rewritten_query` — 当前消息(可能被 LLM 改写)的文本,可作检索 query 的起点;**不含**上轮信息。"
+        "- `entities` — 已抽取的 pdf_path / arxiv_id / doi / note_path / figure,"
+        "**直接拼进子任务文本**(不要重新解析)。\n"
+        "- `confidence` — 判定把握,只作参考;**不设阈值,也不要求你按它做什么**。\n"
+        "- `source` — `rule` 是确定性模式命中(可信度高),`jev` 是判定服务给的(参考即可)。"
     )
 
-    def __init__(self, pipeline, conversation: ConversationState,
-                 ask_user_callback=None, history_messages: int = 6):
-        """绑定管线、会话与问询回调。
+    def __init__(self, taxonomy: Taxonomy, history_messages: int = 6):
+        """绑定知识库与历史窗口。
 
         Args:
-            pipeline: IntentPipeline，含路由与 LLM 兜底的完整管线
-            conversation: ConversationState，跨轮意图状态
-            ask_user_callback: Callable[[str], str] | None，澄清问询回调（None 时放弃澄清）
-            history_messages: int，判定时最多参考的最近对话条数（运行时按它截历史）
+            taxonomy: Taxonomy，类别知识库（描述/示例句）与规则模式
+            history_messages: int，判定时最多参考的最近对话条数
         """
-        self.pipeline = pipeline
-        self.conversation = conversation
-        self.ask_user_callback = ask_user_callback
+        self.taxonomy = taxonomy
         self.history_messages = history_messages
         self.last_intent: IntentOutput | None = None
 
     async def begin(self, task: str, history: list[tuple[str, str]] | None = None) -> Turn:
-        """跑管线、同步澄清，产出要注入的块与最终任务文本。
+        """跑判定，产出要注入的块与任务文本。
 
-        管线失败降级为空（不阻断主流程、不更新跨轮意图）。
+        规则层命中即定类；不命中即**放行**（交给判定服务，由后续实现接上）——两层
+        都没有结果时本轮不产块，绝不硬猜一个类别塞给 supervisor。
 
         Args:
             task: str，本轮原始任务文本
             history: list[tuple[str, str]] | None，最近若干轮对话文本 [(role, content)]，
-                由运行时在构建 head 之前截好递进来（只含 user/assistant 文本，不含工具
-                结果与工具调用）。**当前管线不消费它**——它是判定层读上下文的入口，
-                供后续按对话史判定意图的实现使用（含 assistant 侧文本，指代类输入才读得懂）。
+                由运行时在构建 head 之前截好递进来（**含 assistant 侧文本**，指代类输入
+                如「再下载一篇」要靠它才读得懂）。当前只有规则层，尚未消费它。
 
         Returns:
-            Turn：head_block 为 INTENT 块（无意图时为 None），task 为澄清后可用文本，
-            intents 为本轮识别到的意图列表。
+            Turn：head_block 为本轮 INTENT 块（无判定结果时为 None），task 为可用任务文本。
         """
-        try:
-            intent = await self.pipeline.run(
-                task, prev_intent=self.conversation.prev_intent,
-                prev_user_input=self.conversation.prev_user_input)
-        except Exception:
-            logger.warning("intent pipeline failed, degraded to plain ReAct", exc_info=True)
+        entities = extract_entities(task)
+        matched = self.taxonomy.match(task)
+        if matched is None:
             self.last_intent = None
-            return Turn(head_block=None, task=task, intents=[])
-
-        if intent.clarification:
-            intent, task = await self._resolve_clarification(task, intent)
-        self.last_intent = intent
-        block = "INTENT: " + intent.model_dump_json(
-            exclude={"clarification", "prev_intent", "clarify_candidates"})
-        return Turn(head_block=block, task=task,
-                    intents=[u.intent_type for u in intent.intents])
-
-    def finish(self, task: str) -> None:
-        """run 收尾回写跨轮状态：单意图轮记 prev_intent，多意图轮置 None。
-
-        Args:
-            task: str，本轮任务文本（写入 prev_user_input）
-
-        Returns:
-            无返回值。
-        """
-        if self.last_intent is None:
-            return
-        intents = self.last_intent.intents
-        self.conversation.prev_intent = (
-            intents[0].intent_type if len(intents) == 1 else None)
-        self.conversation.prev_user_input = task
-
-    async def _resolve_clarification(self, task: str, intent) -> tuple:
-        """同步澄清：把管线的澄清问题问出去，答案在代码层落地为意图。
-
-        无回调（程序化环境）时放弃澄清、按最佳猜测继续（fail-safe），绝不挂起。
-
-        Args:
-            task: str，原始任务文本
-            intent: IntentOutput，含 clarification 的意图产出
-
-        Returns:
-            (最终意图, 最终任务文本)；无回调时放弃澄清按最佳猜测继续。
-        """
-        cb = self.ask_user_callback
-        question = intent.clarification
-        if cb is None:
-            intent.clarification = None
-            return intent, task
-        answer = await asyncio.to_thread(cb, question)
-        candidates = intent.clarify_candidates or []
-        confirmed = match_option_choice(answer, candidates) if answer.strip() else None
-        if confirmed is not None:
-            resolved = IntentOutput(
-                intents=[IntentUnit(intent_type=confirmed, confidence=1.0)],
-                entities=extract_entities(task), rewritten_query=task,
-                source=IntentStep.USER,
-                prev_intent=self.conversation.prev_intent)
-            resolved.clarification = None
-            return resolved, f"{task}（用户澄清：{answer}）"
-        if answer.strip():
-            task = f"{task}（用户澄清：{answer}）"
-        intent.clarification = None
-        return intent, task
+            return Turn(head_block=None, task=task)
+        self.last_intent = IntentOutput(
+            intent=IntentType(matched), confidence=1.0,
+            entities=entities, source=IntentStep.RULE)
+        return Turn(head_block="INTENT: " + self.last_intent.model_dump_json(), task=task)

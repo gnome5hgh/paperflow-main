@@ -1,12 +1,12 @@
 # paperflow/terminal/confirm_center.py
-"""确认中心——全进程确认/提问的唯一消费者。
+"""确认中心——全进程确认的唯一消费者。
 
 背景：确认若在 asyncio.to_thread 工作线程里各自跑 prompt_toolkit 临时
 prompt，靠线程级锁串行化；并行多 agent 场景下另一 agent 的渲染事件会重启
 rich Live 盖掉确认框，持锁线程被 Ctrl+C 卡死后锁永久死锁——确认框永不渲染、
 agent 树无限挂起。
 
-设计：所有确认/提问请求跨线程汇入主事件循环上的单一消费者协程，由它独占地
+设计：所有确认请求跨线程汇入主事件循环上的单一消费者协程，由它独占地
 「暂停渲染 → 弹框 → 读输入 → 结算」。要点：
 
 1. **跨事件循环桥接**：子 agent 可能跑在主循环（spawn 改 async 工具后）或
@@ -56,21 +56,19 @@ def _confirm_prompt(cr) -> str:
 
 @dataclass
 class _Request:
-    """一次确认/提问请求：payload + 回传 future（绑定主循环）。
+    """一次确认请求：payload + 回传 future（绑定主循环）。
 
     Attributes:
-        kind: str，请求类型："confirm" | "ask"
-        payload: object，ConfirmRequired 或提问字符串
+        payload: object，ConfirmRequired
         fut: asyncio.Future，主循环上的回传槽
     """
-    kind: str                 # "confirm" | "ask"
-    payload: object           # ConfirmRequired | str（question）
+    payload: object           # ConfirmRequired
     fut: asyncio.Future
 
 
 class ConfirmCenter:
-    """确认/提问的唯一消费者。start() 在主事件循环上启动；confirm()/ask()
-    可从任意线程、任意事件循环安全调用。
+    """确认的唯一消费者。start() 在主事件循环上启动；confirm() 可从任意
+    线程、任意事件循环安全调用。
 
     Attributes:
         _io: InputIO，终端输入适配
@@ -129,67 +127,36 @@ class ConfirmCenter:
         Returns:
             "y"（本次放行）/ "a"（本会话同路径放行）/ "n"（拒绝）。
         """
-        return await self._bridge("confirm", cr)
+        return await self._bridge(cr)
 
-    def ask(self, question: str) -> str:
-        """同步提问（问询回调契约）：阻塞至消费者读到答案或 EOF/超时。
-
-        仅允许从工作线程调用（意图层的同步澄清在 asyncio.to_thread 里执行）；
-        主线程绝不能调（会死锁事件循环）。EOF/中断/超时返回空串（fail-safe）。
+    async def _bridge(self, cr) -> str:
+        """把确认桥接到主循环的消费者；wrap_future 回到调用方循环 await。
 
         Args:
-            question: str，向用户提出的问题
-
-        Returns:
-            用户回答；EOF/中断/超时返回空串（fail-safe）。仅允许工作线程调用。
-        """
-        if self._loop is None:
-            try:
-                return self._io.ask(question)
-            except (EOFError, KeyboardInterrupt):
-                return ""
-        import concurrent.futures
-        cf = asyncio.run_coroutine_threadsafe(self._serve("ask", question), self._loop)
-        try:
-            return cf.result(timeout=self._watchdog_s + 30)
-        except (concurrent.futures.TimeoutError, EOFError, KeyboardInterrupt):
-            return ""
-
-    async def _bridge(self, kind: str, payload) -> str:
-        """把请求桥接到主循环的消费者；wrap_future 回到调用方循环 await。
-
-        Args:
-            kind: str，请求类型（confirm/ask）
-            payload: object，ConfirmRequired 或提问字符串
+            cr: ConfirmRequired，待确认的工具调用
 
         Returns:
             消费者结算的决策；未启动消费者时直连 io 兜底。
         """
         if self._loop is None:
             # 未启动（无 REPL 装配，如测试/程序化调用）：直连 io 兜底
-            if kind == "confirm":
-                return self._io.confirm_choice(_confirm_prompt(payload))
-            try:
-                return self._io.ask(payload)
-            except (EOFError, KeyboardInterrupt):
-                return ""
-        cf = asyncio.run_coroutine_threadsafe(self._serve(kind, payload), self._loop)
+            return self._io.confirm_choice(_confirm_prompt(cr))
+        cf = asyncio.run_coroutine_threadsafe(self._serve(cr), self._loop)
         return await asyncio.wrap_future(cf)
 
     # ---------- 主循环侧 ----------
 
-    async def _serve(self, kind: str, payload) -> str:
+    async def _serve(self, cr) -> str:
         """（主循环）入队并等待结算。fut 挂在主循环，取消时消费者侧感知。
 
         Args:
-            kind: str，请求类型
-            payload: object，请求载荷
+            cr: ConfirmRequired，待确认的工具调用
 
         Returns:
             该请求的决策字符串（在主循环上入队并等待）。
         """
         fut = self._loop.create_future()
-        await self._queue.put(_Request(kind=kind, payload=payload, fut=fut))
+        await self._queue.put(_Request(payload=cr, fut=fut))
         return await fut
 
     async def _consume(self) -> None:
@@ -199,10 +166,7 @@ class ConfirmCenter:
             try:
                 if req.fut.done():
                     continue            # 调用方已被取消，无需渲染
-                if req.kind == "confirm":
-                    decision = await self._render_and_read_confirm(req.payload)
-                else:
-                    decision = await self._render_and_read_ask(req.payload)
+                decision = await self._render_and_read_confirm(req.payload)
                 if not req.fut.done():
                     req.fut.set_result(decision)
             except asyncio.CancelledError:
@@ -210,7 +174,7 @@ class ConfirmCenter:
             except Exception:
                 # 渲染/读输入异常（如终端异常）：fail-safe 拒绝，不杀消费者
                 if not req.fut.done():
-                    req.fut.set_result("n" if req.kind == "confirm" else "")
+                    req.fut.set_result("n")
 
     async def _render_and_read_confirm(self, cr) -> str:
         """渲染 diff 预览 → 抑制渲染 → 三态读输入（带看门狗）。
@@ -244,36 +208,3 @@ class ConfirmCenter:
             dropped = self._renderer.suppress(False)
             if dropped:
                 self._renderer.print(f"（确认期间省略了 {dropped} 条渲染事件）", style="dim")
-
-    async def _render_and_read_ask(self, question: str) -> str:
-        """渲染问题 → 抑制渲染 → 读开放答案（带看门狗，超时按空回答）。
-
-        回答模式横幅：提问期间用户输入的新任务指令会被
-        当成回答吞掉——弹框前明确「此刻输入 = 对提问的回答」，降低误归属。
-
-        Args:
-            question: str，向用户提出的问题
-
-        Returns:
-            用户回答；超时/EOF/中断返回空串。
-        """
-        self._renderer.print(
-            "⌨️ [回答模式] 子任务向你提问——此刻输入将作为对下面问题的回答，"
-            "不是新任务；提交新任务请先回答完本轮再等 REPL 提示符。",
-            style="yellow")
-        self._renderer.suspend()
-        self._renderer.suppress(True)
-        try:
-            read = asyncio.ensure_future(asyncio.to_thread(self._io.ask, question))
-            done, _ = await asyncio.wait({read}, timeout=self._watchdog_s)
-            if done:
-                return next(iter(done)).result()
-            self._renderer.print(f"（提问超过 {self._watchdog_s:.0f}s 无响应，已按空回答处理）",
-                                 style="yellow")
-            return ""
-        except (EOFError, KeyboardInterrupt):
-            return ""
-        finally:
-            dropped = self._renderer.suppress(False)
-            if dropped:
-                self._renderer.print(f"（提问期间省略了 {dropped} 条渲染事件）", style="dim")

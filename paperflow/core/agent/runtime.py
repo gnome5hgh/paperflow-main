@@ -516,24 +516,6 @@ class Agent:
         if cb is not None:
             cb(ev)
 
-    @property
-    def last_intent(self):
-        """本轮意图产出（委托给意图服务；未装配意图时为 None）。
-
-        Returns:
-            IntentOutput | None，本轮意图；无意图服务时恒 None。
-        """
-        return self.intent_service.last_intent if self.intent_service is not None else None
-
-    @property
-    def conversation(self):
-        """跨轮意图会话状态（委托给意图服务；未装配意图时为 None）。
-
-        Returns:
-            ConversationState | None，跨轮状态；无意图服务时恒 None。
-        """
-        return self.intent_service.conversation if self.intent_service is not None else None
-
     #: messages 只读 property（OpenAI wire 格式视图）。
     #: 只读：外部（CLI/测试）可观察但不可改，写入统一走 _append_to_messages。
     @property
@@ -1001,10 +983,6 @@ class Agent:
                 # 每个中间件可以改写最终回答（如追加来源引用、注入安全声明等）
                 for mw in self.security_middleware:
                     content = await mw.on_finish(self, content)
-
-                # 意图层回写跨轮状态（prev_intent / prev_user_input）；未装配时零开销。
-                if self.intent_service is not None:
-                    self.intent_service.finish(task)
 
                 # 最终回答(经 on_finish 改写——回放给下轮的是"用户看到的事实",
                 # SAFE_PROMPT 等安全声明跨轮保留)落盘 + 进 in-context,供下轮回放

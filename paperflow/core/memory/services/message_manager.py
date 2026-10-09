@@ -110,42 +110,6 @@ class MessageManager:
         message_orm.insert_message(self.db, agent_id, m)
         return m
 
-    def make_ask_recorder(self, base_ask, agent_id):
-        """包装问询回调：读答案同时把 Q&A 记进 messages 表（role=user）。
-
-        目前唯一的使用方是意图层的同步澄清（问用户本身不是工具，需要用户给信息时把
-        问题写进最终回答即可）——澄清发生在 ReAct 之外，问答不会自动进对话历史；
-        统一在此记录 → Sleeptime 可整合进 profile 块。记录失败 fail-safe（不阻断提问），
-        answer 原样透传。
-
-        Args:
-            base_ask: 原始的用户提问回调函数，接受 question 字符串返回 answer 字符串。
-            agent_id: 当前 agent 标识（用于关联记录）。
-
-        Returns:
-            包装后的 ask 函数，与原接口一致（question -> answer）。
-        """
-        def ask(question: str) -> str:
-            """包装后的 ask：取答案并把该轮 Q&A 落盘为一条 user 消息（记录失败不阻断提问）。
-
-            Args:
-                question: str，向用户提出的问题
-
-            Returns:
-                用户的回答文本（原样透传 base_ask 的结果）。
-            """
-            # 1. 调用原始问询回调获取答案
-            answer = base_ask(question)
-            # 2. 尝试将问答记录为一条 user 消息（带前缀标识，便于后续识别）
-            try:
-                self.add_message(agent_id, WireMessage(
-                    role="user", content=f"[ask_user] {question}\n{answer}"))
-            except Exception:
-                # 记录失败不阻断正常提问流程（fail-safe）
-                logger.warning("记录 ask_user 问答失败", exc_info=True)
-            return answer
-        return ask
-
     def get_messages_by_agent_id(self, agent_id: str,
                                  limit: int | None = None) -> list[Message]:
         """按 agent 取全部消息（升序）；limit 可选。

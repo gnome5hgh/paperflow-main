@@ -32,7 +32,6 @@ from paperflow.core.skills import SkillRegistry, load_lock
 from paperflow.core.mcp.bridge import collect_mcp_agent_tools
 from paperflow.tools.skills.load_skill import LoadSkillTool
 from paperflow.core.llm import LLMClient
-from paperflow.core.intent.conversation_state import ConversationState
 from paperflow.core.security import (
     AuditMiddleware, WorkspacePolicyMiddleware,
     SecurityScanMiddleware, PolicyEngineMiddleware,
@@ -45,16 +44,13 @@ from paperflow.tools.memory import set_memory_context, MemoryToolsContext
 from paperflow.core.memory.services.title_extractor import TitleExtractor
 from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.sleeptime import Sleeptime
-from paperflow.core.intent.pipeline import IntentPipeline
-from paperflow.core.intent.routing.router import HybridRouter
-from paperflow.core.llm.embedding import CloudEmbedder
-from paperflow.rag.parsers.grobid_client import GrobidClient
-from paperflow.core.intent.routing.route_loader import VECTOR_CACHE_PATH, load_routes
 from paperflow.core.intent.service import IntentService
+from paperflow.core.intent.taxonomy import load_taxonomy
+from paperflow.rag.parsers.grobid_client import GrobidClient
 from paperflow.terminal.io import make_input_io
 from paperflow.terminal.render import make_renderer
 from paperflow.terminal.repl import (
-    _repl, _make_print_fn, _make_confirm_callback, _make_ask_callback)
+    _repl, _make_print_fn, _make_confirm_callback)
 from paperflow.terminal.resume import build_resume_replay
 
 
@@ -359,14 +355,11 @@ def main(argv: list[str] | None = None) -> int | None:
         notify=(lambda msg: console.print(msg, style="dim")) if console else None)
     for w in service_warnings:
         (console.print(w, style="yellow") if console else print(w))
-    # api_key 缺失提示：CloudEmbedder 构造不校验 api_key——此处只提示
-    # 不阻断，降级路径由 router/retriever 各自消化。触发只看 RAG 嵌入：意图
-    # 编码器留空会继承 rag.embedding 的 key，二者不会独立缺失；而「意图路由
-    # 退化」这半句只在意图识别开启时才有意义，故做成条件文案。
+    # api_key 缺失提示：RAG 的云端嵌入未配 key 时只提示不阻断（检索退纯
+    # BM25、无精排，降级路径由 retriever 自己消化）。
     if not config.rag.embedding.api_key:
-        _intent_clause = "意图路由退化为纯 BM25，" if config.intent.enabled else ""
-        _msg = ("未配置云端嵌入 api_key（config.yaml rag.embedding / intent.encoder 段）："
-                f"{_intent_clause}RAG 检索无稠密路与精排。"
+        _msg = ("未配置云端嵌入 api_key（config.yaml rag.embedding 段）："
+                "RAG 检索无稠密路与精排。"
                 "注册 siliconflow.cn 获取（含实名认证）。")
         (console.print(_msg, style="yellow") if console else print(_msg))
     try:
@@ -498,57 +491,20 @@ def main(argv: list[str] | None = None) -> int | None:
         PolicyEngineMiddleware(max_risk=config.runtime.max_risk),
     ]
 
-    # 意图识别装配（可选预处理层）：总开关关时整段跳过——不构造编码器/路由器/
-    # 管线/会话，supervisor 走纯 ReAct。
-    router = None
-    pipeline = None
-    conversation = None
+    # 意图识别装配（可选预处理层）：关时整段跳过——不装载知识库、不构造适配器，
+    # supervisor 走纯 ReAct。启用的前提是知识库能装载：类别缺条目、规则指向未知
+    # 类别这类问题在这里就炸掉（fail-closed），不许跑到某一轮才静默走偏。
+    intent_service = None
     if config.intent.enabled:
-        # 意图编码器（云端实例）：只有意图开启这条路会用到它，构造因此收在本
-        # 开关里——关闭意图识别时不为一个用不上的实例付出构造代价。它与 RAG 的
-        # 编码器（rag_service 内部按 config.rag.embedding 构造）互不共享——两段
-        # 配置、两个实例，换模型互不影响。
-        intent_encoder = CloudEmbedder(
-            config.intent.encoder.base_url, config.intent.encoder.api_key,
-            config.intent.encoder.model,
-            batch_size=config.intent.encoder.batch_size,
-            timeout=config.intent.encoder.timeout,
-            max_retries=config.intent.encoder.max_retries)
-        # 真实混合路由器 + LLM 兜底。各意图阈值由离线标定写回 routes.yaml——
-        # 这里只读阈值，不做训练或阈值搜索。alpha 是稠密/稀疏信号的融合权重，
-        # alpha/top_k 读 config.intent.router（唯一声明点 config.py）。
-        # 路由向量缓存锚安装根（与 routes.yaml 同锚，语料源自那里，不随 workspace
-        # 重定向）：命中即零网络启动，未命中现算回写，断网降级零向量见 _encode_dense。
-        router = HybridRouter(
-            encoder=intent_encoder,
-            routes=load_routes(), alpha=config.intent.router.alpha,
-            top_k=config.intent.router.top_k,
-            vector_cache_path=str(VECTOR_CACHE_PATH))
-        # 启动期意图路由降级必须可见（黄字），不能只写 logger。缓存命中
-        # 时 add() 不走编码、dense_degraded 仍为 False——此时路由是全功能的，无告警。
-        if router.dense_degraded:
-            _msg = ("意图路由已降级为纯 BM25/稀疏：云端稠密编码不可用。"
-                    "网络恢复后自动回到混合路由，无需重启。")
-            (console.print(_msg, style="yellow") if console else print(_msg))
-        pipeline = IntentPipeline(router=router, structured=structured)
-        conversation = ConversationState()
+        intent_service = IntentService(
+            taxonomy=load_taxonomy(),
+            history_messages=config.intent.history_messages)
 
-    # 确认中心：确认/提问的唯一消费者，跑在 REPL 主事件循环上（启动/收尾在
-    # _repl 内）。confirm/ask 回调经它跨线程桥接，弹框期间渲染抑制——并行多
+    # 确认中心：确认的唯一消费者，跑在 REPL 主事件循环上（启动/收尾在
+    # _repl 内）。confirm 回调经它跨线程桥接，弹框期间渲染抑制——并行多
     # agent 的确认框不再被其他 agent 的渲染事件盖掉。
     from paperflow.terminal.confirm_center import ConfirmCenter
     center = ConfirmCenter(io, renderer)
-
-    # 问询回调：只服务意图层的同步澄清（「问用户」本身不是工具——需要用户给信息时
-    # 把问题写进最终回答即可）。它与确认共用同一个消费者（都在 worker 线程里读 stdin），
-    # 并经记录器落盘，使澄清问答也进对话历史、可被后台记忆整合读到。
-    _ask_cb = message_manager.make_ask_recorder(
-        _make_ask_callback(io, renderer, center), session_id)
-    intent_service = (
-        IntentService(pipeline=pipeline, conversation=conversation,
-                      ask_user_callback=_ask_cb,
-                      history_messages=config.intent.history_messages)
-        if config.intent.enabled else None)
 
     supervisor = Agent(
         llm=llm, agent_registry=registry, agent_type="supervisor",
