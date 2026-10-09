@@ -9,10 +9,16 @@
 ```text
 citations/
 ├─ constants/   # 跨模块词汇：CitationStatus（解析状态）+ RemoveOutcome（删除结局）
-├─ bib.py       # references.bib 轻量读写：条目查找/去重 + append 追加 + 按条目原文块删除
-├─ corpus.py    # 语料标题索引（易变投影）：note H1 + PDF 解析标题 → 全标题精确匹配，按 (path, mtime_ns) 增量重建
-└─ manager.py   # 编排：引用解析 → 入库 → 去重 → 渲染 → 调和
+├─ schemas/     # 数据模型（跨层共享）：BibEntry（条目视图）+ ResolvedCitation（解析结果）
+├─ storage/     # references.bib 的读写原语——真相源的唯一出入口
+│   └─ bib.py   # 原文解析（parse_entries/find_*）+ 条目文本生成（entry_text）+ append 追加 + 按条目原文块删除
+└─ services/    # 业务层
+    ├─ keys.py    # 引用键生成规则：{一作姓氏}{年份}{短标题}
+    ├─ corpus.py  # 语料标题索引（易变投影）：note H1 + PDF 解析标题 → 全标题精确匹配，按 (path, mtime_ns) 增量重建
+    └─ manager.py # 编排：引用解析 → 入库 → 去重 → 渲染 → 调和
 ```
+
+分层依据与 `rag/`、`core/memory/` 同惯例：常量、数据模型、持久化原语、业务逻辑各占一层；`bib.py` 的读侧 `parse_entries` 与写侧 `entry_text` 是一对（拆开各自换家才叫割裂，故同处 storage/）。
 
 ## Core Rules
 
@@ -24,8 +30,9 @@ citations/
 
 ## Key Entry Points
 
-- `manager.py` — `get_citation_manager()` 单例与全部编排入口
-- `bib.py` — 条目扫描与读写原语（6 个引用工具的底座）
+- `__init__.py` — `get_citation_manager()` 单例与对外公开 API（导入一律从包门面进）
+- `services/manager.py` — `CitationManager`：解析/入库/删除/渲染/调和的全部编排入口
+- `storage/bib.py` — 条目扫描与读写原语（6 个引用工具的底座）
 
 ## Routing
 

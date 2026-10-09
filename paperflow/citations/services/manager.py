@@ -3,124 +3,20 @@
 职责：引用解析（全标题/路径 → key+status）、入库（append-only 追加 bib 条目）、
 去重、渲染（author-year/numbered/bibtex/gbt7714）、调和（_reconcile：空字段在
 渲染视图回填、冲突标记不覆盖——bib 文件绝不被重写）。
+
+文件读写原语在 storage/、key 生成规则在 services/keys.py、数据模型在 schemas/，
+本模块只做编排——它不碰正则、不拼 BibTeX 文本。
 """
 from __future__ import annotations
 
-import re
 import threading
-from dataclasses import dataclass
 from pathlib import Path
 
-from paperflow.citations import bib as bibmod
-from paperflow.citations.bib import BibEntry
 from paperflow.citations.constants import CitationStatus, RemoveOutcome
-from paperflow.citations.corpus import CorpusIndex
-
-#: key 生成的短标题停用词（首词过滤；其余一律保留）
-#: 例如 "The Attention Mechanism" → "attention"（过滤 "the"）。
-_STOPWORDS = {"the", "a", "an", "of", "in", "for", "and", "on", "to", "with",
-              "toward", "towards", "from", "by", "at", "using", "via"}
-
-
-@dataclass
-class ResolvedCitation:
-    """引用解析结果：key + 语料状态 + 相关路径。
-
-    Attributes:
-        key: BibTeX 条目的键，若 status=MISSING 则为 None。
-        status: CitationStatus，IN_CORPUS（语料库内）或 MISSING（库外/未找到）。
-        title: 论文全标题。
-        year: 发表年份。
-        note_path: 关联的笔记文件路径（若有）。
-        pdf_path: 关联的 PDF 文件路径（若有）。
-    """
-
-    key: str | None
-    status: CitationStatus
-    title: str = ""
-    year: str = ""
-    note_path: str | None = None
-    pdf_path: str | None = None
-    #: key 是否已落地在 references.bib（bib 真相源）。in_corpus 只说明语料标题
-    #: 索引命中——key 可能是现场生成、尚未入库的（溯源链断裂的根因）。in_bib=False
-    #: 时标注 [来源:key§节] 属于无据声称，必须先
-    #: add_citation 成功或降级为 [⚠未入库]。
-    in_bib: bool = False
-
-
-def _shorttitle(title: str) -> str:
-    """从全标题提取用于生成 key 的短标题（首个非停用词）。
-
-    算法：
-        1. 用正则提取所有字母数字词（过滤标点）。
-        2. 返回第一个不在 _STOPWORDS 中的词。
-        3. 若所有词均为停用词，则回退返回第一个词；若无词则返回 "paper"。
-
-    边界：标题 "A Study of ..." → 停用词 "a" 被过滤，返回 "study"。
-
-    Args:
-        title: str，论文全标题
-
-    Returns:
-        用于生成 key 的短标题（首个非停用词；全为停用词时取首词，无词则 "paper"）。
-    """
-    words = re.findall(r"[A-Za-z0-9]+", title.lower())
-    for w in words:
-        if w not in _STOPWORDS:
-            return w
-    return words[0] if words else "paper"
-
-
-def gen_key(title: str, authors: str, year: str) -> str:
-    """生成 `{firstauthor}{year}{shorttitle}` BibTeX key。
-
-    对齐手写库约定，确保人类可读且稳定。
-    例如：作者 "John Smith"、年份 "2024"、标题 "Attention Is All You Need"
-          → "smith2024attention"（忽略 "is/all/you/need" 等停用词）。
-
-    Args:
-        title: 论文全标题。
-        authors: 作者字符串（如 "Smith, John and Doe, Jane"），
-                 只取第一个作者（按逗号或空格分割）。
-        year: 发表年份（字符串）。
-
-    Returns:
-        生成的 key（小写）。
-    """
-    first = ""
-    if authors:
-        first = re.split(r"[,\s]+", authors.strip())[0].lower()
-    return f"{first}{year}{_shorttitle(title)}"
-
-
-def entry_text(key: str, title: str, biblio: dict, external: bool = False) -> str:
-    """把书目字段渲染成一条 BibTeX 条目文本（用于追加到 .bib 文件）
-
-    空字段自动省略，不编造，避免写入无意义的占位符。字段顺序固定为：
-    author → title → journal → year → volume → number → pages。
-
-    Args:
-        key: BibTeX key。
-        title: 论文标题。
-        biblio: 书目元数据字典，键如 "authors"、"journal"、"year" 等。
-        external: 若为 True，在条目上方添加 `% EXTERNAL` 注释行。
-
-    Returns:
-        完整的 BibTeX 条目字符串（含换行）。
-    """
-    lines = [f"@article{{{key},"]
-    if external:
-        lines.insert(0, "% EXTERNAL - 库外真实文献（用户确认，非语料库内）")
-    ordered = [("author", biblio.get("authors")), ("title", title),
-               ("journal", biblio.get("journal")), ("year", biblio.get("year")),
-               ("volume", biblio.get("volume")), ("number", biblio.get("number")),
-               ("pages", biblio.get("pages"))]
-    for name, val in ordered:
-        if val:
-            lines.append(f"  {name:<7} = {{{val}}},")
-    lines.append("}")
-    return "\n".join(lines)
-
+from paperflow.citations.schemas import BibEntry, ResolvedCitation
+from paperflow.citations.services.corpus import CorpusIndex
+from paperflow.citations.services.keys import gen_key
+from paperflow.citations.storage import bib as bibmod
 
 class CitationManager:
     """引用管理门面；bib_path 来自 config（非 LLM 可控，无路径注入面）。
@@ -273,7 +169,7 @@ class CitationManager:
                 return {"key": existing.key, "created": False, "note": "已在库"}
             key = self._unique_key(gen_key(title, biblio.get("authors", ""),
                                            biblio.get("year", "")))
-            bibmod.append_entry(self.bib_path, entry_text(key, title, biblio))
+            bibmod.append_entry(self.bib_path, bibmod.entry_text(key, title, biblio))
             return {"key": key, "created": True, "note": "已追加到 references.bib"}
 
     def add_external(self, title: str, authors: str = "", year: str = "",
@@ -299,7 +195,7 @@ class CitationManager:
             if existing is not None:
                 return {"key": existing.key, "created": False, "note": "已在库"}
             key = self._unique_key(gen_key(title, authors, year))
-            bibmod.append_entry(self.bib_path, entry_text(
+            bibmod.append_entry(self.bib_path, bibmod.entry_text(
                 key, title, {"authors": authors, "year": year, "journal": journal},
                 external=True))
             return {"key": key, "created": True, "note": "EXTERNAL 条目已追加"}

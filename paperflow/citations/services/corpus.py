@@ -80,13 +80,13 @@ class CorpusIndex:
 
     @staticmethod
     def normalize(title: str) -> str:
-        """标题归一化（与 bib._normalize 同规则：小写+去标点+折叠空白）。
+        """标题归一化（与 storage/bib.py 的 _normalize 同规则：小写+去标点+折叠空白）。
 
         Args:
             title: str，待归一化标题
 
         Returns:
-            与 bib._normalize 同规则的小写去标点折叠空白串。
+            与 storage/bib.py 的 _normalize 同规则的小写去标点折叠空白串。
         """
         import re
         return re.sub(r"[\s\W_]+", "", title.lower())

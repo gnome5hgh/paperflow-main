@@ -1,14 +1,18 @@
 """引用管理（溯源落地）：references.bib 读写 + 语料标题索引 + 编排。
 
-懒加载单例 get_citation_manager()：工具/CLI 共享同一实例；重组件（corpus
+分层：`constants/`（枚举）· `schemas/`（数据模型）· `storage/`（bib 文件读写
+原语）· `services/`（编排、语料索引、key 生成规则）。对外只经本门面进入——
+懒加载单例 get_citation_manager() 让工具/CLI 共享同一实例；重组件（corpus
 索引、TitleExtractor）在 CitationManager 内部首次使用时才构造。
 """
 from __future__ import annotations
 
 import threading
 
-from paperflow.citations.bib import BibEntry
-from paperflow.citations.manager import CitationManager, ResolvedCitation, gen_key, entry_text
+from paperflow.citations.schemas import BibEntry, ResolvedCitation
+from paperflow.citations.services.keys import gen_key
+from paperflow.citations.services.manager import CitationManager
+from paperflow.citations.storage import entry_text
 
 _singleton: CitationManager | None = None
 _singleton_lock = threading.Lock()
