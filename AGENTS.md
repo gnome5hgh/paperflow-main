@@ -227,7 +227,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 ### Intent recognition
 
-`paperflow/core/intent/` — 意图识别框架——**可选的预处理层**，由总开关 `config.intent.enabled` 控制（默认关：不构造编码器/路由器/管线，不注入 INTENT 块与规则块，代码路径全为 no-op，关掉零残留）。集成逻辑收在 `IntentService`（`core/intent/service.py`）——Agent 侧只持一个可选的 `intent_service`（`None` 即关），CLI 在启用时经 `IntentService.from_config` 构造后注入；子 agent 不做意图识别。开启后只做三件朴素的事：明确请求走零 LLM 快路径、抽确定性实体、模糊时先消歧——**意图只作信号 + 消歧 + 审计，不决定派发**（不是路由器、不是安全层、不是派发许可）。`IntentPipeline` 五级级联，前一级未裁决才进下一级：
+`paperflow/core/intent/` — 意图识别框架——**可选的预处理层**，由总开关 `config.intent.enabled` 控制（默认关：不构造编码器/路由器/管线，不注入 INTENT 块与规则块，代码路径全为 no-op，关掉零残留）。集成逻辑收在 `IntentService`（`core/intent/service.py`）——Agent 侧只持一个可选的 `intent_service`（`None` 即关），CLI 在启用时直接构造 `IntentService(pipeline=…, conversation=…, ask_user_callback=…)` 并注入；子 agent 不做意图识别。开启后只做三件朴素的事：明确请求走零 LLM 快路径、抽确定性实体、模糊时先消歧——**意图只作信号 + 消歧 + 审计，不决定派发**（不是路由器、不是安全层、不是派发许可）。`IntentPipeline` 五级级联，前一级未裁决才进下一级：
 
 1. **实体抽取**（`routing/entities.py`）— 确定性正则，抽 pdf_path/arxiv_id/doi/note_path/figure（只抽实体不判意图）
 2. **选项答复检测**（`routing/option_reply.py`）— 确定性正则识别纯编号菜单选择（`1`/`1.`/`选项2`/`第3个`）；命中直接产出 `MENU_SELECTION`（confidence=1.0），**不经路由/LLM 重分类**——对齐 Rasa 按钮 payload 惯例：选择动作的语义由发菜单的一方（supervisor 对照上轮菜单）承载，避免 0 阈值路由以微小分数误命中任意意图后误判意图
