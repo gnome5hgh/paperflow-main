@@ -42,8 +42,8 @@ rag:
 # 子代理超时（秒，仅 YAML）；默认值见 config.py AgentsConfig，撞帽即需重估
 # agents:
 #   timeouts:
-#     noter: 900
-#     researcher: 1800
+#     note-agent: 900
+#     research-agent: 1800
 
 # MCP server 接入（工具前缀 mcp__paper-search__*；详见 docs/learning/11-MCP客户端.md）
 mcp_servers:
@@ -56,7 +56,7 @@ mcp_servers:
     args: ["--from", "git+https://github.com/openags/paper-search-mcp@cab1b5cc276a0cd004a0044003926a6440088049", "--with", "mcp<2", "paper-search-mcp"]
     # git main（未发版）已给全部 73 工具显式注解（search/read=readOnlyHint:true，download=false+destructive）
     # --with mcp<2：server 依赖尚未兼容 mcp 2.x（FastMCP 改名）；上游发版后可简化
-    agents: [searcher]           # 挂给哪些 agent
+    agents: [paper-agent]           # 挂给哪些 agent
     # connect_timeout: 30        # uvx 冷启动慢，默认 30s
     # call_timeout: 120
     # disabled_tools: [search_ieee]

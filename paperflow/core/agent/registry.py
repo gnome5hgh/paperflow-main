@@ -47,7 +47,7 @@ class AgentConfig:
         tools: list[Tool]，从 tools.py 的 TOOLS 加载的工具实例
     """
 
-    #: Agent 类型标识符，对应 agents/ 下的目录名（如 "searcher"）
+    #: Agent 类型标识符，对应 agents/ 下的目录名（如 "paper-agent"）
     name: str
 
     #: 简短描述，供 LLM 在 Supervisor 选择 spawn 目标时参考
@@ -72,7 +72,7 @@ class AgentRegistry:
     使用方式::
 
         registry = AgentRegistry("agents")
-        config = registry.get_config("searcher")
+        config = registry.get_config("paper-agent")
         print(config.system_prompt)   # 从 AGENT.md 正文加载
         print(config.tools)           # 从 tools.py TOOLS 列表加载
 
@@ -158,7 +158,7 @@ class AgentRegistry:
         AGENT.md 格式::
 
             ---
-            name: searcher
+            name: paper-agent
             description: 学术论文搜索
             allowed_agents: []
             allowed_spawns: []
@@ -234,7 +234,7 @@ class AgentRegistry:
         按 agent_type 返回完整配置（含 tools）。
 
         Args:
-            agent_type: Agent 类型标识符，如 "supervisor"、"searcher"
+            agent_type: Agent 类型标识符，如 "supervisor"、"paper-agent"
 
         Returns:
             AgentConfig 实例

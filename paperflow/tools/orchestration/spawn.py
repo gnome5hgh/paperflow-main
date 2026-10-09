@@ -1,8 +1,8 @@
 """共享 spawn 工具层——SpawnSubAgentTool 及配套 helper。
 
 子 agent 派发与结构化结果摘要的实现。装配给 supervisor（硬编码放行所有子 agent）
-与需要内部审稿/补料的 searcher/noter/researcher（按各自 allowed_spawns 白名单）；
-叶子 agent（reviewer/qa-agent/librarian）不装配、不递归调度。需父 agent 注入
+与需要内部审稿/补料的 paper-agent/note-agent/research-agent（按各自 allowed_spawns 白名单）；
+叶子 agent（review-agent/qa-agent/citation-agent）不装配、不递归调度。需父 agent 注入
 (needs_parent),见 Tool 约定。
 
 派发前 _admit 的七道闸（未知类型 / mode 校验 / 意图派发门禁 / spawn 白名单 /
@@ -69,8 +69,8 @@ class SubAgentResult(BaseModel):
         return self
 
 
-class SearcherDigest(BaseModel):
-    """searcher 的结果摘要:命中多少篇、有哪些论文、哪些已下载、哪些待确认。
+class PaperAgentDigest(BaseModel):
+    """paper-agent 的结果摘要:命中多少篇、有哪些论文、哪些已下载、哪些待确认。
 
     pending_confirm / needs_attention 对应下载门禁的"待用户确认"路径——这是
     spawn 结果之外的第二处用户介入点,supervisor 需据此提示用户确认。
@@ -89,8 +89,8 @@ class SearcherDigest(BaseModel):
     needs_attention: bool = False
 
 
-class ReviewerDigest(BaseModel):
-    """reviewer 的结果摘要:裁决结论 + 通过/未通过计数 + 建议下载清单。
+class ReviewAgentDigest(BaseModel):
+    """review-agent 的结果摘要:裁决结论 + 通过/未通过计数 + 建议下载清单。
 
     Attributes:
         verdict: str，裁决结论（pass/fail）
@@ -104,8 +104,8 @@ class ReviewerDigest(BaseModel):
     download_list: list[str] = []
 
 
-class NoterDigest(BaseModel):
-    """noter 的结果摘要:note_path 是产物绝对路径,status 描述写盘结果。
+class NoteAgentDigest(BaseModel):
+    """note-agent 的结果摘要:note_path 是产物绝对路径,status 描述写盘结果。
 
     Attributes:
         note_path: str，笔记产物的绝对路径
@@ -115,8 +115,8 @@ class NoterDigest(BaseModel):
     status: str
 
 
-class ResearcherDigest(BaseModel):
-    """researcher 的结果摘要:四个产物路径 + 状态,supervisor 据此汇报。
+class ResearchAgentDigest(BaseModel):
+    """research-agent 的结果摘要:四个产物路径 + 状态,supervisor 据此汇报。
 
     Attributes:
         status: str，研究链路的结果状态
@@ -132,8 +132,8 @@ class ResearcherDigest(BaseModel):
     plan_path: str = ""
 
 
-class LibrarianDigest(BaseModel):
-    """librarian 的结果摘要:同步/删除的计数 + 被拒条目与原因,supervisor 据此汇报。
+class CitationAgentDigest(BaseModel):
+    """citation-agent 的结果摘要:同步/删除的计数 + 被拒条目与原因,supervisor 据此汇报。
 
     status 默认空串:sync_citations 的 tool summary 只有 total/added/skipped/
     rejected、没有 status,LLM 抽 digest 时容易漏该字段——给默认值避免校验失败
@@ -184,8 +184,8 @@ class QaAgentDigest(BaseModel):
     needs_attention: bool = False
 
 
-class IndexerDigest(BaseModel):
-    """indexer 的结果摘要：入库/跳过/清理篇数与失败清单。
+class RagAgentDigest(BaseModel):
+    """rag-agent 的结果摘要：入库/跳过/清理篇数与失败清单。
 
     Attributes:
         indexed: int，成功入库的篇数
@@ -227,13 +227,13 @@ def digest_schema_for(agent_type: str) -> type[BaseModel]:
         对应的摘要 pydantic 模型类；未注册的类型返回 GenericDigest。
     """
     return {
-        "searcher": SearcherDigest,
-        "reviewer": ReviewerDigest,
-        "noter": NoterDigest,
-        "researcher": ResearcherDigest,
-        "librarian": LibrarianDigest,
+        "paper-agent": PaperAgentDigest,
+        "review-agent": ReviewAgentDigest,
+        "note-agent": NoteAgentDigest,
+        "research-agent": ResearchAgentDigest,
+        "citation-agent": CitationAgentDigest,
         "qa-agent": QaAgentDigest,
-        "indexer": IndexerDigest,
+        "rag-agent": RagAgentDigest,
     }.get(agent_type, GenericDigest)
 
 
@@ -243,7 +243,7 @@ async def _extract_digest(llm, agent_type: str, text: str,
 
     复用 StructuredOutput 的三层防御(json 模式 + 模型校验 + 重试);独立超时 30s,
     与子 agent 执行超时解耦——摘要提取是"锦上添花",卡死不能拖垮 spawn 主流程。
-    只取 text 尾部 2000 字符控制 prompt 长度:子 agent 回答可能很长(如 noter 的
+    只取 text 尾部 2000 字符控制 prompt 长度:子 agent 回答可能很长(如 note-agent 的
     整篇笔记),结构化摘要只需要结论性尾部。
 
     Args:
@@ -596,12 +596,12 @@ class SpawnSubAgentTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "agent_type": {"type": "string", "description": "目标 SubAgent 类型，如 searcher"},
+            "agent_type": {"type": "string", "description": "目标 SubAgent 类型，如 paper-agent"},
             "task": {"type": "string", "description": "子任务文本（含实体，已拼入上下文）"},
             "mode": {"type": "string",
                      "enum": [m.value for m in SubAgentMode],
-                     "description": "子 agent 运行模式(可选)。noter: note;"
-                                    "reviewer: note_review/download_review;"
+                     "description": "子 agent 运行模式(可选)。note-agent: note;"
+                                    "review-agent: note_review/download_review;"
                                     "不传 = 子 agent 默认模式"},
             "intent": {"type": "string",
                        "enum": [t.value for t in IntentType],
@@ -801,9 +801,9 @@ class SpawnSubAgentTool(Tool):
         result = None
         try:
             # 构造子 agent(非闸):继承父的安全中间件、会话 ID(同一审计链)、确认回调与
-            #    问用户回调——确认回调是关键:noter 的写盘工具要求用户确认,不传则
-            #    默认回调始终拒绝,spawn 出的 noter 永远写不出笔记;问用户回调同理,
-            #    noter/qa-agent 靠它中途向用户提问。不传意图管线/会话 → 子 agent 不做
+            #    问用户回调——确认回调是关键:note-agent 的写盘工具要求用户确认,不传则
+            #    默认回调始终拒绝,spawn 出的 note-agent 永远写不出笔记;问用户回调同理,
+            #    note-agent/qa-agent 靠它中途向用户提问。不传意图管线/会话 → 子 agent 不做
             #    意图识别(子任务是结构化任务,非用户意图)。
             # 流式统一：子 agent 只透传工具行（前缀由渲染器统一加）、不流 content——
             # 与并行场景同一代码路径（多路并发不串字）。
@@ -816,7 +816,7 @@ class SpawnSubAgentTool(Tool):
                 stream_callback=_make_child_stream_callback(parent),
                 # 继承父 trace_id：去重池（get_run_state 按 trace_id 键控）在
                 # 一次用户任务内跨 agent 共享——子 agent 因此不重复下载/抓取父任务
-                # 已处理过的资源（父超时重试时会派出新的 searcher，不共享池就会重抓）。
+                # 已处理过的资源（父超时重试时会派出新的 paper-agent，不共享池就会重抓）。
                 trace_id=getattr(parent, "_trace_id", None),
             )
             # mode 靠前缀注入 system prompt,而不是构造参数:子 agent 的 AGENT.md 正文

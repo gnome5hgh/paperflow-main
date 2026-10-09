@@ -1,9 +1,9 @@
 # paperflow/tools/review/submit_review.py
-"""SubmitReviewTool：汇总对一篇笔记的审查裁决(reviewer 笔记审查模式返回)。
+"""SubmitReviewTool：汇总对一篇笔记的审查裁决(review-agent 笔记审查模式返回)。
 
 把审查结果规范成结构化裁决(verdict + issues[],各字段枚举校验)。execute 不读文件
 内容,只把提交的字段格式化,因此放开 scratch 根零安全影响。校验哲学对齐 edit_file
-的 miss/multi 报错:非法输入返回可行动报错文本,不静默吞——让 reviewer 的 LLM
+的 miss/multi 报错:非法输入返回可行动报错文本,不静默吞——让 review-agent 的 LLM
 修正后重试。
 """
 from paperflow.core.tool import Tool, ToolResult
@@ -16,7 +16,7 @@ DIMENSIONS = ("requirements", "faithfulness", "consistency", "completeness", "st
 
 
 class SubmitReviewTool(Tool):
-    """汇总笔记审查裁决的终止型工具（reviewer 笔记审查模式返回）。
+    """汇总笔记审查裁决的终止型工具（review-agent 笔记审查模式返回）。
 
     Attributes:
         name: str，工具名 "submit_review"
@@ -27,7 +27,7 @@ class SubmitReviewTool(Tool):
         root_hints: list[str]，["note", "scratch", "research"]（仅生成 [目录] 提示）
     """
     name = "submit_review"
-    description = ("汇总对一篇笔记的审查裁决（reviewer 笔记审查模式返回）。"
+    description = ("汇总对一篇笔记的审查裁决（review-agent 笔记审查模式返回）。"
                    "verdict=pass 当且仅当无 blocking 意见；每条 issue 必须可执行（location + action）。")
     parameters = {
         "type": "object",
@@ -59,7 +59,7 @@ class SubmitReviewTool(Tool):
         """校验并格式化审查裁决;非法输入返回可行动报错文本。
 
         三步校验:verdict 枚举 → 逐 issue 枚举/必需字段 → verdict 与 issues 一致性
-        (pass 当且仅当无 blocking)。通过后按 severity 分组渲染,供 noter 确定性读取。
+        (pass 当且仅当无 blocking)。通过后按 severity 分组渲染,供 note-agent 确定性读取。
 
         Args:
             path: str，被审查笔记的绝对路径
@@ -90,7 +90,7 @@ class SubmitReviewTool(Tool):
             return ToolResult(text="verdict=pass 但存在 blocking 意见——pass 当且仅当无 blocking")
         if verdict == "fail" and not has_blocking:
             return ToolResult(text="verdict=fail 但无 blocking 意见——fail 必须含至少一个 blocking")
-        # ④ 格式化：verdict 行 + 按 severity 分组 issue 清单（noter 确定性可读）
+        # ④ 格式化：verdict 行 + 按 severity 分组 issue 清单（note-agent 确定性可读）
         lines = [f"审查裁决：{verdict}"]
         for sev in SEVERITIES:
             for issue in issues:

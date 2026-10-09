@@ -34,7 +34,7 @@ class FetchPdfTool(Tool):
 
     name = "fetch_pdf"
     # description 与行为对齐:纯下载,url 取检索结果（含 MCP 工具结果）中的 PDF 链接(LLM 据此传参)
-    description = "下载 PDF 到本地资料库（SSRF 校验 + 写盘；入库需另行派发 indexer）。url 取检索结果（含 MCP 工具结果）中的 PDF 链接。"
+    description = "下载 PDF 到本地资料库（SSRF 校验 + 写盘；入库需另行派发 rag-agent）。url 取检索结果（含 MCP 工具结果）中的 PDF 链接。"
     parameters = {
         "type": "object",
         "properties": {
@@ -238,5 +238,5 @@ class FetchPdfTool(Tool):
                 _run_state.downloaded[f"title:{_norm_title(title)}"] = str(dest)
             # 写盘已成功（_fetch 内完成），登记产物路径 -> 生产者
             _run_state.artifacts[str(dest)] = "fetch_pdf"
-        # 索引不在这里做：下载成功后由调用方派发 indexer 入库
-        return ToolResult(text=f"已下载 PDF: {dest}（尚未建立索引，请派发 indexer）")
+        # 索引不在这里做：下载成功后由调用方派发 rag-agent 入库
+        return ToolResult(text=f"已下载 PDF: {dest}（尚未建立索引，请派发 rag-agent）")

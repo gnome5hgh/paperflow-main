@@ -77,7 +77,7 @@ class ReadPdfTool(Tool):
                 raise e
         text = doc.body
         if doc.title:
-            text = f"# {doc.title}\n\n" + text   # 标题在顶部，noter 据此拿干净全标题
+            text = f"# {doc.title}\n\n" + text   # 标题在顶部，note-agent 据此拿干净全标题
         return ToolResult(text=text or "（PDF 未能解析出文本）")
 
     def _resolve_fuzzy(self, path: str):

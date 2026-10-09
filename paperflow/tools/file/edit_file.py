@@ -4,7 +4,7 @@
 LLM 只需输出变更部分(省 token),且不误伤无关内容。安全边界由中间件强制:path 可为
 任意绝对路径,敏感路径黑名单(workspace/audit、.git 等)由 WorkspacePolicyMiddleware
 拦截。风险为 medium(与 write_file 对齐),需用户确认。写盘与入库解耦:本工具只负责
-落盘 + 登记产物,入库由调用方改完后派发 indexer 完成。
+落盘 + 登记产物,入库由调用方改完后派发 rag-agent 完成。
 """
 from pathlib import Path
 
@@ -50,7 +50,7 @@ class EditFileTool(Tool):
 
         查找用 str.count 判断唯一性——锚点必须唯一,避免替换错位置。
         _run_state 为本次 run 的状态容器（未注入时为 None）：替换落盘成功后把路径
-        登记进产物账本。入库不在本工具：调用方据返回文本派发 indexer 重新入库。
+        登记进产物账本。入库不在本工具：调用方据返回文本派发 rag-agent 重新入库。
 
         Args:
             path: str，目标文件绝对路径
@@ -77,8 +77,8 @@ class EditFileTool(Tool):
         atomic_write(p, content.replace(old_text, new_text))
         if _run_state is not None:
             _run_state.artifacts[str(p)] = "edit_file"
-        # 索引不在这里做：改完由调用方派发 indexer 重新入库（索引是「先删后建」，
+        # 索引不在这里做：改完由调用方派发 rag-agent 重新入库（索引是「先删后建」，
         # 直接重跑不会留下旧块）。
         return ToolResult(
-            text=f"已编辑 {path}（尚未建立索引，请派发 indexer）",
+            text=f"已编辑 {path}（尚未建立索引，请派发 rag-agent）",
             completion=f"File edited: {path}")

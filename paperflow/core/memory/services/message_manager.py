@@ -117,7 +117,7 @@ class MessageManager:
     def make_ask_recorder(self, base_ask, agent_id):
         """包装 ask_user 回调：读答案同时把 Q&A 记进 messages 表（role=user）。
 
-        子 agent（noter/qa-agent）无独立 message_manager，其 ask_user 问答本会随
+        子 agent（note-agent/qa-agent）无独立 message_manager，其 ask_user 问答本会随
         spawn 结束丢失；统一在此记录 → Sleeptime 可整合进 profile 块。记录失败
         fail-safe（不阻断提问），answer 原样透传。
 

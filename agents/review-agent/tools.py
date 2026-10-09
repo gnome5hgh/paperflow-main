@@ -1,4 +1,4 @@
-"""reviewer 的工具装配：笔记审查、下载审查与研究选题产物审查三种模式的工具并集。
+"""review-agent 的工具装配：笔记审查、下载审查与研究选题产物审查三种模式的工具并集。
 
 三种模式由父 agent spawn 时注入的「当前模式」判别(AGENT.md 说明)：
 - note_review → 笔记审查(5 维度审查 + 溯源核验 + submit_review 交裁决)
@@ -8,7 +8,7 @@
 三种模式共用同一工具并集。
 溯源核验工具(list_citations/lookup_citation)挂在共享 manager 上,供笔记/选题产物
 审查模式核验 `[来源:key§节]` 的 key 真实性。
-reviewer 是叶子审稿 agent,不派发子 agent。
+review-agent 是叶子审稿 agent,不派发子 agent。
 """
 from paperflow.config import PaperFlowConfig
 from paperflow.tools.common.factory import make_tools

@@ -2,7 +2,7 @@
 
 提示与强制分离：root_hints 仅生成 description 里的 [目录] 行，帮助 LLM 定位
 语料库目录；真正的强制边界是「绝对路径 + 敏感路径黑名单」（WorkspacePolicyMiddleware）。
-default_write_root 按 agent 装配注入（noter→"note"、researcher→"research"）：
+default_write_root 按 agent 装配注入（note-agent→"note"、research-agent→"research"）：
 write_file 的 filename+dir 便捷入口省略 dir 时落到该根，防止产物错位（代码层强制）。
 """
 from pathlib import Path

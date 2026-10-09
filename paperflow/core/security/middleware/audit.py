@@ -106,7 +106,7 @@ class AuditEntry:
     trace_id: str
     #: 会话标识，跨多次运行保持一致，用于按对话线程分组审计日志。
     session_id: str
-    #: 发起调用的 Agent 类型（如 "supervisor"、"searcher"）。
+    #: 发起调用的 Agent 类型（如 "supervisor"、"paper-agent"）。
     agent_type: str
     #: 被调用的工具名称。对于 llm_call 事件，该字段为空字符串。
     tool_name: str

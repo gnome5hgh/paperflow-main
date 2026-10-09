@@ -366,7 +366,7 @@ class Agent:
         agent = Agent(
             llm=llm_client,
             agent_registry=registry,
-            agent_type="searcher",
+            agent_type="paper-agent",
             security_middleware=[AuditMiddleware(), PolicyEngineMiddleware()],
             confirm_callback=my_confirm_handler,
         )
@@ -1021,7 +1021,7 @@ class Agent:
         """
         # 每次 run 独立追踪 ID：同一 conversation 的多次 run 由 trace_id 区分。
         # spawn 的子 agent 继承父 trace_id——去重池（get_run_state 按其键控）因此
-        # 在「一次用户任务」内跨 agent 共享：supervisor 超时重试派发的新 searcher
+        # 在「一次用户任务」内跨 agent 共享：supervisor 超时重试派发的新 paper-agent
         # 不会重复下载父任务已下载过的论文。
         self._trace_id = self._inherited_trace_id or f"trace_{uuid.uuid4().hex[:12]}"
 

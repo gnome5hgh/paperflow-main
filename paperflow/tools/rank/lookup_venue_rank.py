@@ -1,6 +1,6 @@
 """LookupVenueRankTool：查询论文发表 venue(期刊/会议)的等级。
 
-reviewer 下载审查模式专属。查询链:本地映射 → LetPub(ISSN) → SJR → 未命中。
+review-agent 下载审查模式专属。查询链:本地映射 → LetPub(ISSN) → SJR → 未命中。
 等级值带来源与证据链接,未命中显式返回"未找到等级"(不默认通过,交由人工核验)。
 
 网络访问复用 _HttpClientMixin 的 SSRF 安全抓取(逐跳校验重定向),httpx 同步客户端
@@ -90,7 +90,7 @@ def _parse_sjr(html: str, venue: str) -> dict | None:
     为什么限定窗口而非整页扫描:SJR 搜索页返回候选期刊列表,整页取首个 Q 档会命中
     列表里无关期刊的档位——venue 歧义(多本期刊含同名关键词)时误判「通过」,违反
     「等级未知 → 不默认通过」。修复:先定位规范化 venue 名在页内首次出现的位置,
-    只在其后 ~500 字符窗口内找 Q 档;找不到 → None(走「未找到等级」,让 reviewer
+    只在其后 ~500 字符窗口内找 Q 档;找不到 → None(走「未找到等级」,让 review-agent
     人工核验)。归一化(小写 + 去非字母数字)让标题与页面文本去掉标签/大小写干扰后对齐。
 
     Args:
@@ -131,7 +131,7 @@ class LookupVenueRankTool(Tool):
     name = "lookup_venue_rank"
     description = ("查询论文发表 venue（期刊/会议）的等级：本地 CCF/JCR/中科院映射 + "
                    "LetPub/SJR 在线兜底。返回等级、判定（是否 ≥Q2）与证据链接。"
-                   "reviewer 下载审查用——判定依据等价表 B。")
+                   "review-agent 下载审查用——判定依据等价表 B。")
     parameters = {
         "type": "object",
         "properties": {
@@ -249,7 +249,7 @@ class LookupVenueRankTool(Tool):
         except Exception as e:
             # 网络/解析异常 → 显式报错，绝不静默回退成"通过"
             return ToolResult(text=f"等级在线查询失败: {e}")
-        # ⑤ 全未命中 → 不默认通过（reviewer 需人工核验）
+        # ⑤ 全未命中 → 不默认通过（review-agent 需人工核验）
         return ToolResult(text=f"未找到等级（venue={venue}）——请人工核验，不默认通过")
 
 

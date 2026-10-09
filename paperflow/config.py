@@ -513,8 +513,8 @@ class AgentsConfig:
     """子 agent 配置。
 
     timeouts 是自由 dict（agent 类型 → 秒数），仅 YAML 可配（dict 无自然 env 形态）。
-    各值按该 agent 完整任务的典型时长留余量设定：noter 覆盖含内审重试的纯笔记
-    端到端，searcher 覆盖大批量新颖性检索，reviewer 覆盖全文审阅，researcher
+    各值按该 agent 完整任务的典型时长留余量设定：note-agent 覆盖含内审重试的纯笔记
+    端到端，paper-agent 覆盖大批量新颖性检索，review-agent 覆盖全文审阅，research-agent
     覆盖完整研究链路，qa-agent 覆盖精读问答。某 agent 反复撞帽说明任务时长
     需要重新评估，而不是继续调大。
 
@@ -524,8 +524,8 @@ class AgentsConfig:
 
     timeouts: dict[str, int] = field(
         default_factory=lambda: {
-            "noter": 900, "searcher": 420, "reviewer": 300,
-            "researcher": 1800, "qa-agent": 180, "indexer": 900,
+            "note-agent": 900, "paper-agent": 420, "review-agent": 300,
+            "research-agent": 1800, "qa-agent": 180, "rag-agent": 900,
         })
 
 
@@ -563,7 +563,7 @@ class McpServerConfig:
     url: str = ""                       # http 必填
     headers: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
-    agents: list[str] = field(default_factory=lambda: ["searcher"])
+    agents: list[str] = field(default_factory=lambda: ["paper-agent"])
     connect_timeout: float = 30.0
     call_timeout: float = 120.0
     disabled_tools: list[str] = field(default_factory=list)

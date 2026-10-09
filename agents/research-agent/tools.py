@@ -1,9 +1,9 @@
-"""researcher 的工具装配：原子文件工具 + RAG 语料盘点 + 4 引用工具 + 派发 searcher/reviewer。
+"""research-agent 的工具装配：原子文件工具 + RAG 语料盘点 + 4 引用工具 + 派发 paper-agent/review-agent。
 
 选题发现 agent 自产自写：read_file/read_pdf 读本地笔记与 PDF 语料，rag_retrieve 按课题
 发现相关段落，write_file/edit_file 落盘产物（survey/gaps/idea 卡/研究计划），引用工具
-(lookup/add/format/list)做溯源标注与参考文献渲染。spawn 工具派发 searcher（补料下载、
-外部新颖性检索）与 reviewer（plan_review 选题产物审查）。
+(lookup/add/format/list)做溯源标注与参考文献渲染。spawn 工具派发 paper-agent（补料下载、
+外部新颖性检索）与 review-agent（plan_review 选题产物审查）。
 """
 from paperflow.citations import CitationManager
 from paperflow.config import PaperFlowConfig

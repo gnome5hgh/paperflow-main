@@ -2,8 +2,8 @@
 
 path 可写任意绝对路径(敏感路径黑名单除外,WorkspacePolicyMiddleware 强制)。
 filename+dir 便捷入口省略 dir 时落装配注入的默认根(factory default_write_root:
-noter→note、researcher→research——代码层防产物错位)。写盘与入库解耦:本工具只负责
-落盘 + 登记产物,入库由调用方落盘后派发 indexer 完成(结果文本提示这一点)。
+note-agent→note、research-agent→research——代码层防产物错位)。写盘与入库解耦:本工具只负责
+落盘 + 登记产物,入库由调用方落盘后派发 rag-agent 完成(结果文本提示这一点)。
 """
 from pathlib import Path
 
@@ -32,7 +32,7 @@ class WriteFileTool(Tool):
         "写入或整篇重写文件。两种入口二选一：① path=绝对路径（精确控制，敏感路径黑名单外均可写）；"
         "② filename=纯文件名（可选 dir=绝对目录，缺省落本 agent 默认根）。"
         "已存在的文件将被覆盖（小范围修改请用 edit_file 定向替换）；"
-        "写入语料库（note/pdf 根内）的文件需另行派发 indexer 入库，临时文件请显式给 dir。"
+        "写入语料库（note/pdf 根内）的文件需另行派发 rag-agent 入库，临时文件请显式给 dir。"
     )
     parameters = {
         "type": "object",
@@ -111,7 +111,7 @@ class WriteFileTool(Tool):
         """解析双入口 → 黑名单兜底 → 写盘 + 登记产物。
 
         _run_state 为本次 run 的状态容器（未注入时为 None）：写盘成功后把落盘路径
-        登记进产物账本，供后续收尾核对。入库不在本工具：调用方据返回文本派发 indexer。
+        登记进产物账本，供后续收尾核对。入库不在本工具：调用方据返回文本派发 rag-agent。
 
         Args:
             content: str，待写入的完整文本
@@ -134,8 +134,8 @@ class WriteFileTool(Tool):
         atomic_write(p, content)
         if _run_state is not None:
             _run_state.artifacts[str(p)] = "write_file"
-        # 索引不在这里做：写盘成功后由调用方派发 indexer 入库。工具只提示这件事，
+        # 索引不在这里做：写盘成功后由调用方派发 rag-agent 入库。工具只提示这件事，
         # 因为「忘记入库」不会有任何报错，提醒要落在动作发生的那一刻。
         return ToolResult(
-            text=f"已写入 {p}（尚未建立索引，请派发 indexer）",
+            text=f"已写入 {p}（尚未建立索引，请派发 rag-agent）",
             completion=f"File written: {p}")

@@ -28,7 +28,7 @@ class ToolContext:
     Attributes:
         trace_id: str，本次 run 的唯一追踪 ID（聚合一次任务的所有工具调用）
         session_id: str，会话标识（跨多次 run 保持一致）
-        agent_type: str，当前 Agent 类型（如 supervisor/searcher）
+        agent_type: str，当前 Agent 类型（如 supervisor/paper-agent）
         tool: Tool | None，当前执行的 Tool；None 表示未知工具（幻觉或注入）
         tool_name: str，工具名（tool 为 None 时仍可记录）
         args: dict，已解析的工具参数字典
@@ -51,7 +51,7 @@ class ToolContext:
     # --- 调用方与工具本体（由 Agent 构造，贯穿管道） ---
     trace_id: str                      # 本次 run 的唯一追踪 ID，用于聚合一次完整任务的所有工具调用
     session_id: str                    # 会话标识，跨多次 run 保持一致，便于审计聚合
-    agent_type: str                    # 当前 Agent 的类型（如 "supervisor"、"searcher"）
+    agent_type: str                    # 当前 Agent 的类型（如 "supervisor"、"paper-agent"）
     tool: Tool | None = None           # 当前执行的 Tool 实例；None 表示未知工具（LLM 幻觉或注入）
     tool_name: str = ""                # 工具名称（用于审计，即使 tool 为 None 也能记录）
     args: dict = field(default_factory=dict)  # 工具调用的参数字典（已解析 JSON）

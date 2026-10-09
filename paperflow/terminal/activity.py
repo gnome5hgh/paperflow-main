@@ -37,7 +37,7 @@ ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
     "sync_citations": ("📎 同步", "次"),
     "lookup_venue_rank": ("🏛 查刊", "次"),
     # ── 视觉 ──
-    "analyze_figures": ("🖼️ 解析", "次"),   # 视觉解析 PDF 插图（noter 高频、耗时数秒）
+    "analyze_figures": ("🖼️ 解析", "次"),   # 视觉解析 PDF 插图（note-agent 高频、耗时数秒）
     # ── 记忆与笔记 ──
     "history_append": ("🧠 记忆", "次"),
     "memory": ("🧠 记忆", "次"),

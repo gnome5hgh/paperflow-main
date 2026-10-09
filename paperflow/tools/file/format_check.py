@@ -1,4 +1,4 @@
-"""FormatCheckTool：笔记 Markdown 标题树与模板对比(reviewer 用,确定性代码)。
+"""FormatCheckTool：笔记 Markdown 标题树与模板对比(review-agent 用,确定性代码)。
 
 模板是工具内部常量路径(非 LLM 可指定的 path 参数),不进 root_hints 提示;
 模板缺失时自动落盘最小骨架再对比,不抛错中断流程。
@@ -11,7 +11,7 @@ from paperflow.tools.file.atomic import atomic_write
 
 
 class FormatCheckTool(Tool):
-    """笔记 Markdown 标题树与模板对比(确定性代码,供 reviewer 用)。
+    """笔记 Markdown 标题树与模板对比(确定性代码,供 review-agent 用)。
 
     Attributes:
         name: str，工具名 "format_check"
@@ -56,7 +56,7 @@ class FormatCheckTool(Tool):
     def _ensure_template(self) -> list[str]:
         """读取模板标题树;模板文件不存在时先落盘最小骨架再读。
 
-        直接读不存在的模板会抛 FileNotFoundError 中断 reviewer 流程,故先确保模板
+        直接读不存在的模板会抛 FileNotFoundError 中断 review-agent 流程,故先确保模板
         存在(生产路径不再抛错),再提取各级标题。"""
         cfg = get_rag_service().config
         tpl = Path(self._template_path or (Path(cfg.runtime.workspace) / "templates" / "paper_note.md"))

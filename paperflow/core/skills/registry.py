@@ -80,8 +80,8 @@ class SkillRegistry:
     使用方式::
 
         registry = SkillRegistry("<root>/.paperflow/skills")
-        block = registry.skills_block("noter")     # L1 清单
-        tools = registry.get_tools_for("noter")    # 并入 agent 工具表
+        block = registry.skills_block("note-agent")     # L1 清单
+        tools = registry.get_tools_for("note-agent")    # 并入 agent 工具表
 
     Note: 构造有副作用——动态导入各 skill 的 tools.py 并校验 Tool 元数据，非法值抛
         ValueError 终止构造。进程内构造一次，由装配层持有传给所有 Agent。
@@ -141,12 +141,12 @@ class SkillRegistry:
             raise ValueError(f"Skill '{name}': frontmatter 缺少必填字段 'description'")
         raw_allowed = meta.get("allowed_agents")
         if raw_allowed is not None and not isinstance(raw_allowed, list):
-            # fail-fast：标量会被 list() 静默拆成单字符列表（"noter" → n,o,t,e,r），
+            # fail-fast：标量会被 list() 静默拆成单字符列表（"note-agent" → n,o,t,e,r），
             # 可见性白名单就此失效——拒绝配置而不是带病运行（与 name/description 同风格）。
             raise ValueError(
                 f"Skill '{name}': 'allowed_agents' 必须是列表（得到标量 "
                 f"{type(raw_allowed).__name__}: {raw_allowed!r}；"
-                "单 agent 写法用 [noter]）")
+                "单 agent 写法用 [note-agent]）")
         for ignored in _COMMUNITY_FIELDS:
             if ignored in meta:
                 logger.warning("Skill '%s': 忽略社区字段 '%s'（本项目不消费该字段）", name, ignored)

@@ -15,17 +15,17 @@ class SubAgentMode(StrEnum):
     """子 agent 运行模式。值 = AGENT.md 判别用的字符串，str 枚举与字面量等价。
 
     只覆盖有确定性 ground truth 的父子对——qa-agent 自选不传（枚举不含其值，
-    不传 mode 的 spawn 行为不受影响）。noter: 笔记生成；
-    reviewer: 笔记审稿 / 下载门禁 / 研究选题产物审稿。
+    不传 mode 的 spawn 行为不受影响）。note-agent: 笔记生成；
+    review-agent: 笔记审稿 / 下载门禁 / 研究选题产物审稿。
     """
 
-    #: noter：笔记流程（generate_note 派发）
+    #: note-agent：笔记流程（generate_note 派发）
     NOTE = "note"
-    #: reviewer：笔记审稿（noter 笔记流程 spawn）
+    #: review-agent：笔记审稿（note-agent 笔记流程 spawn）
     NOTE_REVIEW = "note_review"
-    #: reviewer：下载门禁（searcher spawn）
+    #: review-agent：下载门禁（paper-agent spawn）
     DOWNLOAD_REVIEW = "download_review"
-    #: reviewer：研究选题产物审稿（researcher 选题发现流程 spawn）
+    #: review-agent：研究选题产物审稿（research-agent 选题发现流程 spawn）
     PLAN_REVIEW = "plan_review"
 
 
