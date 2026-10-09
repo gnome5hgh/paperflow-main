@@ -247,8 +247,8 @@ class IntentConfig:
         router: RouterConfig，混合路由器参数
     """
 
-    #: 意图识别总开关（False 时整套意图层不挂载）
-    enabled: bool = True
+    #: 意图识别总开关（默认关：系统默认形态是纯 ReAct；显式开启才挂载意图层）
+    enabled: bool = False
 
     encoder: IntentEncoderConfig = field(default_factory=IntentEncoderConfig)
     router: RouterConfig = field(default_factory=RouterConfig)
