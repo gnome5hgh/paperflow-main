@@ -35,7 +35,8 @@ class FormatCheckTool(Tool):
     #: 两侧都只读：读笔记与读模板比结构，不写任何落点
     side_effects = ["read_file"]
 
-    #: 模板的默认位置：随 write-note skill 一起分发的资源
+    #: 模板的默认位置：随 write-note skill 一起分发的资源（与 SkillRegistry 同锚 .paperflow/skills/，
+    #: 即相对启动目录解析——不是配置派生，改动时须与 skill 扫描保持一致）
     _DEFAULT_TEMPLATE = Path(".paperflow/skills/write-note/references/paper_note.md")
 
     def __init__(self):

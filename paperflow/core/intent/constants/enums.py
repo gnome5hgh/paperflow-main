@@ -39,7 +39,7 @@ class IntentType(StrEnum):
     CHITCHAT = "chitchat"                      # 闲聊与应答语（系统；直接回复）
     OUT_OF_SCOPE = "out_of_scope"              # 超出能力范围：含与论文工作无关的请求（系统；明确拒绝）
     HELP = "help"                              # 本系统的使用方法/功能引导（系统）；系统无关请求归 out_of_scope
-    FEEDBACK = "feedback"                      # 结果反馈（系统；记忆日志）
+    FEEDBACK = "feedback"                      # 结果反馈（系统；派 memory-agent 记日志）
     UNCLASSIFIED = "unclassified"              # 未分类兜底：路由未命中 / LLM 解析失败（系统）。仅 LLM 兜底产出，不在路由知识库
 
 
@@ -48,7 +48,7 @@ class IntentCategory(StrEnum):
 
     BUSINESS = "business"        # 业务：派发领域 agent 或记忆操作
     DIALOGUE = "dialogue"        # 对话管理：会话状态操作（继承/归档/重派）
-    SYSTEM = "system"            # 系统：直接回复，永不 spawn
+    SYSTEM = "system"            # 系统：直接回复为主（feedback 例外——要写入记忆，派 memory-agent）
 
 
 class IntentStep(StrEnum):

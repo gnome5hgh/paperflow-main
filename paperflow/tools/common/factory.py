@@ -26,7 +26,7 @@ def _root_map(config: PaperFlowConfig) -> dict[str, str]:
         "pdf": config.corpus.pdf_dir,
         "research": config.corpus.research_dir or str(Path(config.runtime.workspace) / "research"),
         "memory": str(Path(config.runtime.workspace) / "memory"),
-        # 模板与 scratch 统一从 workspace 派生基准(FormatCheckTool 默认同此基准,骨架仅降级)
+        # 模板已随写侧 skill 分发(见 format_check 的 _DEFAULT_TEMPLATE);scratch 仍从 workspace 派生
         "scratch": str(Path(config.runtime.workspace) / "scratch"),
     }
 

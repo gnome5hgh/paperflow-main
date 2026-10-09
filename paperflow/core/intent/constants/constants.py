@@ -23,7 +23,7 @@ INTENT_META: dict[IntentType, tuple[IntentCategory, bool]] = {
     IntentType.CHITCHAT:           (IntentCategory.SYSTEM, False),
     IntentType.OUT_OF_SCOPE:       (IntentCategory.SYSTEM, False),
     IntentType.HELP:               (IntentCategory.SYSTEM, False),
-    IntentType.FEEDBACK:           (IntentCategory.SYSTEM, False),
+    IntentType.FEEDBACK:           (IntentCategory.SYSTEM, True),   # 系统但可派发——反馈要落到记忆块
     IntentType.UNCLASSIFIED:       (IntentCategory.SYSTEM, False),
 }
 

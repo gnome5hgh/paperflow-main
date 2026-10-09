@@ -635,17 +635,16 @@ class SpawnSubAgentTool(Tool):
 
     def _admit(self, agent_type: str, task: str,
                intent: str | None = None) -> "ToolResult | str":
-        """派发前的七道闸。前四道是「这一路合不合法」的纯判定，后三道是「会不会与别的
+        """派发前的六道闸。前三道是「这一路合不合法」的纯判定，后三道是「会不会与别的
         派发冲突、超支」的共享状态检查：
 
-        - 纯判定（不进锁，只读、无共享状态写入）：① 未知 agent 类型 → ②
-          → ③ 意图派发门禁 → ④ spawn 白名单
-        - 共享状态（整体持 _SPAWN_LOCK）：⑤ 同批同指纹去重 → ⑥ 审稿预算
-          → ⑦ 每轮派发上限
+        - 纯判定（不进锁，只读、无共享状态写入）：① 未知 agent 类型 → ② 意图派发门禁 → ③ spawn 白名单
+        - 共享状态（整体持 _SPAWN_LOCK）：④ 同批同指纹去重 → ⑤ 审稿预算
+          → ⑥ 每轮派发上限
 
         两条不变式：
         - 所有拒绝都在登记 running **之前**提前 return，注册表不被拒绝路径污染；
-        - ⑥⑦ 只判不记：计数自增与 ⑤ 的注册收敛在同一个临界区——否则被后续闸拒绝的
+        - ⑤⑥ 只判不记：计数自增与 ④ 的注册收敛在同一个临界区——否则被后续闸拒绝的
           派发会白吃额度。
 
         意图只作信号，不强制派发顺序——顺序与并行由 supervisor 自主决定；每条被拒/
@@ -668,7 +667,7 @@ class SpawnSubAgentTool(Tool):
                                             f"{sorted(parent.agent_registry.list_agents())}")
 
 
-        # ③ 意图门禁：代码级确定性检查，不依赖 supervisor 遵循 AGENT.md。
+        # ② 意图门禁：代码级确定性检查，不依赖 supervisor 遵循 AGENT.md。
         #    显式声明 intent 时按声明校验——这是会话意图被误判时的申诉通道（用户已在澄清里确认真实意图，
         #    而 last_intent 要到下一轮才更新）；未声明才回落会话意图。声明什么就按什么校验，
         #    报假声明换不到额外权限。last_intent 为 None（管线降级）时放行，不误伤主流程。
@@ -686,18 +685,18 @@ class SpawnSubAgentTool(Tool):
             return _deny(parent, agent_type,
                          f"当前意图 {parent.last_intent.intent_type.value} 不派发领域 agent")
 
-        # ④ 白名单：supervisor 硬编码放行，其余按自身 allowed_spawns 校验（单点在 _check_spawn_allowed）
+        # ③ 白名单：supervisor 硬编码放行，其余按自身 allowed_spawns 校验（单点在 _check_spawn_allowed）
         not_allowed = _check_spawn_allowed(parent, agent_type)
         if not_allowed is not None:
             return _deny(parent, agent_type, not_allowed)
 
-        # ⑤~⑦ 触及共享状态（去重注册表 / 预算计数），判定与记账整体持锁。
+        # ④~⑥ 触及共享状态（去重注册表 / 预算计数），判定与记账整体持锁。
         # 两者都在 run 容器上（按 trace 隔离，一次用户任务内独立）；容器取用时内部会顺手
         # 清扫过期条目，故此处不再单独清理。
         rs = get_run_state(parent._trace_id)
         fp = _task_fingerprint(task)
         with _SPAWN_LOCK:
-            # ⑤ 去重：同指纹且正在执行中 → 提示等待。只拦同一批工具调用内的机械重复
+            # ④ 去重：同指纹且正在执行中 → 提示等待。只拦同一批工具调用内的机械重复
             #    （模型把同一个调用生成两遍）；不缓存结果，所以跨轮的重复不拦、失败重试会真跑。
             #    键含父实例 id：机械重复来自一次 LLM 生成（一个实例），
             #    按实例分桶足够，且不会让两个兄弟实例的同文本任务互相误拒。
@@ -713,14 +712,14 @@ class SpawnSubAgentTool(Tool):
                     summary="同任务正在执行中，请等待其结果（已去重，勿重复派发）")
                 return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
-            # ⑥ 审稿预算：键 (父实例, mode)——同一 run 内多个同类型父实例各算各的、兄弟不串号；
+            # ⑤ 审稿预算：键 (父实例, mode)——同一 run 内多个同类型父实例各算各的、兄弟不串号；
             #    不同 mode 独立计数。此处只判不记，自增见下方收敛块。
             review_key = (parent._instance_id, agent_type) if agent_type == "review-agent" else None
             if review_key is not None and rs.review_counts.get(review_key, 0) >= _REVIEW_SPAWN_BUDGET:
                 return _deny(parent, agent_type,
                              _REVIEW_BUDGET_DENIED_NOTE.format(budget=_REVIEW_SPAWN_BUDGET))
 
-            # ⑦ 每轮上限：只统计 supervisor 自身的派发，按迭代下标计数——
+            # ⑥ 每轮上限：只统计 supervisor 自身的派发，按迭代下标计数——
             #    下一次迭代即重新起算，不会因为上一次迭代派得多而永久锁死。此处同样只判不记。
             turn = getattr(parent, "_current_turn", 0)
             if parent.agent_type == "supervisor" \
@@ -729,7 +728,7 @@ class SpawnSubAgentTool(Tool):
                              f"本轮派发已达上限 {TURN_SPAWN_BUDGET}，"
                              "请先汇总已有结果向用户交代，需要继续时下一轮再派。")
 
-            # 七道全过：记账收敛到一处——⑥⑦ 判定阶段只看不写，计数自增与注册
+            # 七道全过：记账收敛到一处——⑤⑥ 判定阶段只看不写，计数自增与注册
             # running 落在同一临界区，任何一道闸拒绝的派发都不消耗额度。
             if review_key is not None:
                 rs.review_counts[review_key] = rs.review_counts.get(review_key, 0) + 1

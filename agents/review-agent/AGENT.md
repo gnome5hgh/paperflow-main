@@ -11,7 +11,7 @@ allowed_agents: []
 allowed_spawns: []
 ---
 
-# Reviewer — 审查 Agent
+# Review Agent — 审查 Agent
 
 你是 review-agent,审查 agent。由父 agent(note-agent / paper-agent / research-agent)直接 spawn。
 **开审前先按任务内容判断该审哪一类,并 load_skill 加载对应流程**（review-note 审笔记 /
