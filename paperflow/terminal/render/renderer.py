@@ -1,5 +1,5 @@
-# paperflow/terminal/render.py
-"""输出渲染器——rich 渐进式 markdown 流式渲染 REPL 输出（双模式）。
+# paperflow/terminal/render/renderer.py
+"""活动流渲染器——把 Agent 流式事件渲染进终端，并决定最终结果如何打印。
 
 双模式（终端交互界面重构）：
     - activity=False（非 TTY / 测试）：legacy 路径，行为与重构前完全一致——
@@ -8,7 +8,7 @@
     - activity=True（TTY 装配，见 make_renderer）：ZCode 风格活动流——
       首个 tool_start 之前 root content 照旧 live 流式 markdown；此后所有
       content 静默（不进 live、不进 shown 缓冲），工具调用聚合为活动行
-      （RichBlock.show：spinner + 文本一体），动词/agent 键切换或收尾时以
+      （block.show：spinner + 文本一体），动词/agent 键切换或收尾时以
       完成态落屏（✓，慢操作标注耗时）；写类工具的 diffstat 在 finalize 时
       汇成 dim 徽标（`更改 +A -D · K 个文件`）。
 
@@ -17,7 +17,7 @@ should_print 比对「真正渲染过的 root content」（_shown_buffer）与�
 SAFE_PROMPT 替换）。三态逻辑两种模式共用：直答 shown==result → 只补换行；
 有工具轮 shown≠result → 补打最终答案；纯工具轮 shown 空 → 原样打印。
 
-活动行映射（emoji+动词、计数词）与格式化在 paperflow.terminal.activity
+活动行映射（emoji+动词、计数词）与格式化在 paperflow.terminal.render.activity
 （纯函数）；本模块只管 live 区调度、聚合状态机与落屏时机。落屏时机：
 动词/agent 键切换、finalize、interrupt、任何 print* 方法前——活动行一旦
 落屏不再改动（终端滚动区不可擦除）。
@@ -32,126 +32,13 @@ should_print / reset / finalize / interrupt 只在主线程调用；suspend 例�
 import threading
 import time
 
-from rich.console import Console
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.markup import escape
-from rich.spinner import Spinner
 from rich.syntax import Syntax
-from rich.text import Text
 
 from paperflow.core.agent import StreamEvent
+from ..common import truncate_diff
 from .activity import activity_label, format_activity
-from .common import truncate_diff
-
-
-class BlockRenderer:
-    """
-    live 块渲染通道的抽象基类。
-
-    定义了四种操作：
-        - update(text)：实时更新当前块的内容（重绘）。
-        - end(text)：终态渲染并停止块，释放资源。
-        - spinner(label)：显示空闲指示（如“working”动画）。
-        - show(text)：活动行 + spinner 一体显示（活动流模式 live 区承载物）。
-
-    两种实现：
-        - RichBlock：使用 rich.Live 实现 Markdown 富文本重绘（TTY）。
-        - PlainBlock：纯文本增量打印（非 TTY 或测试）。
-    """
-
-    def update(self, text: str) -> None:
-        """实时更新块内容（增量重绘）。
-
-        Args:
-            text: str，块的最新完整文本
-        """
-        raise NotImplementedError
-
-    def end(self, text: str) -> None:
-        """终态渲染并收尾（停止 live 或复位状态）。
-
-        Args:
-            text: str，块的终态文本
-        """
-        raise NotImplementedError
-
-    def spinner(self, label: str) -> None:
-        """显示空闲工作指示（非 TTY 实现为 no-op）。
-
-        Args:
-            label: str，空闲指示的标签文本
-        """
-        pass
-
-    def show(self, text: str) -> None:
-        """活动行 + spinner 一体显示（默认 no-op，与 spinner 同待遇）。
-
-        Args:
-            text: str，活动行文本（与 spinner 一体显示）
-        """
-        pass
-
-
-class PlainBlock(BlockRenderer):
-    """纯文本块（非 TTY / 测试）：逐段打印增量，模拟打字机逐字输出。
-
-    特点：
-        - content 只追加（append-only）时，仅打印新增部分。
-        - 若新文本不是以已显示文本开头（可能被改写），则整段重打（防御性），避免丢字。
-        - end 会补打剩余文本并复位 _shown，使下个块从零开始。
-
-    Attributes:
-        _print: 回调，打印函数（接受 end=/flush= 等 kwargs）
-        _shown: str，已展示的累积文本（增量比对基准）
-    """
-
-    def __init__(self, print_fn):
-        """
-        Args:
-            print_fn: 打印函数，接受 end=/flush= 等 kwargs（如内置 print 或 rich.console.print）。
-        """
-        self._print = print_fn       # 打印函数（接受 end=/flush= kwargs）
-        self._shown = ""             # 已展示的累积文本，用于计算增量
-
-    def update(self, text: str) -> None:
-        """流式到达时，仅打印新增部分（增量）。
-
-        Args:
-            text: str，块的最新完整文本（只打印增量部分）
-        """
-        self._emit_delta(text)
-
-    def end(self, text: str) -> None:
-        """终态渲染：补打剩余文本并复位 _shown，供下个块从零开始。
-
-        Args:
-            text: str，块的终态文本（补打剩余并复位 _shown）
-        """
-        self._emit_delta(text)
-        self._shown = ""
-
-    def _emit_delta(self, text: str) -> None:
-        """计算并输出增量文本。
-
-        若新文本以已显示文本开头（即 append-only 模式），则只打印尾部新增部分；
-        否则（文本被改写或重置）整段重打（防御性，避免丢字）。
-
-        Args:
-            text: str，块的最新完整文本
-
-        Returns:
-            无返回值；append-only 时只打印尾部新增，文本被改写时整段重打（防御性）。
-        """
-        if text.startswith(self._shown):
-            # 增量打印：只打印新增长度
-            self._print(text[len(self._shown):], end="", flush=True)
-        else:
-            # 非追加场景：整段重打（可能发生在重置或内容替换时）
-            self._print(text, end="", flush=True)
-        self._shown = text
-
-
 class StreamRenderer:
     """将 Agent 流式事件渲染为终端输出，并决定最终结果如何打印。
 
@@ -639,103 +526,3 @@ class StreamRenderer:
         if streamed == result:
             return ""                   # 已逐字展示 → print("") 只补换行
         return "\n" + result            # 最终回答被改写 → 补打最终版
-
-
-class RichBlock(BlockRenderer):
-    """rich Live 区域：把 markdown 缓冲重绘为富文本块（渐进式渲染）。
-
-    update(text) 将文本渲染为 Markdown 并更新 live 区域。
-    end(text) 终态渲染并停止 live（若未启动且 text 为空则跳过）。
-    spinner(label) 显示带转动动画的指示器。
-    show(text) 活动行 + spinner 一体显示（活动流模式 live 区承载物）。
-
-    设计要点：
-        - 惰性启动 live（_start()）仅在首次 update/spinner/show 时启动。
-        - end() 即使 text 为空也必须停止 live，避免 spinner 残留。
-        - live 可注入（测试用），生产时使用共享 Console。
-
-    Attributes:
-        _console: rich.Console，控制台实例
-        _live: rich.Live，Live 区域（惰性启动）
-        _started: bool，live 是否已启动
-    """
-
-    def __init__(self, console=None, live=None):
-        """
-        构造 rich Live 块。
-
-        Args:
-            console: rich.Console 实例（可共享，确保工具行 dim 样式与 live 区域不冲突）。
-            live: 可注入的 Live 实例（测试用），默认使用 20fps 刷新率。
-        """
-        self._console = console or Console()
-        self._live = live or Live(console=self._console, refresh_per_second=20)
-        self._started = False
-
-    def update(self, text: str) -> None:
-        """实时重绘：将 markdown 文本渲染进 live 区域（渐进式展示）。
-
-        Args:
-            text: str，块的 Markdown 文本（实时重绘进 live 区域）
-        """
-        self._start()
-        self._live.update(Markdown(text))
-
-    def end(self, text: str) -> None:
-        """终态渲染并停止 live。若未启动且文本为空，则跳过（幂等）。
-
-        Args:
-            text: str，终态文本；未启动且为空则跳过（幂等）
-        """
-        # 如果已经启动或文本非空（需要渲染），则启动并更新
-        if self._started or text:
-            self._start()
-            self._live.update(Markdown(text))
-            self._live.stop()
-            self._started = False
-
-    def show(self, text: str) -> None:
-        """活动行 + spinner 一体显示（活动流模式 live 区承载物）。
-
-        Args:
-            text: str，活动行文本（活动流 live 区的承载物）
-        """
-        self._start()
-        self._live.update(Spinner("dots", text=Text(f" {text}", style="dim"),
-                                  style="dim"))
-
-    def spinner(self, label: str) -> None:
-        """显示带标签的转动指示器（dim 样式），content update 到达时会被替换。
-
-        Args:
-            label: str，指示器标签文本
-        """
-        self.show(f"{label} working")
-
-    def _start(self) -> None:
-        """惰性启动 live（refresh=False 避免启动时强制重绘当前帧）。"""
-        if not self._started:
-            self._live.start(refresh=False)
-            self._started = True
-
-
-def make_renderer(print_fn, root_agent_type: str, *, is_tty: bool, console=None) -> StreamRenderer:
-    """
-    工厂函数：根据终端类型装配合适的渲染器。
-
-    Args:
-        print_fn: 底层打印函数。
-        root_agent_type: 根 agent 类型标识。
-        is_tty: 是否为交互式终端。
-        console: TTY 下的 rich.Console 实例（用于 print_diff 着色）。
-
-    Returns:
-        StreamRenderer: 配置好的渲染器实例。
-            若 is_tty=True，使用 RichBlock（富文本 Markdown）+ 活动流模式。
-            否则使用 PlainBlock（纯文本增量打印）+ legacy 路径。
-    """
-    if is_tty:
-        return StreamRenderer(print_fn, root_agent_type,
-                              block=RichBlock(console=console), console=console,
-                              activity=True)
-    return StreamRenderer(print_fn, root_agent_type, block=PlainBlock(print_fn))

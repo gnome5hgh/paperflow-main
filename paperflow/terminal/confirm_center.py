@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from paperflow.terminal.activity import activity_label
+from paperflow.terminal.render.activity import activity_label
 
 #: 确认看门狗默认时限（秒）：5 分钟无渲染/无输入即判挂死，自动拒绝
 DEFAULT_WATCHDOG_S = 300.0
