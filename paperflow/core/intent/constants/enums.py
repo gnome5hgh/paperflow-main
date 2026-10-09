@@ -21,7 +21,7 @@ class IntentType(StrEnum):
     ASK_QUESTION = "ask_question"              # 具体问答：即问即答的单点问题（业务）
     GENERATE_NOTE = "generate_note"            # 撰写笔记（业务）
     RESEARCH_DISCOVERY = "research_discovery"  # 选题发现：交付方向/课题建议（业务；搜文献只是其手段）
-    ANALYZE_PAPER = "analyze_paper"            # 精读分析：交付分析报告的长任务（业务）
+    ANALYZE_PAPER = "analyze_paper"            # 读指定论文并口头作答（业务；由 paper-agent 承接，不做 Evidence Card 式拆解）
     MANAGE_MEMORY = "manage_memory"            # 记忆查询 + 待读清单操作（业务）
     MANAGE_CITATIONS = "manage_citations"      # 引用库管理：references.bib 的批量同步/单篇添加/删除/查询导出（业务）。
                                                # 边界：管的是 bib 引用库不是待读清单（那归 manage_memory）；

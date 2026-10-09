@@ -37,7 +37,7 @@ INTENT_LABELS_ZH: dict[IntentType, str] = {
     IntentType.ASK_QUESTION:       "论文问答",
     IntentType.GENERATE_NOTE:      "撰写笔记",
     IntentType.RESEARCH_DISCOVERY: "选题发现",
-    IntentType.ANALYZE_PAPER:      "精读分析",
+    IntentType.ANALYZE_PAPER:      "分析指定论文",
     IntentType.MANAGE_MEMORY:      "记忆/清单管理",
     IntentType.MANAGE_CITATIONS:  "引用库管理",
     IntentType.MANAGE_INDEX:       "索引库管理",
