@@ -156,7 +156,7 @@ class RuntimeConfig:
         max_risk: str，会话风险阈值（超过即被 PolicyEngine 拦截）
     """
 
-    #: 运行时数据根目录，存放 milvus、memory、audit、templates 等
+    #: 运行时数据根目录，存放 milvus、memory、audit 等
     workspace: str = "data"
 
     #: Agent 插件扫描目录，默认扫描项目根下的 agents/
@@ -722,7 +722,7 @@ class PaperFlowConfig:
     #: 语料库与产物路径
     corpus: CorpusConfig = field(default_factory=CorpusConfig)
 
-    #: 意图识别子系统（编码器 + 路由器）
+    #: 意图识别子系统（总开关 + 编码器 + 路由器）
     intent: IntentConfig = field(default_factory=IntentConfig)
 
     #: RAG 检索栈（嵌入/检索/改写/切块/索引/存储/解析/工具）

@@ -2,8 +2,7 @@
 
 wire（core/llm.py::Message）→ schemas Message（补 id/created_at）→ messages 表。
 add_message 是全部消息持久化的唯一漏斗：在此清洗 surrogateescape 残留、
-并让 ask_recorder 捕获子 agent 的 Q&A。embedder 可选（复用 RAG 千问嵌入模型做语义
-检索）；None 时仅 SQL 检索。
+并让 ask_recorder 捕获子 agent 的 Q&A。检索为纯 SQL LIKE，不做语义检索。
 """
 from __future__ import annotations
 
