@@ -25,8 +25,9 @@ allowed_spawns: []
 
 ## 铁律
 
-1. **删除前必须确认**:remove_citation 是不可逆操作。多条命中时工具会返回候选——
-   你必须用 ask_user_question 让用户选择,不得替用户猜。
+1. **删除前必须确认**:remove_citation 是不可逆操作(框架会向用户逐次弹确认)。
+   多条命中时工具会返回候选——**必须让用户选,不得替用户猜**;但提问不是工具、本角色
+   不能中途问用户:把候选与缺口写进结果回报上级,由它向用户问清后再派你来删。
 2. **external 条目字段必须经用户确认**:add_citation 传 external=true 时,
    title/authors/year 必须是用户提供或经用户确认的真实信息,不得编造。
 3. **如实报告**:sync_citations 的 rejected 明细要逐条转述——先说明被拒的是哪几篇、

@@ -131,12 +131,12 @@ Every agent lives in `agents/<name>/` with two files:
 
 | agent | 职责 | allowed_spawns | 工具要点 |
 |---|---|---|---|
-| `supervisor` | 调度主管:拆解任务、spawn、汇总;能自答的先自答 | 硬编码放行所有（绕过白名单） | 仅 2 个调度工具（`spawn_sub_agent` / `ask_user_question`），无执行类工具、无记忆工具 |
-| `paper-agent` | 论文域责任人:多源搜索 → review-agent 门禁 → 可选下载;读 PDF 与图表 | `[review-agent, rag-agent, memory-agent]` | MCP 检索（mcp__paper-search__*） + fetch_pdf + read_pdf + analyze_figures + delete_file + ask_user + spawn |
-| `note-agent` | 笔记域责任人:基于指定 PDF 起草结构化笔记,内部 spawn review-agent 审稿 | `[review-agent, rag-agent, memory-agent, citation-agent]` | 原子文件工具（含 delete_file）+ ask_user + spawn + glob/grep + analyze_figures；引用查 key/入库派 **citation-agent** |
+| `supervisor` | 调度主管:拆解任务、spawn、汇总;能自答的先自答 | 硬编码放行所有（绕过白名单） | 仅 1 个调度工具（`spawn_sub_agent`），无执行类工具、无记忆工具；问用户不占工具（把问题写进最终回答） |
+| `paper-agent` | 论文域责任人:多源搜索 → review-agent 门禁 → 可选下载;读 PDF 与图表 | `[review-agent, rag-agent, memory-agent]` | MCP 检索（mcp__paper-search__*） + fetch_pdf + read_pdf + analyze_figures + delete_file + spawn |
+| `note-agent` | 笔记域责任人:基于指定 PDF 起草结构化笔记,内部 spawn review-agent 审稿 | `[review-agent, rag-agent, memory-agent, citation-agent]` | 原子文件工具（含 delete_file）+ spawn + glob/grep + analyze_figures；引用查 key/入库派 **citation-agent** |
 | `research-agent` | 选题域责任人:基于本地语料盘点→survey/gaps→idea 卡→外部新颖性验证(源优先 semantic scholar,失败如实标「未经外部验证」)→研究计划 | `[paper-agent, review-agent, rag-agent, citation-agent]` | read/write/edit（含 delete_file）+ spawn；检索派 rag-agent、溯源 key 与参考文献渲染派 **citation-agent** |
 | `review-agent` | 审查域责任人:笔记审查 / 下载门禁 / 选题产物审查（开审前加载对应审查流程 skill） | `[citation-agent]` | 只读 + submit_review / submit_download_review + `format_check` + lookup_venue_rank + spawn（专为派 citation-agent 做溯源核验） |
-| `citation-agent` | 引用域责任人:references.bib 同步/新增/删除/查询导出 | `[]` | 6 引用工具全装 + read_pdf（元数据缺失时读首页取标题/作者，不属内容分析）+ ask_user |
+| `citation-agent` | 引用域责任人:references.bib 同步/新增/删除/查询导出 | `[]` | 6 引用工具全装 + read_pdf（元数据缺失时读首页取标题/作者，不属内容分析） |
 | `rag-agent` | 语料索引责任人:检索 + 入库 + 删除后全量收敛 + 索引体检 | `[]` | rag_retrieve + index_paths + reindex_all + index_status（RAG 一域读写与诊断同归一处） |
 | `memory-agent` | 记忆域责任人:记忆读写全归它 | `[]` | `get_memory_tools()` 全集 11 件（blocks 6 / recall 1 / paper_lists 4）+ read_file / glob（读块内容——MemFS 把块投影成 markdown，记忆工具本身没有读动作） |
 
@@ -149,7 +149,6 @@ Every agent lives in `agents/<name>/` with two files:
 - `security_middleware` — 安全中间件列表（before/after/on_finish 洋葱模型，见 Security）
 - `confirm_callback` — 确认回调；默认 fail-safe 拒绝（`_default_confirm` → `False`）
 - `intent_service` — 意图识别（可选预处理层；启用时由 CLI 构造 `IntentService` 注入，引用为 `None` 即「关」——所有钩子 no-op；spawn 的子 agent 不做意图识别）
-- `ask_user_callback` — ask_user_question 工具的消费回调（None 时该工具返回 fail-safe 提示）
 - `session_id` — 跨多轮 run 的会话标识；与 CLI 的 AgentManager.create_agent id 必须一致（记忆/Sleeptime 按它键控）
 - 记忆服务句柄：`memory` / `agent_manager` / `block_manager` / `message_manager` / `compaction` / `structured`（None 时相关路径零开销跳过）
 - `stream_callback` — 流式事件回调（CLI 渲染器消费）；None = 非流式路径（`run()` 保持调 `chat()`）
@@ -237,9 +236,9 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 阈值与常量标定（`scripts/intent/` 下，gitignored；每个实验目录自成 `goldens/`（题集）+ `results/`（存档与报告），题集**不放在 `data/intent/`**——那里只留生产知识库 `routes.yaml` 与路由向量缓存）：`scripts/intent/calibration/`（2026-10-05 完成：编码器模型 + BM25 k1/b/idf + top_k + alpha + 12 条路由阈值 + 判据三常量 + 拟合超参 + 结构常量的分层序贯标定，交付值已写回；报告 `results/report.md`）；`scripts/intent/eval/`（计划中：用指标反映模块可用性）。
 
-产出 `IntentOutput`（`intents` 列表 + 轮级 entities/rewritten_query/source，另含 prev_intent/clarification/clarify_candidates）注入 ReAct head 的 `INTENT:` 块——`intents` 每项自带 `intent_type` 与可空 `confidence`（路由面逐项带融合分数；LLM 兜底面整列为空 = 该阶段不产置信度，不是低置信；仲裁轮同为 `source=llm` 但带一个模型自报数）；`confidence`/`source` 是审计/展示字段，无判定消费者——那条「`confidence < 0.5` 或 `source=llm` → 先 ask_user 澄清」的提示词规则已退，消歧只留代码一条路，**主意图是列表首项**（只读派生属性 `intent_type`，不进序列化，单意图即长度 1 的列表）；块内只序列化 intents/entities/rewritten_query/source，prev_intent/clarification/clarify_candidates 被排除。`INTENT_META` 是意图元数据的**单一真相源**：18 个 `IntentType` 值分 3 类（业务 business / 会话状态 dialogue / 直接回答 system）。收敛与新增史：switch_topic 并入用户信息记录（该值现名 `record_user_info`——它记的是画像/偏好，不只是选题方向）、refine_query 并入 search_paper；另有 `manage_index` / `delete_note` / `delete_research` / `delete_pdf` 四条业务路由。`dispatch_allowed` 是管线内部的业务/非业务标记（chitchat/out_of_scope 等非领域意图不进拆分列表，以免误导选型；`feedback` 例外——它是 system 类但按业务处理，反馈要落到记忆块）；**不再作派发门禁**（spawn 已对意图零耦合）。**意图是信号不是选型依据**：supervisor 读 system 里的 `<available_agents>` 清单（各 agent 的 description 即其职责与边界说明），按能力挑角色、自行决定顺序与并行，不按意图名对号入座；`menu_selection`（选项答复，对话管理可派发）由 supervisor 对照上轮菜单转换成对应动作/派发，无法对应先 ask_user 确认。
+产出 `IntentOutput`（`intents` 列表 + 轮级 entities/rewritten_query/source，另含 prev_intent/clarification/clarify_candidates）注入 ReAct head 的 `INTENT:` 块——`intents` 每项自带 `intent_type` 与可空 `confidence`（路由面逐项带融合分数；LLM 兜底面整列为空 = 该阶段不产置信度，不是低置信；仲裁轮同为 `source=llm` 但带一个模型自报数）；`confidence`/`source` 是审计/展示字段，无判定消费者——那条「`confidence < 0.5` 或 `source=llm` → 先向用户澄清」的提示词规则已退，消歧只留代码一条路，**主意图是列表首项**（只读派生属性 `intent_type`，不进序列化，单意图即长度 1 的列表）；块内只序列化 intents/entities/rewritten_query/source，prev_intent/clarification/clarify_candidates 被排除。`INTENT_META` 是意图元数据的**单一真相源**：18 个 `IntentType` 值分 3 类（业务 business / 会话状态 dialogue / 直接回答 system）。收敛与新增史：switch_topic 并入用户信息记录（该值现名 `record_user_info`——它记的是画像/偏好，不只是选题方向）、refine_query 并入 search_paper；另有 `manage_index` / `delete_note` / `delete_research` / `delete_pdf` 四条业务路由。`dispatch_allowed` 是管线内部的业务/非业务标记（chitchat/out_of_scope 等非领域意图不进拆分列表，以免误导选型；`feedback` 例外——它是 system 类但按业务处理，反馈要落到记忆块）；**不再作派发门禁**（spawn 已对意图零耦合）。**意图是信号不是选型依据**：supervisor 读 system 里的 `<available_agents>` 清单（各 agent 的 description 即其职责与边界说明），按能力挑角色、自行决定顺序与并行，不按意图名对号入座；`menu_selection`（选项答复，对话管理可派发）由 supervisor 对照上轮菜单转换成对应动作/派发，无法对应先向用户问清。
 
-澄清（仅在启用意图识别时）：触发权在代码（`_ambiguous` 的 S1 贴线/S2 竞争分数判据）→ `IntentService.begin` 同步调 ask 回调问用户（问题文本由强制澄清 LLM 调用生成、末尾代码追加编号选项行）→ `routing.confirm.match_option_choice` 解析回复，命中候选 → 合成 `source=USER` 的确认意图（跳过路由复判），未命中 → 答案附录进任务按最佳猜测继续（单次问答、无循环）。`prev_intent`/`prev_user_input` 供追问判别——上一轮是单一意图才继承，多意图轮的 `prev_intent` 置 `None`（追问判别随即返回 False）。agent 执行中途问用户走 `ask_user_question(intent_options=...)`——同一 confirm 原语，经 `IntentService.format_options`/`parse_choice`/`record_confirmed` 落地（父 agent 的 last_intent/prev_intent 立即更新）；意图关闭时退化为普通提问。
+澄清（仅在启用意图识别时）：触发权在代码（`_ambiguous` 的 S1 贴线/S2 竞争分数判据）→ `IntentService.begin` 同步调 ask 回调问用户（问题文本由强制澄清 LLM 调用生成、末尾代码追加编号选项行）→ `routing.confirm.match_option_choice` 解析回复，命中候选 → 合成 `source=USER` 的确认意图（跳过路由复判），未命中 → 答案附录进任务按最佳猜测继续（单次问答、无循环）。`prev_intent`/`prev_user_input` 供追问判别——上一轮是单一意图才继承，多意图轮的 `prev_intent` 置 `None`（追问判别随即返回 False）。agent 执行中途不再有提问工具（需要用户给信息就把问题写进最终回答，见 Orchestration）；意图层自身的澄清仍由 `IntentService.begin` 在本轮内调问询回调完成。
 
 ### RAG
 
@@ -260,14 +259,14 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 `paperflow/citations/` — 引用管理（溯源落地）。`references.bib` 是引用库**真相源**：追加 + 按条目原文块删除，两种原语都不重写其余内容（用户手工维护的分节注释与未触碰条目逐字节保留）。`bib.py` 轻量读写条目（查找/去重/追加/按 key 删除）；`corpus.py` 是「语料里有哪些论文」的易变投影（note H1 + PDF 解析标题 → 全标题精确匹配，按 (path, mtime_ns) 增量重建）；`manager.py` 编排：引用解析（干净全标题/路径 → key+status）、入库（语料内 PDF / 库外 EXTERNAL）、去重、渲染（author-year/numbered/bibtex/gbt7714）、调和（渲染视图回填空字段，bib 文件不动）。懒加载单例 `get_citation_manager()`，重组件（corpus 索引、TitleExtractor）首次使用才构造。
 
-6 个引用工具（`tools/citations/`）：**只装配 citation-agent**——全量 6 件 + `read_pdf`（仅读首页补元数据）+ ask_user；`sync_citations`/`remove_citation` 这两个写入口也只有它装。引用库的读写是它的领域：note-agent / research-agent 要查 key、入库、渲染参考文献，review-agent 要核验 `[来源:key§节]` 的 key 是否真实存在（不信任标注本身），都**派发 citation-agent**，自己一件不装——review-agent 为此从叶子变成只派 citation-agent 的派发方。
+6 个引用工具（`tools/citations/`）：**只装配 citation-agent**——全量 6 件 + `read_pdf`（仅读首页补元数据）；`sync_citations`/`remove_citation` 这两个写入口也只有它装。引用库的读写是它的领域：note-agent / research-agent 要查 key、入库、渲染参考文献，review-agent 要核验 `[来源:key§节]` 的 key 是否真实存在（不信任标注本身），都**派发 citation-agent**，自己一件不装——review-agent 为此从叶子变成只派 citation-agent 的派发方。
 
 产物溯源标注：
 - **笔记**头部写 `**论文引用**: [key]`（落盘前**派 citation-agent 确认该 key 真实存在**，未注册则让它按 PDF 路径入库），各节关键论断标节级 `[来源:§X]`，供 review-agent 沿链回溯核对原文
 
 ### Tools
 
-`paperflow/tools/` — 原子工具，一工具一文件，按域分包；`paperflow/tools/__init__.py` 再导出全部 13 个工具供消费方统一导入（导出符号名稳定，内部路径随便拆）：
+`paperflow/tools/` — 原子工具，一工具一文件，按域分包；`paperflow/tools/__init__.py` 再导出全部 12 个工具供消费方统一导入（导出符号名稳定，内部路径随便拆）：
 
 另有**动态 MCP 工具**（不计入 12 的原子工具清单）：config.yaml 顶层 `mcp_servers` 声明的 server，其工具经 `paperflow/core/mcp/` 桥接为原生 Tool 注入 agent（命名 `mcp__<server>__<tool>`，与 skill 工具同一 `merge_tools` 装配缝），**写类工具可见但需逐次用户确认**（按 readOnlyHint 分类，缺注解按「可能写」处理），config 的 `write_tools` 预批准豁免；`readOnlyHint=true` 只读工具自动放行。配置示例见 `docs/learning/11-MCP客户端.md`（docs/ 为本地文档，不入库）。
 
@@ -278,7 +277,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `rag/` — `rag_retrieve`（`RagRetrieveTool`：惰性取 RAGService 单例 + 持锁检索 + 格式化结果）+ `index_paths`（批量入库语料文件，逐条回报 indexed/skipped/empty/failed）+ `reindex_all`（全量收敛：补缺 + 清掉已删文件的索引块）+ `index_status`（只读体检：块数/篇数、幽灵块、未入库、配方是否一致、PDF 解析器分布）；四件只装 `rag-agent`
 - `vision/` — `analyze_figures`（`needs_parent=True`：视觉 LLM 调用归属父 agent 轮次进审计）。图提取走 pdffigures2 管线（proposal 候选 + 打分选优 + no-overlap 互斥），随后视觉模型结构化看图分析 + 嵌入落盘；key 缺失/无图/失败全降级
 - `memory/` — 11 个记忆工具（`get_memory_tools()` 惰性单例 + `set_memory_context`/`get_memory_context` 运行时上下文；blocks/recall/paper_lists 三组；装配 supervisor，子 agent 各装子集）
-- `orchestration/` — `spawn_sub_agent` / `ask_user_question`（见下）
+- `orchestration/` — `spawn_sub_agent`（唯一的调度工具；见下）
 - `common/` — `make_tools(config, tool_items, default_write_root=None)` 装配工厂：按 `root_hints` 生成 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）、`default_write_root` 盖章到 write_file（note-agent→note、research-agent→research）、注入 `_config`；`_http.py` 共享 HTTP 基础设施
 
 根映射（`_root_map`）：note→`note_dir`、pdf→`pdf_dir`、research→`research_dir` 或 `workspace/research`、memory→`workspace/memory`、scratch→`workspace/scratch`。`templates` 条目已随模板入 skill 退役（读模板改走 `load_skill(resource=…)` 或 `SkillRegistry.resource_path`）。
@@ -295,11 +294,11 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 闸门状态（去重注册表、失败计数、审稿与每轮预算计数、在途写占用、产物账本）统一由 `core/agent/state.py` 的 session/run 两个状态容器持有（见 Agent and ReAct loop）。**顺序与并行由 supervisor 自主决定**，框架不做限制（契约里的「一个对象一路」是提示层的编排期望，不是闸门——闸门只兜上限：每轮 8 路，超出靠分轮补齐）。**同路径写互斥不在 spawn 闸里**：写工具按真实写目标在 `RunState.writing_paths` 登记写占用、跨实例当场拒绝（见 Agent and ReAct loop 的运行期状态容器与 ADR 0003）。
 
-**子 agent 构造与执行**：继承父的 security_middleware / session_id / confirm_callback / ask_user_callback / **skill_registry**（子 agent 能中途问用户、也能加载自己的流程 skill）；**不传**意图管线/会话（子任务是结构化任务非用户意图）。**预算执行**：超时 = 基座超时（`config.agents.timeouts`，按审计数据校准:note-agent 900s/paper-agent 420s/review-agent 300s/research-agent 1800s/rag-agent 900s，未命中回退类默认 120s）+ 累计用户等待（`_UserWaitClock` 同时排除 confirm 确认与 ask_user 提问的人工等待）；`asyncio.TimeoutError`→timeout、`PermissionError`→denied、其他异常→failed；同一会话内同 agent_type 连续 2 次非 success → 结果文本追加强指令「勿再派发，改用 ask_user 请示」。**摘要提取**：末尾 2000 字符经 `StructuredOutput` 抽结构化 `digest`（按 agent_type 选 `PaperAgentDigest`/`ReviewAgentDigest`/`NoteAgentDigest`/`ResearchAgentDigest`/`CitationAgentDigest`/`RagAgentDigest`，未注册的类型——含 `memory-agent`——落 `GenericDigest`），失败回退全文摘要。
+**子 agent 构造与执行**：继承父的 security_middleware / session_id / confirm_callback / **skill_registry**（子 agent 能加载自己的流程 skill）；**不传**意图管线/会话（子任务是结构化任务非用户意图），也不传问询回调——提问不是工具，子 agent 需要用户给信息时把问题写进自己的最终回答，由 supervisor 决定是否转达。**预算执行**：超时 = 基座超时（`config.agents.timeouts`，按审计数据校准:note-agent 900s/paper-agent 420s/review-agent 300s/research-agent 1800s/rag-agent 900s，未命中回退类默认 120s）+ 累计用户确认等待（`_UserWaitClock` 排除 confirm 确认的人工等待）；`asyncio.TimeoutError`→timeout、`PermissionError`→denied、其他异常→failed；同一会话内同 agent_type 连续 2 次非 success → 结果文本追加强指令「勿再派发，改用向用户请示」。**摘要提取**：末尾 2000 字符经 `StructuredOutput` 抽结构化 `digest`（按 agent_type 选 `PaperAgentDigest`/`ReviewAgentDigest`/`NoteAgentDigest`/`ResearchAgentDigest`/`CitationAgentDigest`/`RagAgentDigest`，未注册的类型——含 `memory-agent`——落 `GenericDigest`），失败回退全文摘要。
 
-返回 `ToolResult(text=SubAgentResult.model_dump_json(), summary=model_dump())`。`SubAgentResult.status` ∈ {success, failed, timeout, denied}，`needs_attention=True` 表示「被拒且需用户介入」。supervisor 与四个能派发的领域角色（paper-agent/note-agent/research-agent/review-agent）装配此工具——权限最小化：叶子 agent（citation-agent/rag-agent/memory-agent）不递归。
+返回 `ToolResult(text=SubAgentResult.model_dump_json(), summary=model_dump())`。`SubAgentResult.status` ∈ {success, failed, timeout, denied}，`needs_attention=True` 表示「被拒或报缺口且需用户介入」。supervisor 与四个能派发的领域角色（paper-agent/note-agent/research-agent/review-agent）装配此工具——权限最小化：叶子 agent（citation-agent/rag-agent/memory-agent）不递归。
 
-**AskUserQuestionTool**（`ask_user_question`，`needs_parent=True`）：读 `parent.ask_user_callback`（CLI 注入，worker 线程读 stdin）；回调为 None 时 fail-safe 返回「无法交互，请基于已有信息决定」，绝不挂起。可选 `intent_options` 参数（意图确认协议）：展示编号选项、回复经 `IntentService.parse_choice` 解析后代码级更新父 agent 会话意图；意图关闭时该参数退化为普通提问。装配权限在装配层（supervisor/paper-agent/note-agent/research-agent/citation-agent 有，review-agent 无）。
+**「问用户」不是工具**：需要用户给信息时把问题写进**最终回答**、本轮结束；交互场景下 REPL 的读入循环（含管道喂入）把用户下一行输入当作下一轮的输入。**子 agent 不能在子任务中途问用户**（运行中暂停只能靠工具），它把缺口写进结果——`needs_attention` 项 + summary 里的问题——由 supervisor 决定是否转达。**与安全确认无关**：写盘/编辑/删除/MCP 写类工具的逐次确认是策略引擎的 `requires_confirm`（见 Security），不受此影响。
 
 ### Terminal
 
@@ -369,7 +368,7 @@ mcp_servers                     # 保留顶层（本身即映射）
 - **编排归 supervisor，意图只作信号**：意图不决定派发顺序、也不作派发门禁（门禁已退役）——选型按 `<available_agents>` 的能力说明，顺序与并行由 supervisor 自主决定。契约里写明「**一个对象一路**」：批量同类对象（目录 / glob 结果 / 清单 / 「这几篇」）先枚举成逐项子任务，再一头一个 `spawn_sub_agent`，不让一个子 agent 承包整批——单个子 agent 只有一份预算，整批压在它身上时预算先被串行处理耗光，中途超时则整批都拿不到结果
 - **`Agent.run()` 返回 str**；子 agent 结果经 `SubAgentResult`（status/summary/digest/needs_attention）结构化回传 supervisor
 - **流式零开销**：`stream_callback`/`telemetry_callback` 为 None 时全链路保持原非流式行为（mock/无 UI 调用方不受影响）
-- **意图是可选的预处理层、只进根 agent**：`config.intent.enabled` 默认关，开启时由 `IntentService` 注入根 agent 的 head；spawn 的子 agent 不做意图识别。意图只作信号 + 消歧 + 审计，不作派发门禁；澄清由 `IntentService` 在本轮内同步问用户，不暴露给 supervisor（避免 ask_user 双问）
+- **意图是可选的预处理层、只进根 agent**：`config.intent.enabled` 默认关，开启时由 `IntentService` 注入根 agent 的 head；spawn 的子 agent 不做意图识别。意图只作信号 + 消歧 + 审计，不作派发门禁；澄清由 `IntentService` 在本轮内同步问用户，不暴露给 supervisor（避免与 supervisor 的问题双问）
 - **契约式 prompt,两层装配**:编排决策 LLM 运行时自主(AGENT.md 只写契约+启发式);硬不变式下沉代码——诚实性协议在 BASE_PROMPT、审稿轮数预算在 spawn 闸门
 
 ## 调查规则
