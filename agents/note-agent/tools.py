@@ -4,7 +4,7 @@
 paperflow/tools/ 的集中式安全边界与风险语义)、glob/grep 定位工具,以及
 SpawnSubAgentTool——AGENT.md 的审稿循环用它派发 review-agent 子 agent 审阅草稿,
 拿回裁决后经 edit_file 修订。
-delete_file：删除自己的笔记产物——删除成功后派发 rag-agent 全量收敛,清掉它的索引块。
+delete_file：删除自己的笔记产物（笔记不进检索知识库,删除无需任何入库/收敛动作）。
 引用库的读写(查 key、入库、渲染参考文献)归 citation-agent——本角色不装配引用工具,
 需要时派发它。阅读历史与未读清单的写入已收归 memory-agent（本角色只报告事件，不再自己记账）。
 偏好有歧义时把问题写进最终回答（问用户不需要工具），不自行猜。

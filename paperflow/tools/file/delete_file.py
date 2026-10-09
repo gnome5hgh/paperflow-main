@@ -24,7 +24,7 @@ class DeleteFileTool(Tool):
     description = (
         "删除一个文件（不可逆）。path 必须是精确的绝对路径，"
         "不支持通配符、不支持批量、不猜测相近文件名；目录一律拒绝。"
-        "删除语料文件后，索引里残留的条目需要再跑一次索引收敛才会被清掉。")
+        "删掉的是论文 PDF 时，索引里残留的条目需要再跑一次索引收敛才会被清掉。")
     parameters = {
         "type": "object",
         "properties": {
