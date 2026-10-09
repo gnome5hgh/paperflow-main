@@ -8,7 +8,7 @@
 from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.tools.file.pdf_extract import extract_pdf
+from paperflow.rag.parsers.pdf_extract import extract_pdf
 
 
 def _normalize_path(p: str) -> str:
