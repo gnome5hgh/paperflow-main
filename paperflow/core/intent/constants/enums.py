@@ -1,4 +1,4 @@
-"""意图层的词汇：类别、类别分组、判定来源。
+"""意图层的词汇：类别与判定来源。
 
 类别回答的是「用户要哪一类工作」，按**产物主人**划分——一个类别对应一类产物/事务
 的责任人，而不是一个具体动作。枚举值即类别名，与知识库 `data/intent/taxonomy.yaml`
@@ -6,15 +6,16 @@
 """
 from enum import StrEnum
 
-__all__ = ["IntentType", "IntentCategory", "IntentStep"]
+__all__ = ["IntentType", "IntentStep"]
 
 
 class IntentType(StrEnum):
-    """11 个意图类别（业务 7 + 系统 4）。
+    """11 个意图类别。
 
-    值得单列的区别要两条同时成立：**supervisor 的动作确实不同**，且**这个区别从用户
-    原句里读不出来**。凡是能从文本读出的动作（读/写/删/查）与类别正交，单列只会制造
-    误差——三个删除类因此并入了各自的领域类别。
+    **不分组**：每个类别就是「用户要哪一类工作」，值即类别名。值得单列的区别要两条
+    同时成立：**supervisor 的动作确实不同**，且**这个区别从用户原句里读不出来**。
+    凡是能从文本读出的动作（读/写/删/查）与类别正交，单列只会制造误差——三个删除类
+    因此并入了各自的领域类别。
     """
 
     # ── 业务：各自对应一个领域责任人 ──
@@ -31,18 +32,6 @@ class IntentType(StrEnum):
     OUT_OF_SCOPE = "out_of_scope"  # 非本系统任务：明确越界，或看不出要做什么
     HELP = "help"                  # 功能与方法询问
     FEEDBACK = "feedback"          # 对系统表现的评价与纠正
-
-
-class IntentCategory(StrEnum):
-    """类别的消费分组——是分组，不是路由层级。
-
-    Attributes:
-        BUSINESS: 对应领域责任人的业务类别，按需派发。
-        SYSTEM: 不派发领域角色的类别（feedback 只派记忆域）。
-    """
-
-    BUSINESS = "business"
-    SYSTEM = "system"
 
 
 class IntentStep(StrEnum):

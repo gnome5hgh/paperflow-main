@@ -7,9 +7,7 @@
 集成缝是 `IntentService`（Agent 只持一个可选的它，`None` 即「关」）；类别与规则
 来自知识库 `data/intent/`，由 `rules.taxonomy.load_taxonomy` 装载并做 fail-closed 校验。
 """
-from paperflow.core.intent.constants import (
-    INTENT_CLASSES, INTENT_META, IntentCategory, IntentStep, IntentType,
-)
+from paperflow.core.intent.constants import INTENT_CLASSES, IntentStep, IntentType
 from paperflow.core.intent.rules.entities import extract_entities
 from paperflow.core.intent.rules.taxonomy import (
     IntentClass, Rule, Taxonomy, TaxonomyError, load_taxonomy,
@@ -19,7 +17,7 @@ from paperflow.core.intent.services.jev import JevClient, JevDecision, JevUnavai
 from paperflow.core.intent.services.service import IntentService, Turn
 
 __all__ = [
-    "INTENT_CLASSES", "INTENT_META", "IntentCategory", "IntentClass",
+    "INTENT_CLASSES", "IntentClass",
     "IntentOutput", "IntentService", "IntentStep", "IntentType",
     "JevClient", "JevDecision", "JevUnavailable",
     "Rule", "Taxonomy", "TaxonomyError", "Turn", "extract_entities", "load_taxonomy",

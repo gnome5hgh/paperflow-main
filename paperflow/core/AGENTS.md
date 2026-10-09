@@ -13,7 +13,7 @@ core/
 ├─ llm/            # LLMClient(openai SDK 异步封装：chat/chat_stream/参数降级重试) + embedding.py / rerank.py(云端协议与实现同文件)
 ├─ security/       # 安全中间件洋葱：base.py 协议 + middleware/(audit/workspace 策略/输出扫描/策略引擎) + network.py + text.py
 ├─ memory/         # Letta 记忆栈移植：constants/(MessageRole/TitleSource 枚举 + 工具常量) + schemas/ + orm/(SQLite) + services/ + compaction.py + sleeptime.py
-├─ intent/         # 意图识别（可选预处理层），按角色分层：constants/(枚举 + 类别词汇/元数据/KB 路径) +
+├─ intent/         # 意图识别（可选预处理层），按角色分层：constants/(枚举 + 类别词汇/KB 路径) +
 │                  #   schemas/(产出契约) + rules/(实体抽取 + 知识库装载校验) + services/(判定服务客户端 + 集成缝)
 ├─ structured/     # 结构化输出（pydantic schema 契约抽取）
 ├─ mcp/            # MCP 客户端平台：后台事件循环 + 逐工具桥接；constants/ 放连接状态枚举
