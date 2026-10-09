@@ -14,7 +14,7 @@ from paperflow.tools.file.write_file import WriteFileTool
 from paperflow.tools.file.edit_file import EditFileTool
 from paperflow.tools.file.delete_file import DeleteFileTool
 from paperflow.tools.file.read_pdf import ReadPdfTool
-from paperflow.tools.file.format_check import FormatCheckTool
+from paperflow.tools.review.format_check import FormatCheckTool
 from paperflow.tools.review.submit_review import SubmitReviewTool
 from paperflow.tools.search.fetch_pdf import FetchPdfTool
 from paperflow.tools.rank.lookup_venue_rank import LookupVenueRankTool

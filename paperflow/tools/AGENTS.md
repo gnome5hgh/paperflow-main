@@ -8,10 +8,11 @@
 
 ```text
 tools/
-├─ file/           # 读/写/编辑/glob/grep/read_pdf/format_check + atomic.py 原子写盘（文本/bytes 两入口）
+├─ file/           # 读/写/编辑/glob/grep/read_pdf + atomic.py 原子写盘（文本/bytes 两入口）
 │                  #   pdf_extract.py：read_pdf 的本地 PDF 抽取（PyMuPDF 直读，不经 RAG 栈）
 ├─ search/         # fetch_pdf(SSRF 校验+写盘后索引热更新) + _common.py 标题规范化/运行期状态再导出
-├─ review/         # submit_review / submit_download_review（reviewer 裁决工具）
+├─ review/         # submit_review / submit_download_review（审查裁决工具）+ format_check
+│                  #   format_check：笔记标题树对模板；模板是 review-note skill 的资源，经 SkillRegistry 解析（needs_skill_registry）
 ├─ rank/           # lookup_venue_rank（期刊/会议等级）
 ├─ citations/      # 6 引用工具（lookup/add/format/list/sync/remove；sync+remove 仅 librarian 装配）
 ├─ rag/            # rag_retrieve

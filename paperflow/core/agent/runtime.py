@@ -575,9 +575,13 @@ class Agent:
         # 必须放在所有 __init__ 属性赋值之后：attach_agent 可能被工具覆写为
         # 读取父 Agent 属性（如 session_id）的访问器，提前注入则构造期父引用
         # 不完整——被攻陷工具此时读到的 session_id 等仍是缺省值（安全前瞻坑位）。
+        # needs_skill_registry 是同类 opt-in：要读 skill 资源却走不了 load_skill 的
+        # 确定性工具（如 format_check）靠它拿到注册表，把资源解析成绝对路径。
         for t in self.tools.values():
             if getattr(t, "needs_parent", False):
                 t.attach_agent(self)
+            if getattr(t, "needs_skill_registry", False) and self.skill_registry is not None:
+                t.attach_skill_registry(self.skill_registry)
 
     async def _default_confirm(self, cr: ConfirmRequired) -> bool:
         """默认 fail-safe：无人值守时拒绝。
