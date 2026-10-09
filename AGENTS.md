@@ -100,11 +100,11 @@ paperflow/
                  + security(安全中间件) + memory(记忆系统) + intent(意图识别)
                  + structured(结构化输出) + mcp(MCP 客户端平台:后台循环 + 工具桥接)
   rag/           RAG 检索栈(解析/分块/向量/混合检索),懒加载单例
-  citations/     引用管理(溯源落地):bib.py 读写 + corpus.py 语料标题索引
-                 + manager.py 编排
+  citations/     引用管理(溯源落地):storage/bib 读写 + services(编排/语料索引/key 生成)
+                 + schemas 数据模型
   vision/        视觉分析(pdffigures2 提取管线: parsers/ 解析 + detectors/ 图检测 + 编排 + 视觉模型看图)
   tools/         原子工具:file/ search/ review/ orchestration/ citations/ rag/ vision/ memory/ common
-  terminal/      终端交互:InputIO(输入) + StreamRenderer(渲染) + diff
+  terminal/      终端交互:repl(主循环) / io(输入) / render(渲染) / confirm(确认中心) / commands(斜杠命令)
 agents/<name>/   Agent 插件:AGENT.md(frontmatter+system_prompt) + tools.py(TOOLS 列表)
 .paperflow/skills/<name>/  Skill 插件:SKILL.md(agentskills.io 格式) + 可选 tools.py/references/
 ```
@@ -262,7 +262,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 ### Citations
 
-`paperflow/citations/` — 引用管理（溯源落地）。`references.bib` 是引用库**真相源**：追加 + 按条目原文块删除，两种原语都不重写其余内容（用户手工维护的分节注释与未触碰条目逐字节保留）。`bib.py` 轻量读写条目（查找/去重/追加/按 key 删除）；`corpus.py` 是「语料里有哪些论文」的易变投影（note H1 + PDF 解析标题 → 全标题精确匹配，按 (path, mtime_ns) 增量重建）；`manager.py` 编排：引用解析（干净全标题/路径 → key+status）、入库（语料内 PDF / 库外 EXTERNAL）、去重、渲染（author-year/numbered/bibtex/gbt7714）、调和（渲染视图回填空字段，bib 文件不动）。懒加载单例 `get_citation_manager()`，重组件（corpus 索引、TitleExtractor）首次使用才构造。
+`paperflow/citations/` — 引用管理（溯源落地）。`references.bib` 是引用库**真相源**：追加 + 按条目原文块删除，两种原语都不重写其余内容（用户手工维护的分节注释与未触碰条目逐字节保留）。按角色分四层：`storage/bib.py` 是文件读写原语（原文解析 `parse_entries` 与条目文本生成 `entry_text` 一对，查找/去重/追加/按 key 删除）；`services/corpus.py` 是「语料里有哪些论文」的易变投影（note H1 + PDF 解析标题 → 全标题精确匹配，按 (path, mtime_ns) 增量重建）；`services/keys.py` 是引用键生成规则；`services/manager.py` 编排：引用解析（干净全标题/路径 → key+status）、入库（语料内 PDF / 库外 EXTERNAL）、去重、渲染（author-year/numbered/bibtex/gbt7714）、调和（渲染视图回填空字段，bib 文件不动）；`schemas/` 是跨层数据模型（BibEntry / ResolvedCitation）。懒加载单例 `get_citation_manager()` 在包 `__init__`，重组件（corpus 索引、TitleExtractor）首次使用才构造。
 
 6 个引用工具（`tools/citations/`）：**只装配 citation-agent**——全量 6 件 + `read_pdf`（仅读首页补元数据）；`sync_citations`/`remove_citation` 这两个写入口也只有它装。引用库的读写是它的领域：note-agent / research-agent 要查 key、入库、渲染参考文献，review-agent 要核验 `[来源:key§节]` 的 key 是否真实存在（不信任标注本身），都**派发 citation-agent**，自己一件不装——review-agent 为此从叶子变成只派 citation-agent 的派发方。
 
@@ -309,9 +309,13 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 `paperflow/terminal/` — 终端交互隔离层，测试可注入。
 
-- `io.py`：`InputIO` 契约（`read`/`confirm`/`ask`）。`PromptToolkitIO`（TTY，multiline + 历史；confirm 仅 y/n 键入，Enter 默认 No）vs `FallbackIO`（非 TTY，内置 `input()`）。`make_input_io(config)` 按 `stdin.isatty()` 二选一。`_confirm_lock` 串行化并行子 agent 的并发 confirm/ask（prompt_toolkit 会话非线程安全）
-- `render.py`：`StreamRenderer`（线程安全）经 `on_event` 消费 `StreamEvent`（content/tool）。TTY = `RichBlock`（rich Live + spinner，0.08s 节流重绘）；非 TTY = `PlainBlock`（增量追加）。工具行 `[{agent_type}] Calling ...`，写/编辑工具完成后发 File written/edited 完成行；`should_print` 去重已流式展示的 root 内容；`suspend()` 在确认框/输入框前停 live（rich Live 与 prompt_toolkit 并发互相干扰——实测坑）
-- `diff.py`：`compute_diff`（unified diff ±3）+ `truncate_diff`（≤200 行）——写/编辑确认前渲染 diff 预览
+- `io/`：`InputIO` 契约（`read`/`confirm`/`confirm_choice` 三态）在 `base.py`，两种实现分文件——`interactive.py` 的 `PromptToolkitIO`（TTY，multiline + 历史；确认框仅 y/a/n 键入，Enter 默认拒绝）vs `fallback.py` 的 `FallbackIO`（非 TTY，内置 `input()`）。`make_input_io(config)` 按 `stdin.isatty()` 二选一。`_confirm_lock` 在契约层串行化并行子 agent 的并发确认（prompt_toolkit 会话非线程安全）
+- `render/`：`renderer.py` 的 `StreamRenderer`（线程安全）经 `on_event` 消费 `StreamEvent`（content/tool）；块渲染契约在 `base.py`，两种实现 `RichBlock`（rich Live + spinner，0.08s 节流重绘）/ `PlainBlock`（增量追加）在 `blocks.py`；活动行映射表在 `activity.py`。工具行 `[{agent_type}] Calling ...`，写/编辑工具完成后发 File written/edited 完成行；`should_print` 去重已流式展示的 root 内容；`suspend()` 在确认框/输入框前停 live（rich Live 与 prompt_toolkit 并发互相干扰——实测坑）
+- `confirm/`：`center.py` 的 `ConfirmCenter` 是全进程确认的唯一消费者（并行子 agent 的确认跨线程汇入主循环排队，弹框期间抑制渲染；看门狗超时自动拒绝），同文件带 Agent 侧确认回调；`presentation.py` 产出确认框提示行与写/编辑的 diff 预览
+- `commands/`：`registry.py` 是命令表与首 token 等价匹配分发，`builtin.py` 是内置命令（`/exit` `/mcp` `/version` `/skill` `/help`）
+- `repl/`：`loop.py` 是每轮主循环，`console.py` 是开场横幅与打印函数工厂，`resume.py` 是 `--resume` 的屏上历史回放
+- `common/diff.py`：`compute_diff`（unified diff ±3）+ `truncate_diff`（≤200 行）——写/编辑确认前渲染 diff 预览；`common/errors.py` 把 API 异常翻译成用户语言
+- **包根只留 `__init__.py`**：每个关注点都落在子包里，子包 `__init__` 只做再导出与装配
 - 启动横幅：Codex 风格方框（`>_ paperFlow Academic Assistant` + model/workspace + Tip），无 emoji/版本/标语
 
 ### Config

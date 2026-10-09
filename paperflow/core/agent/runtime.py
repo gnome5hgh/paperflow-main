@@ -263,10 +263,10 @@ def _format_tool_call(name: str, raw_args: str) -> str:
     """把工具调用格式化为终端一行(如 Calling Read(path))。
 
     尽力解析参数;LLM 产出非法 JSON 或参数缺失时只显示工具名——错误路径保持可读,
-    且缓冲清理不依赖参数解析成功(见 terminal.render.StreamRenderer)。每个值经
+    且缓冲清理不依赖参数解析成功(见 terminal/render 的 StreamRenderer)。每个值经
     _compact 头尾截断,超长自动标注字符数。含路径参数(值以 / 开头)的行豁免行宽
     预算:超长路径已头尾截断,再被 80 列切一刀会把文件名尾部切没——宽度交给渲染层
-    overflow="fold" 兜底(见 _compact 与 terminal.render 的溢出说明)。
+    overflow="fold" 兜底(见 _compact 与 terminal/render 的溢出说明)。
 
     Args:
         name: str，工具名

@@ -18,10 +18,10 @@ paperflow/
 ├─ config.py       # 全部可调参数的唯一声明点（dataclass 树 + 递归合并 + env 派生）
 ├─ core/           # 核心运行层（有 AGENTS.md）
 ├─ rag/            # RAG 检索栈（有 AGENTS.md）
-├─ citations/      # 引用管理（有 AGENTS.md）：bib.py / corpus.py / manager.py，懒加载单例
+├─ citations/      # 引用管理（有 AGENTS.md）：constants/ schemas/ storage/ services/，懒加载单例
 ├─ vision/         # 视觉分析（有 AGENTS.md）：pdffigures2 提取管线 + 视觉模型看图
 ├─ tools/          # 原子工具（有 AGENTS.md）
-└─ terminal/       # 终端交互隔离层（有 AGENTS.md）：repl/ io/ render/ 确认中心/ 斜杠命令
+└─ terminal/       # 终端交互隔离层（有 AGENTS.md）：repl/ io/ render/ confirm/ commands/ common/
 ```
 
 ## Core Rules
