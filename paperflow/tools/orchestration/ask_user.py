@@ -1,7 +1,7 @@
 # paperflow/tools/orchestration/ask_user.py
 """共享 ask_user_question 工具——向用户提问并等待回答。
 
-原属 supervisor 私有,子 agent(note-agent/qa-agent/paper-agent)接入中途问用户后上移共享层:
+原属 supervisor 私有,子 agent(note-agent/paper-agent/rag-agent)接入中途问用户后上移共享层:
 一处定义、多处装配。权限卡在装配面——review-agent 不装配即无权问。
 
 意图确认通道（澄清统一）：可选 intent_options 参数把「向用户确认意图」

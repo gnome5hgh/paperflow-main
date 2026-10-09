@@ -2,7 +2,7 @@
 
 子 agent 派发与结构化结果摘要的实现。装配给 supervisor（硬编码放行所有子 agent）
 与需要内部审稿/补料的 paper-agent/note-agent/research-agent（按各自 allowed_spawns 白名单）；
-叶子 agent（review-agent/qa-agent/citation-agent）不装配、不递归调度。需父 agent 注入
+叶子 agent（review-agent/citation-agent/memory-agent）不装配、不递归调度。需父 agent 注入
 (needs_parent),见 Tool 约定。
 
 派发前 _admit 的七道闸（未知类型 / mode 校验 / 意图派发门禁 / spawn 白名单 /
@@ -81,12 +81,18 @@ class PaperAgentDigest(BaseModel):
         downloaded: list[str]，已下载的论文
         pending_confirm: list[str]，待用户确认的下载项
         needs_attention: bool，是否存在需用户介入的项（如下载门禁待确认）
+        points: list[str]，读类任务的材料要点（检索路留空）
+        provenance: list[str]，读类任务的片段出处（原文路径 + 章节/页码；检索路留空）
     """
-    count: int
-    papers: list[str]
+    count: int = 0
+    papers: list[str] = []
     downloaded: list[str] = []
     pending_confirm: list[str] = []
     needs_attention: bool = False
+    #: 读类任务（读整篇 / 图表问题）的材料要点；检索路留空
+    points: list[str] = []
+    #: 读类任务的片段出处（原文路径 + 章节/页码）；检索路留空
+    provenance: list[str] = []
 
 
 class ReviewAgentDigest(BaseModel):
@@ -160,30 +166,6 @@ class CitationAgentDigest(BaseModel):
     blocked_reason: str = ""
 
 
-class QaAgentDigest(BaseModel):
-    """qa-agent 的结果摘要:回答类型 + 简短结论 + 触及的文件。
-
-    source_kind 由摘要提取从最终回答文本推断(取值沿用 qa-agent 自己的职责词表
-    answer/read/notes/figure/memory/analyze)——qa-agent 没有 mode 入参、按请求自选,
-    所以这是推断值而非入参回显。
-
-    Attributes:
-        status: str，回答处理状态
-        source_kind: str，回答类型（回答/精读/笔记/图表/记忆/检索；由最终回答文本推断）
-        answer_summary: str，结论性简短摘要
-        files_touched: list[str]，本次读过的文件
-        needs_attention: bool，是否需用户介入
-    """
-    status: str
-    #: 回答类型(回答/精读/笔记/图表/记忆/检索),由最终回答文本推断
-    source_kind: str = ""
-    #: 结论性简短摘要,supervisor 据此汇报与衔接后续派发
-    answer_summary: str = ""
-    #: 本次回答读过的文件(论文/笔记绝对路径),便于上级判断还缺哪些材料
-    files_touched: list[str] = []
-    needs_attention: bool = False
-
-
 class RagAgentDigest(BaseModel):
     """rag-agent 的结果摘要：入库/跳过/清理篇数与失败清单。
 
@@ -232,7 +214,6 @@ def digest_schema_for(agent_type: str) -> type[BaseModel]:
         "note-agent": NoteAgentDigest,
         "research-agent": ResearchAgentDigest,
         "citation-agent": CitationAgentDigest,
-        "qa-agent": QaAgentDigest,
         "rag-agent": RagAgentDigest,
     }.get(agent_type, GenericDigest)
 
@@ -803,7 +784,7 @@ class SpawnSubAgentTool(Tool):
             # 构造子 agent(非闸):继承父的安全中间件、会话 ID(同一审计链)、确认回调与
             #    问用户回调——确认回调是关键:note-agent 的写盘工具要求用户确认,不传则
             #    默认回调始终拒绝,spawn 出的 note-agent 永远写不出笔记;问用户回调同理,
-            #    note-agent/qa-agent 靠它中途向用户提问。不传意图管线/会话 → 子 agent 不做
+            #    note-agent 与 paper-agent 靠它中途向用户提问。不传意图管线/会话 → 子 agent 不做
             #    意图识别(子任务是结构化任务,非用户意图)。
             # 流式统一：子 agent 只透传工具行（前缀由渲染器统一加）、不流 content——
             # 与并行场景同一代码路径（多路并发不串字）。

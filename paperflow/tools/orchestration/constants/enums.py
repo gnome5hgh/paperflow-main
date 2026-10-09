@@ -14,7 +14,7 @@ __all__ = ["SubAgentMode", "SubAgentStatus"]
 class SubAgentMode(StrEnum):
     """子 agent 运行模式。值 = AGENT.md 判别用的字符串，str 枚举与字面量等价。
 
-    只覆盖有确定性 ground truth 的父子对——qa-agent 自选不传（枚举不含其值，
+    只覆盖有确定性 ground truth 的父子对（自选模式的角色不传，
     不传 mode 的 spawn 行为不受影响）。note-agent: 笔记生成；
     review-agent: 笔记审稿 / 下载门禁 / 研究选题产物审稿。
     """

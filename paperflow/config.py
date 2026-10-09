@@ -515,7 +515,7 @@ class AgentsConfig:
     timeouts 是自由 dict（agent 类型 → 秒数），仅 YAML 可配（dict 无自然 env 形态）。
     各值按该 agent 完整任务的典型时长留余量设定：note-agent 覆盖含内审重试的纯笔记
     端到端，paper-agent 覆盖大批量新颖性检索，review-agent 覆盖全文审阅，research-agent
-    覆盖完整研究链路，qa-agent 覆盖精读问答。某 agent 反复撞帽说明任务时长
+    覆盖完整研究链路；paper-agent 还要覆盖读整篇与图表问题。某 agent 反复撞帽说明任务时长
     需要重新评估，而不是继续调大。
 
     Attributes:
@@ -525,7 +525,7 @@ class AgentsConfig:
     timeouts: dict[str, int] = field(
         default_factory=lambda: {
             "note-agent": 900, "paper-agent": 420, "review-agent": 300,
-            "research-agent": 1800, "qa-agent": 180, "rag-agent": 900,
+            "research-agent": 1800, "rag-agent": 900,
         })
 
 

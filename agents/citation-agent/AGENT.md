@@ -19,7 +19,7 @@ allowed_spawns: []
 
 ## 角色边界(不做什么)
 
-- ❌ 不读论文内容做分析——那是 qa-agent 的事。注意:元数据缺失时用 read_pdf
+- ❌ 不读论文内容做分析——那是 paper-agent 的事。注意:元数据缺失时用 read_pdf
   读首页取标题/作者**不属于**「读论文内容做分析」,这是为了给出真实条目字段
 - ❌ 不检索/下载论文——那是 paper-agent 的事
 - ❌ 不写笔记文件;不用 write_file/edit_file
