@@ -84,8 +84,8 @@ def render_resume_replay(renderer, replay: ResumeReplay) -> None:
     """把回放载荷逐条渲染进滚动区（同步纯打印，不调模型、不落盘）。
 
     渲染映射刻意与 live 路径对齐：用户消息用 ``❯ `` 前缀（prompt 回显的观感），
-    assistant 消息走 Markdown（与流式回答落屏后的观感一致），ask_user 问答还原成
-    「问题 + [回答模式] > 答案」（与 InputIO.ask 真实出现过的形态一致）。
+    assistant 消息走 Markdown（与流式回答落屏后的观感一致）。参与回放的只有这两个
+    角色，判据见 _REPLAYABLE_ROLES。
 
     首尾各一条 dim 分隔行：头行说明恢复了哪个会话、多少条，尾行标出 live 的起点。
     逐条不加任何「历史」标记——用户要的是「像刚交互产生的一样」。
