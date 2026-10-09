@@ -68,8 +68,9 @@ class RunState:
         #: 搜索成功短路：URL 或规范化标题 -> 落盘路径
         self.downloaded: dict[str, str] = {}
         #: supervisor 自身派发账本：(agent_type, status)。
-        #: 按 trace 共享（子 agent 继承父 trace_id）；安全前提是只有 supervisor 会读写它——
-        #: 子 agent 不装配意图服务，不写派发账本。将来若子 agent 也读写它，须改按实例分桶。
+        #: 按 trace 共享（子 agent 继承父 trace_id）；只有 supervisor 会读它，且只由
+        #: supervisor 的 run 在开头复位——子 agent 的 run 不复位，否则子 agent 一跑就
+        #: 抹掉 supervisor 已记的派发。将来若子 agent 也读写它，须改按实例分桶。
         self.spawn_dispatches: list[tuple[str, str]] = []
         #: 每轮派发计数：turn -> 次数（仅统计 supervisor 自身的派发）
         self.turn_spawn_counts: dict[int, int] = {}

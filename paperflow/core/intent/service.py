@@ -29,7 +29,7 @@ class Turn:
     """
     head_block: str | None
     task: str
-    intents: list = field(default_factory=list)
+    intents: list[IntentType] = field(default_factory=list)
 
 
 class IntentService:

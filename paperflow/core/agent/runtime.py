@@ -904,9 +904,11 @@ class Agent:
         # conversation.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 
-        # 每轮 run 独立：清空上一轮的派发账本（收尾核对读它）。账本是 runtime 状态，
-        # 与意图是否装配无关。
-        self._run_dispatches = []
+        # 每轮 run 独立：清空上一轮的派发账本（收尾核对读它）。只在 supervisor 上清——
+        # 账本存在按 trace 键控的 run 状态容器里，而子 agent 继承父 trace_id，若无条件
+        # 清会让每个子 agent 跑一次就抹掉 supervisor 已记的派发（账本是 supervisor 的）。
+        if self.agent_type == "supervisor":
+            self._run_dispatches = []
         # head:① AGENT ② SKILLS ③ 可派发子 agent 清单 ④ Memory ⑤ 意图规则块+INTENT 块,每轮重建
         # 不进累积;末尾 user task。意图层澄清在 _build_head 内(经 begin)同步问用户并落地。
         head = await self._build_head(task)
