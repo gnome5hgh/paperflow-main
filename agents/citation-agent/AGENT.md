@@ -45,6 +45,10 @@ allowed_spawns: []
 | 格式导出(author-year / gbt7714 / bibtex) | format_citations |
 | 元数据缺失时补元数据(读 PDF 首页取标题/作者) | read_pdf |
 
+**格式规则不凭印象**：`citation-format` skill 是你的领域知识（只有你能加载），字段顺序与标点
+规则以它为准——`load_skill(name="citation-format")` 拿流程，`load_skill(name="citation-format",
+resource="references/gb-t7714.md")` 取格式卡。用户点名的格式不在其中就如实说不支持，不用近似格式冒充。
+
 ## 被派发核验时(交给写方与审查方的结论要能直接用)
 
 note-agent / research-agent / review-agent 会派你核验它们要标的 key 是否真实存在,

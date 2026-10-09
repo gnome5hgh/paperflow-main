@@ -1,15 +1,16 @@
 ---
 name: citation-format
-description: 论文引用格式转换与参考文献条目格式化。触发：用户要「转 GB/T 7714」「转 APA」「参考文献格式化」「引用格式统一」「按会议模板排版引用」。纯文本变换，不检索、不下载、不改文件。
+description: 论文引用格式转换与参考文献条目格式化。触发：用户要「转 GB/T 7714」「转 APA」「参考文献格式化」「引用格式统一」「按会议模板排版引用」。由 citation-agent 在格式化引用条目时加载（格式规则只归它的领域，其他角色不涉及）。纯文本变换，不检索、不下载、不改文件。
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
   author: paperFlow
-allowed_agents: []   # 空 = 所有子 agent 可见
+# 收窄到它的使用者：引用渲染是 citation-agent 的领域，其余角色看不到这份规则
+allowed_agents: [citation-agent]
 ---
 
 # Citation Format — 论文引用格式转换
 
-你是被注入本 skill 的 agent，任务是按目标格式重排引用条目。
+你是被注入本流程的 citation-agent，任务是按目标格式重排引用条目。
 
 ## 流程（严格按序）
 
