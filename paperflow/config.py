@@ -151,7 +151,7 @@ class RuntimeConfig:
     """运行时基础设施：工作区、agent 插件目录、会话风险阈值。
 
     Attributes:
-        workspace: str，运行时数据根目录（milvus/memory/audit/templates 等）
+        workspace: str，运行时数据根目录（milvus/memory/audit 等）
         agents_dir: str，Agent 插件扫描目录
         max_risk: str，会话风险阈值（超过即被 PolicyEngine 拦截）
     """

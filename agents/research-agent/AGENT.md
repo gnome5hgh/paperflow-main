@@ -38,9 +38,8 @@ Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent�
 
 - **盘点**:派 rag-agent 检索课题相关语料(可一次带多个检索式),拿回相关笔记/PDF 段落(`[source:note/path]`);
   `read_file` 读笔记全文、`read_pdf` 读相关 PDF 段落。
-- **成稿**:读模板(`[目录] templates=` 下 research_survey.md / research_gaps.md /
-  research_idea.md / research_plan.md)后 `write_file`/`edit_file` 落盘到
-  `<research_root>/<slug>/` 目录。
+- **成稿**:按流程取模板(`load_skill(name="write-research-plan", resource="references/research_survey.md")`
+  等,四份同目录)后 `write_file`/`edit_file` 落盘到 `<research_root>/<slug>/` 目录。
 - **引用**:`lookup_citation(标题)` 确认;未注册 `add_citation(pdf_path=论文路径)`
   入库;`format_citations` 渲染参考文献。
 - **协作**:`spawn_sub_agent(agent_type=paper-agent, ...)` 补料下载与新颖性检索;

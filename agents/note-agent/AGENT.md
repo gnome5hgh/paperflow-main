@@ -41,8 +41,8 @@ supervisor 据此重派即可,比在这里原地超时快得多。
 ## 可用能力与工具用法
 
 - **读**:`read_pdf` 读主论文全文(返回文本的 markdown 章节标题即溯源锚点);`read_file`
-  读笔记模板(工具描述 [目录] templates= 下的 `paper_note.md`);`glob`/`grep` 定位与
-  核对文件。
+  读笔记与既有草稿;`glob`/`grep` 定位与核对文件。模板是写作流程的资源——
+  `load_skill(name="write-note", resource="references/paper_note.md")` 读它。
 - **写**:`write_file` 落盘、`edit_file` 修订(小范围改前先 `grep` 确认锚点,整篇重写
   用 `write_file` 覆盖);笔记路径 = 工具描述 [目录] note= 下的 `<论文slug>.md`。
 - **引用**:`lookup_citation(标题)` 确认论文 key 是否已注册;未注册用

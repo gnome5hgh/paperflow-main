@@ -22,7 +22,8 @@ allowed_agents: [research-agent]
    同意 → 派 `paper-agent`（搜索并下载相关论文，原样带年份约束与下载动词）后重新盘点
    （补料 ≤2 轮）；拒绝或补后仍不足 → 返回「当前笔记积累不足以支撑选题，建议先积累
    以下方向：<缺口>」，不进入成稿。
-4. **成稿 survey / gaps**：按模板成稿——survey 是语料主题地图，gaps 是缺口清单。
+4. **成稿 survey / gaps**：按模板成稿（模板是本 skill 的资源：`load_skill(resource="references/research_survey.md")`
+   与 `references/research_gaps.md`）——survey 是语料主题地图，gaps 是缺口清单。
 5. **生成 idea 卡**：基于 gaps 出 3–5 张卡（名称与一句话主张 / 动机（Gap 来源，需溯源）/
    核心假设 / 验证思路 / interestingness 与 feasibility 打分）；对每张卡派 `paper-agent`
    检索最相似的已存在工作（源优先 semantic scholar，不下载），回填 similar_works 与判定
