@@ -45,7 +45,7 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
   `year_to` 参数,绝不拼进 query 文本——会被 arXiv 当关键词模糊匹配,年份过滤失效。
 - **下载**:`fetch_pdf`(url 取搜索结果行 `pdf=` 字段,`download_to` 填绝对路径
   `<语料库 pdf 根>/<研究方向子目录>/<论文slug>.pdf`),下载后 `glob` 校验存在。
-- **门禁**:`spawn_sub_agent(agent_type=review-agent, mode="download_review", task=...)`,
+- **门禁**:`spawn_sub_agent(agent_type=review-agent, task=...)`,
   任务含候选论文紧凑清单 JSON(标题/年份/venue/issn/pdf_url/来源)与用户约束。
 - **阅读**:`read_pdf(path)` 读整篇(标题与分节按版面还原)→ 以**材料 + 溯源**交付:
   给出原文片段与所在章节/页码,结论必须能指回原文;不替用户写成分析报告。

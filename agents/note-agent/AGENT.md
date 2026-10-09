@@ -50,7 +50,7 @@ supervisor 据此重派即可,比在这里原地超时快得多。
 - **图表**:`analyze_figures(pdf_path, embed_dir=<笔记所在目录>/figures/)` 视觉分析
   (图统一存笔记目录下 figures/ 子目录——Obsidian 按文件名全局解析 `![[图]]`,
   子目录不影响嵌入)。
-- **协作**:`spawn_sub_agent(agent_type=review-agent, mode="note_review", task=...)` 交审,
+- **协作**:`spawn_sub_agent(agent_type=review-agent, task=...)` 交审,
   任务文本带上草稿路径、论文路径与用户对笔记的约束;`ask_user_question` 问用户
   偏好(无法交互时按最合理默认继续,不挂起)。
 

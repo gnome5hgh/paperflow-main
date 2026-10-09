@@ -1,6 +1,6 @@
 """review-agent 的工具装配：笔记审查、下载审查与研究选题产物审查三种模式的工具并集。
 
-三种模式由父 agent spawn 时注入的「当前模式」判别(AGENT.md 说明)：
+三种审查各是一份 skill(review-note / review-plan / review-download),开审前按任务加载：
 - note_review → 笔记审查(5 维度审查 + 溯源核验 + submit_review 交裁决)
 - download_review → 下载审查(lookup_venue_rank 查等级 + submit_download_review)
 - plan_review → 研究选题产物审查(四产物交叉核验 + 溯源标注 + 素材熔断诚实性,

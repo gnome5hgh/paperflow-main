@@ -43,7 +43,7 @@ Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent�
 - **引用**:`lookup_citation(标题)` 确认;未注册 `add_citation(pdf_path=论文路径)`
   入库;`format_citations` 渲染参考文献。
 - **协作**:`spawn_sub_agent(agent_type=paper-agent, ...)` 补料下载与新颖性检索;
-  `spawn_sub_agent(agent_type=review-agent, mode="plan_review", task=...)` 选题产物审查
+  `spawn_sub_agent(agent_type=review-agent, task=...)` 选题产物审查
   (任务带四产物绝对路径、课题与相关笔记路径);`ask_user_question` 问方向/请确认。
 
 ## 交付契约(定稿必须满足,未满足项如实声明、不伪装达标)
@@ -51,7 +51,7 @@ Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent�
 1. 四份产物已落盘:`<research_root>/<slug>/` 下 survey.md / gaps.md / ideas.md /
    plan.md;最终回复给出全部**绝对路径**。
 2. 四产物落盘后交 review-agent 交叉核验（plan.md 为裁决对象）：`spawn_sub_agent(agent_type=review-agent,
-   mode="plan_review", task=...)` 任务文本带**四产物绝对路径**（survey/gaps/ideas/plan）
+   task=...)` 任务文本带**四产物绝对路径**（survey/gaps/ideas/plan）
    + 课题 + 相关笔记路径清单；fail → 修所有 `[BLOCKING]`（edit_file 定向替换 /
    write_file 整篇重写）后重新提审，直至 pass 或预算耗尽。预算由 spawn 工具强制，
    超限派发会被拒绝——届时基于已有裁决定稿，并在最终回复中明示「仍有 blocking

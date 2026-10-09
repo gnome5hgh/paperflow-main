@@ -1,32 +1,12 @@
-"""spawn 派发的枚举——运行模式与派发结局。
+"""spawn 派发的枚举——派发结局。
 
-值即 AGENT.md 里的字符串字面量：父 agent spawn 时经 mode 参数传入，spawn 注入
-`当前模式：{mode}` 到子 agent 的 system prompt，子 agent 据此判别走哪个流程。
 结果状态是 SubAgentResult 与派发账本共用的词汇，会进 LLM 可见的结果 JSON 与
 收尾核对账本，改值等于改提示词契约。
 """
 
 from enum import StrEnum
 
-__all__ = ["SubAgentMode", "SubAgentStatus"]
-
-
-class SubAgentMode(StrEnum):
-    """子 agent 运行模式。值 = AGENT.md 判别用的字符串，str 枚举与字面量等价。
-
-    只覆盖有确定性 ground truth 的父子对（自选模式的角色不传，
-    不传 mode 的 spawn 行为不受影响）。note-agent: 笔记生成；
-    review-agent: 笔记审稿 / 下载门禁 / 研究选题产物审稿。
-    """
-
-    #: note-agent：笔记流程（generate_note 派发）
-    NOTE = "note"
-    #: review-agent：笔记审稿（note-agent 笔记流程 spawn）
-    NOTE_REVIEW = "note_review"
-    #: review-agent：下载门禁（paper-agent spawn）
-    DOWNLOAD_REVIEW = "download_review"
-    #: review-agent：研究选题产物审稿（research-agent 选题发现流程 spawn）
-    PLAN_REVIEW = "plan_review"
+__all__ = ["SubAgentStatus"]
 
 
 class SubAgentStatus(StrEnum):

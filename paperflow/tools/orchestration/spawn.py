@@ -5,7 +5,7 @@
 叶子 agent（review-agent/citation-agent/memory-agent）不装配、不递归调度。需父 agent 注入
 (needs_parent),见 Tool 约定。
 
-派发前 _admit 的七道闸（未知类型 / mode 校验 / 意图派发门禁 / spawn 白名单 /
+派发前 _admit 的六道闸（未知类型 / 意图派发门禁 / spawn 白名单 /
 同指纹去重（同一批内的机械重复） / 审稿预算 / 每轮派发上限）与闸门状态容器
 （session/run 两作用域,见 core/agent/state.py）都在本模块;意图只作信号,
 顺序与并行由父 agent 自主决定,框架不强制。
@@ -27,7 +27,7 @@ from paperflow.core.intent.constants import INTENT_META, IntentType
 from paperflow.core.llm import StructuredOutput
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.tools.orchestration.constants import (
-    SUB_AGENT_MODES, SubAgentMode, SubAgentStatus)
+    SubAgentStatus)
 
 
 class SubAgentResult(BaseModel):
@@ -329,13 +329,11 @@ _FAILURE_ESCALATION_NOTE = (
 
 #: 审稿预算门:同一父实例内同类审稿 spawn 的次数上限。值取自旧的「审稿循环最多3 轮」约定——
 #: 预算下沉到代码强制后,LLM 不再负责数轮次,超限派发直接拒绝并给出路(基于已有裁决定稿、如实报告未解决项)。
-#: 计数键 (父实例 id, mode):按「父实例」而非「父 run」隔离,
+#: 计数键 (父实例 id, 目标类型):按「父实例」而非「父 run」隔离,
 #: 使同一 run 内共用一个 trace 的多个同类型父实例各算各的、兄弟不串号;
 #: 计数存在 run 状态里,跨 run(新 trace)随之重置。
-#: 不同 mode 独立计数(笔记审稿/下载门禁/计划审稿互不挤占)。仅对真实派发计数——
+#: 同一父实例派 review-agent 的 3 次预算独立计数。仅对真实派发计数——
 #: 去重命中(running 提示)早退在计数之前,不消耗预算。
-_REVIEW_SPAWN_MODES = frozenset(m.value for m in (
-    SubAgentMode.NOTE_REVIEW, SubAgentMode.DOWNLOAD_REVIEW, SubAgentMode.PLAN_REVIEW))
 _REVIEW_SPAWN_BUDGET = 3
 _REVIEW_BUDGET_DENIED_NOTE = (
     "同类审稿派发已达预算上限({budget} 次)。请基于已有审查裁决定稿,"
@@ -343,22 +341,20 @@ _REVIEW_BUDGET_DENIED_NOTE = (
 )
 
 
-def _task_fingerprint(task: str, mode: str | None = None) -> str:
-    """任务文本指纹 = sha256(规范化空白后的文本 + mode)[:16]。
+def _task_fingerprint(task: str) -> str:
+    """任务文本指纹 = sha256(规范化空白后的文本)[:16]。
 
-    mode 参与指纹,防"同任务文本不同模式"的去重碰撞(同 task 但 run 模式不同,结果不可互换)。
 
     Args:
         task: str，子任务文本
-        mode: str | None，运行模式（参与指纹防碰撞）
 
     Returns:
-        sha256(规范化文本 + mode) 的前 16 位十六进制指纹。
+        sha256(规范化文本) 的前 16 位十六进制指纹。
     """
     # 先折叠空白再哈希:同一任务只差换行或多空格时应命中同一条目,否则模型把任务文本
     # 换个排版就绕过去重、重复派发同一个子任务。
     norm = " ".join(task.split())
-    key = f"{mode or ''}\n{norm}"
+    key = norm
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
@@ -561,7 +557,7 @@ class SpawnSubAgentTool(Tool):
     Attributes:
         name: str，工具名 "spawn_sub_agent"
         description: str，工具描述
-        parameters: dict，JSON Schema（agent_type/task/mode/intent）
+        parameters: dict，JSON Schema（agent_type/task/intent）
         needs_parent: bool，True（构造时只注入声明者）
         risk_level: str，"low"
         async_execute: bool，True（父事件循环上直接 await，取消沿链级联）
@@ -579,11 +575,6 @@ class SpawnSubAgentTool(Tool):
         "properties": {
             "agent_type": {"type": "string", "description": "目标 SubAgent 类型，如 paper-agent"},
             "task": {"type": "string", "description": "子任务文本（含实体，已拼入上下文）"},
-            "mode": {"type": "string",
-                     "enum": [m.value for m in SubAgentMode],
-                     "description": "子 agent 运行模式(可选)。note-agent: note;"
-                                    "review-agent: note_review/download_review;"
-                                    "不传 = 子 agent 默认模式"},
             "intent": {"type": "string",
                        "enum": [t.value for t in IntentType],
                        "description": "本次派发服务的意图（可选）。会话意图被误判时，"
@@ -625,7 +616,7 @@ class SpawnSubAgentTool(Tool):
         """
         return self._agent_timeouts.get(agent_type, self.timeout)
 
-    def execute(self, agent_type: str, task: str, mode: str | None = None,
+    def execute(self, agent_type: str, task: str,
                 intent: str | None = None) -> ToolResult:
         """同步兼容路径：在调用方线程新建事件循环跑 aexecute。
 
@@ -635,20 +626,19 @@ class SpawnSubAgentTool(Tool):
         Args:
             agent_type: str，目标子 agent 类型
             task: str，子任务文本
-            mode: str | None，运行模式
             intent: str | None，本次派发服务的意图（可覆盖误判）
 
         Returns:
             ToolResult，文本为 SubAgentResult 的 JSON；同步兼容路径（新建事件循环跑 aexecute）。
         """
-        return asyncio.run(self.aexecute(agent_type, task, mode, intent))
+        return asyncio.run(self.aexecute(agent_type, task, intent))
 
-    def _admit(self, agent_type: str, task: str, mode: str | None = None,
+    def _admit(self, agent_type: str, task: str,
                intent: str | None = None) -> "ToolResult | str":
         """派发前的七道闸。前四道是「这一路合不合法」的纯判定，后三道是「会不会与别的
         派发冲突、超支」的共享状态检查：
 
-        - 纯判定（不进锁，只读、无共享状态写入）：① 未知 agent 类型 → ② mode 枚举
+        - 纯判定（不进锁，只读、无共享状态写入）：① 未知 agent 类型 → ②
           → ③ 意图派发门禁 → ④ spawn 白名单
         - 共享状态（整体持 _SPAWN_LOCK）：⑤ 同批同指纹去重 → ⑥ 审稿预算
           → ⑦ 每轮派发上限
@@ -664,7 +654,6 @@ class SpawnSubAgentTool(Tool):
         Args:
             agent_type: str，目标子 agent 类型
             task: str，子任务文本
-            mode: str | None，运行模式
             intent: str | None，显式声明的意图
 
         Returns:
@@ -678,9 +667,6 @@ class SpawnSubAgentTool(Tool):
             return _deny(parent, agent_type, f"未知 agent 类型: {agent_type}；可选: "
                                             f"{sorted(parent.agent_registry.list_agents())}")
 
-        # ② mode：schema enum 已约束生成层，这里兜住漏网之鱼——拼错的 mode 会让子 agent 走错流程
-        if mode is not None and mode not in SUB_AGENT_MODES:
-            return _deny(parent, agent_type, f"未知 mode: {mode}，合法值: {sorted(SUB_AGENT_MODES)}")
 
         # ③ 意图门禁：代码级确定性检查，不依赖 supervisor 遵循 AGENT.md。
         #    显式声明 intent 时按声明校验——这是会话意图被误判时的申诉通道（用户已在澄清里确认真实意图，
@@ -709,7 +695,7 @@ class SpawnSubAgentTool(Tool):
         # 两者都在 run 容器上（按 trace 隔离，一次用户任务内独立）；容器取用时内部会顺手
         # 清扫过期条目，故此处不再单独清理。
         rs = get_run_state(parent._trace_id)
-        fp = _task_fingerprint(task, mode)
+        fp = _task_fingerprint(task)
         with _SPAWN_LOCK:
             # ⑤ 去重：同指纹且正在执行中 → 提示等待。只拦同一批工具调用内的机械重复
             #    （模型把同一个调用生成两遍）；不缓存结果，所以跨轮的重复不拦、失败重试会真跑。
@@ -729,7 +715,7 @@ class SpawnSubAgentTool(Tool):
 
             # ⑥ 审稿预算：键 (父实例, mode)——同一 run 内多个同类型父实例各算各的、兄弟不串号；
             #    不同 mode 独立计数。此处只判不记，自增见下方收敛块。
-            review_key = (parent._instance_id, mode) if mode in _REVIEW_SPAWN_MODES else None
+            review_key = (parent._instance_id, agent_type) if agent_type == "review-agent" else None
             if review_key is not None and rs.review_counts.get(review_key, 0) >= _REVIEW_SPAWN_BUDGET:
                 return _deny(parent, agent_type,
                              _REVIEW_BUDGET_DENIED_NOTE.format(budget=_REVIEW_SPAWN_BUDGET))
@@ -752,7 +738,7 @@ class SpawnSubAgentTool(Tool):
             reg[key] = now
         return fp
 
-    async def aexecute(self, agent_type: str, task: str, mode: str | None = None,
+    async def aexecute(self, agent_type: str, task: str,
                        intent: str | None = None) -> ToolResult:
         """派发一个子 agent（父事件循环上 await），返回 SubAgentResult 序列化结果。
 
@@ -762,13 +748,12 @@ class SpawnSubAgentTool(Tool):
         Args:
             agent_type: str，目标子 agent 类型
             task: str，子任务文本
-            mode: str | None，运行模式
             intent: str | None，显式声明的意图
 
         Returns:
             ToolResult，文本为 SubAgentResult 的 JSON（门禁与去重同同步路径）。
         """
-        admitted = self._admit(agent_type, task, mode, intent)
+        admitted = self._admit(agent_type, task, intent)
         if isinstance(admitted, ToolResult):
             return admitted
         fp = admitted
@@ -800,11 +785,6 @@ class SpawnSubAgentTool(Tool):
                 # 已处理过的资源（父超时重试时会派出新的 paper-agent，不共享池就会重抓）。
                 trace_id=getattr(parent, "_trace_id", None),
             )
-            # mode 靠前缀注入 system prompt,而不是构造参数:子 agent 的 AGENT.md 正文
-            # 会按「当前模式」这段自行判别走哪套流程(label → prompt 的跨层契约)。
-            # 只在前缀加一行、不动机身,让同一份 AGENT.md 同时承载多个模式的协议。
-            if mode:
-                child.system_prompt = f"当前模式：{mode}\n{child.system_prompt}"
             # 传解析后的超时:_run_child 用实际生效值(config > 类默认)
             result = await self._run_child(child, agent_type, task)
             # 派发账本：真实派发完成后按结果状态记账（与早退路径的 denied/deduped 互补），
