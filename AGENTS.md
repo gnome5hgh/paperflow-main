@@ -121,7 +121,7 @@ Every agent lives in `agents/<name>/` with two files:
 
 装配时 `Agent.__init__` 在角色定义后拼接全 agent 共有的行为基座 `BASE_PROMPT`(`core/agent/base_prompt.py`:诚实性协议/交付契约语义/协作语义)——通用铁律不重复写在各 AGENT.md。
 
-**Skill 体系**（`paperflow/core/skills/registry.py`）：Skill 是给**现有** agent 注入领域知识/流程指令/轻量工具的可安装能力包（agentskills.io 格式），无独立推理循环——与上面 agent 插件机制是平行而非同一概念。`SkillRegistry(skills_dir)` 单级扫描 `<项目根>/.paperflow/skills/`（内置与用户安装同层，`/skill install` 准入通道（REPL 内）或手动拷贝，版本对齐经集中 lock 文件），三级渐进披露：L1 `<available_skills>` name+description 清单注入 head（无 skill 零开销）→ L2 `load_skill` 工具按需加载正文 → L3 `load_skill(resource=…)` 读资源（路径围栏限 skill 目录内；`SkillRegistry.resource_path` 是同一道围栏的「给路径」出口，供走不了 `load_skill` 的确定性工具用）。skill 捆绑的 `tools.py` 经 `merge_tools` 并入子 agent 工具表——supervisor 代码级恒不并入（权限最小化红线）；含代码的安装强制人工过目（`-y` 拒绝，须显式 `--allow-code`）。
+**Skill 体系**（`paperflow/core/skills/registry.py`）：Skill 是给**现有** agent 注入领域知识/流程指令/轻量工具的可安装能力包（agentskills.io 格式），无独立推理循环——与上面 agent 插件机制是平行而非同一概念。`SkillRegistry(skills_dir)` 单级扫描 `<项目根>/.paperflow/skills/`（内置与用户安装同层，`/skill install` 准入通道（REPL 内）或手动拷贝，版本对齐经集中 lock 文件），三级渐进披露：L1 `<available_skills>` name+description 清单注入 head（无 skill 零开销）→ L2 `load_skill` 工具按需加载正文 → L3 `load_skill(resource=…)` 读资源（路径围栏限 skill 目录内；`SkillRegistry.resource_path` 是同一道围栏的「给路径」出口，供走不了 `load_skill` 的确定性工具用）。**skill 对全部 agent 可见**（规范无 per-agent 可见性字段，领域边界由 `description` 的触发语境承担）——supervisor 也能读到清单，但它没有可执行工具，读入也落不了地。skill 捆绑的 `tools.py` 经 `merge_tools` 并入子 agent 工具表——supervisor 代码级恒不并入（权限最小化红线）；含代码的安装强制人工过目（`-y` 拒绝，须显式 `--allow-code`）。
 
 **流程与模板都住在 skill 里**：五份流程 skill 承载「怎么做」——`write-note`（写笔记）、`write-research-plan`（选题与计划）、`review-note` / `review-plan` / `review-download`（三类审查）；对应的角色 AGENT.md 只写契约与启发式并指向它（开工前 `load_skill`）。产物标准（笔记模板、四份选题模板）作为资源随流程分发在各自 `references/` 下；审查 skill 另持一份**副本**（`review-note` 一份、`review-plan` 四份），让审查方自包含地读到验收标准而不必跨 skill 借写作流程的资源。两份内容一致靠约定与人工同步（改模板就改写作 skill 那份、副本跟着改），代码层不做一致性校验。
 
@@ -140,7 +140,7 @@ Every agent lives in `agents/<name>/` with two files:
 | `rag-agent` | 语料索引责任人:检索 + 入库 + 删除后全量收敛 + 索引体检 | `[]` | rag_retrieve + index_paths + reindex_all + index_status（RAG 一域读写与诊断同归一处） |
 | `memory-agent` | 记忆域责任人:记忆读写全归它 | `[]` | `get_memory_tools()` 全集 11 件（blocks 6 / recall 1 / paper_lists 4）+ read_file / glob（读块内容——MemFS 把块投影成 markdown，记忆工具本身没有读动作） |
 
-`allowed_agents` / `allowed_spawns` 已由 spawn 工具在运行时强制（见 Orchestration）。记忆工具经 `get_memory_tools()` 装配后**全装给 `memory-agent`、其余 agent 一件不装**——需要记账或查记忆时（如 note-agent 写完笔记要记一条历史、supervisor 要查清单）**派发 `memory-agent`**；读取惯例与写入惯例见各 agent 的 AGENT.md。
+`allowed_spawns` 已由 spawn 工具在运行时强制（同时是 head 里可派发清单的来源，见 Orchestration）。记忆工具经 `get_memory_tools()` 装配后**全装给 `memory-agent`、其余 agent 一件不装**——需要记账或查记忆时（如 note-agent 写完笔记要记一条历史、supervisor 要查清单）**派发 `memory-agent`**；读取惯例与写入惯例见各 agent 的 AGENT.md。
 
 ### Agent and ReAct loop
 
@@ -363,7 +363,7 @@ mcp_servers                     # 保留顶层（本身即映射）
 - **No deterministic pipeline.** Everything — routing, tool selection, task decomposition — is driven by the LLM's ReAct loop. Tools are just JSON Schema definitions fed to the model
 - **`ToolResult.summary: dict`** (default empty) — 结构化摘要通道：决策结果（policy_denied/user_denied）、spawn digest、记忆工具结构化数据都经它承载
 - **`risk_level` 已强制**：PolicyEngineMiddleware 按 `max_risk` 阈值拦截 + `requires_confirm` 确认（键 = (工具名, 目标路径)）；Tool 安全元数据由注册表加载时校验
-- **`allowed_agents` / `allowed_spawns` 已强制**：spawn 工具运行时校验白名单（supervisor 硬编码放行）
+- **`allowed_spawns` 已强制**：spawn 工具运行时校验白名单（supervisor 硬编码放行），同时是 head 里 `<available_agents>` 清单的派生来源
 - **安全是中间件洋葱**：before（可拒绝/要求确认）→ 执行 → 逆序 after；每轮 run 结束 on_finish 可改写最终回答。所有拦截降级为 ToolResult 文本，只有 `MaxTurnsExceeded` 向上抛
 - **SQL 是记忆真相源，markdown 是投影**；压缩/窗口驱逐永不删 SQL 行（Recall 完整）；记忆工具**全装给 `memory-agent`、其余 agent 一件不装**——要记账或查记忆就派发它，supervisor 也不直接执行清单操作
 - **编排归 supervisor，意图只作信号**：意图不决定派发顺序、也不作派发门禁（门禁已退役）——选型按 `<available_agents>` 的能力说明，顺序与并行由 supervisor 自主决定。契约里写明「**一个对象一路**」：批量同类对象（目录 / glob 结果 / 清单 / 「这几篇」）先枚举成逐项子任务，再一头一个 `spawn_sub_agent`，不让一个子 agent 承包整批——单个子 agent 只有一份预算，整批压在它身上时预算先被串行处理耗光，中途超时则整批都拿不到结果
