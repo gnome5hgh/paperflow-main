@@ -12,7 +12,7 @@
    └─ <skill-name>/   # 一个 skill 一个目录，目录名 = frontmatter 的 name
       ├─ SKILL.md     # agentskills.io 格式：frontmatter(name/description/…) + 正文
       ├─ tools.py     # 可选：module-level TOOLS，经 merge_tools 并入子 agent 工具表
-      └─ references/  # 可选：L3 资源（load_skill(resource=...) 读取，路径围栏限本目录内）
+      └─ references/  # 可选：L3 资源（load_skill(name=..., resource=...) 读取，路径围栏限本目录内）
 ```
 
 ## Core Rules

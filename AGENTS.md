@@ -121,7 +121,7 @@ Every agent lives in `agents/<name>/` with two files:
 
 装配时 `Agent.__init__` 在角色定义后拼接全 agent 共有的行为基座 `BASE_PROMPT`(`core/agent/base_prompt.py`:诚实性协议/交付契约语义/协作语义)——通用铁律不重复写在各 AGENT.md。
 
-**Skill 体系**（`paperflow/core/skills/registry.py`）：Skill 是给**现有** agent 注入领域知识/流程指令/轻量工具的可安装能力包（agentskills.io 格式），无独立推理循环——与上面 agent 插件机制是平行而非同一概念。`SkillRegistry(skills_dir)` 单级扫描 `<项目根>/.paperflow/skills/`（内置与用户安装同层，`/skill install` 准入通道（REPL 内）或手动拷贝，版本对齐经集中 lock 文件），三级渐进披露：L1 `<available_skills>` name+description 清单注入 head（无 skill 零开销）→ L2 `load_skill` 工具按需加载正文 → L3 `load_skill(resource=…)` 读资源（路径围栏限 skill 目录内；`SkillRegistry.resource_path` 是同一道围栏的「给路径」出口，供走不了 `load_skill` 的确定性工具用）。**skill 对全部 agent 可见**（规范无 per-agent 可见性字段，领域边界由 `description` 的触发语境承担）——supervisor 也能读到清单，但它没有可执行工具，读入也落不了地。skill 捆绑的 `tools.py` 经 `merge_tools` 并入子 agent 工具表——supervisor 代码级恒不并入（权限最小化红线）；含代码的安装强制人工过目（`-y` 拒绝，须显式 `--allow-code`）。
+**Skill 体系**（`paperflow/core/skills/registry.py`）：Skill 是给**现有** agent 注入领域知识/流程指令/轻量工具的可安装能力包（agentskills.io 格式），无独立推理循环——与上面 agent 插件机制是平行而非同一概念。`SkillRegistry(skills_dir)` 单级扫描 `<项目根>/.paperflow/skills/`（内置与用户安装同层，`/skill install` 准入通道（REPL 内）或手动拷贝，版本对齐经集中 lock 文件），三级渐进披露：L1 `<available_skills>` name+description 清单注入 head（无 skill 零开销）→ L2 `load_skill` 工具按需加载正文 → L3 `load_skill(name=…, resource=…)` 读资源（路径围栏限 skill 目录内；`SkillRegistry.resource_path` 是同一道围栏的「给路径」出口，供走不了 `load_skill` 的确定性工具用）。**skill 对全部 agent 可见**（规范无 per-agent 可见性字段，领域边界由 `description` 的触发语境承担）——supervisor 也能读到清单，但它没有可执行工具，读入也落不了地。skill 捆绑的 `tools.py` 经 `merge_tools` 并入子 agent 工具表——supervisor 代码级恒不并入（权限最小化红线）；含代码的安装强制人工过目（`-y` 拒绝，须显式 `--allow-code`）。
 
 **流程与模板都住在 skill 里**：五份流程 skill 承载「怎么做」——`write-note`（写笔记）、`write-research-plan`（选题与计划）、`review-note` / `review-plan` / `review-download`（三类审查）；对应的角色 AGENT.md 只写契约与启发式并指向它（开工前 `load_skill`）。产物标准（笔记模板、四份选题模板）作为资源随流程分发在各自 `references/` 下；审查 skill 另持一份**副本**（`review-note` 一份、`review-plan` 四份），让审查方自包含地读到验收标准而不必跨 skill 借写作流程的资源。两份内容一致靠约定与人工同步（改模板就改写作 skill 那份、副本跟着改），代码层不做一致性校验。
 
@@ -285,7 +285,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `orchestration/` — `spawn_sub_agent`（唯一的调度工具；见下）
 - `common/` — `make_tools(config, tool_items, default_write_root=None)` 装配工厂：按 `root_hints` 生成 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）、`default_write_root` 盖章到 write_file（note-agent→note、research-agent→research）、注入 `_config`；`_http.py` 共享 HTTP 基础设施
 
-根映射（`_root_map`）：note→`note_dir`、pdf→`pdf_dir`、research→`research_dir` 或 `workspace/research`、memory→`workspace/memory`、scratch→`workspace/scratch`。`templates` 条目已随模板入 skill 退役（读模板改走 `load_skill(resource=…)` 或 `SkillRegistry.resource_path`）。
+根映射（`_root_map`）：note→`note_dir`、pdf→`pdf_dir`、research→`research_dir` 或 `workspace/research`、memory→`workspace/memory`、scratch→`workspace/scratch`。`templates` 条目已随模板入 skill 退役（读模板改走 `load_skill(name=…, resource=…)` 或 `SkillRegistry.resource_path`）。
 
 ### Orchestration
 
