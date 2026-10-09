@@ -210,7 +210,7 @@ class IntentPipeline:
         # ====== 第2级：选项答复检测（确定性正则，在追问之前） ======
         # 纯编号菜单选择是「选择」动作而非自由文本，不经 NLU 重分类——
         # 否则 score_threshold=0.0 的路由会以微小分数误命中任意意图（如把
-        # 「1」路由到 record_user_info），spawn 门禁随之误拦真实意图。
+        # 「1」路由到 record_user_info），把错误意图当作信号注入。
         # 命中即短路：MENU_SELECTION 可派发，派发权在 supervisor 对照其菜单。
         if is_option_reply(query):
             return IntentOutput(
@@ -319,8 +319,8 @@ class IntentPipeline:
         """
         out: list[tuple[str, float]] = []
         for name, score in rescored:
-            # 跳过主意图与非业务意图（chitchat/out_of_scope/help 不派发，
-            # 拆进去只会让 spawn 门禁拒掉整条链）
+            # 跳过主意图与非业务意图（chitchat/out_of_scope/help 不是动作，
+            # 混进拆分列表会误导选型）
             if name == top_name or not _is_business(name):
                 continue
             threshold = threshold_of(name)
@@ -345,7 +345,7 @@ class IntentPipeline:
            规则，独立裁决在重扫分数上（业界多标签惯例：全类打分 + 逐类
            阈值，无第二名的特殊放宽）。
         ③ 是可派发的业务意图：闲聊、帮助这类系统意图永远不该出现在列表里
-           ——它们不派发，拆进去只会让 spawn 门禁拒掉整条链。
+           ——它们不是动作，混进拆分列表会误导选型。
 
         候选打分用第二次 scores()（k=路由数全量重扫）：主管道 top_k 截断
         只看分数最高的前几条例句，复合句里第二意图的例句常常排不进窗口、

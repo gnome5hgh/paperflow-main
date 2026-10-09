@@ -5,7 +5,7 @@ from .enums import IntentCategory, IntentType
 __all__ = ["INTENT_META", "INTENT_LABELS_ZH"]
 
 # 意图 → (category, dispatch_allowed)——单一真相源。枚举=契约=实现集
-# dispatch_allowed=False 的意图由 spawn 门禁代码级拒绝派发
+# dispatch_allowed=False 的意图不是领域动作，不进拆分列表、不派生领域子任务
 INTENT_META: dict[IntentType, tuple[IntentCategory, bool]] = {
     IntentType.RECORD_USER_INFO: (IntentCategory.BUSINESS, True), # record_user_info 记录用户信息——由 memory-agent 写入
     IntentType.MENU_SELECTION:     (IntentCategory.DIALOGUE, True), # menu_selection 是对话管理但派发——选择动作，派发权在 supervisor 对照菜单

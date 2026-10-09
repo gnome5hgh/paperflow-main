@@ -100,7 +100,7 @@ class IntentOutput(_IntentListRules, BaseModel):
 
     意图列表是唯一真相源：单意图 = 长度 1 的列表，多意图 = 多个元素。主意图不再
     单独存一份，而是 intents[0] 的只读派生属性——这样「主意图」与「列表首项」不可能
-    不一致，也让既有读取点（意图门禁、会话落地）无需改动。属性不是 pydantic 字段，
+    不一致，也让既有读取点（会话落地等）无需改动。属性不是 pydantic 字段，
     因此不会进 INTENT 块的序列化结果，模型看到的是列表本身。
 
     轮级字段（entities / rewritten_query / source / clarification / clarify_candidates）

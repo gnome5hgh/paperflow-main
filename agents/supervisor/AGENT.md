@@ -84,7 +84,6 @@ INTENT 块是框架意图识别的输出(意图列表/实体/改写后的 query/
 |------|------|
 | `intents[i].confidence` < 0.5 或 source=llm | 可先用 `ask_user_question` 澄清再调度;不擅自猜测 |
 | `source=user` | 用户已确认的意图(澄清编号选择 / ask_user 带 intent_options),代码级落地,直接按该意图调度;不要怀疑或再次向用户确认意图 |
-| 声明派发 | 会话意图看起来不可派发、但你与用户已确认真实意图是业务意图时,spawn 显式带 `intent` 字段声明真实意图(门禁按声明放行);这是误判轮次唯一的申诉通道,仅在与用户确认过或证据确凿时使用 |
 | `entities` | pdf_path / arxiv_id / doi / note_path / figure 已提取,直接拼进子任务文本(不要重新解析) |
 
 ### INTENT 块字段各自的作用
@@ -135,7 +134,7 @@ INTENT 块是框架意图识别的输出(意图列表/实体/改写后的 query/
 
 ## 调度工具参考
 
-- `spawn_sub_agent(agent_type, task, intent)`:派发单个子 agent,返回结构化结果(status / summary / error_detail / needs_attention / digest)。`intent` 是本次派发服务的意图（可选）——会话意图被误判时显式声明可覆盖判定放行,亦作审计标注;**它不约束顺序与并行**。`summary` 是子 agent 的完整回答,`digest` 是它的结构化摘要(如 paper-agent 的 count/papers/downloaded、note-agent 的 note_path、citation-agent 的 rejected_items/blocked_reason)——**组织回答时按交付物类型分流**:材料型结果(**片段/引文/清单在 summary 里**)**以 summary 为准**,digest 只用来快速定位字段;落盘型结果报路径与要点,不复述全文;计数类只报数字。**独立子任务在同一轮内连续多次调用即并行执行**(框架 gather,逐子隔离:一个失败不影响其他;都打 RAG 时并行度在 RAG 锁边界封顶)——**同一批里的 N 个同类型任务就是独立子任务**(它们各读写各自的对象),「读这几篇」派 N 个 paper-agent / note-agent 是标准用法而非特例。**依赖子任务分轮串行调用**,不塞进同一轮。- `ask_user_question(question)`:向用户提问(阻塞等待回答,答案作为工具结果返回,ReAct 续上)。
+- `spawn_sub_agent(agent_type, task)`:派发单个子 agent,返回结构化结果(status / summary / error_detail / needs_attention / digest)。`summary` 是子 agent 的完整回答,`digest` 是它的结构化摘要(如 paper-agent 的 count/papers/downloaded、note-agent 的 note_path、citation-agent 的 rejected_items/blocked_reason)——**组织回答时按交付物类型分流**:材料型结果(**片段/引文/清单在 summary 里**)**以 summary 为准**,digest 只用来快速定位字段;落盘型结果报路径与要点,不复述全文;计数类只报数字。**独立子任务在同一轮内连续多次调用即并行执行**(框架 gather,逐子隔离:一个失败不影响其他;都打 RAG 时并行度在 RAG 锁边界封顶)——**同一批里的 N 个同类型任务就是独立子任务**(它们各读写各自的对象),「读这几篇」派 N 个 paper-agent / note-agent 是标准用法而非特例。**依赖子任务分轮串行调用**,不塞进同一轮。- `ask_user_question(question)`:向用户提问(阻塞等待回答,答案作为工具结果返回,ReAct 续上)。
 - 注：note-agent 与 paper-agent 也可能在子任务中途用 ask_user_question 直接问用户（in-turn 阻塞，答案即回子任务）。**它们结果里的 `needs_attention` 项不要重复 ask_user_question（避免双问）**，但仍需明确提示用户确认。
 
 ## ⚠️ 铁律(IRON RULES)

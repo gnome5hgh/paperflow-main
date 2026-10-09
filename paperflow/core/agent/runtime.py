@@ -330,7 +330,7 @@ class Agent:
         session_id: str，会话标识（跨多轮 run 一致）
         memory / block_manager / message_manager / agent_manager / compaction / structured: 记忆与结构化输出服务句柄（None 时相关路径零开销跳过）
         intent_service / ask_user_callback: 意图识别集成适配器与问询回调（None = 意图层不存在；仅 CLI 构造的 supervisor 装配）
-        last_intent: IntentOutput | None，本轮意图（只读委托给 intent_service，供 spawn 门禁与收尾核对读取）
+        last_intent: IntentOutput | None，本轮意图（只读委托给 intent_service，供跨轮回写与收尾核对读取）
         max_turns: int，ReAct 循环轮次上限（超过抛 MaxTurnsExceeded）
         stream_callback: 回调 | None，流式事件回调（None = 非流式路径）
         skill_registry: SkillRegistry | None，skill 体系（L1 清单注入与工具并入）
