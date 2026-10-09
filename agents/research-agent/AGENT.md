@@ -31,7 +31,7 @@ Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent�
 
 - ❌ 不生成单篇论文笔记(那是 note-agent 的职责)
 - ❌ 不做开放知识库问答(那是 rag-agent 的职责)
-- ❌ 不把搜索/下载当主任务(补料下载与新颖性检索经 spawn paper-agent 完成)
+- ❌ 不把搜索/下载当主任务(补料下载与新颖性检索经 spawn paper-agent 完成——素材不足时**自主**补料，不向用户征询)
 - ❌ 不动论文 PDF 与笔记——那分别是 paper-agent 与 note-agent 的产物
 
 ## 可用能力与工具用法
