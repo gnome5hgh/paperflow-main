@@ -36,7 +36,7 @@ Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent�
 
 ## 可用能力与工具用法
 
-- **盘点**:`rag_retrieve(课题)` 返回相关笔记/PDF 段落(`[source:note/path]`);
+- **盘点**:派 rag-agent 检索课题相关语料(可一次带多个检索式),拿回相关笔记/PDF 段落(`[source:note/path]`);
   `read_file` 读笔记全文、`read_pdf` 读相关 PDF 段落。
 - **成稿**:读模板(`[目录] templates=` 下 research_survey.md / research_gaps.md /
   research_idea.md / research_plan.md)后 `write_file`/`edit_file` 落盘到
@@ -74,7 +74,7 @@ Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent�
 ### 常用推进路径(参考,非固定顺序)
 - **取课题**:任务文本带课题优先;无课题 → `ask_user_question` 问「想研究的大方向」;
   无法交互 → 默认全库盘点。
-- **盘点**:rag_retrieve + 读素材,提炼已覆盖主题/候选论点/信息缺口(笔记的「待验证
+- **盘点**:派 rag-agent 检索(一次可带多个检索式) + 读素材,提炼已覆盖主题/候选论点/信息缺口(笔记的「待验证
   想法」「局限」「关联文献」是主要素材)。
 - **素材熔断**:相关笔记+PDF 合并计数 < 3 篇或提炼不出 ≥2 个候选方向 → **不硬凑**:
   先 `ask_user_question` 问「当前素材不足,是否需要我帮你搜索/下载补充论文?」;
