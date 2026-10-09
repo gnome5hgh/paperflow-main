@@ -17,8 +17,8 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
-from paperflow.vision.geometry import Box, Box_container, Line, Paragraph
-from paperflow.vision.parsers.constants import FigureType
+from paperflow.vision.common.geometry import Box, Box_container, Line, Paragraph
+from paperflow.vision.constants import FigureType
 from paperflow.vision.parsers.text_extractor import Page
 
 

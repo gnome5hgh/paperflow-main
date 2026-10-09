@@ -14,7 +14,7 @@ pdffigures2 的 GraphicsExtractor 移植（GraphicBBDetector.scala + GraphicsExt
 """
 from __future__ import annotations
 
-from paperflow.vision.geometry import Box, Box_container
+from paperflow.vision.common.geometry import Box, Box_container
 
 #: 相交聚类容差（GraphicClusteringTolerance=2，pt）：两框相距 ≤2pt 视为相交合并
 _GRAPHIC_CLUSTERING_TOLERANCE = 2.0

@@ -24,10 +24,10 @@ from paperflow.vision.parsers.caption import (
     find_captions,
     strip_caption_lines,
 )
-from paperflow.vision.parsers.constants import FigureType
+from paperflow.vision.constants import FigureType
 from paperflow.vision.parsers.document_layout import build_document_layout
 from paperflow.vision.detectors.figure_detector import located_figures
-from paperflow.vision.renderer import render_figure
+from paperflow.vision.services.renderer import render_figure
 from paperflow.vision.schemas import Figure
 from paperflow.vision.parsers.text_extractor import Page, extract_text, strip_formatting
 from paperflow.vision.parsers.graphics import extract_graphics

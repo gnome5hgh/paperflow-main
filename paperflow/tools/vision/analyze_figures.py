@@ -13,8 +13,7 @@ from paperflow.config import PaperFlowConfig
 from paperflow.core.llm import LLMClient
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.tools.file.atomic import atomic_write_bytes
-from paperflow.vision.analyzer import FigureAnalyzer
-from paperflow.vision.extractor import FigureExtractor
+from paperflow.vision import FigureAnalyzer, FigureExtractor
 
 #: 单次分析图数上限（防超长论文拖死工具；超限截断并如实标注）
 MAX_FIGURES = 12

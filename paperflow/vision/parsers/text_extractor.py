@@ -22,7 +22,7 @@ from typing import Optional
 import fitz
 fitz.TOOLS.mupdf_display_errors(False)  # C 层 stderr 告警（损坏对象/字体）不糊屏：失败仍经工具返回值可见
 
-from paperflow.vision.geometry import (
+from paperflow.vision.common.geometry import (
     Box,
     Box_container,
     Line,

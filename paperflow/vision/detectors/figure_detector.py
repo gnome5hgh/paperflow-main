@@ -25,7 +25,7 @@ from itertools import product
 
 from paperflow.vision.parsers.caption import Caption, CaptionParagraph
 from paperflow.vision.parsers.document_layout import DocumentLayout
-from paperflow.vision.geometry import (
+from paperflow.vision.common.geometry import (
     Box,
     Box_container,
     Box_crop,

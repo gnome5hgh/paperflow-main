@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 from paperflow.vision.parsers.caption import CaptionParagraph
 from paperflow.vision.parsers.document_layout import LINE_WIDTH_BUCKET_SIZE, DocumentLayout
-from paperflow.vision.geometry import Box, Line, Paragraph
+from paperflow.vision.common.geometry import Box, Line, Paragraph
 from paperflow.vision.parsers.text_extractor import Page
 
 # 段落与图形区重叠面积 / 段落面积 超过该比例 → 图内文本（照 GraphicOverlaps）
