@@ -411,9 +411,8 @@ class Agent:
         #: L1 <available_skills> 清单块（静态；空串 = 无已注册 skill，head 整块省略）
         self.skills_block = skill_registry.skills_block() if skill_registry else ""
 
-        #: <available_agents> 清单块（仅派发方持有；空串 = 整块省略）
-        self.agents_block = (agent_registry.agents_block(exclude={agent_type})
-                             if agent_type == "supervisor" else "")
+        #: <available_agents> 清单块（本 agent 可派发目标，空串 = 无可派发目标，整块省略）
+        self.agents_block = agent_registry.agents_block(agent_type)
 
         #: Agent 类型标识符
         self.agent_type = agent_type
@@ -617,7 +616,7 @@ class Agent:
         它按顺序拼接六块内容：
             1. system: AGENT.md 系统提示（来自 agent 配置，定义角色与行为规范）
             2. system: SKILLS 清单块（L1 渐进披露清单，若装配了 SkillRegistry 且有可见 skill）
-            3. system: 可派发子 agent 清单块（仅 supervisor，列出各子 agent 的 name + description）
+            3. system: 可派发子 agent 清单块（本 agent 有权派发的目标，按 allowed_spawns 渲染）
             4. system: 记忆块（Memory.compile() 输出的 assistant/profile + 文件树索引，若有）
             5. system: 意图规则块与 INTENT 块（仅装配意图服务时；规则块给出字段语义与
                非派发意图的处理说明，INTENT 块是路由先验）
@@ -641,9 +640,10 @@ class Agent:
         if self.skills_block:
             head.append(Message(role="system", content=self.skills_block))
 
-        # ====== 第 2.5 层：可派发子 agent 清单（仅 supervisor，静态） ======
-        # 派发顺序与并行由 supervisor 自主决定，因此它必须先知道有哪些子 agent、各自能做什么；
-        # 非派发方的 agents_block 为空串，整块省略（不产生空 system 消息）。
+        # ====== 第 2.5 层：可派发子 agent 清单（本 agent 的派发权限视图，静态） ======
+        # 派发顺序与并行由派发方自主决定，因此它必须先知道有哪些子 agent、各自能做什么；
+        # 清单是自身 allowed_spawns 的派生视图（supervisor 为全部），无可派目标时为空串，
+        # 整块省略（不产生空 system 消息）。
         if self.agents_block:
             head.append(Message(role="system", content=self.agents_block))
 
@@ -854,9 +854,9 @@ class Agent:
 
             1. 生成本次 run 的 trace_id（trace_<12位hex）并清洗 task 的未配对 surrogate
             2. 构建 head：① AGENT（AGENT.md 系统提示）→ ② SKILLS 清单块（若装配
-               SkillRegistry 且有可见 skill）→ ③ 可派发子 agent 清单块（仅 supervisor）
-               → ④ Memory.compile()（system/ 记忆块，若有）→ ⑤ 意图规则块与 INTENT 块
-               （装配意图服务时）→ user_task。
+               SkillRegistry 且有可见 skill）→ ③ 可派发子 agent 清单块（本 agent
+               有权派发的目标）→ ④ Memory.compile()（system/ 记忆块，若有）→ ⑤ 意图
+               规则块与 INTENT 块（装配意图服务时）→ user_task。
                意图层的澄清在本步内同步问用户并代码级落地意图
             3. 从 MessageManager 加载该会话的 in-context 消息（跨轮回放），当前
                user task 落盘；消息归属 self._messages（in-context 窗口）

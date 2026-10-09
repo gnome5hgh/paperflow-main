@@ -11,7 +11,9 @@ Agent 注册表 —— 扫描 agents/ 目录,统一加载配置和工具。
 设计要点:
 
 - **单一注册表**:一个类同时解析配置和导入工具,避免两套注册表数据不同步
-- **Spawn 控制**:``allowed_spawns`` 声明本 agent 能 spawn 哪些子 agent
+- **Spawn 控制**:``allowed_spawns`` 声明本 agent 能 spawn 哪些子 agent。
+  它同时是 ``<available_agents>`` 清单的真相源——清单按各 agent 自己的权限
+  渲染,不再另写一份散文,避免权限与广告各说一遍而走样
 """
 
 import importlib.util
@@ -253,20 +255,29 @@ class AgentRegistry:
         """
         return list(self._agents.keys())
 
-    def agents_block(self, exclude: set[str] | None = None) -> str:
-        """渲染 <available_agents> 清单块（供派发方按能力选型）。
+    def agents_block(self, agent_type: str) -> str:
+        """渲染该 agent 的 <available_agents> 清单（其可派发子 agent 的派生视图）。
+
+        派发集合按 agent 自己的权限算：supervisor 硬编码放行全部（与 spawn 工具的
+        校验一致，见 orchestration/spawn.py）；其余取自身 allowed_spawns。两者都
+        排除自身，并过滤掉未注册的名字——AGENT.md 写错名字时不在清单里广告一个
+        不存在的目标。集合为空返回空串，调用方据此整块省略。
 
         Args:
-            exclude: 不列入清单的 agent 类型（如派发方自身）。
+            agent_type: str，清单的持有者
 
         Returns:
-            清单文本；无可列条目时返回空串（调用方据此整块省略）。
+            清单文本；该 agent 无可派发目标时返回空串。
         """
-        skip = exclude or set()
-        lines = [f"- {name}: {self.get_config(name).description}"
-                 for name in self.list_agents() if name not in skip]
-        if not lines:
+        if agent_type == "supervisor":
+            targets = [n for n in self.list_agents() if n != agent_type]
+        else:
+            registered = set(self.list_agents())
+            targets = [n for n in self.get_config(agent_type).allowed_spawns
+                       if n != agent_type and n in registered]
+        if not targets:
             return ""
+        lines = [f"- {n}: {self.get_config(n).description}" for n in targets]
         return ("<available_agents>\n"
-                "可派发的子 agent（按能力选择，说明即其职责与边界）：\n"
+                "你有权派发的子 agent（按其能力选择，说明即其职责与边界）：\n"
                 + "\n".join(lines) + "\n</available_agents>")
