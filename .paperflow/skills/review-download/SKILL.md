@@ -4,7 +4,6 @@ description: 下载与推荐前门禁的流程——对候选论文清单逐篇�
 metadata:
   version: "1.0.0"
   author: paperFlow
-allowed_agents: [review-agent]
 ---
 
 # Review Download — 下载/推荐前门禁流程

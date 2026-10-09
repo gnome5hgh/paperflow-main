@@ -408,8 +408,8 @@ class Agent:
         #: Skill 注册表（spawn 构造子 agent 时透传用）
         self.skill_registry = skill_registry
 
-        #: L1 <available_skills> 清单块（静态；空串 = 无可见 skill，head 整块省略）
-        self.skills_block = skill_registry.skills_block(agent_type) if skill_registry else ""
+        #: L1 <available_skills> 清单块（静态；空串 = 无已注册 skill，head 整块省略）
+        self.skills_block = skill_registry.skills_block() if skill_registry else ""
 
         #: <available_agents> 清单块（仅派发方持有；空串 = 整块省略）
         self.agents_block = (agent_registry.agents_block(exclude={agent_type})
@@ -637,7 +637,7 @@ class Agent:
         head: list[Message] = [Message(role="system", content=self.system_prompt)]
 
         # ====== 第2层：SKILLS 清单（L1 渐进披露，静态） ======
-        # skill 指令的约束力声明写在块内；无可见 skill 时 skills_block 为空串，整块省略
+        # skill 指令的约束力声明写在块内；无已注册 skill 时 skills_block 为空串，整块省略
         if self.skills_block:
             head.append(Message(role="system", content=self.skills_block))
 

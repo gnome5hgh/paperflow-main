@@ -4,8 +4,6 @@ description: 论文引用格式转换与参考文献条目格式化。触发：�
 metadata:
   version: "1.1.0"
   author: paperFlow
-# 收窄到它的使用者：引用渲染是 citation-agent 的领域，其余角色看不到这份规则
-allowed_agents: [citation-agent]
 ---
 
 # Citation Format — 论文引用格式转换

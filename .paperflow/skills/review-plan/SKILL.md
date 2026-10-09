@@ -4,7 +4,6 @@ description: 审研究选题产物的流程——对 survey/gaps/ideas/plan 四�
 metadata:
   version: "1.0.0"
   author: paperFlow
-allowed_agents: [review-agent]
 # references/ 是 write-research-plan 四份模板的副本——审查与写作要基于同一份模板，改的时候两份一起改。
 ---
 

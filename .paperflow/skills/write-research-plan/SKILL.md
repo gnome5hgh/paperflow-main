@@ -4,7 +4,6 @@ description: 研究选题与计划的写作流程——从语料盘点到研究�
 metadata:
   version: "1.0.0"
   author: paperFlow
-allowed_agents: [research-agent]
 ---
 
 # Write Research Plan — 选题与计划的写作流程

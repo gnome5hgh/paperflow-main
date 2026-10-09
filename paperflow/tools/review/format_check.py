@@ -45,7 +45,6 @@ class FormatCheckTool(Tool):
 
     #: 模板在 skill 体系里的坐标（模板随审查流程分发，审查方读同一份）
     _SKILL = "review-note"
-    _AGENT_TYPE = "review-agent"
     _RESOURCE = "references/paper_note.md"
 
     #: 声明需要 skill 注册表：运行时构造期注入（与 needs_parent 同款 opt-in）
@@ -72,7 +71,7 @@ class FormatCheckTool(Tool):
         if self._skill_registry is None:
             return None
         try:
-            return self._skill_registry.resource_path(self._SKILL, self._AGENT_TYPE, self._RESOURCE)
+            return self._skill_registry.resource_path(self._SKILL, self._RESOURCE)
         except (KeyError, ValueError, FileNotFoundError):
             # skill 未安装 / 被停用 / 资源缺失：统一当作「模板不存在」，由 execute 报明确错误
             return None

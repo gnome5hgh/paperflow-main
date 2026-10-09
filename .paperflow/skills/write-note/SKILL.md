@@ -4,7 +4,6 @@ description: 论文笔记的写作流程——从模板到定稿送审。触发�
 metadata:
   version: "1.0.0"
   author: paperFlow
-allowed_agents: [note-agent]
 ---
 
 # Write Note — 论文笔记的写作流程

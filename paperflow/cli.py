@@ -393,17 +393,14 @@ def main(argv: list[str] | None = None) -> int | None:
     _disabled = {n for n, e in load_lock(_pf_dir).items() if not e.get("enabled", True)}
     skill_registry = SkillRegistry(
         str(_skills_dir) if _skills_dir.is_dir() else None, disabled=_disabled)
+    # load_skill 无可见性门控（skill 对所有 agent 可见），也不持有父 Agent 引用，
+    # 因此全进程共享一个实例即可被所有 agent 安全复用。
+    _load_skill_tool = LoadSkillTool(skill_registry)
     for _agent_type in registry.list_agents():
         _cfg = registry.get_config(_agent_type)
-        # LoadSkillTool 声明 needs_parent=True：Agent.__init__ 构造期即
-        # attach_agent(self) 回写 _parent。共享单个实例会被最后构造的 Agent 覆盖
-        # _parent——spawn 出子 agent 后 supervisor 门控读到的 agent_type 变成子
-        # agent，可见性双向失效（该拒的放行、该放的拒）。因此每个 agent type 一个
-        # 独立实例；同 type 的并发子 agent 共享同一实例是良性的——可见性门控只依赖
-        # agent_type，不依赖每实例状态（_parent 在构造后不再变更）。
-        _load_skill_tool = LoadSkillTool(skill_registry)
         _cfg.tools = merge_tools(
             ("agent", _cfg.tools),
+            # supervisor 的 skill 捆绑工具并入被 get_tools_for 代码级拒绝（权限最小化红线）
             ("skill", skill_registry.get_tools_for(_agent_type)),
             ("framework", [_load_skill_tool]),
             ("mcp", collect_mcp_agent_tools(_agent_type, config.mcp_servers, mcp_manager)),

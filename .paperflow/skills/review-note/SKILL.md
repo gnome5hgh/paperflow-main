@@ -4,7 +4,6 @@ description: 审笔记的流程——对笔记草稿做结构、保真、一致�
 metadata:
   version: "1.0.0"
   author: paperFlow
-allowed_agents: [review-agent]
 # references/ 是 write-note 模板的副本——审查与写作要基于同一份模板，改的时候两份一起改。
 ---
 
