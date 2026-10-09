@@ -23,7 +23,7 @@ class ReindexAllTool(Tool):
 
     name = "reindex_all"
     description = (
-        "对整个语料库做一次增量收敛：重新索引新增或有改动的笔记 / PDF，"
+        "对整个语料库做一次增量收敛：重新索引新增或有改动的 PDF，"
         "清理已删除文件残留的索引块，并重建关键词索引。"
         "用于删除文件之后、手动往语料目录里拷了论文之后、或怀疑索引与语料不一致时。")
     parameters = {"type": "object", "properties": {}, "required": []}

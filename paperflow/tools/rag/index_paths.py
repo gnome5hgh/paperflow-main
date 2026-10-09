@@ -26,7 +26,7 @@ class IndexPathsTool(Tool):
 
     name = "index_paths"
     description = (
-        "把给定的语料文件（笔记 / PDF）切块、编码后写入检索索引。"
+        "把给定的论文 PDF 切块、编码后写入检索索引。"
         "写盘或修改文件后调用它，一次传入全部待入库文件的绝对路径。"
         "路径不在语料根目录下、或文件不存在时会跳过并在结果里说明原因。")
     parameters = {

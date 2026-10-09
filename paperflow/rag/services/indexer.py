@@ -1,16 +1,17 @@
-"""RagIndexer：把知识库里的文档（Markdown 笔记和 PDF）索引进向量库与 BM25。
+"""RagIndexer：把语料库里的 PDF 索引进向量库与 BM25。
 
-索引方式是增量扫描：用文件的修改时间判断哪些文档变了，只重索引新增或
-变更的文档；被删除的文档则从索引里清理掉。
+索引方式是增量扫描：用文件的修改时间判断哪些论文变了，只重索引新增或
+变更的论文；被删除的论文则从索引里清理掉。索引根只有论文目录——笔记是 agent
+自己的产物，短、可整篇读，不需要检索（「检索自己的笔记」这项能力是有意移除的）。
 
 幂等设计：单篇文档的重新索引用"先删后建"。因为块 id 由路径加序号哈希
 生成、与内容无关，文档内容收缩或删掉某些章节时，原来位置上的旧块必须
 显式清除，否则会永远残留在索引里。BM25 是向量库文档在内存里的投影，
 删除和写入必须与向量库成对执行才能保持一致。
 
-解析来源单一：PDF 与笔记都走「抽取出文本 → 按 ``#`` 行分节」这一条路，PDF 的
-文本与结构由本地版面解析给出（见 ``paperflow.rag.parsers.pdf_extract``），不依赖
-任何外部解析服务，因此不存在「解析器降级」这种状态。
+解析来源单一：文本与结构由本地版面解析给出（见 ``paperflow.rag.parsers.pdf_extract``），
+抽出的 markdown 再按 ``#`` 行分节；不依赖任何外部解析服务，因此不存在「解析器降级」
+这种状态。
 
 媒体块：PDF 的图与表各成一类块，接在章节块之后——表格单元格里的数值与图注里的
 结论在章节正文中往往不出现，不独立成块就检索不到。区域定位由 ``vision`` 提供，
@@ -82,17 +83,13 @@ def _recipe_hash(cfg) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _split_markdown(lines: list[tuple[str, tuple[int, int, int, int, int] | None]]
+def _split_markdown(lines: list[tuple[str, tuple[int, int, int, int, int]]]
                     ) -> tuple[str, list[Section]]:
     """按 ``#`` 行把正文切成章节，顺带取首个一级标题作文档标题。
 
-    PDF（本地版面解析还原出的 markdown）与笔记文件走同一条路，因此这里不分来源；
-    两者唯一的差别是每行能否带上版面位置——PDF 有（用于给检索块标注页码与坐标），
-    笔记没有。
-
     Args:
-        lines: ``(行文本, 该行的位置或 None)`` 列表。位置为
-            ``(页, left, right, top, bottom)``。
+        lines: ``(行文本, 该行的位置)`` 列表。位置为
+            ``(页, left, right, top, bottom)``，用于给检索块标注页码与坐标。
 
     Returns:
         tuple[str, list[Section]]：(文档标题, 章节列表)。标题只认 ``# `` 开头的
@@ -118,15 +115,9 @@ def _split_markdown(lines: list[tuple[str, tuple[int, int, int, int, int] | None
                 title = text[2:].strip()
         else:
             cur_body.append(text)
-        if pos is not None:
-            cur_pos.append(pos)
+        cur_pos.append(pos)
     flush()
     return title, sections
-
-
-def _markdown_lines(text: str) -> list[tuple[str, None]]:
-    """把一段纯文本按行包装成分节输入（位置一律为 None）。"""
-    return [(ln, None) for ln in text.splitlines()]
 
 
 @dataclass
@@ -134,8 +125,8 @@ class _FileContent:
     """单篇文档解析产物：切块所需的全部原料。
 
     Attributes:
-        title: str，文档标题（PDF=版面/元数据标题，笔记=首个 H1；取不到为空串）
-        sections: list[Section]，章节列表（带各自的版面位置；笔记无位置）
+        title: str，文档标题（版面/元数据标题；取不到为空串）
+        sections: list[Section]，章节列表（带各自的版面位置）
     """
     title: str
     sections: list[Section]
@@ -189,7 +180,7 @@ class IndexStatus:
         bm25_docs: int，内存关键词索引里的文档数
         ghost: list[str]，状态有记录但磁盘已不存在的文档（相对路径）——删除未收敛的残留
         not_indexed: list[str]，语料根下有文件但状态里没有（相对路径）——新增未入库
-        corpus_docs: int，语料根下扫描到的 .md / .pdf 文件数
+        corpus_docs: int，语料根下扫描到的 PDF 篇数
         milvus_ok: bool，Milvus 可连性（探测带 TTL）
     """
 
@@ -211,7 +202,7 @@ class RagIndexer:
     """索引器：维护"文档路径 → 修改时间"的状态文件，据此做增量索引。
 
     职责：
-    - 将工作区内的 Markdown 笔记和 PDF 切块、编码后写入向量库和 BM25。
+    - 将语料目录里的 PDF 切块、编码后写入向量库和 BM25。
     - 通过修改时间戳判断文档是否变更，只增量更新有变化的文档。
     - 自动清理已被删除的文档的索引数据。
     - 维护索引状态文件（rag/index_state.json，带配方哈希版本），保证跨进程的增量一致性；
@@ -252,26 +243,22 @@ class RagIndexer:
         绝对路径（见 Chunk.path），调用方拿它当真假用：返回 None 即跳过。
         返回相对路径而非布尔值是为了在报错文案与体检清单里给出更短的展示路径。
 
-        如果路径既不在笔记目录也不在 PDF 目录下，返回 None——不能用文件名代替。
-        原因：还有其他目录（如记忆目录）里的文件也会触发索引钩子，若用文件名
-        代替，与笔记目录里同名的文件（如 memory/shared.md 与 note/shared.md）
-        会被当成同一篇，导致后索引的文档静默覆盖、删除前者的块，造成数据丢失。
+        不在论文目录下的路径一律返回 None——不能用文件名代替：别的目录（记忆、
+        笔记）里的文件也会触发索引钩子，用文件名会把它们的同名文件当成同一篇，
+        后索引的覆盖并删掉前者的块。
 
         Args:
             path: 绝对或相对路径（会被解析为绝对路径）。
 
         Returns:
-            str | None: 相对路径（如 "note/paper.md"），若文件不在语料根下则返回 None。
+            str | None: 相对论文目录的路径，若文件不在语料根下则返回 None。
         """
         abs_path = Path(path).resolve()
-        # 依次尝试在笔记目录和 PDF 目录下计算相对路径
-        for root in (Path(self.service.config.corpus.note_dir).resolve(),
-                     Path(self.service.config.corpus.pdf_dir).resolve()):
-            try:
-                return str(abs_path.relative_to(root))
-            except ValueError:
-                continue
-        return None
+        try:
+            return str(abs_path.relative_to(
+                Path(self.service.config.corpus.pdf_dir).resolve()))
+        except ValueError:
+            return None
 
 
     def _read_state(self) -> tuple[object, dict] | None:
@@ -312,33 +299,27 @@ class RagIndexer:
 
     # ---------- 文档解析 → 分块 ----------
     def _parse_file(self, path: Path) -> _FileContent:
-        """读取并解析文档，产出 chunker 切块所需的全部原料。
+        """解析一篇 PDF，产出 chunker 切块所需的全部原料。
 
-        两条来源共用同一套分节逻辑（按 ``#`` 行切章节）：PDF 的文本与章节由本地
-        版面解析还原成 markdown 后再切，笔记文件本身已是 markdown。文档标题都取自
-        内容（PDF 取版面/元数据标题、笔记取首个一级标题），绝不用文件名充当标题。
+        文本与章节由本地版面解析还原成 markdown，再按同一套「按 ``#`` 行分节」逻辑
+        切章节。文档标题取自版面/元数据，绝不用文件名充当标题。
 
         Args:
-            path: 文档路径。
+            path: PDF 路径。
 
         Returns:
             _FileContent: 解析产物（title/sections）。
         """
-        if path.suffix.lower() == ".pdf":
-            extracted = extract_pdf(str(path))
-            # 每个渲染块的位置随它拆出的每一行重复出现，分节后即成为该章节的
-            # 位置集合（一个块内的行同属一段，位置相同是准确的）。
-            lines: list[tuple[str, tuple[int, int, int, int, int] | None]] = []
-            for blk in extracted.blocks:
-                pos = (blk.page, blk.left, blk.right, blk.top, blk.bottom)
-                lines.extend((ln, pos) for ln in blk.text.splitlines())
-            _, sections = _split_markdown(lines)
-            # PDF 的正文里不出现一级标题（级别从二级起），标题只能来自版面/元数据
-            return _FileContent(extracted.title or "", sections)
-
-        text = path.read_text(encoding="utf-8")
-        title, sections = _split_markdown(_markdown_lines(text))
-        return _FileContent(title, sections)
+        extracted = extract_pdf(str(path))
+        # 每个渲染块的位置随它拆出的每一行重复出现，分节后即成为该章节的
+        # 位置集合（一个块内的行同属一段，位置相同是准确的）。
+        lines: list[tuple[str, tuple[int, int, int, int, int]]] = []
+        for blk in extracted.blocks:
+            pos = (blk.page, blk.left, blk.right, blk.top, blk.bottom)
+            lines.extend((ln, pos) for ln in blk.text.splitlines())
+        _, sections = _split_markdown(lines)
+        # PDF 的正文里不出现一级标题（级别从二级起），标题只能来自版面/元数据
+        return _FileContent(extracted.title or "", sections)
 
     def _media_chunks(self, path: str, start_index: int) -> list[Chunk]:
         """把一篇 PDF 的图/表区域转成检索块，序号接在章节块之后。
@@ -455,10 +436,10 @@ class RagIndexer:
 
         key = str(p.resolve())
         if self._rel_path(key) is None:
-            # 非知识库根目录的路径（如记忆目录）直接跳过，避免与同名笔记冲突。
-            # 记忆文件的写入也会触发本钩子，但本模块只索引笔记和 PDF；
-            # 若不跳过，记忆目录下与笔记目录同名的文件会被当成同一篇，导致笔记的块被静默覆盖删除。
-            return IndexOutcome("skipped", reason="不在语料根目录下（只索引笔记与 PDF）")
+            # 非语料目录的路径（笔记、记忆）直接跳过。
+            # 那些目录里的写入也会触发本钩子，但本模块只索引 PDF；
+            # 若不跳过，同名文件会被当成同一篇，导致先入索引的块被静默覆盖删除。
+            return IndexOutcome("skipped", reason="不在语料根目录下（只索引 PDF）")
 
         # 1. 解析文档，获得切块原料（章节 + 标题）
         parsed = self._parse_file(p)
@@ -520,7 +501,7 @@ class RagIndexer:
 
         删除清理策略：
         - 已删除的文档逐个移除（按路径定点查块 id，替代全表扫描），无需整库重建，避免开销。
-        - 若遇到状态中的路径不在笔记/PDF 目录下（旧版本残留），则跳过清理（防御性）。
+        - 若遇到状态中的路径不在论文目录下（旧版本残留），则跳过清理（防御性）。
 
         增量索引策略：
         - 对于变更的文档，直接调用 `index_document`（内部会先删后建），保证每个文档的一致性。
@@ -552,20 +533,18 @@ class RagIndexer:
         self.service._ensure_bm25().rebuild(
             [(c.id, indexed_text(c)) for c, _mtime in store.all_documents()])
 
-        # 收集待索引文档：扫描两个知识库根目录，按修改时间比对找出变更项。
-        roots = [Path(self.service.config.corpus.note_dir),
-                 Path(self.service.config.corpus.pdf_dir)]
+        # 收集待索引论文：扫描论文目录，按修改时间比对找出变更项。
+        roots = [Path(self.service.config.corpus.pdf_dir)]
         new_state: dict = {}
         changed: list[Path] = []
         seen: set[Path] = set()
 
-        # 3. 扫描两个知识库目录，列出所有.md 和.pdf 文件。
+        # 3. 扫描论文目录，列出所有 .pdf 文件。
         for root in roots:
             if not root.exists():
                 continue
-            # 递归遍历所有 .md 和 .pdf 文件
             for p in root.rglob("*"):
-                if not p.is_file() or p.suffix.lower() not in (".md", ".pdf"):
+                if not p.is_file() or p.suffix.lower() != ".pdf":
                     continue
                 seen.add(p.resolve())
                 key = str(p.resolve())
@@ -582,7 +561,7 @@ class RagIndexer:
         # 6. 清理已删除的文档。
         removed_count = 0
         for abs_path in removed:
-            # 防御性跳过：正常流程下状态文件里的键只可能是笔记/PDF 目录的路径
+            # 防御性跳过：正常流程下状态文件里的键只可能是论文目录下的路径
             # （写入前就用 _rel_path 过滤过），但旧版本可能残留其他目录的键——
             # 遇到时跳过，不要误删对应块。
             if self._rel_path(abs_path) is None:
@@ -632,16 +611,14 @@ class RagIndexer:
             st.recipe_in_sync = version == st.recipe
             st.indexed_docs = len(docs)
 
-        # 语料根扫描：磁盘有而状态没有 = 新增未入库；状态有而磁盘没有 = 删除未收敛。
-        # 同一套 .md/.pdf 过滤与 _rel_path 围栏，保证口径与索引扫描一致。
+        # 论文目录扫描：磁盘有而状态没有 = 新增未入库；状态有而磁盘没有 = 删除未收敛。
+        # 同一套 .pdf 过滤与 _rel_path 围栏，保证口径与索引扫描一致。
         # 清单用相对路径展示，便于人读；状态文件里的键是绝对路径。
         corpus: set[str] = set()
-        for root in (Path(self.service.config.corpus.note_dir),
-                     Path(self.service.config.corpus.pdf_dir)):
-            if not root.exists():
-                continue
+        root = Path(self.service.config.corpus.pdf_dir)
+        if root.exists():
             for p in root.rglob("*"):
-                if p.is_file() and p.suffix.lower() in (".md", ".pdf"):
+                if p.is_file() and p.suffix.lower() == ".pdf":
                     corpus.add(str(p.resolve()))
         st.corpus_docs = len(corpus)
         known = set(docs)
