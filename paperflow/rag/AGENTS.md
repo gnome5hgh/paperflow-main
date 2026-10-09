@@ -11,7 +11,7 @@ rag/
 ├─ constants/      # 跨模块词汇：RagSource（语料来源类型，写进向量库 source 列并进工具 schema）
 ├─ services/       # 门面与编排：rag_service.py(RAGService 单例门面) + indexer.py(增量索引) + retriever.py(混合检索) + query_rewriter.py
 ├─ parsers/        # grobid_client.py(TEI XML 解析，不可达回退) + chunker.py(学术分块)
-├─ encoders/       # bm25.py(jieba BM25，向量库文本的投影)
+├─ encoders/       # bm25.py(jieba BM25，向量库文本的投影) + embedder.py(云端稠密编码) + reranker.py(云端交叉精排)
 └─ storage/        # vector_store.py(Milvus：Standalone 走 gRPC，本地文件路径走 Lite)
 ```
 

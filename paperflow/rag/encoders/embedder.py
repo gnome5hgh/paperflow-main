@@ -1,9 +1,8 @@
-# paperflow/rag/models/embedder.py
+# paperflow/rag/encoders/embedder.py
 """稠密编码：Embedder 协议与云端实现（OpenAI 兼容 /v1/embeddings）。
 
-core 定义接口，rag/services 与 cli 向下依赖。云端 only：构造不碰网络、不校验
-api_key（软依赖），失败在调用时以 RuntimeError 暴露，由调用方按各自降级语义
-处理（路由退稀疏、检索跳稠密路、索引明确报错）。
+云端 only：构造不碰网络、不校验 api_key（软依赖），失败在调用时以 RuntimeError
+暴露，由调用方按各自降级语义处理（检索跳稠密路、索引明确报错）。
 """
 import logging
 import time
@@ -26,7 +25,7 @@ _EMBED_DIMS = {
 class Embedder(Protocol):
     """稠密编码协议：文本批次 → L2 归一化向量矩阵。
 
-    与原 rag 协议逐字一致——调用方（索引器/路由器/检索器）无需感知实现更换。
+    与原 rag 协议逐字一致——调用方（索引器/检索器）无需感知实现更换。
 
     Attributes:
         dim: int，模型输出的向量维度（只读静态表，不发网络探测）

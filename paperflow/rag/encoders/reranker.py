@@ -1,4 +1,4 @@
-# paperflow/rag/models/reranker.py
+# paperflow/rag/encoders/reranker.py
 """精排：Reranker 协议与云端实现（硅基流动 /v1/rerank，Jina/Cohere 风格）。
 
 返回值契约：按相关度降序的文档下标列表（长度 ≤ top_k），调用方零适配。
@@ -8,7 +8,7 @@ from typing import Protocol
 
 import httpx
 
-from paperflow.rag.models.embedder import RETRY_BACKOFF_BASE
+from paperflow.rag.encoders.embedder import RETRY_BACKOFF_BASE
 from paperflow.core.security.text import sanitize_surrogates
 
 
@@ -88,7 +88,7 @@ class RagReranker:
                 return [x["index"] for x in ranked[:top_k] if 0 <= x["index"] < len(docs)]
             except httpx.HTTPStatusError as e:
                 last_err = e
-                # 与 embedding.py 对齐：4xx 不可恢复（408/429 例外）立即失败，
+                # 与 embedder.py 对齐：4xx 不可恢复（408/429 例外）立即失败，
                 # 不空耗退避；5xx 仍重试。
                 if e.response.status_code < 500 and e.response.status_code not in (408, 429):
                     break

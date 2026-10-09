@@ -5,7 +5,7 @@
 - ``Message``（wire 格式消息）/ ``LLMClient`` / ``tool_to_openai_schema`` ← client
 - ``StructuredOutput`` / ``StructuredOutputConfig`` / ``StructuredOutputError`` ← structured
 
-**这里只有 LLM 客户端**：稠密编码与精排的协议与实现在 `paperflow.rag.models`
+**这里只有 LLM 客户端**：稠密编码与精排的协议与实现在 `paperflow.rag.encoders`
 （只服务 RAG）。私有辅助（``_message_to_openai`` / ``_accumulate_stream_chunks`` /
 ``_extract_json_body`` 等）也不在此导出，需要时从具体子模块 import。
 """

@@ -90,7 +90,7 @@ class RAGService:
         if self._embedder is None:
             with self.lock:
                 if self._embedder is None:
-                    from paperflow.rag.models.embedder import RagEmbedder
+                    from paperflow.rag.encoders.embedder import RagEmbedder
                     emb = self.config.rag.embedding
                     self._embedder = RagEmbedder(emb.base_url, emb.api_key,
                                                    emb.embed_model,
@@ -108,7 +108,7 @@ class RAGService:
         if self._reranker is None:
             with self.lock:
                 if self._reranker is None:
-                    from paperflow.rag.models.reranker import RagReranker
+                    from paperflow.rag.encoders.reranker import RagReranker
                     # 直接构造 config 的调用方（测试/嵌入宿主）未必经过 from_env 的继承回填，
                     # 故此处对空的端点/key 再兜底继承 embedding 一次。
                     rr = self.config.rag.rerank
