@@ -1879,3 +1879,51 @@ routes:
   - 帮我维护一下引用库
   - 我的引用管理
   - bib该整理了
+- name: manage_index
+  utterances:
+  - 把新拷进来的论文入库
+  - 把这些论文加入索引
+  - 重建一下索引
+  - 刷一下索引
+  - 索引好像不对，重新建一遍
+  - 语料库里少了刚下载的那篇
+  - 我手动放了几个 PDF 进去，帮我建索引
+  - 让检索能搜到这些新论文
+  - 知识库需要更新一下
+  - 索引和我的论文对不上了
+  score_threshold: 0.75
+  steps_threshold: 0.5
+- name: delete_note
+  utterances:
+  - 删掉这篇笔记
+  - 把 xxx 的笔记删了
+  - 这篇笔记不要了
+  - 删除刚才生成的笔记
+  - 笔记写错了，删掉重来
+  - 清理一下那篇论文的笔记
+  - 我不要这个笔记文件了
+  - 把笔记从磁盘上删掉
+  score_threshold: 0.75
+  steps_threshold: 0.5
+- name: delete_research
+  utterances:
+  - 删掉这个研究计划
+  - 那张 idea 卡删了
+  - 把选题产物清掉
+  - 研究计划不要了，删掉
+  - 删除上次生成的 survey
+  - gap 分析那份也删了
+  - 清理研究目录下的产物
+  score_threshold: 0.75
+  steps_threshold: 0.5
+- name: delete_pdf
+  utterances:
+  - 删掉这篇下载错的论文
+  - 下载错了，删掉重下
+  - 把这个 PDF 删了
+  - 论文文件不要了
+  - 那份 PDF 下错了，删除
+  - 清掉这个下载失败的 PDF
+  - 把 pdf 目录里那篇删掉
+  score_threshold: 0.75
+  steps_threshold: 0.5
