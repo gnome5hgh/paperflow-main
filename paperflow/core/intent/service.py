@@ -77,26 +77,32 @@ class IntentService:
     )
 
     def __init__(self, pipeline, conversation: ConversationState,
-                 ask_user_callback=None):
+                 ask_user_callback=None, history_messages: int = 6):
         """绑定管线、会话与问询回调。
 
         Args:
             pipeline: IntentPipeline，含路由与 LLM 兜底的完整管线
             conversation: ConversationState，跨轮意图状态
             ask_user_callback: Callable[[str], str] | None，澄清问询回调（None 时放弃澄清）
+            history_messages: int，判定时最多参考的最近对话条数（运行时按它截历史）
         """
         self.pipeline = pipeline
         self.conversation = conversation
         self.ask_user_callback = ask_user_callback
+        self.history_messages = history_messages
         self.last_intent: IntentOutput | None = None
 
-    async def begin(self, task: str) -> Turn:
+    async def begin(self, task: str, history: list[tuple[str, str]] | None = None) -> Turn:
         """跑管线、同步澄清，产出要注入的块与最终任务文本。
 
         管线失败降级为空（不阻断主流程、不更新跨轮意图）。
 
         Args:
             task: str，本轮原始任务文本
+            history: list[tuple[str, str]] | None，最近若干轮对话文本 [(role, content)]，
+                由运行时在构建 head 之前截好递进来（只含 user/assistant 文本，不含工具
+                结果与工具调用）。**当前管线不消费它**——它是判定层读上下文的入口，
+                供后续按对话史判定意图的实现使用（含 assistant 侧文本，指代类输入才读得懂）。
 
         Returns:
             Turn：head_block 为 INTENT 块（无意图时为 None），task 为澄清后可用文本，

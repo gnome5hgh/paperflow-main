@@ -606,8 +606,34 @@ class Agent:
             return None
         return Message(role="system", content=compiled)
 
+    def _intent_history(self) -> list[tuple[str, str]]:
+        """截取最近若干轮对话文本，供意图层判定时参考上下文。
+
+        只取 user / assistant 的**正文**：工具结果又长又噪（检索命中、文件内容），
+        且 assistant 的最终答复已经概括过它们；带 tool_calls 但正文为空的 assistant
+        消息也不进（那是工具调用的载体，不是「它说过的话」）。**assistant 侧必须保留**
+        ——「再下载一篇」「那 Figure 3 呢」的指代目标就是它上一轮说的话。按时间正序
+        返回，末尾是最近一轮。
+
+        窗口大小取自意图层（`history_messages`）；意图层未装配时不会被调用。
+
+        Returns:
+            list[tuple[str, str]]：[(role, content)]，role 为 "user" / "assistant"；
+            正序、已截到窗口上限。
+        """
+        limit = getattr(self.intent_service, "history_messages", 0)
+        if not limit or not self._messages:
+            return []
+        history = [(m.role, m.content.strip())
+                   for m in self._messages
+                   if m.role in ("user", "assistant") and (m.content or "").strip()]
+        return history[-limit:]
+
     async def _build_head(self, task: str) -> list[Message]:
         """构建本轮 ReAct 循环的头部消息列表（system 层 + 用户任务）。
+
+        **调用前 in-context 历史必须已加载**（`run()` 里先 `_load_in_context` 再建 head）——
+        意图层要读最近几轮对话文本才能读懂「再下载一篇」这类指代。
 
         此方法在每次 run 开始时被调用一次（不在 ReAct 轮次内重复），用于组装 LLM 输入的前置部分（system 消息）。
         它按顺序拼接六块内容：
@@ -657,7 +683,7 @@ class Agent:
         if self.intent_service is not None:
             if self.intent_service.rules_block:
                 head.append(Message(role="system", content=self.intent_service.rules_block))
-            turn = await self.intent_service.begin(task)
+            turn = await self.intent_service.begin(task, history=self._intent_history())
             task = turn.task
             if turn.head_block:
                 head.append(Message(role="system", content=turn.head_block))
@@ -877,13 +903,14 @@ class Agent:
         # conversation.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 
+        #: in-context 窗口每轮重建:跨轮回放统一经 MessageManager(SQL) 加载,避免: self._messages 跨 run 残留导致下一轮重复加载(每步都从权威源重新 load)。
+        # 必须先于 head 构建——意图层要读最近几轮对话文本（它得读懂指代类输入）。
+        self._messages = []
+        self._load_in_context()
+
         # head:① AGENT ② SKILLS ③ 可派发子 agent 清单 ④ Memory ⑤ 意图规则块+INTENT 块,每轮重建
         # 不进累积;末尾 user task。意图层澄清在 _build_head 内(经 begin)同步问用户并落地。
         head = await self._build_head(task)
-
-        #: in-context 窗口每轮重建:跨轮回放统一经 MessageManager(SQL) 加载,避免: self._messages 跨 run 残留导致下一轮重复加载(每步都从权威源重新 load)。
-        self._messages = []
-        self._load_in_context()
         #: 当前 user task 落盘(Recall),下轮经 _load_in_context 回放
         self._persist_conversation([head[-1]])
 

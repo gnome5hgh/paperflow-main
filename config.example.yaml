@@ -29,6 +29,7 @@ corpus:
 # 仍是 0.6B）。换非同款模型需重标路由阈值。
 # intent:
 #   enabled: true
+#   history_messages: 6                # 判定时参考的最近对话条数（只取 user/assistant 文本）
 #   encoder:
 #     model: Qwen/Qwen3-Embedding-8B   # 覆盖示例（默认即此值）
 

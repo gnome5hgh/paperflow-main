@@ -546,7 +546,9 @@ def main(argv: list[str] | None = None) -> int | None:
         _make_ask_callback(io, renderer, center), session_id)
     intent_service = (
         IntentService(pipeline=pipeline, conversation=conversation,
-                      ask_user_callback=_ask_cb) if config.intent.enabled else None)
+                      ask_user_callback=_ask_cb,
+                      history_messages=config.intent.history_messages)
+        if config.intent.enabled else None)
 
     supervisor = Agent(
         llm=llm, agent_registry=registry, agent_type="supervisor",

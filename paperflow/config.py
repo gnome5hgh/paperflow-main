@@ -238,17 +238,21 @@ class RouterConfig:
 
 @dataclass
 class IntentConfig:
-    """意图识别子系统配置：总开关 + 独立编码器 + 路由器。
+    """意图识别子系统配置：总开关 + 独立编码器 + 路由器 + 判定用的历史窗口。
 
     Attributes:
         enabled: bool，意图识别总开关（关时整套意图层不装配：不构造编码器/
             路由器/管线，Agent 走纯 ReAct，提示词不含意图规则）
         encoder: IntentEncoderConfig，意图路由独立编码器
         router: RouterConfig，混合路由器参数
+        history_messages: int，判定时参考的最近对话条数（运行时按它截历史切片）
     """
 
     #: 意图识别总开关（默认关：系统默认形态是纯 ReAct；显式开启才挂载意图层）
     enabled: bool = False
+
+    #: 判定时参考的最近若干轮对话（只取 user/assistant 文本，不含工具结果）
+    history_messages: int = 6
 
     encoder: IntentEncoderConfig = field(default_factory=IntentEncoderConfig)
     router: RouterConfig = field(default_factory=RouterConfig)
