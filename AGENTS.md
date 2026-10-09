@@ -39,16 +39,15 @@ conda run -n paperflow python -m pytest tests/ -v
 # Run a single test
 conda run -n paperflow python -m pytest tests/agent/test_agent.py::TestExecTool -v
 
-# Start 依赖服务栈（Milvus Standalone RAG 向量库 + GROBID PDF 解析）；单测用 Milvus Lite 内嵌，无需此服务
+# Start 依赖服务栈（Milvus Standalone RAG 向量库）；单测用 Milvus Lite 内嵌，无需此服务
 # `paperflow` 启动时会自动拉起，此命令用于手动管理
-# GROBID 首次需先一次性初始化（复制 grobid-home 到 data/infra/grobid/），见 docker-compose.yml 首部注释
 docker compose up -d
 
 # Run the app — 交互式 REPL（⚠️ 不能经 conda run）
 # conda run 不转发 stdin 给子进程 → 交互式 REPL 的 input() 立即 EOF 退出。必须先激活 env：
 conda activate paperflow && paperflow
 # 等价：python -m paperflow（同一 env 内）
-# 启动时自动探测依赖服务（Milvus/GROBID），未起则自动 docker compose up -d 并等待健康；
+# 启动时自动探测依赖服务（Milvus），未起则自动 docker compose up -d 并等待健康；
 # 失败只警告不阻塞（软依赖降级）。手动管理服务仍用 docker compose up -d；
 # 跳过预检：PAPERFLOW_SKIP_BOOTSTRAP=1
 ```
@@ -133,7 +132,7 @@ Every agent lives in `agents/<name>/` with two files:
 |---|---|---|---|
 | `supervisor` | 调度主管:拆解任务、spawn、汇总;能自答的先自答 | 硬编码放行所有（绕过白名单） | 仅 1 个调度工具（`spawn_sub_agent`），无执行类工具、无记忆工具；问用户不占工具（把问题写进最终回答） |
 | `paper-agent` | 论文域责任人:多源搜索 → review-agent 门禁 → 可选下载;读 PDF 与图表 | `[review-agent, rag-agent, memory-agent]` | MCP 检索（mcp__paper-search__*） + fetch_pdf + read_pdf + analyze_figures + delete_file + spawn |
-| `note-agent` | 笔记域责任人:基于指定 PDF 起草结构化笔记,内部 spawn review-agent 审稿 | `[review-agent, rag-agent, memory-agent, citation-agent]` | 原子文件工具（含 delete_file）+ spawn + glob/grep + analyze_figures；引用查 key/入库派 **citation-agent** |
+| `note-agent` | 笔记域责任人:基于指定 PDF 起草结构化笔记,内部 spawn review-agent 审稿 | `[review-agent, memory-agent, citation-agent]` | 原子文件工具（含 delete_file, extract_title）+ spawn + glob/grep + analyze_figures；引用查 key/入库派 **citation-agent**（笔记不进知识库，无需触达检索责任人） |
 | `research-agent` | 选题域责任人:基于本地语料盘点→survey/gaps→idea 卡→外部新颖性验证(源优先 semantic scholar,失败如实标「未经外部验证」)→研究计划 | `[paper-agent, review-agent, rag-agent, citation-agent]` | read/write/edit（含 delete_file）+ spawn；检索派 rag-agent、溯源 key 与参考文献渲染派 **citation-agent** |
 | `review-agent` | 审查域责任人:笔记审查 / 下载门禁 / 选题产物审查（开审前加载对应审查流程 skill） | `[citation-agent]` | 只读 + submit_review / submit_download_review + `format_check` + lookup_venue_rank + spawn（专为派 citation-agent 做溯源核验） |
 | `citation-agent` | 引用域责任人:references.bib 同步/新增/删除/查询导出 | `[]` | 6 引用工具全装 + read_pdf（元数据缺失时读首页取标题/作者，不属内容分析） |
@@ -214,12 +213,12 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | `MessageManager` | 对话全量落盘（Recall）。`get_in_context_messages()` 按 `AgentState.message_ids` 回放窗口；`get_messages_by_agent_id()` 按会话直查全量 |
 | `AgentManager` | Agent 生命周期：`AgentState` JSON 行（keyed by agent_id；message_ids = in-context 窗口） |
 | `MemFS` | Git 托管的 markdown 投影层：`system/assistant.md` + `system/profile.md` + 其他块；自动生成 `memory_filesystem.md` 索引；`detect_file_changes()` 检测手工编辑回写块（双向同步） |
-| `TitleExtractor` | 论文标题权威提取：5 级回退链（搜索元数据 > GROBID > LLM > pdftitle > PyMuPDF 启发式），**绝不回退到 PDF 文件名** |
+| 标题与书目 | 标题由 RAG 解析器出口给（元数据 + 首页版面，判据**宁空勿错**）；书目（作者/年份/期刊）由引用域读首页经一次模型调用提取。**绝不回退到 PDF 文件名** |
 
 **关键不变式**：
 - **SQL 块是真相源，markdown 是投影**——与旧 GitStore 的语义正好相反
 - 记忆工具在 **`paperflow/tools/memory/`**，经 **`get_memory_tools()`**（`tools/memory/__init__.py`）惰性构建 11 个工具（模块级单例，双重检查加锁，每次返回新列表副本）；执行时经 **`set_memory_context(MemoryToolsContext(...))`** 绑定一次（cli.py）+ `get_memory_context()` 取运行时上下文；未装配时工具降级为错误文本而非崩溃
-- 11 个记忆工具分 3 组：**blocks**（`memory`/`memory_replace`/`memory_insert`/`memory_rethink`/`memory_apply_patch`/`memory_finish_edits`）、**recall**（`conversation_search`，默认过滤 tool 消息防递归噪音）、**paper_lists**（`unread_list_add`/`unread_list_remove`/`history_append`/`extract_title`——列表块工具，`unread_list_add` 要求真实标题绝不用文件名）
+- 10 个记忆工具分 3 组：**blocks**（`memory`/`memory_replace`/`memory_insert`/`memory_rethink`/`memory_apply_patch`/`memory_finish_edits`）、**recall**（`conversation_search`，默认过滤 tool 消息防递归噪音）、**paper_lists**（`unread_list_add`/`unread_list_remove`/`history_append`——列表块工具，`unread_list_add` 要求真实标题绝不用文件名）
 - **Compaction**（`compaction.py`）：只压缩 in-context 窗口（驱逐旧对话 + 插 SummarySchema 摘要 + 保留尾部），**永不删 SQL 行**；`should_compress`（tiktoken 估算，超 `trigger_ratio × context_size` 触发）+ `run_compaction`（滑动窗口，保留 tool 消息与其结果的配对，尾部孤儿清理）
 - **Sleeptime**（`sleeptime.py`）：后台记忆整合，REPL 每轮循环顶部 `run_once_if_due()`（读 stdin 前）；LLM 产出 `MemoryEditBatch` 经 BlockManager 应用 + git commit；两阶段校验（类型枚举白名单：system/ 精确枚举 profile/assistant、顶层仅 feedback_/project_/reference_ 三前缀；动作仅 append/replace，delete 全量收禁），连续 3 次失败强制推进游标防死循环
 - 装配不变式：CLI `session_id` == `AgentManager.create_agent` id == `Agent.session_id`，三者错位会各自读到空数据
@@ -247,22 +246,22 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 ### RAG
 
-`paperflow/rag/` — 检索增强栈，`RAGService` 是唯一门面（indexer 与 retriever 是同一实例的两个视图，共享一把锁，增量写入对查询立即可见）。**懒加载单例**：`get_rag_service(config=None)`（双重检查加锁），所有重量组件（embedder/reranker/grobid/vector_store/bm25）首次访问才构造——`rag/__init__.py` 因此在包导入期不拉重型依赖。
+`paperflow/rag/` — 检索增强栈，`RAGService` 是唯一门面（indexer 与 retriever 是同一实例的两个视图，共享一把锁，增量写入对查询立即可见）。**懒加载单例**：`get_rag_service(config=None)`（双重检查加锁），所有重量组件（embedder/reranker/vector_store/bm25）首次访问才构造——`rag/__init__.py` 因此在包导入期不拉重型依赖。
 
-端到端链路：**解析**（`GrobidClient` HTTP 解析 TEI XML → `ParsedDoc`；GROBID 不可达时回退 `PyMuPDFParser` 字体启发式分节；按 (path, mtime, size) 缓存）→ **分块**（`AcademicChunker`：按节切 → 句界装窗 512/overlap 64——不切句、重叠取上一窗尾完整句、单句超长回退 token 滑窗；块首行 `context_prefix` 逐窗拼「标题 > 章节」前缀（PDF=GROBID 主标题，笔记=首个 `# ` 行），切块前丢弃判据：参考文献 + 期刊样板章节（`_DROP_HEADS`：致谢/资助/利益冲突/数据可用性等，标题子串匹配）+ 解析残渣正文（<12 token 且无句末标点的微碎片/空正文）；Chunk id = sha1(path:index) 幂等）→ **索引**（`RagIndexer` 增量扫描，state 文件 `index_state.json` 带**配方哈希**（`_recipe_hash`，输入含 `RECIPE_LOGIC_REVISION` 与 chunker 的 max/overlap、indexer 的 table_text_limit、embedding 的 embed_model；指纹不符放弃旧状态全量重扫重嵌，改切块参数自动失效；GROBID 降级不纳入）；表格/图注转独立块（heading 标 `[表格]`/`[图注]`，表格截断 8000 字符）；文档级「删旧建新」（`doc_chunk_ids` 定点取旧块 id），Milvus upsert + BM25 同步；含一致性恢复）→ **检索**（`Retriever` 混合：query 侧加指令前缀（`_QUERY_INSTRUCTION`，Qwen3 官方 Instruct 格式）编码；BM25 top-30 + 向量 top-30（可按 source=note/pdf 过滤）→ RRF 融合 → 取 max(2×top_k, `rag.retriever.rerank_candidates`（默认来自 `RERANK_CANDIDATES=24`）) 个候选 → `RagReranker` 重排 → 有序 Chunks；零全表扫描：向量路元数据随结果带回、BM25 路定点 `fetch_by_ids` 补齐）。评测（代码与产物都在 scripts/rag/ 下，gitignored；每个实验目录自成 `goldens/`（题集）+ `results/`（存档））：总方案 `scripts/rag/实验方案.md`；检索侧 `scripts/rag/retrieval_eval/run_eval.py`（黄金集 `goldens/rag_golden.jsonl`，指标 hit_rate@3/5/10 / MRR，纯脚本无 LLM judge；`strict_hit_rate@10` 已于 2026-10-05 移除——它分母含无 heading 的题（满分上限 12/43）且只看该文档排名第一的块，章节级评测改由 `scripts/rag/chunking_eval/` 的区间级指标承担）；回答侧 `scripts/rag/answer_eval/run_answer_eval.py` + `answer_evaluation.py`（忠实度/答题相关性 LLM-judge + `check_citations` 引用校验，`aggregate` 聚合、失败题不进分母）；切块侧 `scripts/rag/chunking_eval/`（Chroma 式 span recall/precision/IoU + 内在体检）；参数标定 `scripts/rag/calibration/`。
+端到端链路：**解析**（`pdf_extract`：PyMuPDF 本地版面解析，按字号还原章节标题并分级、按阅读顺序合段，每个渲染块带页码与四边包围盒；同一模块另出两条轻路径 `pdf_title` / `first_page_text`；**无外部服务、无降级分支**）→ **分块**（`AcademicChunker`：按节切 → 句界装窗 512/overlap 64——不切句、重叠取上一窗尾完整句、单句超长回退 token 滑窗；丢弃判据：参考文献 + 期刊样板章节（`_DROP_HEADS`：致谢/资助/利益冲突/数据可用性等，标题子串匹配）+ 解析残渣正文（<12 token 且无句末标点的微碎片/空正文）；**块文本存干净正文**，「标题 > 章节位」由 `indexed_text()` 在使用点现拼（章节位 = `heading or caption`）；Chunk id = sha1(绝对路径:index) 幂等）→ **索引**（`RagIndexer` 增量扫描，只扫 `pdf_dir`；state 文件 `index_state.json` 带**配方哈希**（`_recipe_hash`，输入含 `RECIPE_LOGIC_REVISION` 与 chunker 的 max/overlap、embedding 的 embed_model；指纹不符放弃旧状态全量重扫重嵌，改切块参数自动失效）；**图/表各成媒体块**（注文进 `caption` 字段、区域内文字进 `text`，`chunk_type` 记 figure/table，位置取区域包围盒；定位由 `vision` 提供，是 `rag → vision` 的唯一一条边且惰性 import）；文档级「删旧建新」（`doc_chunk_ids` 定点取旧块 id），Milvus upsert + BM25 同步（两侧用同一份带前缀文本）；含一致性恢复）→ **检索**（`Retriever` 混合：query 侧加指令前缀（`_QUERY_INSTRUCTION`，Qwen3 官方 Instruct 格式）编码；BM25 top-30 + 向量 top-30 → RRF 融合 → 取 max(2×top_k, `rag.retriever.rerank_candidates`（默认来自 `RERANK_CANDIDATES=24`）) 个候选 → `RagReranker` 重排 → 有序 Chunks；零全表扫描：向量路元数据随结果带回、BM25 路定点 `fetch_by_ids` 补齐）。评测（代码与产物都在 scripts/rag/ 下，gitignored；每个实验目录自成 `goldens/`（题集）+ `results/`（存档））：总方案 `scripts/rag/实验方案.md`；检索侧 `scripts/rag/retrieval_eval/run_eval.py`（黄金集 `goldens/rag_golden.jsonl`，指标 hit_rate@3/5/10 / MRR，纯脚本无 LLM judge；`strict_hit_rate@10` 已于 2026-10-05 移除——它分母含无 heading 的题（满分上限 12/43）且只看该文档排名第一的块，章节级评测改由 `scripts/rag/chunking_eval/` 的区间级指标承担）；回答侧 `scripts/rag/answer_eval/run_answer_eval.py` + `answer_evaluation.py`（忠实度/答题相关性 LLM-judge + `check_citations` 引用校验，`aggregate` 聚合、失败题不进分母）；切块侧 `scripts/rag/chunking_eval/`（Chroma 式 span recall/precision/IoU + 内在体检）；参数标定 `scripts/rag/calibration/`。
 
 存储与模型：
-- `VectorStore` — Milvus（`pymilvus.MilvusClient`，单 collection `config.rag.storage.collection`="paperflow"）；`config.rag.storage.uri` 默认 `http://localhost:19530` 连 Standalone（`docker compose up -d` 起 etcd+minio+milvus，gRPC 19530 / 健康检查 9091，数据落 `data/infra/milvus/`）；传本地文件路径则走 Milvus Lite 内嵌（单测用，无需常驻服务）。**每个 RPC 都传超时**（`rag.storage.timeout` 读路径 5s / `write_timeout` 写路径 60s）：该参数在 pymilvus 里既是单次尝试的 gRPC 截止时间、也是整个重试循环的预算（不设则默认重试最多 75 次、退避到 3 秒，服务不可达时一次调用能白等几分钟）；失败交给检索侧熔断器
+- `VectorStore` — Milvus（`pymilvus.MilvusClient`，单 collection `config.rag.storage.collection`="paperflow"）。**块元数据**：`path`（绝对路径）、`title`、`heading`、`caption`、`chunk_type`、`page_num_int`、`top_int`、`position_int`、`mtime`、`created_at`；**集合结构自愈**（启动比对所需字段，缺即删集合重建并提示需全量重建）。`config.rag.storage.uri` 默认 `http://localhost:19530` 连 Standalone（`docker compose up -d` 起 etcd+minio+milvus，gRPC 19530 / 健康检查 9091，数据落 `data/infra/milvus/`）；传本地文件路径则走 Milvus Lite 内嵌（单测用，无需常驻服务）。**每个 RPC 都传超时**（`rag.storage.timeout` 读路径 5s / `write_timeout` 写路径 60s）：该参数在 pymilvus 里既是单次尝试的 gRPC 截止时间、也是整个重试循环的预算（不设则默认重试最多 75 次、退避到 3 秒，服务不可达时一次调用能白等几分钟）；失败交给检索侧熔断器
 - `RetrievalBreaker`（`rag/services/breaker.py`）— 检索侧熔断器（closed/open/half-open，冷却 60s）：Milvus 不可达时跳闸，跳闸期间 `rag_retrieve` 直接返回降级文本、不进检索（省掉每次白等一轮连接超时），冷却到期自动放行一次探测、成功即复位，因此 Milvus 恢复不需要重启进程。只保护检索侧，索引写入不被检索侧的瞬时故障牵连；`RAGService.milvus_available()` 是带 TTL 的可连性探测（30s），不在热路径上
-- `Bm25Index` — rank_bm25 + jieba；是向量库文本的**投影**，启动时从 `store.all_documents()` 重建
+- `Bm25Index` — rank_bm25 + jieba；是向量库文本的**投影**，启动时从 `store.all_documents()` 重建（建索引用的是 `indexed_text()` 拼出的带前缀文本，与向量编码同源）
 - `RagEmbedder`（`rag/encoders/embedder.py`）— 云端 `Qwen/Qwen3-Embedding-0.6B`（OpenAI 兼容 `/v1/embeddings`，默认硅基流动；1024 维，客户端 L2 归一化，维度走静态映射不发网络）；`RagReranker`（`rag/encoders/reranker.py`）— 云端 `Qwen/Qwen3-Reranker-0.6B`（`/v1/rerank`，返回降序下标）。协议 `Embedder`/`Reranker` 与实现同文件同层——**两件都只服务 RAG**（意图层曾有自己的编码器实例，随混合路由退役），与稀疏的 `Bm25Index` 并列在 `rag/encoders/`（三者同属编码器家族，产出形态分别是稀疏权重/向量/分数）；`core/llm` 因此只剩 LLM 客户端与结构化输出
 - 端点/模型经 `config.rag.embedding` 配置；本地 sentence-transformers 栈已退役（无 `resolve_model_dir`、无本地权重下载），api_key 缺失时路由退纯 BM25、检索跳过稠密路、索引明确报错
 
-消费方：`RagRetrieveTool`（`tools/rag/`，`rag_retrieve`：参数 query / top_k / source（enum 限定 note=笔记 / pdf=论文，缺省两处都搜），每条命中展示来源、路径与正文摘录前 400 字）**装配进 `rag-agent`**——RAG 一域的读写同归一处（检索是读侧、索引是写侧，都由它的责任人独占）；note-agent / research-agent / paper-agent 需要检索时派发 `rag-agent`。**索引写入已与写工具解耦**：`write_file` / `edit_file` / `fetch_pdf` 写盘后不再内联触发入库，改由内容生产者（note-agent / research-agent / paper-agent）写盘或删除成功后**派发 `rag-agent`**（`index_paths` 入库 / `reindex_all` 删除后收敛）；代价是这层一致性由契约承担而非代码保证。**`ReadPdfTool` 不经本栈**——它走工具层自己的本地抽取（`tools/file/pdf_extract.py`：PyMuPDF 直读、按版面还原章节标题、`(路径, mtime, 大小)` 进程内缓存），本栈的 GROBID/PyMuPDF 解析只服务索引与语料标题索引（`corpus.py`）。RAG 的 `RagEmbedder` 由 `RAGService` 内部按 `config.rag.embedding` 惰性构造——**现在全仓只此一处用它**（意图层曾有自己的编码器实例，随混合路由退役，记忆检索为纯 SQL LIKE 不用向量）。
+消费方：`RagRetrieveTool`（`tools/rag/`，`rag_retrieve`：参数 query / top_k，每条命中**一行固定四列**「绝对路径 | 论文标题 | 章节 | 摘录」，表头写明列序——元数据靠子任务的最终回答逐字上行）**装配进 `rag-agent`**——RAG 一域的读写同归一处（检索是读侧、索引是写侧，都由它的责任人独占）；note-agent / research-agent / paper-agent 需要检索时派发 `rag-agent`。**索引写入已与写工具解耦**：写盘后不再内联触发入库，改由**论文 PDF 的生产者**（paper-agent 下载、用户手动拷入）写盘或删除成功后**派发 `rag-agent`**（`index_paths` 入库 / `reindex_all` 删除后收敛）——笔记与选题产物不进知识库，那两类生产者不再需要触达检索责任人；代价是这层一致性由契约承担而非代码保证。**`ReadPdfTool` 不经索引栈**——它走同一模块的 markdown 出口（`(路径, mtime, 大小)` 进程内缓存），不碰服务、也不占索引/检索那把全局锁；代码共享（一个实现点）与运行期隔离（各走各的出口）两件事同时成立。RAG 的 `RagEmbedder` 由 `RAGService` 内部按 `config.rag.embedding` 惰性构造——**现在全仓只此一处用它**（意图层曾有自己的编码器实例，随混合路由退役，记忆检索为纯 SQL LIKE 不用向量）。
 
 ### Citations
 
-`paperflow/citations/` — 引用管理（溯源落地）。`references.bib` 是引用库**真相源**：追加 + 按条目原文块删除，两种原语都不重写其余内容（用户手工维护的分节注释与未触碰条目逐字节保留）。按角色分四层：`storage/bib.py` 是文件读写原语（原文解析 `parse_entries` 与条目文本生成 `entry_text` 一对，查找/去重/追加/按 key 删除）；`services/corpus.py` 是「语料里有哪些论文」的易变投影（note H1 + PDF 解析标题 → 全标题精确匹配，按 (path, mtime_ns) 增量重建；`corpus_titles.json` 是它的磁盘缓存，首次 `refresh` 读回、缺失或损坏按冷启动重建、本轮无变更不重写——不读回就等于每次启动把整库 PDF 重解析一遍）；`services/keys.py` 是引用键生成规则；`services/manager.py` 编排：引用解析（干净全标题/路径 → key+status）、入库（语料内 PDF / 库外 EXTERNAL）、去重、渲染（author-year/numbered/bibtex/gbt7714）、调和（渲染视图回填空字段，bib 文件不动）；`schemas/` 是跨层数据模型（BibEntry / ResolvedCitation）。懒加载单例 `get_citation_manager()` 在包 `__init__`，重组件（corpus 索引、TitleExtractor）首次使用才构造。
+`paperflow/citations/` — 引用管理（溯源落地）。`references.bib` 是引用库**真相源**：追加 + 按条目原文块删除，两种原语都不重写其余内容（用户手工维护的分节注释与未触碰条目逐字节保留）。按角色分四层：`storage/bib.py` 是文件读写原语（原文解析 `parse_entries` 与条目文本生成 `entry_text` 一对，查找/去重/追加/按 key 删除）；`services/corpus.py` 是「语料里有哪些论文」的易变投影（只跟踪 PDF：标题走解析器轻路径、书目走首页提取器 → 全标题精确匹配，按 (path, mtime_ns) 增量重建；`corpus_titles.json` 是它的磁盘缓存，首次 `refresh` 读回、缺失或损坏按冷启动重建、本轮无变更不重写——不读回就等于每次启动把整库 PDF 重读一遍首页并重跑一遍书目提取）；`parsers/paper_meta_extract.py` 是首页书目提取（作者/年份/期刊，取不到即如实为空）；`services/keys.py` 是引用键生成规则；`services/manager.py` 编排：引用解析（干净全标题/路径 → key+status）、入库（语料内 PDF / 库外 EXTERNAL）、去重、渲染（author-year/numbered/bibtex/gbt7714）、调和（渲染视图回填空字段，bib 文件不动）；`schemas/` 是跨层数据模型（BibEntry / ResolvedCitation）。懒加载单例 `get_citation_manager()` 在包 `__init__`，重组件（corpus 索引、首页书目提取器）首次使用才构造。
 
 6 个引用工具（`tools/citations/`）：**只装配 citation-agent**——全量 6 件 + `read_pdf`（仅读首页补元数据）；`sync_citations`/`remove_citation` 这两个写入口也只有它装。引用库的读写是它的领域：note-agent / research-agent 要查 key、入库、渲染参考文献，review-agent 要核验 `[来源:key§节]` 的 key 是否真实存在（不信任标注本身），都**派发 citation-agent**，自己一件不装——review-agent 为此从叶子变成只派 citation-agent 的派发方。
 
@@ -275,13 +274,13 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 另有**动态 MCP 工具**（不计入 12 的原子工具清单）：config.yaml 顶层 `mcp_servers` 声明的 server，其工具经 `paperflow/core/mcp/` 桥接为原生 Tool 注入 agent（命名 `mcp__<server>__<tool>`，与 skill 工具同一 `merge_tools` 装配缝），**写类工具可见但需逐次用户确认**（按 readOnlyHint 分类，缺注解按「可能写」处理），config 的 `write_tools` 预批准豁免；`readOnlyHint=true` 只读工具自动放行。配置示例见 `docs/learning/11-MCP客户端.md`（docs/ 为本地文档，不入库）。
 
-- `file/` — 读/写/编辑/glob/grep/read_pdf（+ `atomic.py` 原子写盘：文本 `atomic_write` / bytes `atomic_write_bytes`；`pdf_extract.py` 供 read_pdf 本地抽取：PyMuPDF 直读、按版面还原章节标题、`(路径, mtime, 大小)` 进程内缓存，不经 RAG 栈）
+- `file/` — 读/写/编辑/glob/grep/read_pdf/extract_title（+ `atomic.py` 原子写盘：文本 `atomic_write` / bytes `atomic_write_bytes`；抽取实现与标题/首页文本的轻路径都在 `rag/parsers/pdf_extract.py`——代码同一个实现点，运行期各走各的出口，读 PDF 不经索引栈）
 - `search/` — `fetch_pdf`（下载：SSRF 校验 + 写盘后索引热更新；url 取检索结果（含 MCP 工具结果）中的 PDF 链接）；`_common.py` 只保留标题规范化 helper 并再导出 `get_run_state`（兼容既有导入点），搜索去重池已收进 `core/agent/state.py` 的 `RunState`（核心运行时按 `wants_run_state` opt-in 懒注入：failed_urls 负缓存 + downloaded 成功短路）。检索收敛到 MCP（paper-search-mcp），直连 web_search/clients 已退役（2026-10-02，docs/adr/0012-mcp-client.md）
 - `review/` — `submit_review` / `submit_download_review`（审查裁决工具）+ `format_check`（笔记标题树对模板；模板取自 review-note skill 的资源，经 `SkillRegistry.resource_path` 解析成绝对路径——工具与审查方读同一份，不按工作目录拼相对路径）+ `lookup_venue_rank`（期刊/会议等级查询——下载门禁的一个维度，同归审查域）
 - `citations/` — 6 引用工具（`lookup_citation`/`add_citation`/`format_citations`/`list_citations` + `sync_citations`/`remove_citation`；只装配 **citation-agent**（全量六件 + `read_pdf` 补元数据），其余 agent 需要时派发它）
-- `rag/` — `rag_retrieve`（`RagRetrieveTool`：惰性取 RAGService 单例 + 持锁检索 + 格式化结果）+ `index_paths`（批量入库语料文件，逐条回报 indexed/skipped/empty/failed）+ `reindex_all`（全量收敛：补缺 + 清掉已删文件的索引块）+ `index_status`（只读体检：块数/篇数、幽灵块、未入库、配方是否一致、PDF 解析器分布）；四件只装 `rag-agent`
+- `rag/` — `rag_retrieve`（`RagRetrieveTool`：惰性取 RAGService 单例 + 持锁检索 + 格式化结果）+ `index_paths`（批量入库语料文件，逐条回报 indexed/skipped/empty/failed）+ `reindex_all`（全量收敛：补缺 + 清掉已删文件的索引块）+ `index_status`（只读体检：块数/篇数、幽灵块、未入库、配方是否一致）；四件只装 `rag-agent`
 - `vision/` — `analyze_figures`（`needs_parent=True`：视觉 LLM 调用归属父 agent 轮次进审计）。图提取走 pdffigures2 管线（proposal 候选 + 打分选优 + no-overlap 互斥），随后视觉模型结构化看图分析 + 嵌入落盘；key 缺失/无图/失败全降级
-- `memory/` — 11 个记忆工具（`get_memory_tools()` 惰性单例 + `set_memory_context`/`get_memory_context` 运行时上下文；blocks/recall/paper_lists 三组；装配 supervisor，子 agent 各装子集）
+- `memory/` — 10 个记忆工具（`get_memory_tools()` 惰性单例 + `set_memory_context`/`get_memory_context` 运行时上下文；blocks/recall/paper_lists 三组；装配 supervisor，子 agent 各装子集）
 - `orchestration/` — `spawn_sub_agent`（唯一的调度工具；见下）
 - `common/` — `make_tools(config, tool_items, default_write_root=None)` 装配工厂：按 `root_hints` 生成 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）、`default_write_root` 盖章到 write_file（note-agent→note、research-agent→research；**只是没指定时的兜底**——supervisor 把用户点名的保存位置拼进子任务文本，领域 agent 收到位置就用它）、注入 `_config`；`_http.py` 共享 HTTP 基础设施
 
@@ -329,8 +328,7 @@ corpus:   note_dir / pdf_dir / research_dir / citations_bib_path
 intent:   enabled / history_messages
 rag:      embedding{...,batch_size,timeout,max_retries} / retriever{top_k,bm25_topk,vector_topk,rerank_candidates,rrf_k}
           query_rewrite{...,history_messages} / chunker{max_tokens,overlap_tokens}
-          indexer{table_text_limit} / storage{uri,collection,batch_size}
-          grobid{endpoint,timeout} / tools{excerpt_chars}
+          storage{uri,collection,batch_size} / tools{excerpt_chars}
 memory:   sleeptime_enable / sleeptime_agent_frequency
 session:  resume_replay / resume_replay_limit
 agents:   timeouts（自由 dict，YAML-only）
@@ -348,14 +346,12 @@ mcp_servers                     # 保留顶层（本身即映射）
 | `memory.sleeptime_enable` / `memory.sleeptime_agent_frequency` | 后台整合开关 / 每 N 条新消息检查一次（默认 50） |
 | `corpus.note_dir` / `corpus.pdf_dir` / `corpus.research_dir` | 语料库数据源根（note/pdf/research，个人绝对路径，**无默认值**，须经 config.yaml/env） |
 | `corpus.citations_bib_path` | references.bib 路径（引用库真相源）。默认 `workspace/citations/references.bib`，可指向任意论文项目目录；空则回退默认 |
-| `rag.grobid.endpoint` / `rag.grobid.timeout` | GROBID 服务地址（默认 `http://localhost:8070`）/ 请求超时（默认 60s，来自 `GROBID_TIMEOUT`） |
 | `rag.storage.uri` / `rag.storage.collection` / `rag.storage.batch_size` | Milvus 地址（默认 `http://localhost:19530`）/ 集合名（默认 `paperflow`）/ 全表分页行数（默认 1000） |
 | `rag.storage.timeout` / `rag.storage.write_timeout` | Milvus 单次 RPC 超时（秒）：读路径默认 5、写路径默认 60（批量入库本身耗时故更宽松）。该值同时是 gRPC 截止时间与整个重试循环预算 |
 | `rag.embedding` (`EmbeddingConfig`) | RAG 云端嵌入 + 精排：base_url / api_key / embed_model（Qwen3-Embedding-0.6B）/ rerank_model（Qwen3-Reranker-0.6B）/ batch_size / timeout / max_retries；api_key 留空不崩启动，路由退纯 BM25、检索跳稠密路 |
 | `rag.retriever` (`RetrieverConfig`) | 混合检索参数：top_k / bm25_topk / vector_topk / rerank_candidates / rrf_k（唯一声明点 `paperflow/config.py`） |
 | `rag.query_rewrite` (`QueryRewriteConfig`) | query 改写模型三元组 base_url / api_key / model（留空逐项继承 `llm`；model 留空 = 沿用主模型）+ history_messages（默认 6） |
 | `rag.chunker` (`ChunkerConfig`) | max_tokens / overlap_tokens（唯一声明点 `paperflow/config.py`；改动触发配方哈希全量重索引） |
-| `rag.indexer.table_text_limit` | 表格块文本截断上限（默认 8000） |
 | `rag.tools.excerpt_chars` | 工具输出单条命中正文摘录上限（默认 400） |
 | `intent.enabled` | 意图识别总开关（bool，默认 `False` = 纯 ReAct；env `PAPERFLOW_INTENT_ENABLED`）。关时整套意图层不挂载：不装载知识库、不注入 INTENT 块与规则块 |
 | `intent.history_messages` | 判定参考的最近对话条数（int，默认 6）。运行时按它截历史切片——只取 user/assistant 正文，不含工具结果 |
@@ -364,7 +360,7 @@ mcp_servers                     # 保留顶层（本身即映射）
 | `agents.timeouts` | 子 agent 超时覆盖表（note-agent 900 / paper-agent 420 / review-agent 300 / research-agent 1800 / rag-agent 900 / citation-agent 300 / memory-agent 180;按审计数据校准,见 spec 2026-09-05-agent-timeout-recalibration）；未命中的 agent 回退类默认 120s；自由 dict，**仅 YAML**（不派生 env） |
 | `mcp_servers` | MCP server 接入配置（顶层 dict，仅 YAML 无环境变量形态）：每 server 声明 transport(stdio/http)/command/args/url/agents/超时/工具名单；连接失败跳过不挡启动，写类工具默认禁用。可注释示例段见 `docs/learning/11-MCP客户端.md`（gitignored 本地文档） |
 
-环境变量（按路径派生，示例非全集）：`PAPERFLOW_LLM_API_KEY` / `PAPERFLOW_LLM_BASE_URL` / `PAPERFLOW_LLM_MODEL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_RUNTIME_WORKSPACE` / `PAPERFLOW_RUNTIME_AGENTS_DIR` / `PAPERFLOW_RUNTIME_MAX_RISK` / `PAPERFLOW_CORPUS_NOTE_DIR` / `PAPERFLOW_CORPUS_PDF_DIR` / `PAPERFLOW_CORPUS_RESEARCH_DIR` / `PAPERFLOW_CORPUS_CITATIONS_BIB_PATH` / `PAPERFLOW_INTENT_ENABLED` / `PAPERFLOW_INTENT_HISTORY_MESSAGES` / `PAPERFLOW_INTENT_JEV_API_KEY` / `PAPERFLOW_INTENT_JEV_BASE_URL` / `PAPERFLOW_INTENT_JEV_MODEL` / `PAPERFLOW_RAG_EMBEDDING_API_KEY` / `PAPERFLOW_RAG_EMBEDDING_BASE_URL` / `PAPERFLOW_RAG_EMBEDDING_EMBED_MODEL` / `PAPERFLOW_RAG_EMBEDDING_RERANK_MODEL` / `PAPERFLOW_RAG_RETRIEVER_TOP_K` / `PAPERFLOW_RAG_RETRIEVER_RERANK_CANDIDATES` / `PAPERFLOW_RAG_QUERY_REWRITE_MODEL` / `PAPERFLOW_RAG_CHUNKER_MAX_TOKENS` / `PAPERFLOW_RAG_CHUNKER_OVERLAP_TOKENS` / `PAPERFLOW_RAG_INDEXER_TABLE_TEXT_LIMIT` / `PAPERFLOW_RAG_STORAGE_URI` / `PAPERFLOW_RAG_STORAGE_COLLECTION` / `PAPERFLOW_RAG_STORAGE_TIMEOUT` / `PAPERFLOW_RAG_STORAGE_WRITE_TIMEOUT` / `PAPERFLOW_RAG_GROBID_ENDPOINT` / `PAPERFLOW_RAG_TOOLS_EXCERPT_CHARS` / `PAPERFLOW_MEMORY_SLEEPTIME_ENABLE` / `PAPERFLOW_MEMORY_SLEEPTIME_AGENT_FREQUENCY` / `PAPERFLOW_SESSION_RESUME_REPLAY` / `PAPERFLOW_SESSION_RESUME_REPLAY_LIMIT`。`agents.timeouts` 与 `mcp_servers` 是自由 dict，仅 YAML 可配。env 恒为字符串，按目标字段当前类型做 bool/int 转换。运营类 env（`PAPERFLOW_SKIP_BOOTSTRAP` / `PAPERFLOW_FILE_MODE`）与 `PaperFlowConfig` 无关，不在本表。
+环境变量（按路径派生，示例非全集）：`PAPERFLOW_LLM_API_KEY` / `PAPERFLOW_LLM_BASE_URL` / `PAPERFLOW_LLM_MODEL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_RUNTIME_WORKSPACE` / `PAPERFLOW_RUNTIME_AGENTS_DIR` / `PAPERFLOW_RUNTIME_MAX_RISK` / `PAPERFLOW_CORPUS_NOTE_DIR` / `PAPERFLOW_CORPUS_PDF_DIR` / `PAPERFLOW_CORPUS_RESEARCH_DIR` / `PAPERFLOW_CORPUS_CITATIONS_BIB_PATH` / `PAPERFLOW_INTENT_ENABLED` / `PAPERFLOW_INTENT_HISTORY_MESSAGES` / `PAPERFLOW_INTENT_JEV_API_KEY` / `PAPERFLOW_INTENT_JEV_BASE_URL` / `PAPERFLOW_INTENT_JEV_MODEL` / `PAPERFLOW_RAG_EMBEDDING_API_KEY` / `PAPERFLOW_RAG_EMBEDDING_BASE_URL` / `PAPERFLOW_RAG_EMBEDDING_EMBED_MODEL` / `PAPERFLOW_RAG_EMBEDDING_RERANK_MODEL` / `PAPERFLOW_RAG_RETRIEVER_TOP_K` / `PAPERFLOW_RAG_RETRIEVER_RERANK_CANDIDATES` / `PAPERFLOW_RAG_QUERY_REWRITE_MODEL` / `PAPERFLOW_RAG_CHUNKER_MAX_TOKENS` / `PAPERFLOW_RAG_CHUNKER_OVERLAP_TOKENS` / `PAPERFLOW_RAG_STORAGE_URI` / `PAPERFLOW_RAG_STORAGE_COLLECTION` / `PAPERFLOW_RAG_STORAGE_TIMEOUT` / `PAPERFLOW_RAG_STORAGE_WRITE_TIMEOUT` / `PAPERFLOW_RAG_TOOLS_EXCERPT_CHARS` / `PAPERFLOW_MEMORY_SLEEPTIME_ENABLE` / `PAPERFLOW_MEMORY_SLEEPTIME_AGENT_FREQUENCY` / `PAPERFLOW_SESSION_RESUME_REPLAY` / `PAPERFLOW_SESSION_RESUME_REPLAY_LIMIT`。`agents.timeouts` 与 `mcp_servers` 是自由 dict，仅 YAML 可配。env 恒为字符串，按目标字段当前类型做 bool/int 转换。运营类 env（`PAPERFLOW_SKIP_BOOTSTRAP` / `PAPERFLOW_FILE_MODE`）与 `PaperFlowConfig` 无关，不在本表。
 
 ### Key design decisions
 
