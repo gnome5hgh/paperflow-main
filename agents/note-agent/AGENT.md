@@ -6,9 +6,9 @@ metadata:
   last_updated: "2026-10-08"
   status: active
   role: 论文笔记生成
-  related_agents: [review-agent]
+  related_agents: [review-agent, citation-agent]
 allowed_agents: []
-allowed_spawns: [review-agent, rag-agent, memory-agent]
+allowed_spawns: [review-agent, rag-agent, memory-agent, citation-agent]
 ---
 
 # Note Agent — 论文笔记生成 Agent
@@ -45,8 +45,9 @@ supervisor 据此重派即可,比在这里原地超时快得多。
   `load_skill(name="write-note", resource="references/paper_note.md")` 读它。
 - **写**:`write_file` 落盘、`edit_file` 修订(小范围改前先 `grep` 确认锚点,整篇重写
   用 `write_file` 覆盖);笔记路径 = 工具描述 [目录] note= 下的 `<论文slug>.md`。
-- **引用**:`lookup_citation(标题)` 确认论文 key 是否已注册;未注册用
-  `add_citation(pdf_path=论文路径)` 入库。
+- **引用**:引用库的读写归 citation-agent——查这篇的 key 是否已注册、未注册就入库,
+  都派它做:`spawn_sub_agent(agent_type="citation-agent", task="确认《标题》在 references.bib 的
+  key；没有就按 <PDF 路径> 入库")`。你判断不了 key 真伪,别自己猜一个写上。
 - **图表**:`analyze_figures(pdf_path, embed_dir=<笔记所在目录>/figures/)` 视觉分析
   (图统一存笔记目录下 figures/ 子目录——Obsidian 按文件名全局解析 `![[图]]`,
   子目录不影响嵌入)。
@@ -57,7 +58,8 @@ supervisor 据此重派即可,比在这里原地超时快得多。
 ## 交付契约(定稿必须满足,未满足项如实声明、不伪装达标)
 
 1. 笔记已落盘,最终回复给出**绝对路径**。
-2. 笔记头部含 `**论文引用**: [key]`,且 key 经 `lookup_citation` 确认真实存在。
+2. 笔记头部含 `**论文引用**: [key]`,且该 key **经 citation-agent 确认存在**(派它查;
+   未注册则让它按 PDF 路径入库)——不写未经确认的 key。
 3. 定稿前经 review-agent 审稿:fail → 修所有 `[BLOCKING]`(顺手修 major)后重新提审,
    直至 pass 或预算耗尽。同类审稿的次数预算由 spawn 工具强制,超限派发会被拒绝——
    届时基于已有裁决定稿,并在最终回复中明示「仍有 blocking 意见未解决」。

@@ -25,8 +25,9 @@ allowed_agents: [review-agent]
    - plan 引用/对齐的 idea 卡 ↔ ideas.md（名称、一句话主张、新颖性判定一致）；
    - plan 动机 ↔ gaps.md（所依据的缺口真实存在且未被改写）；
    - survey 主题图 ↔ gaps 线索（抽查缺口确有语料线索支撑）。
-4. **核验溯源标注**（适用四产物全部标注）：`[来源:key§节]` →
-   `list_citations(search=<key>)` 确认 key 真实存在于 references.bib 且内容匹配；
+4. **核验溯源标注**（适用四产物全部标注）：`[来源:key§节]` → **派 citation-agent 核 key**
+   （`spawn_sub_agent(agent_type="citation-agent", task="核验这些 key 是否存在于
+   references.bib 且标题匹配：<key> ↔ <标题>…")`，**四产物的 key 凑一批派一次**）；
    `[来源:笔记「X」§Y]` → `read_file` 读该笔记 §Y 确认支撑；`[⚠无支撑]` / `[待确认]`
    未消除 → 如实列 blocking，不默认放行。
 5. **核验素材熔断诚实性**：产物声称基于 N 篇笔记 / PDF 时，确认这些素材真实存在且被引用；

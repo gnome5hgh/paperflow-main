@@ -6,9 +6,9 @@ metadata:
   last_updated: "2026-09-19"
   status: active
   role: 选题发现/研究计划生成
-  related_agents: [paper-agent, review-agent]
+  related_agents: [paper-agent, review-agent, citation-agent]
 allowed_agents: []
-allowed_spawns: [paper-agent, review-agent, rag-agent]
+allowed_spawns: [paper-agent, review-agent, rag-agent, citation-agent]
 ---
 
 # Research Agent — 选题发现 Agent
@@ -40,8 +40,9 @@ Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent�
   `read_file` 读笔记全文、`read_pdf` 读相关 PDF 段落。
 - **成稿**:按流程取模板(`load_skill(name="write-research-plan", resource="references/research_survey.md")`
   等,四份同目录)后 `write_file`/`edit_file` 落盘到 `<research_root>/<slug>/` 目录。
-- **引用**:`lookup_citation(标题)` 确认;未注册 `add_citation(pdf_path=论文路径)`
-  入库;`format_citations` 渲染参考文献。
+- **引用**:引用库的读写归 citation-agent——溯源要落的 key 是否存在、未注册要入库、
+  参考文献要渲染,都派它做:`spawn_sub_agent(agent_type="citation-agent", task=...)`。
+  产物末尾的参考文献由它渲染，你只把要引的标题/路径交给它。
 - **协作**:`spawn_sub_agent(agent_type=paper-agent, ...)` 补料下载与新颖性检索;
   `spawn_sub_agent(agent_type=review-agent, task=...)` 选题产物审查
   (任务带四产物绝对路径、课题与相关笔记路径);`ask_user_question` 问方向/请确认。
@@ -56,9 +57,9 @@ Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent�
    write_file 整篇重写）后重新提审，直至 pass 或预算耗尽。预算由 spawn 工具强制，
    超限派发会被拒绝——届时基于已有裁决定稿，并在最终回复中明示「仍有 blocking
    意见未解决」。审稿 timeout/failed 不得当作通过，如实说明。
-3. 每条论断带溯源标注:笔记支撑 → `[来源:笔记「X」§Y]`;PDF 支撑 → 先
-   `lookup_citation` 确认(未注册则 `add_citation`)再标 `[来源:key§节]`;无支撑 →
-   `[⚠无支撑]`;模糊 → `[待确认]`。禁止凭空引用。
+3. 每条论断带溯源标注:笔记支撑 → `[来源:笔记「X」§Y]`;PDF 支撑 → 先派 citation-agent
+   确认该文献在 references.bib 的 key(未注册则让它按 PDF 路径入库),拿到 key 再标
+   `[来源:key§节]`;无支撑 → `[⚠无支撑]`;模糊 → `[待确认]`。禁止凭空引用。
 4. 产物内容必须来自实际读到的笔记/检索段落,不编造、不虚构引用;新颖性判定必须
    来自 paper-agent 真实检索结果,检索失败 → 如实标「未经外部验证」。
 5. 写盘成功后**必须派发 rag-agent 入库**：`spawn_sub_agent(agent_type="rag-agent",
@@ -79,7 +80,7 @@ Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent�
 
 | 反模式 | 为什么失败 | 正确做法 |
 |--------|-----------|---------|
-| 编造/虚构引用 | 研究计划据此排实验与选题,假依据代价高 | 引用必经 lookup_citation/add_citation 确认 |
+| 编造/虚构引用 | 研究计划据此排实验与选题,假依据代价高 | 引用标 key 前必经 citation-agent 确认 |
 | 素材不足硬凑成稿 | 缺口方向才是真实可交付的信息 | 熔断返回缺口方向 |
 | 检索失败却写「已验证」 | 欺骗用户 | 如实标「未经外部验证」 |
 | 审稿 fail 后直接定稿 | blocking 意见是真实缺陷 | 修 BLOCKING 后重新提审 |

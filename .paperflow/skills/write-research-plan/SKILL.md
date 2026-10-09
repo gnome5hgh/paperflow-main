@@ -32,7 +32,8 @@ allowed_agents: [research-agent]
    （无法交互 → 选综合打分最高者）。
 7. **产出计划**：按模板产出 plan——研究问题 / 核心论点（2–3 个子主张，各带依据 + 推理 +
    风险）/ 论文结构草案 / 任务依赖图 / 证据规划表 / 预期对比对象与数据集 / 风险与 Plan B；
-   正文末尾用 `format_citations` 渲染参考文献。
+   正文末尾的参考文献派 `citation-agent` 渲染——`spawn_sub_agent(agent_type="citation-agent",
+   task="按这些文献渲染参考文献：<标题或 key>…")`。
 8. **诚实性检查**：产物声称基于 N 篇笔记 / PDF 时，确认这些素材真实存在且真的被引用；
    未经外部验证的方向不得写成已验证。
 

@@ -23,4 +23,4 @@
 > 最强反驳 + 回应策略;若核心论点被证伪可转向的备选。
 
 ## 参考文献
-> format_citations 渲染;只含语料库内真实文献或 EXTERNAL。
+> 派 citation-agent 渲染(format_citations);只含语料库内真实文献或 EXTERNAL。
