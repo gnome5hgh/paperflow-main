@@ -22,7 +22,7 @@ vision/
 - **提取与看图两段式**：先 pdffigures2 式管线从 PDF 拿到图区候选（proposal 候选 + 打分选优 + no-overlap 互斥），再由视觉模型结构化看图分析；两段以 `schemas.py` 的数据模型衔接。
 - **全链路降级**：视觉 api_key 缺失、页面无图、管线失败一律降级返回（不抛进 ReAct 循环），调用方拿到的是带原因的不可用结果。
 - **视觉调用归属父轮次**：`analyze_figures` 工具（`tools/vision/`）`needs_parent=True`，视觉 LLM 调用计入父 agent 轮次进审计。
-- **产物落盘**：分析结果与图片嵌入落盘后可供 noter/qa-agent 等引用，路径由工具参数指定。
+- **产物落盘**：分析结果与图片嵌入落盘后可供 `note-agent`（笔记图表节）与 `paper-agent` 引用，路径由工具参数指定。
 
 ## Key Entry Points
 
