@@ -613,7 +613,7 @@ class Agent:
     async def _build_head(self, task: str) -> list[Message]:
         """构建本轮 ReAct 循环的头部消息列表（system 层 + 用户任务）。
 
-        此方法在每个 ReAct 轮次开始时被调用，用于组装 LLM 输入的前置部分（system 消息）。
+        此方法在每次 run 开始时被调用一次（不在 ReAct 轮次内重复），用于组装 LLM 输入的前置部分（system 消息）。
         它按顺序拼接六块内容：
             1. system: AGENT.md 系统提示（来自 agent 配置，定义角色与行为规范）
             2. system: SKILLS 清单块（L1 渐进披露清单，若装配了 SkillRegistry 且有可见 skill）
