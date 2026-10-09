@@ -68,7 +68,7 @@ _POLL_INTERVAL_S = 2.0       # 端口轮询间隔
 _PROBE_TIMEOUT_S = 1.0       # 单次端口连通探测超时
 _COMPOSE_TIMEOUT_S = 600.0   # docker compose up -d 上限（首启可能拉镜像）
 
-_DEGRADE_NOTE = "RAG/PDF 解析功能降级，REPL 仍可正常使用"
+_DEGRADE_NOTE = "RAG 检索功能降级，REPL 仍可正常使用"
 _NO_DOCKER_WARN = f"未检测到 docker，无法自动拉起依赖服务（Milvus）；{_DEGRADE_NOTE}"
 _NO_COMPOSE_WARN = f"未找到 docker-compose.yml（当前目录与安装目录均无），无法自动拉起依赖服务；{_DEGRADE_NOTE}"
 

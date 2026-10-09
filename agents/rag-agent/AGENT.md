@@ -3,10 +3,10 @@ name: rag-agent
 description: 论文语料检索与索引的维护者（RAG 一域）。检索：按 query 取回论文命中段落与出处——用户问「我的语料里关于 X 说了什么」或要「找相关材料」时由它取材料；索引：论文 PDF 的新增/变更入库、删除后收敛、全量重建与索引体检。触发：论文生产者写盘或删除后派发，或用户要求"把这些论文入库""重建索引""索引好像不对，刷一下"。边界：不读单份文件做整篇分析（按路径读归 paper-agent / note-agent）、不改语料文件、不产出面向用户的成品回答。
 metadata:
   version: "2.1.0"
-  last_updated: "2026-10-09"
+  last_updated: "2026-10-10"
   status: active
   role: 语料检索与索引维护
-  related_agents: [supervisor, paper-agent, note-agent, research-agent]
+  related_agents: [supervisor, paper-agent, research-agent]
 allowed_spawns: []
 ---
 

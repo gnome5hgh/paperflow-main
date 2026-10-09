@@ -18,7 +18,7 @@ tools/
 ├─ citations/      # 6 引用工具（lookup/add/format/list/sync/remove；全部只装 citation-agent）
 ├─ rag/            # rag_retrieve + index_paths + reindex_all + index_status（读写与体检同域，只装 rag-agent）
 ├─ vision/         # analyze_figures（needs_parent=True，视觉调用归属父轮次审计）
-├─ memory/         # 11 个记忆工具：get_memory_tools() 惰性单例 + set/get_memory_context（全装 memory-agent）
+├─ memory/         # 10 个记忆工具：get_memory_tools() 惰性单例 + set/get_memory_context（全装 memory-agent）
 ├─ orchestration/  # spawn_sub_agent（唯一的调度工具）+ constants/ 放 SubAgentStatus
 ├─ skills/         # load_skill（渐进披露 L2/L3）
 └─ common/         # make_tools 装配工厂 + _http.py 共享 HTTP 基础设施
@@ -37,7 +37,7 @@ tools/
 - `__init__.py` — 全量再导出
 - `common/__init__.py` — `make_tools(config, tool_items, default_write_root=None)`
 - `orchestration/spawn.py` — SpawnSubAgentTool（`_admit` 五道闸 + 去重/预算/摘要）
-- `memory/__init__.py` — `get_memory_tools()`（模块级单例，11 件全装给 `memory-agent`）
+- `memory/__init__.py` — `get_memory_tools()`（模块级单例，10 件全装给 `memory-agent`）
 
 ## Routing
 

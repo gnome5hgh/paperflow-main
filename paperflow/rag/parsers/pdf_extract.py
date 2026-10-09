@@ -470,8 +470,12 @@ def _render(lines: list[_Line], body_size: float, rank: dict[float, int],
             title: str) -> list[Block]:
     """把一页的文本行拼成 markdown 块：标题独占一块，连续正文行合成一段。
 
-    同一个标题在版面上换行成多行时字号级别都一样，且中间不会夹正文行，据此把它们
-    合并回一行——否则一个标题会碎成两三个独立标题。
+    标题在版面上换行成多行时字号级别都一样，且中间不夹正文行，据此把它们合并回
+    一块——否则一个标题会碎成两三个独立标题。
+
+    **合并有长度上限**：正文段落若整段用了略大于正文字号的字体，每一行都会「像标题」
+    地连成一大片；不设上限时它们会合并成一个上千字符的「标题」。超过上限的候选段
+    一律当正文——真正的标题不会那么长。
 
     Args:
         lines: 该页的文本行（阅读顺序）。
@@ -484,33 +488,42 @@ def _render(lines: list[_Line], body_size: float, rank: dict[float, int],
     """
     blocks: list[Block] = []
     paragraph: list[_Line] = []
-    prev_heading: tuple[int, float] | None = None
+    run: list[_Line] = []                       # 进行中的「同级别同字号候选行」连续段
+    run_key: tuple[int, float] | None = None
 
-    def flush() -> None:
+    def flush_paragraph() -> None:
         if paragraph:
             blocks.append(_block_of("\n".join(ln.text for ln in paragraph), paragraph))
             paragraph.clear()
 
+    def flush_run() -> None:
+        """候选段收尾：够短就当标题块，超长则降级成正文块。"""
+        nonlocal run, run_key
+        if not run:
+            return
+        text = " ".join(ln.text for ln in run)
+        if len(text) <= _MAX_HEADING_CHARS:
+            blocks.append(_block_of(f"{'#' * run_key[0]} {text}", run))
+        else:
+            blocks.append(_block_of("\n".join(ln.text for ln in run), run))
+        run, run_key = [], None
+
     for line in lines:
         level = _heading_level(line.text, line.size, body_size, rank, title)
         if level is None:
+            flush_run()                          # 中间出现正文即打断标题的续行合并
             paragraph.append(line)
-            prev_heading = None          # 中间出现正文即打断标题的续行合并
             continue
-        flush()
         key = (level, round(line.size, 1))
-        if prev_heading == key and blocks:
-            # 续行并入上一个标题块：文本接上，包围盒扩到两行的并集
-            last = blocks[-1]
-            blocks[-1] = Block(
-                text=f"{last.text} {line.text}", page=last.page,
-                left=min(last.left, line.left), right=max(last.right, line.right),
-                top=min(last.top, line.top), bottom=max(last.bottom, line.bottom),
-            )
-        else:
-            blocks.append(_block_of(f"{'#' * level} {line.text}", [line]))
-        prev_heading = key
-    flush()
+        if run and key == run_key:
+            run.append(line)
+            continue
+        # 新的候选段开始：先按原文顺序把在进行的段落与候选段收尾
+        flush_paragraph()
+        flush_run()
+        run, run_key = [line], key
+    flush_paragraph()
+    flush_run()
     return blocks
 
 

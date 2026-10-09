@@ -1,6 +1,6 @@
 ---
 name: paperflow-troubleshooting
-description: 排查 paperFlow 项目问题：启动失败/报错、Milvus/GROBID 服务异常、检索不到或不准、意图识别错类、澄清不触发、测试红。触发：用户说「排查」「报错了」「起不来」「为什么检索不到」「意图识别不对」「测试挂了」，或准备对本项目异常下结论之前。
+description: 排查 paperFlow 项目问题：启动失败/报错、Milvus 服务异常、检索不到或不准、意图识别错类、澄清不触发、测试红。触发：用户说「排查」「报错了」「起不来」「为什么检索不到」「意图识别不对」「测试挂了」，或准备对本项目异常下结论之前。
 ---
 
 # PaperFlow Troubleshooting

@@ -9,7 +9,7 @@
 6. 逐页 build_captions     图注起始行向后扩展成完整图注段落
 7. 逐页 classify_regions   正文/图内文本分类
 8. 逐页 located_figures    为每图注构建候选区域、打分、取最优配置
-9. 渲染每图区域 → schemas.Figure
+9. 组装每个区域 → schemas.Figure（渲染可选：调用方只要区域与文本时不渲染）
 
 消费方分两类：看图（FigureAnalyzer / analyze_figures 工具）用 number/caption/
 image_bytes/mime；造检索块（索引侧）用 caption/image_text/region_boundary/page，

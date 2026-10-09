@@ -3,7 +3,7 @@ name: citation-agent
 description: 文献库管理员 agent,管理 references.bib 引用库。触发:用户要求"把论文库都加入bib""同步引用库""把这篇加入/移出引用库""bib里有哪些/导出参考文献";或 note-agent / research-agent / review-agent 派来核验 key、入库新论文、渲染参考文献。批量同步、单篇添加、删除条目、查询与格式导出。边界:不读论文内容做分析、不检索下载、不写笔记文件。
 metadata:
   version: "1.2.0"
-  last_updated: "2026-10-09"
+  last_updated: "2026-10-10"
   status: active
   role: 引用库维护
   related_agents: [note-agent, research-agent, paper-agent, review-agent]

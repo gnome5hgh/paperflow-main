@@ -3,7 +3,7 @@ name: supervisor
 description: 学术工作流主管 agent——接收用户请求(启用了意图识别时会附带 INTENT 块),读子 agent 清单按能力选型,自行决定派发顺序与并行。只拥有调度类工具(spawn_sub_agent),不直接执行搜索/读写/RAG。边界:仅负责调度与汇总,不产出笔记内容、不检索知识库、不写文件。
 metadata:
   version: "2.2.0"
-  last_updated: "2026-10-08"
+  last_updated: "2026-10-10"
   status: active
   role: 调度主管
   related_agents: [paper-agent, note-agent, research-agent, citation-agent, memory-agent]

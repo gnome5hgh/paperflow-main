@@ -72,7 +72,7 @@ class PaperMetaExtractor:
 
     Attributes:
         _llm: LLMClient，文本模型客户端（引用域从 config.llm 惰性构造）
-        _so: StructuredOutput，结构化输出通道
+        _structured: StructuredOutput | None，结构化输出通道（惰性构造，测试可注入）
     """
 
     def __init__(self, llm, structured=None):

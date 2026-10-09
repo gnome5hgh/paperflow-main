@@ -17,21 +17,20 @@
 - **修法**：Docker Desktop 调 VM 内存 ≥4GB 后 `docker compose up -d` 重建；数据卷在 `data/infra/milvus/` 不用动。
 - **验证**：`docker compose ps` 中 milvus 状态 Up 且 9091 健康检查通过，不再重启。
 
-### `index_all` 卡住 / GROBID 相关报错（GROBID 60s 超时）
-- **根因**：GROBID 解析单 PDF 超时（60s），批量索引被阻断；GROBID 不可用时回退 PyMuPDF（质量差，可能是后续检索不准的根）。
-- **修法**：确认 GROBID 健康（`docker compose ps`、`curl localhost:8070`）；首次使用需按 docker-compose.yml 首部注释初始化 grobid-home 到 `data/infra/grobid/grobid-home/`。超时 PDF 单独重试，不阻塞整批。
-- **验证**：`curl -s localhost:8070/api/isalive` 返回 true；index_all 跑完无超时中断。
+### `index_all` 被某一篇 PDF 中断
+- **根因**：解析是进程内 PyMuPDF（无外部服务，也没有超时这回事），但索引器**没有单篇容错**——`index_all` 逐篇调 `index_document`，其中 `extract_pdf` 对损坏/加密/非 PDF 文件会抛异常并一路穿出去，整批就此停住。
+- **修法**：`index_paths(paths=[...])` 逐条回报 indexed/skipped/empty/failed，**不因单篇失败中断**——批量入库用它而不是 `index_all`；排查是哪一篇时看它的逐条回报。
+- **验证**：`index_paths` 跑完并列出那一篇的 failed 原因；`index_status` 显示其余篇目已入库。
 
-### 某篇 PDF 反复读不出来、每次卡 60~80 秒后报错（见于 RAG 解析路径；agent 读路径已解耦）
-- **根因**：**没有单篇回退**。`pdf_parser()`（`paperflow/rag/services/rag_service.py`）只在**服务级**探活上是 GROBID/PyMuPDF 二选一——`grobid_available()` 的探测结果整个会话缓存，服务活着就永远用 GROBID；`parse_pdf_cached` 又把解析异常直接上抛、**失败结果不入缓存**。于是「GROBID 服务健康但啃不动某一篇（复杂版式/大文件，撞 60s 单次读间隔）」这一情形下，该篇在这条链路上永远读不出来：每次重试都是又一轮 60 秒超时。既有的「超时 PDF 单独重试」在对话场景下是反效果——重试本身就在烧预算。
-- **现状（读路径已解耦）**：agent 面向的 `ReadPdfTool` 已改走本地 PyMuPDF 抽取（`tools/file/pdf_extract.py`），不再经这条链路，所以「读一篇论文读不出来」不会再由这里造成。该限制现在只影响 **RAG 内部**：索引入库（`indexer` 直调 `pdf_parser()`，单篇失败会中断整批）与语料标题索引（`corpus.py`）。
-- **修法**：读路径无需处理（已解耦）。索引侧若遇到，给解析加**单篇**容错——失败/超时的篇跳过并如实记录是哪一篇，不中断整批；并按需为失败结果记负缓存，避免同一会话内反复 60 秒重试。
-- **验证**：同一篇 PDF 连续 `read_pdf` 两次，均在秒级返回正文（本地抽取 + 进程内缓存）；索引侧看 `index_all` 是否仍被单篇拖停。
+### 某篇 PDF 读不出来 / 取不到标题
+- **根因**：解析全在进程内（PyMuPDF），失败只有两类：①文件本身损坏、加密或根本不是 PDF（抛异常，工具层转成错误文本）；②文件正常但**标题判据不过**——元数据标题被判为垃圾、或首页版面候选全是页眉/水印/作者行。第二类**不报错，只是标题为空**（宁空勿错的设计），表现为该 PDF 不进语料索引、笔记头部拿不到引用标题。
+- **修法**：①损坏/加密的手工确认后换文件；②标题为空的用 `extract_title` 显式取一次看返回值，仍为空就**让用户提供标题**（不要拿文件名顶上），要入库则走 `add_external` 手动提供字段。
+- **验证**：`read_pdf` 秒级返回正文或明确错误；`extract_title` 给出标题或明确的「未能取到可靠标题」提示。
 
 ### 一个子 agent 承包多篇 PDF 阅读，撞穿子 agent 超时帽（早先版本误记为「并发拖垮依赖栈」）
 - **根因**：**任务形状**。一次「读一下某目录下所有论文」实测：supervisor 把整批交给一个 qa-agent，它对该目录 3 篇 PDF 逐个 `read_pdf`。当时的读路径是 `ReadPdfTool → RAGService.parse_pdf_cached`，而那把缓存**解析全程持 `RAGService` 全局锁**，同一批并发发起的多个 `read_pdf` 到了这一层会被**串行化**——三篇解析分别约 60.1 / 61.0 / 13.7 秒，墙钟合计约 135 秒，再加一轮 LLM 与工具开销就超过 qa-agent 的 180 秒预算。
 - **别误判成「并发解析压垮了依赖栈」**：那把锁使这些解析并没有真正并发，且 Milvus 同期重启与「读 PDF 的并发」之间没有因果证据（本条早先版本这么写过，已纠正）。
-- **修法**：任务侧「同类 N 件 → N 路 spawn，一个对象一个子 agent」——每路各有独立预算，即便底层串行也各自等得起。读路径现已与 RAG 栈解耦，不再受这把锁与 GROBID 影响。
+- **修法**：任务侧「同类 N 件 → N 路 spawn，一个对象一个子 agent」——每路各有独立预算，即便底层串行也各自等得起。读路径现已与索引栈解耦，不再受这把锁影响。
 - **验证**：单个子 agent 的 `read_pdf` 不再连续跑多个不同 path；单篇精读子任务不再撞 180 秒帽。
 
 ### 启动报「LLM API key 未配置」
@@ -50,7 +49,7 @@
 - **验证**：重启后首次查询结果与重启前一致；`retriever.py` 中存在 rebuild 恢复逻辑。
 
 ### 想跳过启动时的服务预检（PAPERFLOW_SKIP_BOOTSTRAP）
-- **根因**：启动自动探测 Milvus/GROBID，服务未起时会拉起 docker（可能很慢或失败刷屏）。
+- **根因**：启动自动探测 Milvus，服务未起时会拉起 docker（可能很慢或失败刷屏）。
 - **修法**：`PAPERFLOW_SKIP_BOOTSTRAP=1` 跳过预检；服务失败本就只警告不阻塞（软依赖降级）。
 - **验证**：设变量后启动秒进 REPL，无服务探测输出。
 
@@ -60,9 +59,9 @@
 - **验证**：`conda run -n paperflow python -c "from paperflow.config import PaperFlowConfig; print(PaperFlowConfig.from_env().<改动字段的路径，如 rag.storage.uri>)"` 输出与 config.yaml 改后的值一致；不一致时按 `tests/core/test_config.py` 的 `_leaf_unknowns` 口径扫 config.yaml 未生效键（未知键列表应只为命中的旧键）。
 
 ### 重负载任务跑到一半 Milvus 崩溃循环（`streaming node is not alive` / `Slow etcd operation` / `session is expired`）
-- **根因**：与上一条同源但触发条件不同——不是 VM 一开始就太小，而是**任务把 VM 内存吃穿**。Docker VM 约 3.9GB，其中 GROBID 常驻 1.5GB+（镜像为 linux/amd64，Apple Silicon 上走仿真，解析大文件时 CPU 300%+、内存再涨），Milvus 并发检索/写入时再占 1GB+。实测一次「读一下某目录下所有论文」：Milvus 在 13 分钟内重启 9 次（此前累计 RestartCount 25），随后整个 OrbStack VM 也重启一次（表现为**所有**容器同时变成 `Up N seconds`，RestartCount 清零）。VM 内内存耗尽后 Milvus 的 datanode/mixcoord/streamingnode 拿不到 etcd 租约（日志依次出现 `etcdserver: request timed out, waiting for the applied index took too long`、`Slow etcd operation`、`streaming node is not alive`、`confirm the lease is expired`）→ standalone 进程退出，`restart: unless-stopped` 反复拉起。宿主同为内存紧张时（`sysctl vm.swapusage` 显示 swap 用量高、宿主 load average 远超核数）会加剧。
-- **因果的成色**：重启时间窗与该次重负载窗重合、机制（仿真 GROBID 吃满 VM 资源）也说得通，但**未经受控实验验证**——别在别的场合把它当成已证结论照搬。
-- **修法**：两条腿——① **削负载**：重活别堆在一轮里做完（多篇大 PDF 分轮、同类任务拆多路 spawn）；agent 的读 PDF 已改本地抽取（`tools/file/pdf_extract.py`），不再占用 VM 里的 GROBID。② **加资源**：调大 OrbStack/Docker VM 内存，并给 GROBID 设内存上限；宿主侧先释放内存（关掉大内存 IDE 等）比调 VM 更立竿见影。
+- **根因**：与上一条同源但触发条件不同——不是 VM 一开始就太小，而是**任务把 VM 内存吃穿**。Docker VM 约 3.9GB，其中 Milvus 栈（etcd + minio + standalone）并发检索/写入时能占 1GB+。实测一次「读一下某目录下所有论文」：Milvus 在 13 分钟内重启 9 次（此前累计 RestartCount 25），随后整个 OrbStack VM 也重启一次（表现为**所有**容器同时变成 `Up N seconds`，RestartCount 清零）。VM 内内存耗尽后 Milvus 的 datanode/mixcoord/streamingnode 拿不到 etcd 租约（日志依次出现 `etcdserver: request timed out, waiting for the applied index took too long`、`Slow etcd operation`、`streaming node is not alive`、`confirm the lease is expired`）→ standalone 进程退出，`restart: unless-stopped` 反复拉起。宿主同为内存紧张时（`sysctl vm.swapusage` 显示 swap 用量高、宿主 load average 远超核数）会加剧。
+- **因果的成色**：重启时间窗与该次重负载窗重合、机制（重负载把 VM 内存吃穿）也说得通，但**未经受控实验验证**——别在别的场合把它当成已证结论照搬。
+- **修法**：两条腿——① **削负载**：重活别堆在一轮里做完（多篇大 PDF 分轮、同类任务拆多路 spawn）；PDF 解析已是进程内的事，不再占 VM 资源，但**建索引**要调云端嵌入并写 Milvus，仍是重活。② **加资源**：调大 OrbStack/Docker VM 内存；宿主侧先释放内存（关掉大内存 IDE 等）比调 VM 更立竿见影。
 - **验证**：重负载任务跑完后 `docker inspect milvus-standalone --format '{{.RestartCount}}'` 不再增长；`curl -s localhost:9091/healthz` 持续返回 OK；`docker ps` 各容器 uptime 连续不归零。
 
 ### Milvus 半死时单次 `rag_retrieve` 阻塞 25~90 秒（`Connection recovery failed` / `Fail connecting to server on localhost:19530` / `DEADLINE_EXCEEDED`）

@@ -137,7 +137,7 @@ Every agent lives in `agents/<name>/` with two files:
 | `review-agent` | 审查域责任人:笔记审查 / 下载门禁 / 选题产物审查（开审前加载对应审查流程 skill） | `[citation-agent]` | 只读 + submit_review / submit_download_review + `format_check` + lookup_venue_rank + spawn（专为派 citation-agent 做溯源核验） |
 | `citation-agent` | 引用域责任人:references.bib 同步/新增/删除/查询导出 | `[]` | 6 引用工具全装 + read_pdf（元数据缺失时读首页取标题/作者，不属内容分析） |
 | `rag-agent` | 语料索引责任人:检索 + 入库 + 删除后全量收敛 + 索引体检 | `[]` | rag_retrieve + index_paths + reindex_all + index_status（RAG 一域读写与诊断同归一处） |
-| `memory-agent` | 记忆域责任人:记忆读写全归它 | `[]` | `get_memory_tools()` 全集 11 件（blocks 6 / recall 1 / paper_lists 4）+ read_file / glob（读块内容——MemFS 把块投影成 markdown，记忆工具本身没有读动作） |
+| `memory-agent` | 记忆域责任人:记忆读写全归它 | `[]` | `get_memory_tools()` 全集 10 件（blocks 6 / recall 1 / paper_lists 3）+ read_file / glob（读块内容——MemFS 把块投影成 markdown，记忆工具本身没有读动作）；取标题不归它（那是 `tools/file/extract_title`） |
 
 `allowed_spawns` 已由 spawn 工具在运行时强制（同时是 head 里可派发清单的来源，见 Orchestration）。记忆工具经 `get_memory_tools()` 装配后**全装给 `memory-agent`、其余 agent 一件不装**——需要记账或查记忆时（如 note-agent 写完笔记要记一条历史、supervisor 要查清单）**派发 `memory-agent`**；读取惯例与写入惯例见各 agent 的 AGENT.md。
 
@@ -217,7 +217,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 **关键不变式**：
 - **SQL 块是真相源，markdown 是投影**——与旧 GitStore 的语义正好相反
-- 记忆工具在 **`paperflow/tools/memory/`**，经 **`get_memory_tools()`**（`tools/memory/__init__.py`）惰性构建 11 个工具（模块级单例，双重检查加锁，每次返回新列表副本）；执行时经 **`set_memory_context(MemoryToolsContext(...))`** 绑定一次（cli.py）+ `get_memory_context()` 取运行时上下文；未装配时工具降级为错误文本而非崩溃
+- 记忆工具在 **`paperflow/tools/memory/`**，经 **`get_memory_tools()`**（`tools/memory/__init__.py`）惰性构建 10 个工具（模块级单例，双重检查加锁，每次返回新列表副本）；执行时经 **`set_memory_context(MemoryToolsContext(...))`** 绑定一次（cli.py）+ `get_memory_context()` 取运行时上下文；未装配时工具降级为错误文本而非崩溃
 - 10 个记忆工具分 3 组：**blocks**（`memory`/`memory_replace`/`memory_insert`/`memory_rethink`/`memory_apply_patch`/`memory_finish_edits`）、**recall**（`conversation_search`，默认过滤 tool 消息防递归噪音）、**paper_lists**（`unread_list_add`/`unread_list_remove`/`history_append`——列表块工具，`unread_list_add` 要求真实标题绝不用文件名）
 - **Compaction**（`compaction.py`）：只压缩 in-context 窗口（驱逐旧对话 + 插 SummarySchema 摘要 + 保留尾部），**永不删 SQL 行**；`should_compress`（tiktoken 估算，超 `trigger_ratio × context_size` 触发）+ `run_compaction`（滑动窗口，保留 tool 消息与其结果的配对，尾部孤儿清理）
 - **Sleeptime**（`sleeptime.py`）：后台记忆整合，REPL 每轮循环顶部 `run_once_if_due()`（读 stdin 前）；LLM 产出 `MemoryEditBatch` 经 BlockManager 应用 + git commit；两阶段校验（类型枚举白名单：system/ 精确枚举 profile/assistant、顶层仅 feedback_/project_/reference_ 三前缀；动作仅 append/replace，delete 全量收禁），连续 3 次失败强制推进游标防死循环

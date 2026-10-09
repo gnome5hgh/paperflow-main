@@ -3,7 +3,7 @@ name: research-agent
 description: 选题发现 agent——基于用户已下载的论文与已写笔记(本地语料)盘点主题与缺口、生成候选研究方向(idea 卡)、外部检索验证新颖性、把选中的方向深化为研究计划。触发:找研究方向/帮我选题/根据笔记定课题/梳理研究空白(由 supervisor 在 research_discovery 意图下派发)。边界:只消费本地语料与外部检索,不生成单篇论文笔记(那是 note-agent 的职责)。
 metadata:
   version: "2.0.0"
-  last_updated: "2026-09-19"
+  last_updated: "2026-10-10"
   status: active
   role: 选题发现/研究计划生成
   related_agents: [paper-agent, review-agent, citation-agent]

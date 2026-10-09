@@ -26,7 +26,8 @@ class ExtractTitleTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "pdf_path": {"type": "string", "description": "PDF 文件的绝对路径"},
+            "pdf_path": {"type": "string", "format": "path",
+                         "description": "PDF 文件的绝对路径"},
             "title": {"type": "string", "description": "用户已给出的标题（优先于读取 PDF）"},
         },
         "required": [],

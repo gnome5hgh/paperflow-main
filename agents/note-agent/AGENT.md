@@ -3,7 +3,7 @@ name: note-agent
 description: 生成结构化论文笔记的 agent。触发:把论文整理成笔记/生成笔记/把 PDF 做成笔记。基于指定 PDF 生成笔记,定稿前经 review-agent 审稿(轮数预算由框架强制)。边界:不回答开放问题、不做开放知识库问答、不搜索新论文。
 metadata:
   version: "2.1.0"
-  last_updated: "2026-10-08"
+  last_updated: "2026-10-10"
   status: active
   role: 论文笔记生成
   related_agents: [review-agent, citation-agent]

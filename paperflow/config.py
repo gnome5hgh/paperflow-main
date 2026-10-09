@@ -172,13 +172,13 @@ class CorpusConfig:
     """语料库与产物路径。个人绝对路径，经 config.yaml / env 提供，留空走各自回退。
 
     Attributes:
-        note_dir: str，笔记目录（RAG 索引源）
+        note_dir: str，笔记目录（产出落点，不是索引源）
         pdf_dir: str，PDF 目录（RAG 索引源）
         research_dir: str，研究产物目录（空则回退 workspace/research）
         citations_bib_path: str，references.bib 路径（引用库真相源；空则回退默认）
     """
 
-    #: 语料库笔记目录（RAG 索引源,note/）——留空则文件类工具无可用根。
+    #: 语料库笔记目录（笔记产物的默认落点；不进检索知识库,note/）——留空则文件类工具无可用根。
     note_dir: str = ""
 
     #: 语料库 PDF 目录（RAG 索引源,pdf/）。

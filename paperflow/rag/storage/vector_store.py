@@ -33,12 +33,45 @@ _REQUIRED_FIELDS = (
     "page_num_int", "top_int", "position_int", "created_at",
 )
 
+#: 各 VARCHAR 字段的字符上限（与建表时的 max_length 一致）。
+#: 写入前按它截断：Milvus 对超长值是**整行拒绝**——一个字段超限就会让整篇论文
+#: 一行都写不进去，代价远大于截掉一个已经退化的标签。截断只针对元数据与正文，
+#: 且发生时会记一条 warning，不做静默丢弃。
+_FIELD_LIMITS = {
+    "text": 65535,
+    "path": 1024,
+    "title": 1024,
+    "heading": 1024,
+    "caption": 4096,
+    "chunk_type": 16,
+}
+
+
 #: 位置数组字段的容量上限：ARRAY 字段在 Milvus 里必须给定 ``max_capacity``。
 #: 一个块对应一个章节区间，跨页时每页一组 (页, 四边坐标)，几十页的章节也用不到这么大。
 _POSITION_CAPACITY = 512
 
 #: 页码数组字段的容量上限（块覆盖到的页数）。
 _PAGE_CAPACITY = 64
+
+
+def _fit(value: str, field: str, chunk_id: str) -> str:
+    """把一列字符串截到该字段的上限内，超限时记一条 warning（不静默丢弃）。
+
+    Args:
+        value: 待写入的值。
+        field: 字段名（取 ``_FIELD_LIMITS`` 里的上限）。
+        chunk_id: 块 id，仅用于日志定位是哪个块。
+
+    Returns:
+        str: 未超限时原值；超限时截断后的值。
+    """
+    limit = _FIELD_LIMITS.get(field)
+    if limit is None or value is None or len(value) <= limit:
+        return value
+    logger.warning("块 %s 的 %s 字段超长（%d > %d），已截断后写入",
+                   chunk_id, field, len(value), limit)
+    return value[:limit]
 
 
 def _to_chunk(row: dict, chunk_id: str = "") -> Chunk:
@@ -125,9 +158,13 @@ class VectorStore:
             desc = self._client.describe_collection(self._collection,
                                                     timeout=self._read_timeout)
         except Exception as e:
-            # 读不出结构就不敢重建（可能是暂时不可达）——按「不重建」处理，
-            # 让后续写入自己去暴露问题，比误删一个健康的集合安全。
-            logger.warning("读取集合结构失败，跳过结构校验：%s", e)
+            # 读不出结构就不敢重建：这多半是暂时不可达（真不可达时后面的写入自己会报错），
+            # 而误删一个健康的集合是不可逆的——库里的块只靠这行 warning 之外的信号兜不住。
+            # 因此这里按「未校验」放行，并把后果写明：结构真的过期时，第一次写入会以
+            # 「未知字段」报错暴露出来，届时按提示重建并跑全量索引。
+            logger.warning(
+                "读取集合结构失败，本次未校验结构（若集合结构确已过期，"
+                "首次写入会报未知字段，届时删集合重建并跑全量索引）：%s", e)
             return []
         present = {f.get("name") for f in desc.get("fields", []) if isinstance(f, dict)}
         return [name for name in _REQUIRED_FIELDS if name not in present]
@@ -217,13 +254,13 @@ class VectorStore:
             {
                 "id": c.id,
                 "vector": embeddings[i].tolist(), # 转换为 Python list
-                "text": c.text,
-                "path": c.path,
+                "text": _fit(c.text, "text", c.id),
+                "path": _fit(c.path, "path", c.id),
                 "mtime": float(mtime), # 确保为 float 类型
-                "title": c.title,
-                "heading": c.heading,
-                "caption": c.caption,
-                "chunk_type": c.chunk_type,
+                "title": _fit(c.title, "title", c.id),
+                "heading": _fit(c.heading, "heading", c.id),
+                "caption": _fit(c.caption, "caption", c.id),
+                "chunk_type": _fit(c.chunk_type, "chunk_type", c.id),
                 "page_num_int": list(c.page_num),
                 "top_int": c.top,
                 # 展平位置：每 5 个一组 (页, left, right, top, bottom)
@@ -302,10 +339,10 @@ class VectorStore:
         return [_to_chunk(r) for r in res]
 
     def doc_chunk_ids(self, path: str) -> list[str]:
-        """按文档相对路径取回其全部块 id（索引器「先删后建」与删除清理用）。
+        """按文档路径取回其全部块 id（索引器「先删后建」与删除清理用）。
 
         Args:
-            path: 文档的相对路径（存储时使用的路径值）。
+            path: 文档的绝对路径（写入时用的就是它）。
 
         Returns:
             list[str]: 该路径下全部块 id；路径不存在时返回空列表。
@@ -319,10 +356,10 @@ class VectorStore:
         return [r["id"] for r in res]
 
     def delete_doc(self, path: str) -> None:
-        """删除指定路径文档的全部块（按 path 字段过滤）。
+        """删除指定文档的全部块（按 path 字段过滤）。
 
         Args:
-            path: 文档的相对路径（存储时使用的路径值）。
+            path: 文档的绝对路径（写入时用的就是它）。
         """
         # 过滤表达式是字符串拼接形式，path 值中的反斜杠（Windows 路径）和双引号必须转义，
         # 否则会破坏 filter 语法——转义逻辑统一收口在 _escape_filter_value。
@@ -355,8 +392,7 @@ class VectorStore:
         it = self._client.query_iterator(
             collection_name=self._collection,
             filter="", # 空过滤 = 全量
-            output_fields=["text", "path", "title", "heading", "caption",
-                           "chunk_type", "page_num_int", "position_int", "mtime"],
+            output_fields=[*_CHUNK_OUTPUT_FIELDS, "mtime"],
             batch_size=self._batch_size,
             timeout=self._read_timeout,
         )

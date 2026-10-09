@@ -345,6 +345,9 @@ class RagIndexer:
             logger.warning("图表区域定位失败，本篇不产媒体块：%s", e)
             return []
 
+        # 惰性 import：vision 有自己的重依赖，不在包导入期拉起
+        from paperflow.vision.constants import FigureType
+
         chunks: list[Chunk] = []
         idx = start_index
         for f in figures:
@@ -352,8 +355,6 @@ class RagIndexer:
             body = " ".join((f.image_text or "").split())
             if not caption and not body:
                 continue
-            # 惰性 import：vision 有自己的重依赖，不在包导入期拉起
-            from paperflow.vision.constants import FigureType
             ctype = (CHUNK_TYPE_TABLE if f.fig_type == FigureType.Table
                      else CHUNK_TYPE_FIGURE)
             bounds = f.region_boundary
@@ -407,7 +408,7 @@ class RagIndexer:
         """单篇文档的增量重索引入口，文档写入/编辑/下载完成后调用。
 
         为什么必须"先删后建"？
-        - 块 ID 由相对路径和块序号哈希生成，与内容无关。
+        - 块 ID 由绝对路径和块序号哈希生成，与内容无关。
         - 若文档内容缩短（如删掉某些章节），旧块 ID 不再出现，若不清除则会永久残留。
         - 因此每次索引必须先清除旧块，再写入新块。
 
