@@ -1,4 +1,4 @@
-# paperflow/core/intent/jev.py
+# paperflow/core/intent/services/jev.py
 """判定服务客户端——经网关的 Decision 模态调一次「从候选类别里选一个」。
 
 **这是意图层唯一依赖外部服务的地方**，因此它的每一条失败路径都必须有明确去向：

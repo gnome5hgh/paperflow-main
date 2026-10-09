@@ -233,7 +233,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 **两层，前一层不命中才进下一层：**
 
 1. **规则层**（已实现，纯代码零成本）— ① `entities.extract_entities`：确定性正则抽 pdf_path / arxiv_id / doi / note_path / figure（只抽实体不判意图）；② `taxonomy.Taxonomy.match`：读 `data/intent/rules.yaml` 的高精度模式，命中即定类（`source=rule`，置信度记 1.0），**不命中即放行**。规则层**永不猜测**，也不做「抑制」——命中与不命中是两件事，没有分值也没有阈值。
-2. **判定服务**（`core/intent/jev.py`）— 规则不命中时由结合对话史的模型判定（`source=jev`）。**网关是托管 API，账户须先绑定信用卡**，因此启用前要过启动探测（探测失败 → 整套意图层不装配，见 Config）。它的输入是运行时递进来的最近若干轮对话文本（`intent.history_messages`，默认 6，只取 user/assistant 正文、不含工具结果——**assistant 侧必须保留**，否则「再下载一篇」这类指代读不懂），由 `IntentService.render_state` 拼成逐行「用户：…／助手：…」的共享状态，**末行是本轮输入**（判定口径写明「判最后一条用户消息」）。请求带 `providerOptions.gateway`：`zeroDataRetention` 与 `only: [厂商]`。**零保留被拒时按「该层不可用」处理，不摘掉这一项重试**——要不要在无保留保证下发送对话史是隐私决定。任何失败都退回规则层，绝不抛进 ReAct 循环。
+2. **判定服务**（`core/intent/services/jev.py`）— 规则不命中时由结合对话史的模型判定（`source=jev`）。**网关是托管 API，账户须先绑定信用卡**，因此启用前要过启动探测（探测失败 → 整套意图层不装配，见 Config）。它的输入是运行时递进来的最近若干轮对话文本（`intent.history_messages`，默认 6，只取 user/assistant 正文、不含工具结果——**assistant 侧必须保留**，否则「再下载一篇」这类指代读不懂），由 `IntentService.render_state` 拼成逐行「用户：…／助手：…」的共享状态，**末行是本轮输入**（判定口径写明「判最后一条用户消息」）。请求带 `providerOptions.gateway`：`zeroDataRetention` 与 `only: [厂商]`。**零保留被拒时按「该层不可用」处理，不摘掉这一项重试**——要不要在无保留保证下发送对话史是隐私决定。任何失败都退回规则层，绝不抛进 ReAct 循环。
 
 **类别 11 值（`INTENT_META` 单一真相源，`IntentType` 即类别词汇的唯一声明点，知识库按它 fail-closed 校验）**：业务 7 个——`paper`（论文事务：检索/下载/读指定论文/分析图表/删 PDF）、`note`（撰写/删除笔记）、`research`（选题/研究计划/删产物）、`citation`（references.bib 同步/增删/查询导出）、`index`（语料入库/重建/体检）、`memory`（记忆与清单查询、记账，**用户陈述自身信息也归此类**）、`question`（即问即答，supervisor 先自答）；系统 4 个——`chitchat` / `out_of_scope` / `help` / `feedback`。**类别按产物主人划分**：值得单列的区别要两条同时成立——supervisor 的动作确实不同，且这个区别从用户原句里读不出来；能从文本读出的动作（读/写/删/查）与类别正交，单列只会制造误差（三个删除类因此并入了各自领域）。
 
@@ -241,7 +241,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 **产出契约**：`IntentOutput` = `intent`（单类别，不是列表）+ `confidence`（规则命中记 1.0；**没有判定消费者**，只作展示与排查）+ `entities` + `source`（`rule` / `jev`）。注入形态是一行 `INTENT: {json}`，序列化全部四个字段。
 
-**集成缝**：`IntentService`（`core/intent/service.py`）——Agent 侧只持一个可选的 `intent_service`（`None` 即关），唯一的钩子是 `begin(task, history)`，返回要注入的块与可用任务文本（**不改写任务**）。字段语义与各类别的动作说明由 `IntentService.rules_block` 产出、仅在启用时注入（关掉时提示词零意图痕迹），其中**必须写明两处从类别降级到提示层的区分**：`memory` 类内「用户在陈述自身信息」vs「在查询记忆」，`out_of_scope` 的「明确越界」vs「看不出要做什么」。
+**集成缝**：`IntentService`（`core/intent/services/service.py`）——Agent 侧只持一个可选的 `intent_service`（`None` 即关），唯一的钩子是 `begin(task, history)`，返回要注入的块与可用任务文本（**不改写任务**）。字段语义与各类别的动作说明由 `IntentService.rules_block` 产出、仅在启用时注入（关掉时提示词零意图痕迹），其中**必须写明两处从类别降级到提示层的区分**：`memory` 类内「用户在陈述自身信息」vs「在查询记忆」，`out_of_scope` 的「明确越界」vs「看不出要做什么」。
 
 **旧实现已整体退役**（勿复活）：混合路由器与稠密/稀疏编码、路由知识库与向量缓存、LLM 兜底面（`IntentionResult`）、澄清（判据 / 强制轮 / 编号选项原语）、追问检测与跨轮状态（`ConversationState` / `prev_intent`）、选项答复检测、边界仲裁、意图确认通道、`IntentType` 的旧 18 值、`INTENT_LABELS_ZH`、`dispatch_allowed`。旧知识库 `data/intent/routes.yaml`（按 18 类标注的例句 + 标定阈值）与路由向量缓存随之一并退役；**题集数据仍保留在 `scripts/intent/calibration/goldens/`**（`scripts/` 不入库，删掉不可恢复），标定与评测脚本已删。
 

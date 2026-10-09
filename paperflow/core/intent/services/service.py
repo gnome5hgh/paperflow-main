@@ -1,4 +1,4 @@
-# paperflow/core/intent/service.py
+# paperflow/core/intent/services/service.py
 """意图识别的集成适配器——把「进 ReAct 之前」的意图逻辑收在一处。
 
 意图识别是可选预处理层：这里持有知识库（类别描述与规则模式）、跑判定、渲染要注入的
@@ -9,9 +9,9 @@ import logging
 from dataclasses import dataclass
 
 from paperflow.core.intent.constants import IntentStep, IntentType
-from paperflow.core.intent.entities import extract_entities
+from paperflow.core.intent.rules.entities import extract_entities
 from paperflow.core.intent.schemas import IntentOutput
-from paperflow.core.intent.taxonomy import Taxonomy
+from paperflow.core.intent.rules.taxonomy import Taxonomy
 
 logger = logging.getLogger(__name__)
 

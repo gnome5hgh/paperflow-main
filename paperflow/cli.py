@@ -44,9 +44,9 @@ from paperflow.tools.memory import set_memory_context, MemoryToolsContext
 from paperflow.core.memory.services.title_extractor import TitleExtractor
 from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.sleeptime import Sleeptime
-from paperflow.core.intent.jev import JevClient, JevUnavailable
-from paperflow.core.intent.service import IntentService
-from paperflow.core.intent.taxonomy import TaxonomyError, load_taxonomy
+from paperflow.core.intent.services.jev import JevClient, JevUnavailable
+from paperflow.core.intent.services.service import IntentService
+from paperflow.core.intent.rules.taxonomy import TaxonomyError, load_taxonomy
 from paperflow.rag.parsers.grobid_client import GrobidClient
 from paperflow.terminal.io import make_input_io
 from paperflow.terminal.render import make_renderer

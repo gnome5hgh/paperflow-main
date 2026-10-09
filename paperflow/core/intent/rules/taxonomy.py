@@ -1,4 +1,4 @@
-# paperflow/core/intent/taxonomy.py
+# paperflow/core/intent/rules/taxonomy.py
 """意图知识库的装载与校验：类别（描述 + 示例句）与规则层的高精度模式。
 
 判定要回答的是「用户要哪一类工作」，而类别之间的边界正是这件事的全部难点，
@@ -7,7 +7,7 @@
 
 两份资产都随仓库发布（`data/intent/`）：`taxonomy.yaml` 写各类的判定口径与
 示例句（判定模型看到的 criteria），`rules.yaml` 写规则层的高精度模式。类别
-枚举由本模块的 `INTENT_CLASSES` 声明，装载时与知识库逐项对齐。
+类别词汇由 `core/intent/constants/` 声明（`INTENT_CLASSES` 从枚举派生），装载时与知识库逐项对齐。
 """
 from __future__ import annotations
 
@@ -17,19 +17,9 @@ from pathlib import Path
 
 import yaml
 
-from paperflow.core.intent.constants import IntentType
-
-#: 类别词汇：**由枚举派生**（枚举是唯一声明点，知识库必须与它逐项一致）。
-#: 顺序即枚举声明顺序，规则表按自己的声明顺序匹配，与本元组无关。
-INTENT_CLASSES: tuple[str, ...] = tuple(t.value for t in IntentType)
-
-#: 仓库安装根（本文件位于 paperflow/core/intent/，向上三级即仓库根）。
-#: 随仓库发布的知识资产恒锚此处，不随 PAPERFLOW_RUNTIME_WORKSPACE 重定向。
-_INSTALL_ROOT = Path(__file__).resolve().parents[3]
-
-#: 知识库默认路径（单测与生产共用；显式传参可指向替身文件）
-_TAXONOMY_PATH = _INSTALL_ROOT / "data" / "intent" / "taxonomy.yaml"
-_RULES_PATH = _INSTALL_ROOT / "data" / "intent" / "rules.yaml"
+from paperflow.core.intent.constants import (
+    INTENT_CLASSES, RULES_PATH, TAXONOMY_PATH,
+)
 
 
 class TaxonomyError(ValueError):
@@ -232,6 +222,6 @@ def load_taxonomy(taxonomy_path: Path | None = None,
     Raises:
         TaxonomyError: 任一份资产缺失、解析失败或校验不过（报错点名具体类别）。
     """
-    classes = _parse_classes(_read_yaml(taxonomy_path or _TAXONOMY_PATH, "意图类别知识库"))
-    rules = _parse_rules(_read_yaml(rules_path or _RULES_PATH, "规则层知识库"), classes)
+    classes = _parse_classes(_read_yaml(taxonomy_path or TAXONOMY_PATH, "意图类别知识库"))
+    rules = _parse_rules(_read_yaml(rules_path or RULES_PATH, "规则层知识库"), classes)
     return Taxonomy(classes=classes, rules=rules)

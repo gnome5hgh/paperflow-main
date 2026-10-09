@@ -67,7 +67,7 @@ from paperflow.core.constants import SideEffect
 from paperflow.core.agent.state import get_run_state
 
 #: Agent 与意图识别之间只有一个缝：可选的集成适配器。未装配时整套意图层不存在。
-from paperflow.core.intent.service import IntentService
+from paperflow.core.intent.services.service import IntentService
 
 #: 同路径写/编辑串行锁注册表（键 = 目标文件路径）。同一 message
 #: 并行发两个 edit_file 改同一文件时，双方都在对方决策前弹确认（「a」授权只覆盖
