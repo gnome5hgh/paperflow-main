@@ -48,10 +48,10 @@ from paperflow.core.intent.services.jev import JevClient, JevUnavailable
 from paperflow.core.intent.services.service import IntentService
 from paperflow.core.intent.rules.taxonomy import TaxonomyError, load_taxonomy
 from paperflow.rag.parsers.grobid_client import GrobidClient
+from paperflow.terminal.confirm import ConfirmCenter, _make_confirm_callback
 from paperflow.terminal.io import make_input_io
 from paperflow.terminal.render import make_renderer
-from paperflow.terminal.repl import (
-    _repl, _make_print_fn, _make_confirm_callback)
+from paperflow.terminal.repl import _repl, _make_print_fn
 from paperflow.terminal.resume import build_resume_replay
 
 
@@ -531,7 +531,6 @@ def main(argv: list[str] | None = None) -> int | None:
     # 确认中心：确认的唯一消费者，跑在 REPL 主事件循环上（启动/收尾在
     # _repl 内）。confirm 回调经它跨线程桥接，弹框期间渲染抑制——并行多
     # agent 的确认框不再被其他 agent 的渲染事件盖掉。
-    from paperflow.terminal.confirm_center import ConfirmCenter
     center = ConfirmCenter(io, renderer)
 
     supervisor = Agent(

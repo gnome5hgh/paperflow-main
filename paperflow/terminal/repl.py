@@ -28,8 +28,8 @@ from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.terminal.commands import (
     CommandContext, CommandRegistry, build_default_registry)
-from paperflow.terminal.common import compute_diff, truncate_diff
 from paperflow.terminal.common import translate_error
+from paperflow.terminal.confirm import ConfirmCenter
 from paperflow.terminal.io import InputIO
 from paperflow.terminal.render import StreamRenderer
 from paperflow.terminal.resume import ResumeReplay, render_resume_replay
@@ -73,96 +73,6 @@ def _make_print_fn(console):
         # overflow="fold"：长行自动换行而非截断
         console.print(*args, style=style, end=end, overflow="fold")
     return _rich
-
-
-def _confirm_diff_preview(tool_name: str, params: dict) -> str | None:
-    """
-    为写/编辑工具生成确认前的 diff 预览文本。
-
-    Args:
-        tool_name: 工具名称（"write_file" 或 "edit_file"）。
-        params: 工具参数字典，需包含 "path"，write_file 还需 "content"，
-                edit_file 还需 "old_text" 和 "new_text"。
-
-    Returns:
-        str | None: 若预览可用则返回截断后的 unified diff 字符串；
-                    若工具不是写/编辑、参数缺失、文件读取失败或编辑替换条件不满足，
-                    则返回 None（表示走纯确认，无预览）。
-
-    关键边界条件（edit_file）：
-        - edit_file 工具仅在 old_text 在文件中恰好出现一次时才执行替换。
-          若 count != 1，则实际不会写入，此时预览与当前内容无异，反而干扰用户，
-          因此直接返回 None，只走纯确认。
-        - 若文件不存在，old 为空字符串，count=0，亦返回 None。
-    """
-    if tool_name not in {"write_file", "edit_file"}:
-        return None
-    path = params.get("path") if isinstance(params, dict) else None
-    if not path:
-        return None
-    p = Path(path)
-    try:
-        old = p.read_text(encoding="utf-8") if p.exists() else ""
-    except (OSError, UnicodeDecodeError):
-        return None
-    if tool_name == "write_file":
-        new = params.get("content", "")
-    else:  # edit_file
-        old_text, new_text = params.get("old_text"), params.get("new_text")
-        if old_text is None or new_text is None:
-            return None
-        # 仅在替换确实会应用时预览：要求 old_text 在文件中恰好出现一次
-        if old.count(old_text) != 1:
-            return None
-        new = old.replace(old_text, new_text)
-    return truncate_diff(compute_diff(old, new, fromfile=str(p), tofile=str(p)))
-
-
-def _make_confirm_callback(io: InputIO, renderer: StreamRenderer, center=None):
-    """
-    构造异步确认回调函数，供 Agent 执行器在工具执行前调用。
-
-    Args:
-        io: 输入适配器（保留参数供无 center 时兜底）。
-        renderer: 渲染器（用于显示 diff 预览和暂停 live）。
-        center: ConfirmCenter（确认中心，单一消费者）。None 时创建独立实例
-                （仅测试/无 REPL 装配场景）。
-
-    Returns:
-        async callable: 接收一个 ConfirmRequired，返回 bool（True 表示确认继续）。
-
-    行为：
-        1. 经确认中心排队（跨线程桥接到主循环唯一消费者），弹框期间渲染抑制，
-           其他 agent 的事件不会盖掉确认框。
-        2. 三态决策：y=本次放行；a=本会话同 (工具,路径) 放行（pre-confirm 进
-           PolicyEngine 已确认集合，agent 后续的 cr.confirm() 重复加键无害）；
-           n=拒绝。
-        3. 看门狗超时自动拒绝（fail-safe）。
-    """
-    from paperflow.terminal.confirm_center import ConfirmCenter
-    center = center or ConfirmCenter(io, renderer)
-
-    async def _confirm(cr) -> bool:
-        """确认回调：把三态选择折叠为放行/拒绝，并把会话级授权记入已确认集合。
-
-        Args:
-            cr: ConfirmRequired，待确认的工具调用
-
-        Returns:
-            True 表示放行；EOF/Ctrl+C 与拒绝都返回 False。
-        """
-        try:
-            choice = await center.confirm(cr)
-        except (EOFError, KeyboardInterrupt):
-            # deny 语义：确认框内 EOF/Ctrl+C = 拒绝，与 fail-safe 同效
-            return False
-        if choice == "a":
-            # 会话级授权：提前把 (tool, path) 记入已确认集合——同一文件本会话内
-            # 后续写/编辑不再询问（批准仅本会话有效）
-            cr.confirm()
-            return True
-        return choice == "y"
-    return _confirm
 
 
 def _shorten_path(p: str) -> str:
@@ -268,7 +178,6 @@ async def _repl(supervisor: Agent, *,
 
     # 确认中心：主循环上的唯一消费者。cli.main 把同一实例注入 confirm/ask 回调，
     # 这里负责启动与收尾；未注入（测试/裸跑）时自建。
-    from paperflow.terminal.confirm_center import ConfirmCenter
     center = confirm_center or ConfirmCenter(io, renderer)
     center.start()
     registry = registry or build_default_registry(

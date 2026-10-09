@@ -1,4 +1,4 @@
-# paperflow/terminal/confirm_center.py
+# paperflow/terminal/confirm/center.py
 """确认中心——全进程确认的唯一消费者。
 
 背景：确认若在 asyncio.to_thread 工作线程里各自跑 prompt_toolkit 临时
@@ -20,38 +20,20 @@ agent 树无限挂起。
    安全门）。
 4. **三态确认**：y=本次放行 / a=本会话同 (工具,路径) 放行（调用方 pre-confirm
    进 PolicyEngine 已确认集合）/ n=拒绝。
+
+确认框的文案与 diff 预览在 presentation.py；本模块只管排队、渲染抑制与结算。
 """
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
 
-from paperflow.terminal.render.activity import activity_label
+from ..io.base import InputIO
+from ..render import StreamRenderer
+from .presentation import _confirm_diff_preview, _confirm_prompt
 
 #: 确认看门狗默认时限（秒）：5 分钟无渲染/无输入即判挂死，自动拒绝
 DEFAULT_WATCHDOG_S = 300.0
-
-
-def _confirm_prompt(cr) -> str:
-    """确认框一行提示：左边条 + 图标动词 + 目标 + 键提示。
-
-    图标动词复用活动行的 activity_label；目标取 params 里的 path 尾段
-    （basename），取不到 path（如 spawn_sub_agent）就只显示工具名。
-    键绑定不变：y=本次放行 / a=本会话放行 / n=拒绝。
-
-    Args:
-        cr: ConfirmRequired，待确认的工具调用
-
-    Returns:
-        确认框一行提示文本（左边条 + 图标动词 + 目标 + 键提示）。
-    """
-    tool_name = getattr(cr, "tool_name", "") or ""
-    verb, _ = activity_label(tool_name)
-    params = getattr(cr, "params", None)
-    path = params.get("path") if isinstance(params, dict) else None
-    target = (str(path).rstrip("/").rsplit("/", 1)[-1]
-              if path else (tool_name or "确认"))
-    return f"┃ {verb} {target}　y 放行 / a 本会话放行 / n 拒绝"
 
 
 @dataclass
@@ -185,7 +167,6 @@ class ConfirmCenter:
         Returns:
             "y"/"a"/"n"；看门狗超时或读输入异常一律返回 "n"（fail-safe 拒绝）。
         """
-        from paperflow.terminal.repl import _confirm_diff_preview
         preview = _confirm_diff_preview(cr.tool_name, getattr(cr, "params", None))
         self._renderer.suspend()
         if preview:
@@ -208,3 +189,49 @@ class ConfirmCenter:
             dropped = self._renderer.suppress(False)
             if dropped:
                 self._renderer.print(f"（确认期间省略了 {dropped} 条渲染事件）", style="dim")
+
+
+def _make_confirm_callback(io: InputIO, renderer: StreamRenderer, center=None):
+    """
+    构造异步确认回调函数，供 Agent 执行器在工具执行前调用。
+
+    Args:
+        io: 输入适配器（保留参数供无 center 时兜底）。
+        renderer: 渲染器（用于显示 diff 预览和暂停 live）。
+        center: ConfirmCenter（确认中心，单一消费者）。None 时创建独立实例
+                （仅测试/无 REPL 装配场景）。
+
+    Returns:
+        async callable: 接收一个 ConfirmRequired，返回 bool（True 表示确认继续）。
+
+    行为：
+        1. 经确认中心排队（跨线程桥接到主循环唯一消费者），弹框期间渲染抑制，
+           其他 agent 的事件不会盖掉确认框。
+        2. 三态决策：y=本次放行；a=本会话同 (工具,路径) 放行（pre-confirm 进
+           PolicyEngine 已确认集合，agent 后续的 cr.confirm() 重复加键无害）；
+           n=拒绝。
+        3. 看门狗超时自动拒绝（fail-safe）。
+    """
+    center = center or ConfirmCenter(io, renderer)
+
+    async def _confirm(cr) -> bool:
+        """确认回调：把三态选择折叠为放行/拒绝，并把会话级授权记入已确认集合。
+
+        Args:
+            cr: ConfirmRequired，待确认的工具调用
+
+        Returns:
+            True 表示放行；EOF/Ctrl+C 与拒绝都返回 False。
+        """
+        try:
+            choice = await center.confirm(cr)
+        except (EOFError, KeyboardInterrupt):
+            # deny 语义：确认框内 EOF/Ctrl+C = 拒绝，与 fail-safe 同效
+            return False
+        if choice == "a":
+            # 会话级授权：提前把 (tool, path) 记入已确认集合——同一文件本会话内
+            # 后续写/编辑不再询问（批准仅本会话有效）
+            cr.confirm()
+            return True
+        return choice == "y"
+    return _confirm
