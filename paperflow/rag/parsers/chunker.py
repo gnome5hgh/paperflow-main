@@ -1,7 +1,7 @@
 """AcademicChunker：把带章节结构的文档切成检索块。
 
 两级切分：先按章节切，超长章节再按 token 数二次切分并带重叠。块 id 由
-「相对路径 + 块序号」哈希而来、与内容无关，同一位置编辑后重切得到同一个
+「绝对路径 + 块序号」哈希而来、与内容无关，同一位置编辑后重切得到同一个
 id，保证索引写入的幂等覆盖（对应 indexer 里的「先删后建」）。
 """
 import hashlib
@@ -9,12 +9,17 @@ import re
 from dataclasses import dataclass
 
 from paperflow.core.tokenization import get_token_encoder
-from paperflow.rag.constants import RagSource
 
-#: 块 id 的哈希前缀长度（字符）：块 id 取 ``sha1(相对路径:序号)`` 十六进制串的
+#: 块 id 的哈希前缀长度（字符）：块 id 取 ``sha1(绝对路径:序号)`` 十六进制串的
 #: 前 N 个字符。结构契约——改它所有块 id 变化，必须全量重建索引，否则旧块残留、
 #: 新块 id 对不上（indexer 的「先删后建」依赖 id 稳定，与 chunker 共用同一规则）。
 CHUNK_ID_LEN = 16
+
+#: 块类型取值：普通正文块 / 表格块 / 插图块。媒体块（表、图）的正文是区域内
+#: 文字、字幕字段另存注文原文，两者在检索结果里分开呈现。
+CHUNK_TYPE_TEXT = "text"
+CHUNK_TYPE_TABLE = "table"
+CHUNK_TYPE_FIGURE = "figure"
 
 #: 需丢弃的引用段标题前缀（中英文）。匹配这些标题的章节内容不进入检索块，
 #: 因为参考文献列表对语义检索价值较低，且包含大量外部文献信息可能干扰检索。
@@ -68,26 +73,61 @@ def context_prefix(title: str, heading: str, body: str) -> str:
     return f"{label}\n{body}" if label else body
 
 
-@dataclass
-class Chunk:
-    """一个检索块：由切块器产出，包含文本、所属文档路径与章节信息。
+@dataclass(frozen=True)
+class Section:
+    """切块器的输入单元：一个章节的标题、正文，以及它在原文档里的版面位置。
 
     Attributes:
-        id: str，块唯一标识 sha1(相对路径 + 块序号)[:16]；与内容无关，同位置重复切分得到相同 id（写入幂等）
-        text: str，块文本（首行含「标题 > 章节」前缀）
-        path: str，文档相对知识库根的路径（兼作文档 id 与元数据，跨机器稳定）
-        source: RagSource，来源类型：note（Markdown 笔记）| pdf
-        heading: str，所属章节标题（可能为空）
-        chunk_index: int，块在文档中的全局序号（从 0 起）
+        heading: 章节标题（可能为空——文档开头的无标题段）。
+        text: 章节正文。
+        positions: 该章节覆盖到的区域，每项为 ``(页, left, right, top, bottom)``。
+            页从 1 起、坐标取整；笔记等无版面信息的来源为空元组。
     """
 
-    id: str            # 块唯一标识符，由 `sha1(相对路径 + 块序号 chunk_index)[:16]` 生成，
+    heading: str
+    text: str
+    positions: tuple[tuple[int, int, int, int, int], ...] = ()
+
+
+@dataclass
+class Chunk:
+    """一个检索块：由切块器产出，包含文本与它的全部元数据。
+
+    Attributes:
+        id: str，块唯一标识 ``sha1(绝对路径 + 块序号)[:16]``；与内容无关，同位置
+            重复切分得到相同 id（写入幂等）。
+        text: str，块正文。
+        path: str，文档的**绝对路径**（兼作文档 id 与元数据）。
+        title: str，文档标题（取不到为空串）。
+        heading: str，所属章节标题（媒体块为空）。
+        caption: str，表注/图注原文（媒体块用，文本块为空）。
+        chunk_type: str，块类型：``text`` / ``table`` / ``figure``。
+        position: tuple[tuple[int, int, int, int, int], ...]，块覆盖到的区域，
+            每项为 ``(页, left, right, top, bottom)``；同一章节切多窗时各窗共享
+            该章节的区间（窗口级坐标要把坐标一路带进装窗，暂不做）。
+        chunk_index: int，块在文档中的全局序号（从 0 起）。
+    """
+
+    id: str            # 块唯一标识符，由 `sha1(绝对路径 + chunk_index)[:16]` 生成，
                        # 该 ID 与内容无关，同一文档位置重复切分得到相同 ID，编辑同一位置会得到同 id，保证了索引写入的幂等性（覆盖而非追加）。
     text: str          # 块的文本内容。
-    path: str          # 文档相对于知识库根目录的路径（同时用作文档 id 与元数据，跨机器稳定）
-    source: RagSource   # 来源类型：note（Markdown 笔记）| pdf
-    heading: str       # 该块所属章节的标题（可能为空）。
-    chunk_index: int   # 块在文档中的全局序号（从0开始），用于生成 ID。
+    path: str          # 文档的绝对路径（同时用作文档 id 与元数据）
+    title: str = ""    # 文档标题
+    heading: str = ""  # 该块所属章节的标题（可能为空）。
+    caption: str = ""  # 表注/图注原文（媒体块用，文本块为空）
+    chunk_type: str = CHUNK_TYPE_TEXT   # text | table | figure
+    position: tuple = ()                 # 覆盖到的区域：(页, left, right, top, bottom) 元组序列
+    chunk_index: int = 0   # 块在文档中的全局序号（从0开始），用于生成 ID。
+
+    @property
+    def page_num(self) -> tuple[int, ...]:
+        """块覆盖到的页码：从 position 去重后升序取出。"""
+        return tuple(sorted({p[0] for p in self.position}))
+
+    @property
+    def top(self) -> int:
+        """块覆盖区域的最高点（y 最小值）；无位置信息时为 0。"""
+        return min((p[3] for p in self.position), default=0)
 
 
 class AcademicChunker:
@@ -324,8 +364,7 @@ class AcademicChunker:
         # 全程不切断句子——除非某一句本身就超过整个预算（ _pack_sentences 调用 _token_window）
         return self._pack_sentences(sentences)
 
-    def split_doc(self, rel_path: str, sections: list[tuple[str, str]], source: RagSource,
-                  title: str = "") -> list[Chunk]:
+    def split_doc(self, path: str, sections: list[Section], title: str = "") -> list[Chunk]:
         """文档级：逐章节遍历，把带章节结构的一篇文档切成 Chunk 列表。
 
         进切块前先过三道丢弃判据，被丢弃的章节不产生块、不占块序号：
@@ -333,11 +372,10 @@ class AcademicChunker:
         解析残渣正文（_is_fragment）。
 
         Args:
-            rel_path: 文档相对路径（进块 id 与元数据）。
-            sections: 章节列表，每项为 (章节标题, 章节正文)。
-            source: 来源类型（note | pdf），写入块元数据。
-            title: 文档标题（PDF=GROBID 主标题，笔记=H1）；与 heading 一起拼成
-                   每个窗口的首行前缀，随文本进入 embedding/BM25/展示。
+            path: 文档**绝对路径**（进块 id 与元数据；块 id 因此与文档在语料里的
+                位置绑定——挪库或改语料根会让全部块 id 变化，只能全量重建）。
+            sections: 章节列表（见 Section）。
+            title: 文档标题；与章节标题一起拼成每个窗口的首行前缀。
 
         Returns:
             Chunk 列表，序号在文档内全局递增；无可用章节时为空列表。
@@ -347,8 +385,9 @@ class AcademicChunker:
         chunks: list[Chunk] = []
         idx = 0  # 文档内全局块序号 id
 
-        # 1. 遍历每个章节（标题, 正文）。
-        for heading, text in sections:
+        # 1. 遍历每个章节（标题, 正文, 位置）。
+        for sec in sections:
+            heading, text = sec.heading, sec.text
             # 2. 丢弃判据：参考文献 / 期刊样板（按标题）、解析残渣（按正文）。
             #    被丢弃的章节不产生块；后续章节的块序号照常顺延。
             if self._is_reference(heading) or self._is_boilerplate(heading):
@@ -359,11 +398,12 @@ class AcademicChunker:
             # 4. 前缀逐窗拼接（而非拼进原文再切）：长章节切多窗时每个窗口都自带「标题 > 章节」上下文，任一窗口被单独检回都不丢所属信息。
             # split_doc 逐章节调 _split_long，每得到一个窗口片段就拼上「标题>章节」前缀、哈希出 块 id
             for part in self._split_long(text):
-                # 5. 为每个片段生成一个 Chunk 对象，其中 id 由 `sha1(rel_path + 全局序号)[:16]` 生成。
-                chunk_id = hashlib.sha1(f"{rel_path}:{idx}".encode()).hexdigest()[:CHUNK_ID_LEN]
+                # 5. 为每个片段生成一个 Chunk 对象，其中 id 由 `sha1(绝对路径 + 全局序号)[:16]` 生成。
+                chunk_id = hashlib.sha1(f"{path}:{idx}".encode()).hexdigest()[:CHUNK_ID_LEN]
                 chunks.append(Chunk(
                     id=chunk_id, text=context_prefix(title, heading, part),
-                    path=rel_path, source=source, heading=heading, chunk_index=idx,
+                    path=path, title=title, heading=heading, position=sec.positions,
+                    chunk_index=idx,
                 ))
                 # 6. 全局序号 `idx` 从 0 开始递增，保证同一文档内不同位置的块 ID 唯一且稳定。
                 idx += 1

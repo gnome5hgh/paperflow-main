@@ -52,15 +52,46 @@ _cache_lock = threading.Lock()
 class PdfText:
     """一个 PDF 的本地抽取结果。
 
+    ``blocks`` 是唯一真相源：它既给出正文，也给出每块在原页上的位置（索引侧据此给
+    检索块标注页码与坐标）。``body`` 是它的投影——不单独存一份，避免两处不一致。
+
     Attributes:
         title: 论文标题；元数据与首页启发式都拿不到时为空串。
-        body: 正文 markdown 文本（章节标题由字号推断并分级）。
         pages: 页数。
+        blocks: 正文按渲染块拆开的明细（阅读顺序）。
     """
 
     title: str
-    body: str
     pages: int
+    blocks: tuple["Block", ...] = ()
+
+    @property
+    def body(self) -> str:
+        """正文 markdown 文本（各渲染块按空行连接）。"""
+        return "\n\n".join(b.text for b in self.blocks)
+
+
+@dataclass(frozen=True)
+class Block:
+    """一个已渲染的 markdown 块（一段正文或一个标题行）及其在原页上的位置。
+
+    Attributes:
+        text: 块文本（标题行带 ``#`` 前缀；段落内部用换行连接）。
+        page: 页码，1 起（PDF 页序）。
+        left: 包围盒左边界（点，向下取整）。
+        right: 包围盒右边界。
+        top: 包围盒上边界。
+        bottom: 包围盒下边界。
+
+    边界条件：跨行合并的标题取其首行的页码，包围盒取各行的并集。
+    """
+
+    text: str
+    page: int
+    left: int
+    right: int
+    top: int
+    bottom: int
 
 
 @dataclass
@@ -70,10 +101,37 @@ class _Line:
     Attributes:
         text: 行文字（连续空白已折叠）。
         size: 行内最大字号，用于判断它是不是章节标题。
+        page: 页码，1 起。
+        left: 行包围盒左边界（点，向下取整）。
+        right: 行包围盒右边界。
+        top: 行包围盒上边界。
+        bottom: 行包围盒下边界。
     """
 
     text: str
     size: float
+    page: int
+    left: int
+    right: int
+    top: int
+    bottom: int
+
+
+def _block_of(text: str, lines: list[_Line]) -> Block:
+    """把一段文字连同它覆盖的那些行合成一个带位置的块。
+
+    Args:
+        text: 块的 markdown 文本。
+        lines: 组成该块的行（非空）。
+
+    Returns:
+        Block: 位置取各行的并集，页码取首行。
+    """
+    return Block(
+        text=text, page=lines[0].page,
+        left=min(ln.left for ln in lines), right=max(ln.right for ln in lines),
+        top=min(ln.top for ln in lines), bottom=max(ln.bottom for ln in lines),
+    )
 
 
 # ---------- 标题 ----------
@@ -144,7 +202,7 @@ def _heuristic_title(doc) -> str:
 
 # ---------- 正文 ----------
 
-def _page_lines(page) -> list[_Line]:
+def _page_lines(page, page_no: int) -> list[_Line]:
     """按阅读顺序取出页内所有文本行。
 
     顺序沿用 PyMuPDF 的块顺序（即版面阅读顺序），不做坐标重排——双栏论文按坐标
@@ -152,9 +210,10 @@ def _page_lines(page) -> list[_Line]:
 
     Args:
         page: PyMuPDF 的页面对象。
+        page_no: 该页的页码（1 起），随行带回供索引侧标注检索块位置。
 
     Returns:
-        list[_Line]: 该页的文本行。
+        list[_Line]: 该页的文本行（含包围盒）。
     """
     lines: list[_Line] = []
     for block in page.get_text("dict").get("blocks", []):
@@ -167,7 +226,14 @@ def _page_lines(page) -> list[_Line]:
             text = " ".join("".join(s.get("text", "") for s in spans).split())
             if not text:
                 continue
-            lines.append(_Line(text=text, size=max(float(s.get("size", 0.0)) for s in spans)))
+            # 行包围盒取 PyMuPDF 给出的 (x0, y0, x1, y1)；缺失时给零盒（位置随之为 0，
+            # 属于「位置未知」而非错误坐标）。
+            x0, y0, x1, y1 = line.get("bbox") or (0, 0, 0, 0)
+            lines.append(_Line(
+                text=text, size=max(float(s.get("size", 0.0)) for s in spans),
+                page=page_no, left=int(x0), top=int(y0),
+                right=int(x1), bottom=int(y1),
+            ))
     return lines
 
 
@@ -280,8 +346,9 @@ def _heading_level(text: str, size: float, body_size: float,
     return rank.get(round(size, 1))
 
 
-def _render(lines: list[_Line], body_size: float, rank: dict[float, int], title: str) -> str:
-    """把一页的文本行拼成 markdown：标题独占一行，连续正文行合成段落。
+def _render(lines: list[_Line], body_size: float, rank: dict[float, int],
+            title: str) -> list[Block]:
+    """把一页的文本行拼成 markdown 块：标题独占一块，连续正文行合成一段。
 
     同一个标题在版面上换行成多行时字号级别都一样，且中间不会夹正文行，据此把它们
     合并回一行——否则一个标题会碎成两三个独立标题。
@@ -293,32 +360,38 @@ def _render(lines: list[_Line], body_size: float, rank: dict[float, int], title:
         title: 论文标题。
 
     Returns:
-        str: 该页的 markdown 文本。
+        list[Block]: 该页的 markdown 块（含各自的版面位置）。
     """
-    blocks: list[str] = []
-    paragraph: list[str] = []
+    blocks: list[Block] = []
+    paragraph: list[_Line] = []
     prev_heading: tuple[int, float] | None = None
 
     def flush() -> None:
         if paragraph:
-            blocks.append("\n".join(paragraph))
+            blocks.append(_block_of("\n".join(ln.text for ln in paragraph), paragraph))
             paragraph.clear()
 
     for line in lines:
         level = _heading_level(line.text, line.size, body_size, rank, title)
         if level is None:
-            paragraph.append(line.text)
+            paragraph.append(line)
             prev_heading = None          # 中间出现正文即打断标题的续行合并
             continue
         flush()
         key = (level, round(line.size, 1))
-        if prev_heading == key:
-            blocks[-1] = f"{blocks[-1]} {line.text}"
+        if prev_heading == key and blocks:
+            # 续行并入上一个标题块：文本接上，包围盒扩到两行的并集
+            last = blocks[-1]
+            blocks[-1] = Block(
+                text=f"{last.text} {line.text}", page=last.page,
+                left=min(last.left, line.left), right=max(last.right, line.right),
+                top=min(last.top, line.top), bottom=max(last.bottom, line.bottom),
+            )
         else:
-            blocks.append(f"{'#' * level} {line.text}")
+            blocks.append(_block_of(f"{'#' * level} {line.text}", [line]))
         prev_heading = key
     flush()
-    return "\n\n".join(blocks)
+    return blocks
 
 
 def _extract(path: str) -> PdfText:
@@ -340,19 +413,15 @@ def _extract(path: str) -> PdfText:
     fitz.TOOLS.mupdf_display_errors(False)
     with fitz.open(path) as doc:
         title = _metadata_title(doc) or _heuristic_title(doc)
-        pages = [_page_lines(page) for page in doc]
+        pages = [_page_lines(page, i + 1) for i, page in enumerate(doc)]
 
         # 正文字号与级别映射跨页统一：同一篇论文里同级标题字号一致，
         # 逐页各算一套会把同一级标题在不同页排出不同级别。
         all_lines = [line for page in pages for line in page]
         body_size = _dominant_size(all_lines)
         rank = _rank_levels(all_lines, body_size, title)
-        body = "\n\n".join(
-            part for part in (
-                _render(page, body_size, rank, title) for page in pages
-            ) if part
-        )
-        return PdfText(title=title, body=body, pages=doc.page_count)
+        blocks = [blk for page in pages for blk in _render(page, body_size, rank, title)]
+        return PdfText(title=title, pages=doc.page_count, blocks=tuple(blocks))
 
 
 def extract_pdf(path: str) -> PdfText:

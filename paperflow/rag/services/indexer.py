@@ -26,8 +26,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from paperflow.rag.constants import RagSource
-from paperflow.rag.parsers.chunker import Chunk
+from paperflow.rag.parsers.chunker import Chunk, Section
 from paperflow.rag.parsers.pdf_extract import extract_pdf
 
 #: 配方哈希的逻辑版本号：切块/解析「算法逻辑」修订号（非参数）。参数
@@ -69,36 +68,51 @@ def _recipe_hash(cfg) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _split_markdown(text: str) -> tuple[str, list[tuple[str, str]]]:
-    """按 ``#`` 行把 markdown 文本切成章节，顺带取首个一级标题作文档标题。
+def _split_markdown(lines: list[tuple[str, tuple[int, int, int, int, int] | None]]
+                    ) -> tuple[str, list[Section]]:
+    """按 ``#`` 行把正文切成章节，顺带取首个一级标题作文档标题。
 
-    PDF（本地版面解析还原出的 markdown）与笔记文件走同一条路，因此这里不分来源。
+    PDF（本地版面解析还原出的 markdown）与笔记文件走同一条路，因此这里不分来源；
+    两者唯一的差别是每行能否带上版面位置——PDF 有（用于给检索块标注页码与坐标），
+    笔记没有。
 
     Args:
-        text: markdown 文本。
+        lines: ``(行文本, 该行的位置或 None)`` 列表。位置为
+            ``(页, left, right, top, bottom)``。
 
     Returns:
-        tuple[str, list[tuple[str, str]]]：(文档标题, [(章节标题, 正文), …])。
-        标题只认 ``# `` 开头的一级标题且取第一个，``##`` 及更深的不算；
-        取不到时为空串。
+        tuple[str, list[Section]]：(文档标题, 章节列表)。标题只认 ``# `` 开头的
+        一级标题且取第一个，``##`` 及更深的不算；取不到时为空串。每个章节的位置
+        是它覆盖到的行的位置去重后的集合。
     """
     title = ""
-    sections: list[tuple[str, str]] = []
+    sections: list[Section] = []
     cur_head, cur_body = "", []
-    for ln in text.splitlines():
-        if ln.startswith("#"):
-            # 遇到新标题，保存当前章节（如果有内容）
-            if cur_head or cur_body:
-                sections.append((cur_head, "\n".join(cur_body)))
-            cur_head, cur_body = ln.lstrip("# "), []   # 去掉 # 和后面的空格
-            if not title and ln.startswith("# "):
-                title = ln[2:].strip()
+    cur_pos: list[tuple[int, int, int, int, int]] = []
+
+    def flush() -> None:
+        """把攒着的当前章节收进 sections（位置去重且保持出现顺序）。"""
+        if cur_head or cur_body:
+            sections.append(Section(cur_head, "\n".join(cur_body),
+                                    tuple(dict.fromkeys(cur_pos))))
+
+    for text, pos in lines:
+        if text.startswith("#"):
+            flush()
+            cur_head, cur_body, cur_pos = text.lstrip("# "), [], []   # 去掉 # 和后面的空格
+            if not title and text.startswith("# "):
+                title = text[2:].strip()
         else:
-            cur_body.append(ln)
-    # 保存最后一个章节
-    if cur_head or cur_body:
-        sections.append((cur_head, "\n".join(cur_body)))
+            cur_body.append(text)
+        if pos is not None:
+            cur_pos.append(pos)
+    flush()
     return title, sections
+
+
+def _markdown_lines(text: str) -> list[tuple[str, None]]:
+    """把一段纯文本按行包装成分节输入（位置一律为 None）。"""
+    return [(ln, None) for ln in text.splitlines()]
 
 
 @dataclass
@@ -106,13 +120,11 @@ class _FileContent:
     """单篇文档解析产物：切块所需的全部原料。
 
     Attributes:
-        source: RagSource，来源类型：pdf | note
         title: str，文档标题（PDF=版面/元数据标题，笔记=首个 H1；取不到为空串）
-        sections: list[tuple[str, str]]，(章节标题, 正文) 列表
+        sections: list[Section]，章节列表（带各自的版面位置；笔记无位置）
     """
-    source: RagSource
     title: str
-    sections: list[tuple[str, str]]
+    sections: list[Section]
 
 
 @dataclass
@@ -220,25 +232,22 @@ class RagIndexer:
 
     # ---------- 路径/状态工具 ----------
     def _rel_path(self, path: str) -> str | None:
-        """把绝对路径转成相对知识库根目录的路径（用于文档 id 与元数据，跨机器稳定）。
+        """判断路径是否属于语料，并给出它相对语料根的路径。
+
+        现在的用途**只是「这个文件属不属于语料」这道判定**——存储与块 id 一律用
+        绝对路径（见 Chunk.path），调用方拿它当真假用：返回 None 即跳过。
+        返回相对路径而非布尔值是为了在报错文案与体检清单里给出更短的展示路径。
 
         如果路径既不在笔记目录也不在 PDF 目录下，返回 None——不能用文件名代替。
         原因：还有其他目录（如记忆目录）里的文件也会触发索引钩子，若用文件名
         代替，与笔记目录里同名的文件（如 memory/shared.md 与 note/shared.md）
-        会得到相同的相对路径和块 id，导致后索引的文档静默覆盖、删除前者的块，
-        造成数据丢失。本模块只索引笔记和 PDF，非这两个目录的路径必须返回
-        None，由调用方跳过处理。
-
-        重要边界条件：
-        - 路径必须位于 `note_dir` 或 `pdf_dir` 之下，否则返回 None。
-        - 返回 None 时，调用方应跳过该文件，不进行索引（如记忆目录下的文件）。
-        - 不能使用文件名代替相对路径，因为不同目录下的同名文件会导致块 ID 冲突。
+        会被当成同一篇，导致后索引的文档静默覆盖、删除前者的块，造成数据丢失。
 
         Args:
             path: 绝对或相对路径（会被解析为绝对路径）。
 
         Returns:
-            str | None: 相对路径（如 "note/paper.md"），若文件不在知识库根目录下则返回 None。
+            str | None: 相对路径（如 "note/paper.md"），若文件不在语料根下则返回 None。
         """
         abs_path = Path(path).resolve()
         # 依次尝试在笔记目录和 PDF 目录下计算相对路径
@@ -250,29 +259,6 @@ class RagIndexer:
                 continue
         return None
 
-    def _rel_to_abs(self, rel: str) -> str:
-        """把相对知识库根目录的路径还原成绝对路径（从向量库元数据重建索引状态时用）。
-
-        适用场景：状态文件丢失，但向量库中仍存有文档元数据（包括相对路径）。
-        本方法尝试在笔记目录和 PDF 目录下查找该相对路径对应的实际文件。
-
-        边界情况：
-        - 若文件已不存在（被删除），则无法确定其原属根目录，默认返回笔记目录下的路径。
-        - 返回的路径可能指向一个不存在的文件，但在删除清理过程中，该路径不会出现在扫描结果中，后续逻辑会从状态中移除它。
-
-        Args:
-            rel: 相对路径（如 "note/paper.md"）。
-
-        Returns:
-            str: 解析后的绝对路径字符串。
-        """
-        for root in (Path(self.service.config.corpus.note_dir),
-                     Path(self.service.config.corpus.pdf_dir)):
-            cand = Path(root) / rel
-            if cand.exists():
-                return str(cand.resolve())
-        # 文件已不存在，回退到笔记目录（仅用于状态重建，实际删除操作会后续清理）
-        return str(Path(self.service.config.corpus.note_dir) / rel)
 
     def _read_state(self) -> tuple[object, dict] | None:
         """读原始状态文件，返回 (版本号, docs)。
@@ -322,17 +308,23 @@ class RagIndexer:
             path: 文档路径。
 
         Returns:
-            _FileContent: 解析产物（source/title/sections）。
+            _FileContent: 解析产物（title/sections）。
         """
         if path.suffix.lower() == ".pdf":
             extracted = extract_pdf(str(path))
-            _, sections = _split_markdown(extracted.body)
+            # 每个渲染块的位置随它拆出的每一行重复出现，分节后即成为该章节的
+            # 位置集合（一个块内的行同属一段，位置相同是准确的）。
+            lines: list[tuple[str, tuple[int, int, int, int, int] | None]] = []
+            for blk in extracted.blocks:
+                pos = (blk.page, blk.left, blk.right, blk.top, blk.bottom)
+                lines.extend((ln, pos) for ln in blk.text.splitlines())
+            _, sections = _split_markdown(lines)
             # PDF 的正文里不出现一级标题（级别从二级起），标题只能来自版面/元数据
-            return _FileContent(RagSource.PDF, extracted.title or "", sections)
+            return _FileContent(extracted.title or "", sections)
 
         text = path.read_text(encoding="utf-8")
-        title, sections = _split_markdown(text)
-        return _FileContent(RagSource.NOTE, title, sections)
+        title, sections = _split_markdown(_markdown_lines(text))
+        return _FileContent(title, sections)
 
     def _embed_chunks(self, chunks: list[Chunk]):
         """把一批块文本编码成向量（供写入向量库）。
@@ -350,8 +342,8 @@ class RagIndexer:
     def _derive_state_from_store(self, store) -> dict:
         """从向量库的元数据重建索引状态（当状态文件丢失时使用）。
 
-        向量库中每个块都存储了其所属文档的相对路径和修改时间。
-        同一文档的多个块共享相同的修改时间，因此取最大值即可。
+        向量库里每个块都带其所属文档的**绝对路径**与修改时间；同一文档的多个块
+        共享同一修改时间，因此取最大值即可。
 
         Args:
             store: VectorStore 实例。
@@ -360,11 +352,10 @@ class RagIndexer:
             dict: {绝对路径: 修改时间戳}，用于后续增量比对。
         """
         state: dict = {}
-        for _id, _doc, rel, mtime in store.all_documents():
-            abs_path = self._rel_to_abs(rel)
+        for _id, _doc, path, mtime in store.all_documents():
             # 同一文档可能有多块，取最新的 mtime
-            if abs_path not in state or mtime > state[abs_path]:
-                state[abs_path] = mtime
+            if path not in state or mtime > state[path]:
+                state[path] = mtime
         return state
 
     # ---------- 公开 API ----------
@@ -399,11 +390,11 @@ class RagIndexer:
         if not p.exists():
             return IndexOutcome("skipped", reason="文件不存在")   # 索引不存在的文件：跳过
 
-        rel = self._rel_path(str(p))
-        if rel is None:
+        key = str(p.resolve())
+        if self._rel_path(key) is None:
             # 非知识库根目录的路径（如记忆目录）直接跳过，避免与同名笔记冲突。
             # 记忆文件的写入也会触发本钩子，但本模块只索引笔记和 PDF；
-            # 若不跳过，记忆目录下与笔记目录同名的文件会撞上同一个相对路径和块 id，导致笔记的块被静默覆盖删除。
+            # 若不跳过，记忆目录下与笔记目录同名的文件会被当成同一篇，导致笔记的块被静默覆盖删除。
             return IndexOutcome("skipped", reason="不在语料根目录下（只索引笔记与 PDF）")
 
         # 1. 解析文档，获得切块原料（章节 + 标题）
@@ -411,15 +402,14 @@ class RagIndexer:
         store = self.service._ensure_vector_store()
         bm25 = self.service._ensure_bm25()
 
-        # 2. 清除该文档的旧索引（定点查询替代全表扫描）
-        old_ids = store.doc_chunk_ids(rel)
+        # 2. 清除该文档的旧索引（定点查询替代全表扫描）。存储键与块 id 都用绝对路径。
+        old_ids = store.doc_chunk_ids(key)
         for did in old_ids:
             bm25.remove_document(did)
-        store.delete_doc(rel) # 按相对路径删除所有块
+        store.delete_doc(key)
 
         # 3. 切分章节，过滤空白块
-        chunks = self.service.chunker.split_doc(rel, parsed.sections, parsed.source,
-                                                title=parsed.title)
+        chunks = self.service.chunker.split_doc(key, parsed.sections, title=parsed.title)
         chunks = [c for c in chunks if c.text.strip()]   # 过滤空白文本的块，避免产生无意义向量
         if not chunks:
             # 文档被清空：旧块已删，无需写新内容
@@ -428,9 +418,9 @@ class RagIndexer:
         # 4. 编码并写入
         vecs = self._embed_chunks(chunks)
         mtime = p.stat().st_mtime
-        # 向量数据库存：① 原文全文；② 原文压缩成的一个 1024 维浮点向量；③ 元数据
+        # 向量数据库存：① 块正文；② 正文压缩成的一个 1024 维浮点向量；③ 元数据
         store.upsert(chunks, vecs, mtime=mtime)
-        # bm25存的是：① 原文分词后的 token 列表，比如：["多意图","执行","clarification","触发","判定",...]；② 词频矩阵 + idf 表（“这个词在几篇文档里出现过”的统计）
+        # bm25存的是：① 正文分词后的 token 列表，比如：["多意图","执行","clarification","触发","判定",...]；② 词频矩阵 + idf 表（“这个词在几篇文档里出现过”的统计）
         bm25.add_documents([(c.id, c.text) for c in chunks])
 
         # 5. 更新状态文件——仅「状态缺失或同版本」时写入。状态缺失时没有可
@@ -440,7 +430,7 @@ class RagIndexer:
         raw = self._read_state()
         if raw is None or raw[0] == self._recipe:
             docs = raw[1] if raw else {}
-            docs[str(p.resolve())] = mtime
+            docs[key] = mtime
             self._save_state(docs)
 
         return IndexOutcome("indexed", chunks=len(chunks))
@@ -527,18 +517,16 @@ class RagIndexer:
         # 6. 清理已删除的文档。
         removed_count = 0
         for abs_path in removed:
-            rel = self._rel_path(abs_path)
-            # 防御性跳过（旧版本可能残留非知识库路径）
-            if rel is None:
-                # 防御性兜底：正常流程下状态文件里的键只可能是笔记/PDF 目录
-                # 路径（写入时就过滤过），但旧版本可能残留其他目录的键——
-                # 遇到时跳过，不要误删对应块。
+            # 防御性跳过：正常流程下状态文件里的键只可能是笔记/PDF 目录的路径
+            # （写入前就用 _rel_path 过滤过），但旧版本可能残留其他目录的键——
+            # 遇到时跳过，不要误删对应块。
+            if self._rel_path(abs_path) is None:
                 continue
             # 定点查询该文档的所有块 ID（替代全表扫描后按路径过滤）
-            rm_ids = store.doc_chunk_ids(rel)
+            rm_ids = store.doc_chunk_ids(abs_path)
             for did in rm_ids:
                 self.service._ensure_bm25().remove_document(did)
-            store.delete_doc(rel)
+            store.delete_doc(abs_path)
             removed_count += 1
 
         # 7. 增量索引变更的文档，累计本次写入的块数。
@@ -581,6 +569,7 @@ class RagIndexer:
 
         # 语料根扫描：磁盘有而状态没有 = 新增未入库；状态有而磁盘没有 = 删除未收敛。
         # 同一套 .md/.pdf 过滤与 _rel_path 围栏，保证口径与索引扫描一致。
+        # 清单用相对路径展示，便于人读；状态文件里的键是绝对路径。
         corpus: set[str] = set()
         for root in (Path(self.service.config.corpus.note_dir),
                      Path(self.service.config.corpus.pdf_dir)):
@@ -591,8 +580,8 @@ class RagIndexer:
                     corpus.add(str(p.resolve()))
         st.corpus_docs = len(corpus)
         known = set(docs)
-        st.not_indexed = [rel for rel in (self._rel_path(p) for p in sorted(corpus - known)) if rel]
-        st.ghost = [rel for rel in (self._rel_path(p) for p in sorted(known - corpus)) if rel]
+        st.not_indexed = [r for r in (self._rel_path(p) for p in sorted(corpus - known)) if r]
+        st.ghost = [r for r in (self._rel_path(p) for p in sorted(known - corpus)) if r]
 
         if st.milvus_ok:
             store = self.service._ensure_vector_store()

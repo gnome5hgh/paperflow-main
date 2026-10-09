@@ -7,7 +7,6 @@ query），再持锁检索。检索与融合算法本身在 `rag/services/retrie
 import logging
 
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.constants import RagSource
 from paperflow.rag.services.rag_service import get_rag_service
 from paperflow.tools.memory.runtime_context import get_memory_context
 
@@ -73,17 +72,14 @@ class RagRetrieveTool(Tool):
     """
 
     name = "rag_retrieve"
-    description = ("从本地知识库（笔记 + PDF 全文）检索相关段落。"
-                   "参数 query 为检索问题；top_k 为返回块数；source 可选限定来源——"
-                   "问笔记观点用 \"note\"，问论文原文用 \"pdf\"，缺省两处都搜。")
+    description = ("从本地论文库检索相关段落。参数 query 为检索问题；"
+                   "top_k 为返回块数。")
     parameters = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "检索问题"},
             "top_k": {"type": "integer",
                       "description": "返回块数；缺省时由配置 rag.retriever.top_k 决定"},
-            "source": {"type": "string", "enum": [m.value for m in RagSource],
-                       "description": "限定来源：note=读书笔记，pdf=论文原文；缺省不限"},
         },
         "required": ["query"],
     }
@@ -94,11 +90,9 @@ class RagRetrieveTool(Tool):
         super().__init__()
         self._service = None # 可被测试注入，否则在 execute 中取全局单例
 
-    def execute(self, query: str, top_k: int | None = None,
-                source: str | None = None) -> ToolResult:
-        """执行检索并返回格式化结果：每条命中列出来源、路径与正文摘录（前 N 字）。
+    def execute(self, query: str, top_k: int | None = None) -> ToolResult:
+        """执行检索并返回格式化结果：每条命中列出路径与正文摘录（前 N 字）。
 
-        带标题前缀的块其摘录首行即「论文标题 > 章节标题」，供上层直接引用节号。
         摘录上限、默认 top_k、历史条数全部读配置（rag.tools.excerpt_chars /
         rag.retriever.top_k / rag.query_rewrite.history_messages），改 YAML 即生效。
 
@@ -106,7 +100,6 @@ class RagRetrieveTool(Tool):
             query: 检索查询。
             top_k: 返回块数；None 时取 rag.retriever.top_k（schema 不再给
                    default，模型省略该参数即落到配置值）。
-            source: 限定来源——"note" 只搜笔记，"pdf" 只搜论文；None 不过滤。
 
         Returns:
             ToolResult: 包含格式化文本的 ToolResult 对象。
@@ -144,8 +137,7 @@ class RagRetrieveTool(Tool):
         # 「检索结果可能不完整/不可用」而非怀疑工具本身。
         try:
             with svc.lock:
-                # source 原样透传给检索器（非法值由 Retriever 侧按不过滤防御处理）。
-                chunks = svc.get_retriever().retrieve(queries, top_k, source)
+                chunks = svc.get_retriever().retrieve(queries, top_k)
         except Exception as e:
             if breaker is not None:
                 breaker.record_failure()
@@ -157,9 +149,9 @@ class RagRetrieveTool(Tool):
         if not chunks:
             return ToolResult(text="检索无命中（索引可能为空，可先写几篇笔记）")
 
-        # 5. 否则，每条命中格式化为 `- [来源:路径] 正文摘录前 N 字` 的列表。
-        # 摘录上限读 rag.tools.excerpt_chars：带前缀的块首行即「论文标题 > 章节标题」，
+        # 5. 否则，每条命中格式化为 `- [路径] 正文摘录前 N 字` 的列表。
+        # 摘录上限读 rag.tools.excerpt_chars：块的首行是「论文标题 > 章节标题」前缀，
         # 需要足够窗口才能让上层同时拿到节号与可用的正文上下文。
         excerpt_chars = svc.config.rag.tools.excerpt_chars
-        lines = [f"- [{c.source}:{c.path}] {c.text[:excerpt_chars]}" for c in chunks]
+        lines = [f"- [{c.path}] {c.text[:excerpt_chars]}" for c in chunks]
         return ToolResult(text="检索到以下相关段落：\n" + "\n".join(lines))

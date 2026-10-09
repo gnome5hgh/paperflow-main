@@ -4,7 +4,6 @@
 """
 import logging
 
-from paperflow.rag.constants import RagSource
 from paperflow.rag.parsers.chunker import Chunk
 
 logger = logging.getLogger(__name__)
@@ -13,11 +12,6 @@ logger = logging.getLogger(__name__)
 #: ``max(top_k * 本值, config.rag.retriever.rerank_candidates)``，保证大 top_k
 #: 时池子同步放大。改它改变大 top_k 场景的精排候选面与开销，需重评检索质量。
 RERANK_CANDIDATE_MULTIPLIER = 2
-
-#: source 过滤的合法取值（None = 不过滤）；超出按不过滤处理（工具层已有 enum 约束，此处防御）。
-#: 从 RagSource 派生，避免与块元数据的取值集分成两份。
-VALID_SOURCES = (None, *(m.value for m in RagSource))
-
 
 #: query 侧任务指令（Qwen3-Embedding 官方格式 Instruct: {task}\nQuery: {query}，
 #: 只加 query 侧、文档侧不加，官方称可提升 1–5%）。
@@ -49,8 +43,7 @@ class Retriever:
         # 成对执行维护，无需再重建。
         self._bm25_synced = False
 
-    def retrieve(self, queries, top_k: int | None = None,
-                 source: str | None = None) -> list[Chunk]:
+    def retrieve(self, queries, top_k: int | None = None) -> list[Chunk]:
         """对查询集执行检索：每条 query 独立跑双路，全部排名进同一 RRF 池融合。
 
         Args:
@@ -58,8 +51,6 @@ class Retriever:
                      用它打分）；其余为改写变体，词面不同、语义等价。
             top_k: 返回块数；None 时取配置 ``rag.retriever.top_k``（默认值单点在
                    config，不再用模块常量字面量）。
-            source: 限定来源——"note" 只搜笔记，"pdf" 只搜论文；None 不过滤。
-                    非法值按 None 处理（防御性）。
 
         并发约定：调用方（RagRetrieveTool）已持有锁，此处不再加锁——锁由
         工具层统一控制，若在此重复加锁会造成死锁或锁语义混乱（防止后人
@@ -71,7 +62,7 @@ class Retriever:
         - 重排返回的下标越界 → 安全截断（防御性）。
 
         Returns:
-            精排后的块列表，最多 top_k 条；无命中时为空列表。
+            精排后的块列表（带完整元数据），最多 top_k 条；无命中时为空列表。
         """
         if isinstance(queries, str):
             queries = [queries]
@@ -83,9 +74,6 @@ class Retriever:
         # 显式传入的值（含 0 等边界）原样使用。
         if top_k is None:
             top_k = self.service.config.rag.retriever.top_k
-
-        if source not in VALID_SOURCES:
-            source = None
 
         # 检索阈值读配置（rag.retriever.*）：值的唯一声明点在 config.py。
         rcfg = self.service.config.rag.retriever
@@ -109,46 +97,40 @@ class Retriever:
         # ---- BM25 进程级恢复（裸 rebuild）----
         # 每进程同步一次，而非「空了才补」：重启后若先发生一次写热更新，
         # BM25 只含新写的一篇，与向量库已漂移（非空但残缺），is_empty 探测不到。
-        # 重建以向量库原文为唯一源，只恢复 BM25 内存索引，
+        # 重建以向量库正文为唯一源，只恢复 BM25 内存索引，
         # 不触碰索引状态与文档块（那是 index_all 全量重扫的职责，个人语料规模下两者开销差一个量级）。
         # 重建失败（Milvus 读取异常）不置位，下次查询重试；本次退化为纯向量路。
         if not self._bm25_synced:
             bm25.rebuild([(d[0], d[1]) for d in vs.all_documents()])
             self._bm25_synced = True
 
-        expr = f'source == "{source}"' if source else ""
-
         # ---- 多查询双路检索，全部排名累计进同一 RRF 池 ----
         # scores：块 id → 各路倒数排名分之和。同一块在越多路命中、名次越靠前，
         # 总分越高——这正是 multi-query 融合的收益来源（改写变体从不同措辞
         # 命中同一批真相关块，RRF 把它们抬到前排）。
         scores: dict[str, float] = {}
-        id2doc: dict[str, tuple] = {}
+        id2chunk: dict[str, Chunk] = {}
 
         # 向量路：每条 query 一个编码向量，各取 rcfg.vector_topk（编码失败时整路跳过）
         if qvecs is not None:
             for qvec in qvecs:
-                for rank, hit in enumerate(vs.query(qvec, rcfg.vector_topk, expr=expr)):
-                    scores[hit[0]] = scores.get(hit[0], 0.0) + 1.0 / (rrf_k + rank)
-                    id2doc[hit[0]] = hit
+                for rank, chunk in enumerate(vs.query(qvec, rcfg.vector_topk)):
+                    scores[chunk.id] = scores.get(chunk.id, 0.0) + 1.0 / (rrf_k + rank)
+                    id2chunk[chunk.id] = chunk
 
-        # BM25 路：每条 query 各查一次 rcfg.bm25_topk；档案回查合并成一次
+        # BM25 路：每条 query 各查一次 rcfg.bm25_topk；元数据回查合并成一次
         #（不同 query 的命中高度重叠，先收集 union 再一次 fetch_by_ids，避免重复回库）
         bm25_ranked: list[list[str]] = []
         for q in cleaned:
-            hits = bm25.query(q, rcfg.bm25_topk) if not bm25.is_empty() else []
-            if source:
-                # BM25 路无原生过滤，取回元数据后按 source 筛
-                docs = {d[0]: d for d in vs.fetch_by_ids(hits)}
-                hits = [i for i in hits if i in docs and docs[i][3] == source]
-            bm25_ranked.append(hits)
+            bm25_ranked.append(
+                bm25.query(q, rcfg.bm25_topk) if not bm25.is_empty() else [])
         all_bm25_ids = {i for hits in bm25_ranked for i in hits}
-        bm25_docs = {d[0]: d for d in vs.fetch_by_ids(list(all_bm25_ids))}
+        bm25_chunks = {c.id: c for c in vs.fetch_by_ids(list(all_bm25_ids))}
         for hits in bm25_ranked:
             for rank, doc_id in enumerate(hits):
                 scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rrf_k + rank)
-                if doc_id in bm25_docs:
-                    id2doc[doc_id] = bm25_docs[doc_id]
+                if doc_id in bm25_chunks:
+                    id2chunk[doc_id] = bm25_chunks[doc_id]
 
         # 两路名单合起来一个块都没有（索引空/查询无命中）→ 直接返回空
         if not scores:
@@ -157,11 +139,9 @@ class Retriever:
         # ---- 候选池与精排（与单 query 版一致，宽召回窄输出）----
         candidates = max(top_k * RERANK_CANDIDATE_MULTIPLIER, rcfg.rerank_candidates)
         ranked_ids = sorted(scores, key=scores.get, reverse=True)[:candidates]
-        present = [i for i in ranked_ids if i in id2doc]
-        docs = [id2doc[i][1] for i in present]
-        chunks = [Chunk(id=i, text=id2doc[i][1], path=id2doc[i][2],
-                        source=id2doc[i][3], heading="", chunk_index=0)
-                  for i in present]
+        present = [i for i in ranked_ids if i in id2chunk]
+        docs = [id2chunk[i].text for i in present]
+        chunks = [id2chunk[i] for i in present]
 
         # 精排：cross-encoder 用主查询（standalone）打分；失败跳过精排，
         # 按 RRF 初检顺序输出（降级语义）
