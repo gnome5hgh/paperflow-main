@@ -46,7 +46,6 @@ from paperflow.core.memory.sleeptime import Sleeptime
 from paperflow.core.intent.services.jev import JevClient, JevUnavailable
 from paperflow.core.intent.services.service import IntentService
 from paperflow.core.intent.rules.taxonomy import TaxonomyError, load_taxonomy
-from paperflow.rag.parsers.grobid_client import GrobidClient
 from paperflow.terminal.confirm import ConfirmCenter, _make_confirm_callback
 from paperflow.terminal.io import make_input_io
 from paperflow.terminal.render import make_renderer
@@ -70,9 +69,8 @@ _PROBE_TIMEOUT_S = 1.0       # 单次端口连通探测超时
 _COMPOSE_TIMEOUT_S = 600.0   # docker compose up -d 上限（首启可能拉镜像）
 
 _DEGRADE_NOTE = "RAG/PDF 解析功能降级，REPL 仍可正常使用"
-_NO_DOCKER_WARN = f"未检测到 docker，无法自动拉起依赖服务（Milvus/GROBID）；{_DEGRADE_NOTE}"
+_NO_DOCKER_WARN = f"未检测到 docker，无法自动拉起依赖服务（Milvus）；{_DEGRADE_NOTE}"
 _NO_COMPOSE_WARN = f"未找到 docker-compose.yml（当前目录与安装目录均无），无法自动拉起依赖服务；{_DEGRADE_NOTE}"
-_GROBID_RUNBOOK_HINT = "若为首次启动，需先初始化 grobid-home（见 docker-compose.yml 首部注释）"
 
 
 def _host_port(url: str) -> tuple[str, int]:
@@ -172,7 +170,7 @@ def _probe_app_layer(endpoints: list[tuple[str, str, int]]) -> list[str]:
 
     只做 TCP 连通探测会漏掉两类故障：容器「端口开了随即 Exited(1)」（etcd TSO
     超时崩溃）与「半健康栈」都能通过预检，此后 RAG 静默降级而无人察觉。
-    Milvus 用 pymilvus 语义级连接（list_collections），GROBID 用 /api/isalive。
+    Milvus 用 pymilvus 语义级连接（list_collections）。
     任何异常只产出警告、绝不抛出——软依赖语义不变。
 
     Returns:
@@ -189,11 +187,6 @@ def _probe_app_layer(endpoints: list[tuple[str, str, int]]) -> list[str]:
                 client = MilvusClient(uri=f"http://{host}:{port}")
                 client.list_collections()
                 client.close()
-            elif name == "GROBID":
-                import httpx
-                r = httpx.get(f"http://{host}:{port}/api/isalive", timeout=5.0)
-                if r.status_code != 200 or r.text.strip().lower() != "true":
-                    raise RuntimeError(f"isalive 返回 {r.status_code}: {r.text[:50]}")
         except Exception as e:
             warnings.append(
                 f"{name} 端口可达但应用层探活失败（{e}）——服务可能已中途崩溃，"
@@ -207,10 +200,10 @@ def _ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
                      wait_timeout_s: float = _WAIT_TIMEOUT_S,
                      poll_interval_s: float = _POLL_INTERVAL_S) -> list[str]:
     """
-    启动预检：确保 Docker 依赖服务（Milvus/GROBID）就绪，未起则自动拉起。
+    启动预检：确保 Docker 依赖服务（Milvus）就绪，未起则自动拉起。
 
     Args:
-        config: 全局配置（读 milvus_uri / grobid_endpoint 两个端点）。
+        config: 全局配置（读 milvus_uri 端点）。
         is_tty: 是否交互终端——False（管道/CI/测试）直接跳过。
         skip: 显式跳过开关（--skip-bootstrap flag，与环境变量等价）。
         notify: 进度回调（str → None），拉起/等待阶段逐条调用；None 静默。
@@ -224,10 +217,7 @@ def _ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
     if not is_tty or skip or os.environ.get("PAPERFLOW_SKIP_BOOTSTRAP") == "1":
         return []
 
-    endpoints = [
-        ("Milvus", *_host_port(config.rag.storage.uri)),
-        ("GROBID", *_host_port(config.rag.grobid.endpoint)),
-    ]
+    endpoints = [("Milvus", *_host_port(config.rag.storage.uri))]
     if all(_port_open(h, p) for _, h, p in endpoints):
         return _probe_app_layer(endpoints)      # 端口在 → 应用层语义健康再确认
 
@@ -247,10 +237,8 @@ def _ensure_services(config: PaperFlowConfig, *, is_tty: bool, notify=None,
     warnings = []
     not_ready = _wait_healthy(endpoints, wait_timeout_s, poll_interval_s)
     for name, host, port in not_ready:
-        w = f"{name} 服务未在 {wait_timeout_s:.0f}s 内就绪（{host}:{port}）；{_DEGRADE_NOTE}"
-        if name == "GROBID":
-            w += f"；{_GROBID_RUNBOOK_HINT}"
-        warnings.append(w)
+        warnings.append(
+            f"{name} 服务未在 {wait_timeout_s:.0f}s 内就绪（{host}:{port}）；{_DEGRADE_NOTE}")
     # 端口就绪的子集再做应用层探活（未就绪的不重复报）
     ready = [(n, h, p) for n, h, p in endpoints if (n, h, p) not in not_ready]
     warnings.extend(_probe_app_layer(ready))
@@ -333,7 +321,7 @@ def main(argv: list[str] | None = None) -> int | None:
                         metavar="SESSION_ID",
                         help="恢复历史会话；不带 id 则列出历史会话供选择")
     parser.add_argument("--skip-bootstrap", action="store_true",
-                        help="跳过依赖服务（Milvus/GROBID）启动预检")
+                        help="跳过依赖服务（Milvus）启动预检")
     args = parser.parse_args(argv)
 
     config = PaperFlowConfig.from_env()
@@ -347,7 +335,7 @@ def main(argv: list[str] | None = None) -> int | None:
     is_tty = sys.stdin.isatty()
     io = make_input_io(config)
     console = Console() if is_tty else None
-    # 启动预检：依赖服务（Milvus/GROBID）未起时自动 docker compose 拉起（仅 TTY，
+    # 启动预检：依赖服务（Milvus）未起时自动 docker compose 拉起（仅 TTY，
     # 管道/CI 跳过）。软依赖：任何失败只产出警告不阻塞——服务缺席时 RAG/PDF 降级。
     service_warnings = _ensure_services(
         config, is_tty=is_tty, skip=args.skip_bootstrap,

@@ -4,7 +4,7 @@
 与内容扫描（scanner.py）同属"信任边界输入清洗"：在外部输入进入模型前统一
 做编码清洗与威胁扫描。本模块的唯一职责是清洗未配对的 surrogate 字符。
 
-为什么需要：PDF 提取（如 GROBID、PyMuPDF）或外部文本可能携带未配对的
+为什么需要：PDF 提取（PyMuPDF）或外部文本可能携带未配对的
 surrogate（孤立的高/低代理位），它们不是合法的 Unicode 标量值，会让下游
 两处崩溃：
 - 向量化编码：tokenizer 抛 ``TypeError: TextEncodeInput must be

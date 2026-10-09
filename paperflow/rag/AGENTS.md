@@ -9,7 +9,7 @@
 ```text
 rag/
 ├─ services/       # 门面与编排：rag_service.py(RAGService 单例门面) + indexer.py(增量索引) + retriever.py(混合检索) + query_rewriter.py
-├─ parsers/        # pdf_extract.py(PDF → markdown + 版面坐标) + chunker.py(学术分块) + grobid_client.py(待退役)
+├─ parsers/        # pdf_extract.py(PDF → markdown + 版面坐标 + 标题) + chunker.py(学术分块)
 ├─ encoders/       # bm25.py(jieba BM25，向量库文本的投影) + embedder.py(云端稠密编码) + reranker.py(云端交叉精排)
 └─ storage/        # vector_store.py(Milvus：Standalone 走 gRPC，本地文件路径走 Lite)
 ```

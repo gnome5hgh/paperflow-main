@@ -9,7 +9,7 @@
 
 配置结构与 config.yaml 同构：
 ``runtime`` / ``corpus`` / ``intent`` / ``rag{embedding, rerank,
-retriever, query_rewrite, chunker, indexer, storage, grobid, tools}`` / ``memory`` /
+retriever, query_rewrite, chunker, storage, tools}`` / ``memory`` /
 ``session`` / ``agents{timeouts}``，外加保留的顶层 ``llm`` / ``vision`` / ``mcp_servers``。
 
 env 名约定：字段路径以 ``_`` 连接并大写，前缀 ``PAPERFLOW_``。例如
@@ -402,22 +402,6 @@ class StorageConfig:
 
 
 @dataclass
-class GrobidConfig:
-    """GROBID PDF 解析服务配置。
-
-    Attributes:
-        endpoint: str，GROBID 服务地址（解析与标题提取共用）
-        timeout: float，请求超时（秒）
-    """
-
-    #: GROBID 服务地址（待退役：解析已换本地实现，仅引用域旧路径还引用它）
-    endpoint: str = "http://localhost:8070"
-
-    #: 请求超时（秒），覆盖健康检查与全文解析请求。
-    timeout: float = 60.0
-
-
-@dataclass
 class RagToolsConfig:
     """RAG 工具输出参数。
 
@@ -440,7 +424,6 @@ class RagConfig:
         query_rewrite: QueryRewriteConfig，query 改写
         chunker: ChunkerConfig，切块参数（改动触发配方哈希全量重索引）
         storage: StorageConfig，向量库连接
-        grobid: GrobidConfig，GROBID 解析服务
         tools: RagToolsConfig，检索工具输出参数
     """
 
@@ -450,7 +433,6 @@ class RagConfig:
     query_rewrite: QueryRewriteConfig = field(default_factory=QueryRewriteConfig)
     chunker: ChunkerConfig = field(default_factory=ChunkerConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
-    grobid: GrobidConfig = field(default_factory=GrobidConfig)
     tools: RagToolsConfig = field(default_factory=RagToolsConfig)
 
 

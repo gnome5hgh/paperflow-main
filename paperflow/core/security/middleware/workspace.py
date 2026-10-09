@@ -44,7 +44,7 @@ def is_denied_path(resolved: Path, workspace: str) -> bool:
 
     分六段：
     ① 系统运行时数据：workspace/security（审计日志防篡改）、workspace/infra
-       （Milvus/GROBID 依赖服务数据卷防绕过/防写坏）——按工作区根下的模块前缀
+       （Milvus 依赖服务数据卷防绕过/防写坏）——按工作区根下的模块前缀
        精确匹配，工作区里同名文件夹（如笔记 "security"）不误伤。约定审计目录
        = workspace/security/audit、服务卷 = workspace/infra/*；若将来改为
        自定义目录，此派生需同步。

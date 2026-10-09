@@ -6,7 +6,7 @@ LLM 驱动的学术研究流程助手：一个交互式终端 REPL，围绕「�
 
 - **多 Agent 协作**：supervisor 单根调度，读子 agent 能力清单（`<available_agents>`）按需拆解子任务并派发（paper-agent 文献搜索 / note-agent 论文笔记 / review-agent 审稿评阅 / paper-agent 问答 / research-agent 深度研究 / citation-agent 文献库维护），各子 agent 返回结构化摘要后聚合回答
 - **意图识别路由**：向量 + BM25 混合编码，多意图拆分为意图列表（顺序与并行由 supervisor 自主决定），低置信度时向用户澄清确认
-- **RAG 检索栈**：GROBID 解析 PDF（不可达时回退 PyMuPDF 启发式分节）→ 学术分块（按节切 + 句界滑窗，丢弃参考文献/样板章节残渣）→ Milvus 向量 + BM25 混合检索 → RRF 融合 → 云端重排
+- **RAG 检索栈**：本地版面解析 PDF（PyMuPDF 还原章节与坐标，不依赖外部服务）→ 学术分块（按节切 + 句界滑窗，丢弃参考文献/样板章节残渣）→ Milvus 向量 + BM25 混合检索 → RRF 融合 → 云端重排
 - **引用管理**：BibTeX 文库读写、语料标题索引、引用溯源，支持 APA / GB/T 7714 等格式
 - **视觉分析**：PDF 图表区域检测与提取，多模态模型看图解读
 - **记忆系统**：对话持久化 + 分层记忆块 + 后台 sleeptime 记忆整合 + 会话回放（`--resume`）
@@ -17,7 +17,7 @@ LLM 驱动的学术研究流程助手：一个交互式终端 REPL，围绕「�
 
 - Python ≥ 3.11
 - 一个 OpenAI 兼容的 LLM 端点（`config.yaml` 配置 base_url + api_key）
-- 可选：Docker（Milvus Standalone + GROBID 服务栈；不启用时 RAG 稠密检索降级、PDF 解析走内置解析器）
+- 可选：Docker（Milvus Standalone 服务栈；不启用时 RAG 检索降级为纯关键词）
 
 ## 快速开始
 
@@ -28,7 +28,7 @@ pip install -e .
 # 2. 配置：复制模板并填入 LLM api_key
 cp config.example.yaml config.yaml
 
-# 3. （可选）启动依赖服务：Milvus 向量库 + GROBID PDF 解析
+# 3. （可选）启动依赖服务：Milvus 向量库
 docker compose up -d
 
 # 4. 启动交互式 REPL（首次启动会自动探测并拉起依赖服务）

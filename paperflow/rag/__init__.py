@@ -6,10 +6,9 @@ rank_bm25）由 RAGService 内部惰性加载，包导入本身不拉取，避�
 测试启动。
 """
 from paperflow.rag.parsers.chunker import AcademicChunker, Chunk
-from paperflow.rag.parsers.grobid_client import GrobidClient, ParsedDoc, PyMuPDFParser
 from paperflow.rag.services.rag_service import RAGService, get_rag_service
 from paperflow.rag.services.indexer import RagIndexer
 from paperflow.rag.services.retriever import Retriever
 
-__all__ = ["AcademicChunker", "Chunk", "GrobidClient", "ParsedDoc", "PyMuPDFParser",
+__all__ = ["AcademicChunker", "Chunk",
            "RAGService", "get_rag_service", "RagIndexer", "Retriever"]
