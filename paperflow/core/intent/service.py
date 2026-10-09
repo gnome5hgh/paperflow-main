@@ -2,14 +2,14 @@
 """意图识别的集成适配器——把「进 ReAct 之前」的全部意图逻辑收在一处。
 
 意图识别是可选的预处理层：这里独占管线调用、INTENT 块与规则块的渲染、同步
-澄清、收尾账本、跨轮状态回写，并持有会话状态。Agent 的 ReAct 循环只持一个
+澄清、跨轮状态回写，并持有会话状态。Agent 的 ReAct 循环只持一个
 可选的本类实例、在固定钩子点调用；引用为 None 即「关」，一切退化为空操作。
 """
 import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from paperflow.core.intent.constants import INTENT_LABELS_ZH, IntentStep, IntentType
+from paperflow.core.intent.constants import IntentStep, IntentType
 from paperflow.core.intent.conversation_state import ConversationState
 from paperflow.core.intent.routing.confirm import format_intent_options, match_option_choice
 from paperflow.core.intent.routing.entities import extract_entities
@@ -39,7 +39,7 @@ class IntentService:
         pipeline: IntentPipeline，五级级联管线
         conversation: ConversationState，跨轮状态（prev_intent / prev_user_input）
         ask_user_callback: Callable[[str], str] | None，同步澄清的问询回调
-        last_intent: IntentOutput | None，本轮意图产出（供账本与回写）
+        last_intent: IntentOutput | None，本轮意图产出（供跨轮回写）
     """
 
     #: 意图规则块：随 INTENT 块注入的字段语义与「非派发意图」处理说明。
@@ -59,10 +59,6 @@ class IntentService:
         self.conversation = conversation
         self.ask_user_callback = ask_user_callback
         self.last_intent: IntentOutput | None = None
-        #: 本轮识别出的完整意图列表（收尾核对的事实来源，非派发队列）。
-        self._recognized_steps: list[IntentType] = []
-        #: 本轮是否已注入过收尾核对（每个 run 至多一次）。
-        self._steps_checked: bool = False
 
     async def begin(self, task: str) -> Turn:
         """跑管线、同步澄清，产出要注入的块与最终任务文本。
@@ -83,54 +79,15 @@ class IntentService:
         except Exception:
             logger.warning("intent pipeline failed, degraded to plain ReAct", exc_info=True)
             self.last_intent = None
-            self._recognized_steps = []
-            self._steps_checked = False
             return Turn(head_block=None, task=task, intents=[])
 
         if intent.clarification:
             intent, task = await self._resolve_clarification(task, intent)
         self.last_intent = intent
-        self._recognized_steps = [u.intent_type for u in intent.intents]
-        self._steps_checked = False
         block = "INTENT: " + intent.model_dump_json(
             exclude={"clarification", "prev_intent", "clarify_candidates"})
-        return Turn(head_block=block, task=task, intents=list(self._recognized_steps))
-
-    def needs_ledger(self) -> bool:
-        """是否需要注入收尾核对账本（识别到 ≥2 个意图且本轮尚未核对过）。
-
-        Returns:
-            True 表示本轮需注入收尾核对账本。
-        """
-        return len(self._recognized_steps) >= 2 and not self._steps_checked
-
-    def mark_ledger_injected(self) -> None:
-        """标记本轮已注入收尾核对（防重复注入）。
-
-        Returns:
-            无返回值。
-        """
-        self._steps_checked = True
-
-    def render_ledger(self, dispatches, artifacts) -> str:
-        """渲染收尾核对消息（只摆事实、不下结论）。
-
-        Args:
-            dispatches: list[tuple[str, str]]，本轮派发账本（agent_type, status）
-            artifacts: list[str]，本轮新落盘的产物路径
-
-        Returns:
-            收尾核对消息文本（识别到的意图 + 派发记录 + 产物清单）。
-        """
-        steps = "、".join(INTENT_LABELS_ZH.get(t, t.value) for t in self._recognized_steps)
-        dispatched = "、".join(f"{a}({s})" for a, s in dispatches) or "无"
-        produced = "、".join(artifacts) or "无"
-        return ("（系统核对）本轮识别出的意图：{steps}。\n"
-                "本轮已派发的子任务记录：{dispatched}。\n"
-                "本轮新落盘的产物：{produced}。\n"
-                "请核对：若有意图未派发、或某次派发失败/超时/被拒，必须在最终回答中如实说明；"
-                "全部完成则正常汇报，不要提及本条提示。").format(
-            steps=steps, dispatched=dispatched, produced=produced)
+        return Turn(head_block=block, task=task,
+                    intents=[u.intent_type for u in intent.intents])
 
     def finish(self, task: str) -> None:
         """run 收尾回写跨轮状态：单意图轮记 prev_intent，多意图轮置 None。

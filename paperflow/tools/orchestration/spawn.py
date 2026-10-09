@@ -265,40 +265,15 @@ def _check_spawn_allowed(parent: Agent, agent_type: str) -> str | None:
     return None
 
 
-def _record_dispatch(parent: Agent, agent_type: str, status: SubAgentStatus) -> None:
-    """把一次派发尝试记入 supervisor 的派发账本（run 状态容器，按 trace 键控）。
-
-    只记 supervisor 自身的派发——子 agent 的内部派发不进这份账本，与每轮派发
-    上限的计数口径一致。被拒/去重的尝试也记（状态 denied/deduped），收尾核对时
-    模型能据此看到「想派但没派成」的事实。parent 非 supervisor 时直接跳过，不给
-    子 agent 的任务留噪声。
+def _deny(summary: str) -> ToolResult:
+    """构造一次派发拒绝的结果。
 
     Args:
-        parent: Agent，发起派发的父实例
-        agent_type: str，目标子 agent 类型
-        status: SubAgentStatus，这次派发的结局
-    """
-    if parent.agent_type != "supervisor":
-        return
-    get_run_state(parent._trace_id).spawn_dispatches.append((agent_type, status))
-
-
-def _deny(parent: Agent, agent_type: str, summary: str) -> ToolResult:
-    """构造一次派发拒绝的结果,并同步记入派发账本。
-
-    各道闸的拒绝走同一形状(记账 denied + status=denied),集中在这里而不是每道闸各写
-    一遍构造样板:账本少记一笔,收尾核对就看不到那次「想派但没派成」,而漏记往往正是
-    复制粘贴样板时发生的。
-
-    Args:
-        parent: Agent，发起派发的父实例（账本只记 supervisor 的派发，非 supervisor 跳过）
-        agent_type: str，目标子 agent 类型
         summary: str，给模型看的拒绝原因——需可行动(说清为什么被拒、该怎么调整)
 
     Returns:
         ToolResult，text 与 summary 均为同一份 SubAgentResult 的 JSON 序列化。
     """
-    _record_dispatch(parent, agent_type, SubAgentStatus.DENIED)
     result = SubAgentResult(status=SubAgentStatus.DENIED, summary=summary)
     return ToolResult(text=result.model_dump_json(), summary=result.model_dump())
 
@@ -653,13 +628,13 @@ class SpawnSubAgentTool(Tool):
 
         # ① 未知类型：先于其余校验，拒绝时附可选清单，让模型能自己改对而不是一路带到构造期
         if agent_type not in parent.agent_registry.list_agents():
-            return _deny(parent, agent_type, f"未知 agent 类型: {agent_type}；可选: "
-                                            f"{sorted(parent.agent_registry.list_agents())}")
+            return _deny(f"未知 agent 类型: {agent_type}；可选: "
+                         f"{sorted(parent.agent_registry.list_agents())}")
 
         # ② 白名单：supervisor 硬编码放行，其余按自身 allowed_spawns 校验（单点在 _check_spawn_allowed）
         not_allowed = _check_spawn_allowed(parent, agent_type)
         if not_allowed is not None:
-            return _deny(parent, agent_type, not_allowed)
+            return _deny(not_allowed)
 
         # ③~⑤ 触及共享状态（去重注册表 / 预算计数），判定与记账整体持锁。
         # 两者都在 run 容器上（按 trace 隔离，一次用户任务内独立）；容器取用时内部会顺手
@@ -675,7 +650,6 @@ class SpawnSubAgentTool(Tool):
             key = (parent._instance_id, fp)
             now = time.monotonic()
             if key in reg:
-                _record_dispatch(parent, agent_type, SubAgentStatus.DEDUPED)
                 # 回传 SubAgentResult 形状（status=denied）而非裸文本：supervisor 统一按
                 # status 判读各路 spawn 结果，去重命中要能被同一条判读路径识别。
                 result = SubAgentResult(
@@ -687,16 +661,14 @@ class SpawnSubAgentTool(Tool):
             #    不同 mode 独立计数。此处只判不记，自增见下方收敛块。
             review_key = (parent._instance_id, agent_type) if agent_type == "review-agent" else None
             if review_key is not None and rs.review_counts.get(review_key, 0) >= _REVIEW_SPAWN_BUDGET:
-                return _deny(parent, agent_type,
-                             _REVIEW_BUDGET_DENIED_NOTE.format(budget=_REVIEW_SPAWN_BUDGET))
+                return _deny(_REVIEW_BUDGET_DENIED_NOTE.format(budget=_REVIEW_SPAWN_BUDGET))
 
             # ⑤ 每轮上限：只统计 supervisor 自身的派发，按迭代下标计数——
             #    下一次迭代即重新起算，不会因为上一次迭代派得多而永久锁死。此处同样只判不记。
             turn = getattr(parent, "_current_turn", 0)
             if parent.agent_type == "supervisor" \
                     and rs.turn_spawn_counts.get(turn, 0) >= TURN_SPAWN_BUDGET:
-                return _deny(parent, agent_type,
-                             f"本轮派发已达上限 {TURN_SPAWN_BUDGET}，"
+                return _deny(f"本轮派发已达上限 {TURN_SPAWN_BUDGET}，"
                              "请先汇总已有结果向用户交代，需要继续时下一轮再派。")
 
             # 五道全过：记账收敛到一处——④⑤ 判定阶段只看不写，计数自增与注册
@@ -755,9 +727,6 @@ class SpawnSubAgentTool(Tool):
             )
             # 传解析后的超时:_run_child 用实际生效值(config > 类默认)
             result = await self._run_child(child, agent_type, task)
-            # 派发账本：真实派发完成后按结果状态记账（与早退路径的 denied/deduped 互补），
-            # 供收尾核对列出「本轮派了哪些、结果如何」。
-            _record_dispatch(parent, agent_type, result.summary["status"])
             # 失败升级：仅 supervisor 的派发计数——连续 N 次非 success
             # 后追加强指令，把「继续自动重试」的决策权交回用户（模型对不可能
             # 成功的任务会自动重派多轮，每轮分钟级）。按会话容器计数：同一会话

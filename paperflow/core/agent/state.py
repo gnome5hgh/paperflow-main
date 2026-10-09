@@ -2,8 +2,8 @@
 
 - SessionState（键 session_id）：跨 run 存活。装「跨任务才有意义」的东西——连续失败
   计数（连续失败才升级）。
-- RunState（键 trace_id）：一次用户任务一个。装本次任务的中间产物——搜索去重池、派发与
-  产物账本、各类预算计数、在途写占用、在途派发去重注册表。子 agent 继承父的
+- RunState（键 trace_id）：一次用户任务一个。装本次任务的中间产物——搜索去重池、产物
+  账本、各类预算计数、在途写占用、在途派发去重注册表。子 agent 继承父的
   trace_id，故整棵任务树共用一份。
 
 两者都按 TTL 惰性清扫（取用时顺手剔除过期条目，不需要定时任务），粒度不同：
@@ -52,7 +52,6 @@ class RunState:
     Attributes:
         failed_urls: dict[str, str]，失败 URL → 失败原因（搜索负缓存）
         downloaded: dict[str, str]，URL 或规范化标题 → 落盘路径（搜索成功短路）
-        spawn_dispatches: list[tuple[str, str]]，supervisor 自身派发账本 (agent_type, status)
         turn_spawn_counts: dict[int, int]，轮次 → 该轮派发次数（每轮上限用）
         review_counts: dict[tuple[str, str], int]，(父实例 id, mode) → 审稿次数（预算用）
         writing_paths: dict[str, tuple[str, int]]，目标路径 → (持有者实例 id, 重入计数)（在途写互斥）
@@ -67,11 +66,6 @@ class RunState:
         self.failed_urls: dict[str, str] = {}
         #: 搜索成功短路：URL 或规范化标题 -> 落盘路径
         self.downloaded: dict[str, str] = {}
-        #: supervisor 自身派发账本：(agent_type, status)。
-        #: 按 trace 共享（子 agent 继承父 trace_id）；只有 supervisor 会读它，且只由
-        #: supervisor 的 run 在开头复位——子 agent 的 run 不复位，否则子 agent 一跑就
-        #: 抹掉 supervisor 已记的派发。将来若子 agent 也读写它，须改按实例分桶。
-        self.spawn_dispatches: list[tuple[str, str]] = []
         #: 每轮派发计数：turn -> 次数（仅统计 supervisor 自身的派发）
         self.turn_spawn_counts: dict[int, int] = {}
         #: 审稿预算计数：(父实例 id, mode) -> 次数

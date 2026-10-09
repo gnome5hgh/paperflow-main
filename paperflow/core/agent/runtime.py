@@ -330,7 +330,7 @@ class Agent:
         session_id: str，会话标识（跨多轮 run 一致）
         memory / block_manager / message_manager / agent_manager / compaction / structured: 记忆与结构化输出服务句柄（None 时相关路径零开销跳过）
         intent_service / ask_user_callback: 意图识别集成适配器与问询回调（None = 意图层不存在；仅 CLI 构造的 supervisor 装配）
-        last_intent: IntentOutput | None，本轮意图（只读委托给 intent_service，供跨轮回写与收尾核对读取）
+        last_intent: IntentOutput | None，本轮意图（只读委托给 intent_service，供跨轮回写读取）
         max_turns: int，ReAct 循环轮次上限（超过抛 MaxTurnsExceeded）
         stream_callback: 回调 | None，流式事件回调（None = 非流式路径）
         skill_registry: SkillRegistry | None，skill 体系（L1 清单注入与工具并入）
@@ -341,7 +341,6 @@ class Agent:
         _current_turn: int，当前 ReAct 轮次（spawn 摘要提取借此归属父轮次）
         _tool_schemas: list[dict]，预计算的 function calling JSON Schema
         _has_human_confirm: bool，是否有真实人工确认回调（区分 auto_denied 与 user_denied）
-        _run_dispatches: list[tuple[str, str]]，本轮派发账本（属性视图，直连 run 状态容器）
     """
 
     def __init__(
@@ -486,9 +485,6 @@ class Agent:
         #: 与按 run 生成的 _trace_id 区分——子 agent 继承父 trace_id，用 trace_id 键控
         #: 会把同一轮里多个同类父实例的预算混在一起。构造即固定，不再变化。
         self._instance_id: str = uuid.uuid4().hex
-        #: 本次 run 的派发账本（supervisor 自身的派发）。赋值走属性 setter，让
-        #: spawn 写入与收尾核对读到 run 状态容器里的同一份列表。
-        self._run_dispatches: list[tuple[str, str]] = []
 
         # opt-in 注入：仅对声明 needs_parent 的工具注入父引用。
         # 原子工具不需要 parent；只有嵌套子 agent 的工具声明——权限最小化。
@@ -541,26 +537,6 @@ class Agent:
             ConversationState | None，跨轮状态；无意图服务时恒 None。
         """
         return self.intent_service.conversation if self.intent_service is not None else None
-
-    @property
-    def _run_dispatches(self) -> list[tuple[str, str]]:
-        """本次 run 的派发账本（supervisor 自身的派发），取自 run 状态容器。
-
-        spawn 每次派发（含被拒/去重）写进容器的 spawn_dispatches，收尾核对经本
-        属性读到同一份——两者必须是同一列表，否则核对只会看到空账本。
-        """
-        from paperflow.core.agent.state import get_run_state
-        return get_run_state(self._trace_id or "").spawn_dispatches
-
-    @_run_dispatches.setter
-    def _run_dispatches(self, value) -> None:
-        """覆盖本次 run 的派发账本（原地改写容器列表，不留旧引用）。
-
-        Args:
-            value: list[tuple[str, str]]，新的派发账本内容（agent_type, status）。
-        """
-        from paperflow.core.agent.state import get_run_state
-        get_run_state(self._trace_id or "").spawn_dispatches[:] = list(value)
 
     #: messages 只读 property（OpenAI wire 格式视图）。
     #: 只读：外部（CLI/测试）可观察但不可改，写入统一走 _append_to_messages。
@@ -904,11 +880,6 @@ class Agent:
         # conversation.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 
-        # 每轮 run 独立：清空上一轮的派发账本（收尾核对读它）。只在 supervisor 上清——
-        # 账本存在按 trace 键控的 run 状态容器里，而子 agent 继承父 trace_id，若无条件
-        # 清会让每个子 agent 跑一次就抹掉 supervisor 已记的派发（账本是 supervisor 的）。
-        if self.agent_type == "supervisor":
-            self._run_dispatches = []
         # head:① AGENT ② SKILLS ③ 可派发子 agent 清单 ④ Memory ⑤ 意图规则块+INTENT 块,每轮重建
         # 不进累积;末尾 user task。意图层澄清在 _build_head 内(经 begin)同步问用户并落地。
         head = await self._build_head(task)
@@ -996,24 +967,6 @@ class Agent:
                         role="user",
                         content="上一条回答因输出长度上限被截断，请直接从断点继续输出，不要重复已输出的内容。"))
                     self._persist_conversation([response])
-                    continue
-
-                # 收尾核对：识别到多意图时，把「识别到的意图 + 实际派发记录 + 产物清单」
-                # 摆给模型，由它自己核对并如实汇报。代码不下结论，所以不会说错话；
-                # 每个 run 至多注入一次，max_turns 是第二道保险。注入后 continue，
-                # 让模型基于账本给出最终回答——本轮这条回答先不落盘。
-                if self.intent_service is not None and self.intent_service.needs_ledger():
-                    self.intent_service.mark_ledger_injected()
-                    # 注入账本后本轮这条纯文本先不落盘、直接 continue:若此前发生过截断
-                    # 续写,累积器里的半截不清空就会在下一轮与完整重答拼成「重复交付」。
-                    # 与压缩重建、正常完成两处的清空保持一致。
-                    accumulated.clear()
-                    from paperflow.core.agent.state import get_run_state
-                    ledger_msg = Message(role="user", content=self.intent_service.render_ledger(
-                        self._run_dispatches,
-                        get_run_state(getattr(self, "_trace_id", "") or "").artifacts))
-                    self._append_to_messages(ledger_msg)
-                    self._persist_conversation([ledger_msg])
                     continue
 
                 # 正常完成（未被截断）
