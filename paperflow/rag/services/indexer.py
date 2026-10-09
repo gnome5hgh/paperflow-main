@@ -12,6 +12,10 @@
 文本与结构由本地版面解析给出（见 ``paperflow.rag.parsers.pdf_extract``），不依赖
 任何外部解析服务，因此不存在「解析器降级」这种状态。
 
+媒体块：PDF 的图与表各成一类块，接在章节块之后——表格单元格里的数值与图注里的
+结论在章节正文中往往不出现，不独立成块就检索不到。区域定位由 ``vision`` 提供，
+本模块只负责把它转成块（存注文与区域内文本，不落图）。
+
 状态版本门控：状态文件记录「配方哈希」（见 ``_recipe_hash``）而非手写版本号。
 所有决定「产出哪些块」的配置输入（切块 max/overlap、embed_model）连同
 ``RECIPE_LOGIC_REVISION`` 一起做 sha256；YAML 里改任一参数即指纹变化 →
@@ -23,11 +27,21 @@
 """
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from paperflow.rag.parsers.chunker import Chunk, Section, indexed_text
+from paperflow.rag.parsers.chunker import (
+    CHUNK_ID_LEN,
+    CHUNK_TYPE_FIGURE,
+    CHUNK_TYPE_TABLE,
+    Chunk,
+    Section,
+    indexed_text,
+)
 from paperflow.rag.parsers.pdf_extract import extract_pdf
+
+logger = logging.getLogger(__name__)
 
 #: 配方哈希的逻辑版本号：切块/解析「算法逻辑」修订号（非参数）。参数
 #: （``rag.chunker.*``、embed_model）自动进 ``_recipe_hash`` 指纹；算法逻辑改动
@@ -326,6 +340,52 @@ class RagIndexer:
         title, sections = _split_markdown(_markdown_lines(text))
         return _FileContent(title, sections)
 
+    def _media_chunks(self, path: str, start_index: int) -> list[Chunk]:
+        """把一篇 PDF 的图/表区域转成检索块，序号接在章节块之后。
+
+        每块存两样东西：**注文进 `caption`、区域内文字进 `text`**。检索结果的
+        「章节」列取 `heading or caption`，所以媒体块那一列显示的就是表注/图注原文；
+        摘录给出的则是区域内的文字。两者都为空的区域不产块——没有可检索内容的块
+        只会占位。注文偏长时进前缀会加长编码输入，但正文与窗口不受影响。
+
+        不写图片、不入库图像：块只承载文字，图本身另有 analyze_figures 工具按需看。
+
+        Args:
+            path: 文档绝对路径（进块 id 与元数据）。
+            start_index: 起始块序号（章节块数量），保证 id 空间不重叠。
+
+        Returns:
+            list[Chunk]: 媒体块（图与表，可能为空）。
+        """
+        try:
+            figures = self.service.extract_figures(path)
+        except Exception as e:
+            # 图表定位是加分项：失败只丢媒体块，章节块照常入库
+            logger.warning("图表区域定位失败，本篇不产媒体块：%s", e)
+            return []
+
+        chunks: list[Chunk] = []
+        idx = start_index
+        for f in figures:
+            caption = " ".join((f.caption or "").split())
+            body = " ".join((f.image_text or "").split())
+            if not caption and not body:
+                continue
+            # 惰性 import：vision 有自己的重依赖，不在包导入期拉起
+            from paperflow.vision.constants import FigureType
+            ctype = (CHUNK_TYPE_TABLE if f.fig_type == FigureType.Table
+                     else CHUNK_TYPE_FIGURE)
+            bounds = f.region_boundary
+            position = ((f.page + 1, int(bounds.x1), int(bounds.x2),
+                         int(bounds.y1), int(bounds.y2)),) if bounds else ()
+            chunk_id = hashlib.sha1(f"{path}:{idx}".encode()).hexdigest()[:CHUNK_ID_LEN]
+            chunks.append(Chunk(
+                id=chunk_id, text=body, path=path, heading="", caption=caption,
+                chunk_type=ctype, position=position, chunk_index=idx,
+            ))
+            idx += 1
+        return chunks
+
     def _embed_chunks(self, chunks: list[Chunk]):
         """把一批块编码成向量（供写入向量库）。
 
@@ -411,9 +471,11 @@ class RagIndexer:
             bm25.remove_document(did)
         store.delete_doc(key)
 
-        # 3. 切分章节，过滤空白块
+        # 3. 切分：章节块 + 图/表媒体块，过滤空白块
         chunks = self.service.chunker.split_doc(key, parsed.sections, title=parsed.title)
-        chunks = [c for c in chunks if c.text.strip()]   # 过滤空白文本的块，避免产生无意义向量
+        if p.suffix.lower() == ".pdf":
+            chunks.extend(self._media_chunks(key, start_index=len(chunks)))
+        chunks = [c for c in chunks if c.text.strip() or c.caption.strip()]
         if not chunks:
             # 文档被清空：旧块已删，无需写新内容
             return IndexOutcome("empty", reason="切块后无内容（旧块已清理）")

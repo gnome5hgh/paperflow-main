@@ -181,6 +181,22 @@ class RAGService:
                     self._bm25 = Bm25Index()
         return self._bm25
 
+    def extract_figures(self, path: str):
+        """定位一篇 PDF 里的图与表区域（媒体块构造用），不渲染图像。
+
+        这是 `rag → vision` 的唯一一条边，且**惰性 import**：vision 有自己的
+        重型依赖（PyMuPDF 版面管线、pdffigures2 式检测），包导入期拉起它会拖慢
+        每一次 import paperflow.rag 的调用方。
+
+        Args:
+            path: PDF 文件绝对路径。
+
+        Returns:
+            list[Figure]: 检测到的图与表区域；检测不出（扫描件/纯图）为空列表。
+        """
+        from paperflow.vision import FigureExtractor
+        return FigureExtractor().extract(path, render_images=False)
+
     # ---------- 索引器/检索器视图（延迟创建） ----------
     def get_indexer(self):
         """惰性创建并返回索引器视图。

@@ -11,8 +11,9 @@
 8. 逐页 located_figures    为每图注构建候选区域、打分、取最优配置
 9. 渲染每图区域 → schemas.Figure
 
-消费方（FigureAnalyzer / analyze_figures 工具）只用 number/caption/image_bytes/mime，
-扩展出的 name/fig_type/image_text/boundary 字段向下兼容。
+消费方分两类：看图（FigureAnalyzer / analyze_figures 工具）用 number/caption/
+image_bytes/mime；造检索块（索引侧）用 caption/image_text/region_boundary/page，
+并以 render_images=False 跳过渲染。图与表都产出——表格单元格里的数值常是检索目标。
 """
 from __future__ import annotations
 
@@ -24,7 +25,6 @@ from paperflow.vision.parsers.caption import (
     find_captions,
     strip_caption_lines,
 )
-from paperflow.vision.constants import FigureType
 from paperflow.vision.parsers.document_layout import build_document_layout
 from paperflow.vision.detectors.figure_detector import located_figures
 from paperflow.vision.services.renderer import render_figure
@@ -56,14 +56,19 @@ class FigureExtractor:
     文本分类、图区域检测、渲染等步骤串联起来，最终返回视觉分析可用的 Figure 对象列表。
     """
 
-    def extract(self, path: str) -> list[Figure]:
-        """提取 PDF 中所有图表对象。
+    def extract(self, path: str, render_images: bool = True) -> list[Figure]:
+        """提取 PDF 中所有图表对象（图与表都产出）。
 
         Args:
             path: PDF 文件绝对路径。
+            render_images: 是否把区域栅格化成 PNG。只要区域定位与区域文本的调用方
+                （如索引侧造媒体块，不落图）传 False，省掉整篇的渲染开销——区域、
+                注文与图内文本照常给出。
 
         Returns:
-            list[Figure]：图表对象列表；无图或布局信息不足（扫描件/纯图文档）返回空列表。
+            list[Figure]：图表对象列表（含 fig_type 为 Table 的表）；无图或布局信息
+            不足（扫描件/纯图文档）返回空列表。render_images=False 时 image_bytes
+            为空字节、mime 为空串。
 
         注意：
             本方法会打开 PDF 文档并在 finally 中关闭，确保资源释放。
@@ -86,14 +91,14 @@ class FigureExtractor:
             # 步骤4：全文档图注起始识别（含消歧）
             starts = find_captions(pages, layout)
             # 步骤5-9：逐页处理
-            return self._process_pages(doc, pages, starts, layout)
+            return self._process_pages(doc, pages, starts, layout, render_images)
         finally:
             doc.close()
 
     def _process_pages(
-        self, doc, pages: list[Page], starts, layout
+        self, doc, pages: list[Page], starts, layout, render_images: bool = True
     ) -> list[Figure]:
-        """逐页执行 图形 → 图注扩展 → 分类 → 图检测 → 渲染，汇总成 Figure 列表。
+        """逐页执行 图形 → 图注扩展 → 分类 → 图检测 →（可选渲染），汇总成 Figure 列表。
 
         图注起始（starts）是全文级别识别的，按页码过滤出本页的再传给 build_captions
         ——build_captions 靠行对象身份对齐，必须复用 find_captions 传入的同一批 Page。
@@ -130,12 +135,14 @@ class FigureExtractor:
             )
             # 步骤8：为每个图注定位图区域，取最优配置
             located = located_figures(classified, layout)
-            # 步骤9：对每个检测到的图区域渲染成 PNG，并组装 Figure 对象
+            # 步骤9：逐个检测到的区域组装 Figure 对象（图与表都产出——表格单元格里
+            # 的数值常是检索目标，只在章节正文里找不到它们）
             for f in located.figures:
-                if f["fig_type"] != FigureType.Figure:
-                    continue  # 表格检测保留但不产出（Phase 2 范围只收图）
-                # 将 region_boundary 裁剪区域渲染为 PNG 字节
-                image_bytes, mime = render_figure(fitz_page, f["region_boundary"])
+                if render_images:
+                    # 将 region_boundary 裁剪区域渲染为 PNG 字节
+                    image_bytes, mime = render_figure(fitz_page, f["region_boundary"])
+                else:
+                    image_bytes, mime = b"", ""
                 figures.append(Figure(
                     number=_parse_number(f["name"]),
                     caption=f["caption_text"],

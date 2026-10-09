@@ -1,7 +1,8 @@
-"""从 PDF 提取出的图表对象。
+"""从 PDF 提取出的图表对象（图与表）。
 
-提取管线的最终产出；消费方（视觉分析器、analyze_figures 工具）主要用
-number、caption、image_bytes、mime 四个字段。
+提取管线的最终产出。两类消费方各取所需：视觉分析器与 analyze_figures 工具用
+number/caption/image_bytes/mime 看图；索引侧造媒体块只用 caption/image_text/
+region_boundary/page（不要图像，故不渲染）。
 """
 
 from dataclasses import dataclass
@@ -24,14 +25,15 @@ class Figure:
         image_bytes: 渲染出的图区域 PNG 字节，可直接用于 base64 编码或存储。
         mime: 图片 MIME 类型，固定为 "image/png"（目前仅支持 PNG 输出）。
         name: 图号原始字符串，透传自图注检测结果（如 "1"、"3.1"、"III" 等）。
-        fig_type: 图注类型，目前管线仅产出 "Figure"，保留字段用于扩展（如 "Table"）。
+        fig_type: 图注类型（"Figure" 或 "Table"），由管线按图注首词判定。
         image_text: 图区域内识别出的图内文本，所有词以空格拼接（可能为空）。
         caption_boundary: 图注段落的包围盒（Box），可能为 None（仅当图注未扩展成功）。
         region_boundary: 检测出的图区域包围盒（Box），用于渲染和后续分析。
 
     边界条件：
         - number 为 0 并不代表图号真的是 0，而是表示 name 无法解析为整数。
-        - image_bytes 总为非空字节（管线保证）。
+        - image_bytes 通常非空；调用方要求不渲染时（只要区域定位与区域文本）为
+          空字节、mime 为空串。
         - caption_boundary 和 region_boundary 可为 None，但通常在成功检测后均非 None。
     """
 
