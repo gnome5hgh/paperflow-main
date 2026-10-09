@@ -261,7 +261,9 @@ class AgentRegistry:
         派发集合按 agent 自己的权限算：supervisor 硬编码放行全部（与 spawn 工具的
         校验一致，见 orchestration/spawn.py）；其余取自身 allowed_spawns。两者都
         排除自身，并过滤掉未注册的名字——AGENT.md 写错名字时不在清单里广告一个
-        不存在的目标。集合为空返回空串，调用方据此整块省略。
+        不存在的目标。allowed_spawns 里重复出现的名字按首次出现去重，避免同一个目标
+        在清单里被广告两遍（自引用的名字随自身过滤一并剔除）。集合为空返回空串，
+        调用方据此整块省略。
 
         Args:
             agent_type: str，清单的持有者
@@ -273,8 +275,9 @@ class AgentRegistry:
             targets = [n for n in self.list_agents() if n != agent_type]
         else:
             registered = set(self.list_agents())
-            targets = [n for n in self.get_config(agent_type).allowed_spawns
-                       if n != agent_type and n in registered]
+            # dict.fromkeys 保序去重：同一目标重复出现只在首次渲染一行
+            allowed = dict.fromkeys(self.get_config(agent_type).allowed_spawns)
+            targets = [n for n in allowed if n != agent_type and n in registered]
         if not targets:
             return ""
         lines = [f"- {n}: {self.get_config(n).description}" for n in targets]

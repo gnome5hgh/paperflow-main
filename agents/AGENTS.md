@@ -33,7 +33,7 @@ agents/
 - **通用铁律不重复**：诚实性协议/交付契约语义/协作语义在全 agent 共有的 `BASE_PROMPT`（`paperflow/core/agent/base_prompt.py`），AGENT.md 只写角色特有契约。
 - **权限最小化**：`allowed_spawns` 由 spawn 工具运行时强制；叶子 agent（`citation-agent`/`rag-agent`/`memory-agent`）不递归 spawn；`supervisor` 不装 skill 工具（代码级红线）。
 - **frontmatter 是契约**：`name` 必须与目录名一致；`allowed_spawns` 只能引用已存在的 agent。
-- 新增 agent：建目录 → 写 AGENT.md + tools.py → 在根 manifest 的 agent 表补一行。`description` 会被自动收进 supervisor 的 system 消息里的 `<available_agents>` 清单，supervisor 按能力选型——没有「意图 → 子 agent」映射表要维护。
+- 新增 agent：建目录 → 写 AGENT.md + tools.py → 在根 manifest 的 agent 表补一行。`description` 会被自动收进**每个可派发 agent** 的 system 消息里的 `<available_agents>` 清单——清单由该 agent 自己的 `allowed_spawns` 派生（`supervisor` 硬编码放行全部），没有 `allowed_spawns` 的叶子 agent 不生成该块；派发方按能力选型，没有「意图 → 子 agent」映射表要维护。
 
 ## Investigation Rule
 
