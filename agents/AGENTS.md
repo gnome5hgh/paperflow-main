@@ -22,7 +22,7 @@ agents/
 
 每个插件恰好两个文件：
 
-- `AGENT.md` — YAML frontmatter（`name`/`description`/`allowed_agents`/`allowed_spawns`）+ Markdown 正文
+- `AGENT.md` — YAML frontmatter（`name`/`description`/`allowed_spawns`）+ Markdown 正文
 - `tools.py` — module-level `TOOLS: list[Tool]`（Tool ABC 子类：`name`/`description`/`parameters` JSON Schema/`execute`）
 
 ## Core Rules

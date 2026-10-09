@@ -7,7 +7,6 @@ metadata:
   status: active
   role: 记忆与清单维护
   related_agents: [supervisor, paper-agent, note-agent]
-allowed_agents: [supervisor, paper-agent, note-agent]
 allowed_spawns: []
 ---
 

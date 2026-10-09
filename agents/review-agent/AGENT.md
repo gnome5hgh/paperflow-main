@@ -7,7 +7,6 @@ metadata:
   status: active
   role: 审查/门禁
   related_agents: [citation-agent]
-allowed_agents: []
 allowed_spawns: [citation-agent]
 ---
 

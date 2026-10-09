@@ -114,7 +114,7 @@ agents/<name>/   Agent 插件:AGENT.md(frontmatter+system_prompt) + tools.py(TOO
 ### Agent plugin system
 
 Every agent lives in `agents/<name>/` with two files:
-- `AGENT.md` — YAML frontmatter (`name`, `description`, `allowed_agents`, `allowed_spawns`) + Markdown body(契约式结构:派发类 worker 为五段式——身份/边界/能力/交付契约/方法启发式;review-agent 按角色裁剪。编排决策由 LLM 运行时自主,不写跨 agent 编排序列。**流程步骤沉在 skill 里**——写笔记/写选题计划/三类审查的做法在 `.paperflow/skills/` 的五份流程 skill 中,AGENT.md 指向它)
+- `AGENT.md` — YAML frontmatter (`name`, `description`, `allowed_spawns`) + Markdown body(契约式结构:派发类 worker 为五段式——身份/边界/能力/交付契约/方法启发式;review-agent 按角色裁剪。编排决策由 LLM 运行时自主,不写跨 agent 编排序列。**流程步骤沉在 skill 里**——写笔记/写选题计划/三类审查的做法在 `.paperflow/skills/` 的五份流程 skill 中,AGENT.md 指向它)
 - `tools.py` — module-level `TOOLS: list[Tool]` list. Each Tool is a subclass of `Tool` ABC with `name`, `description`, `parameters` (JSON Schema for OpenAI function calling), and `execute(**kwargs) -> ToolResult`
 
 `AgentRegistry(agents_dir)` scans this directory at init time, parses frontmatter, dynamically imports `TOOLS` from each `tools.py`, and exposes `get_config(agent_type) -> AgentConfig` plus `list_agents()`. It is the single entry point for agent plugin discovery — the Skill system keeps a parallel registry (`SkillRegistry`, see below), which registers installed skills rather than agents.

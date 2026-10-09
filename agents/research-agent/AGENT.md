@@ -7,7 +7,6 @@ metadata:
   status: active
   role: 选题发现/研究计划生成
   related_agents: [paper-agent, review-agent, citation-agent]
-allowed_agents: []
 allowed_spawns: [paper-agent, review-agent, rag-agent, citation-agent]
 ---
 

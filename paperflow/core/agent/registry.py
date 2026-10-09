@@ -11,7 +11,6 @@ Agent 注册表 —— 扫描 agents/ 目录,统一加载配置和工具。
 设计要点:
 
 - **单一注册表**:一个类同时解析配置和导入工具,避免两套注册表数据不同步
-- **权限最小化**:``allowed_agents`` 限制哪些 agent 类型可以加载特权 Agent 定义捆绑的 Tool
 - **Spawn 控制**:``allowed_spawns`` 声明本 agent 能 spawn 哪些子 agent
 """
 
@@ -32,8 +31,6 @@ class AgentConfig:
         name            ← AGENT.md frontmatter "name" 或目录名
         description     ← AGENT.md frontmatter "description"
         system_prompt   ← AGENT.md 正文（frontmatter 后的 Markdown）
-        allowed_agents  ← AGENT.md frontmatter "allowed_agents"
-                          空列表 = 公开，任何 agent 可加载其 Tool
         allowed_spawns  ← AGENT.md frontmatter "allowed_spawns"
                           空列表 = 不能 spawn 任何 SubAgent
         tools           ← tools.py 模块级 TOOLS 列表
@@ -42,7 +39,6 @@ class AgentConfig:
         name: str，Agent 类型标识（对应 agents/ 下目录名）
         description: str，简短描述（供 LLM 选择 spawn 目标时参考）
         system_prompt: str，注入 LLM 的 system prompt（AGENT.md 正文）
-        allowed_agents: list[str]，可加载本 Agent 工具的白名单（空 = 公开）
         allowed_spawns: list[str]，本 Agent 能 spawn 的子 agent（空 = 不能 spawn）
         tools: list[Tool]，从 tools.py 的 TOOLS 加载的工具实例
     """
@@ -55,9 +51,6 @@ class AgentConfig:
 
     #: 注入 LLM system prompt 的完整文本，定义 Agent 的行为规范
     system_prompt: str = ""
-
-    #: 特权控制:只有白名单中的 agent 类型可加载此 Agent 的工具(策略层执行)
-    allowed_agents: list[str] = field(default_factory=list)
 
     #: Spawn 权限:本 Agent 能 spawn 哪些子 agent(spawn 工具运行时校验)
     allowed_spawns: list[str] = field(default_factory=list)
@@ -146,7 +139,6 @@ class AgentRegistry:
                 description=meta.get("description", ""),
                 # system_prompt 优先取 Markdown 正文，回退到 description
                 system_prompt=body.strip() if body else meta.get("description", ""),
-                allowed_agents=meta.get("allowed_agents", []),
                 allowed_spawns=meta.get("allowed_spawns", []),
                 tools=tools,
             )
@@ -160,7 +152,6 @@ class AgentRegistry:
             ---
             name: paper-agent
             description: 学术论文搜索
-            allowed_agents: []
             allowed_spawns: []
             ---
 

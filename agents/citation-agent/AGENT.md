@@ -7,7 +7,6 @@ metadata:
   status: active
   role: 引用库维护
   related_agents: [note-agent, research-agent, paper-agent, review-agent]
-allowed_agents: [supervisor]
 allowed_spawns: []
 ---
 

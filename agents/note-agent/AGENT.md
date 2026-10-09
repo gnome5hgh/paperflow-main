@@ -7,7 +7,6 @@ metadata:
   status: active
   role: 论文笔记生成
   related_agents: [review-agent, citation-agent]
-allowed_agents: []
 allowed_spawns: [review-agent, rag-agent, memory-agent, citation-agent]
 ---
 

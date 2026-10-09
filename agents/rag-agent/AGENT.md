@@ -7,7 +7,6 @@ metadata:
   status: active
   role: 语料检索与索引维护
   related_agents: [supervisor, paper-agent, note-agent, research-agent]
-allowed_agents: [supervisor, paper-agent, note-agent, research-agent]
 allowed_spawns: []
 ---
 

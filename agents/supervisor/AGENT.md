@@ -7,7 +7,6 @@ metadata:
   status: active
   role: 调度主管
   related_agents: [paper-agent, note-agent, research-agent, citation-agent, memory-agent]
-allowed_agents: [supervisor]
 allowed_spawns: []   # supervisor 硬编码放行所有子 agent(_check_spawn_allowed 对 supervisor 旁路);留空表示不依赖此列表做递归限制
 ---
 

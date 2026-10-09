@@ -7,7 +7,6 @@ metadata:
   status: active
   role: 学术论文检索
   related_agents: [review-agent]
-allowed_agents: []
 allowed_spawns: [review-agent, rag-agent, memory-agent]
 ---
 
