@@ -4,15 +4,13 @@
 公共出口（下游一律 `from paperflow.core.llm import ...`）：
 - ``Message``（wire 格式消息）/ ``LLMClient`` / ``tool_to_openai_schema`` ← client
 - ``StructuredOutput`` / ``StructuredOutputConfig`` / ``StructuredOutputError`` ← structured
-- ``Embedder``（稠密编码协议）/ ``CloudEmbedder``（云端实现）← embedding
-- ``Reranker``（精排协议）/ ``CloudReranker``（云端实现）← rerank
-私有辅助（``_message_to_openai`` / ``_accumulate_stream_chunks`` / ``_extract_json_body``
-等）不在此导出，需要时从具体子模块 import。
+
+**这里只有 LLM 客户端**：稠密编码与精排的协议与实现在 `paperflow.rag.models`
+（只服务 RAG）。私有辅助（``_message_to_openai`` / ``_accumulate_stream_chunks`` /
+``_extract_json_body`` 等）也不在此导出，需要时从具体子模块 import。
 """
 
 from paperflow.core.llm.client import LLMClient, Message, tool_to_openai_schema
-from paperflow.core.llm.embedding import CloudEmbedder, Embedder
-from paperflow.core.llm.rerank import CloudReranker, Reranker
 from paperflow.core.llm.structured import (
     StructuredOutput,
     StructuredOutputConfig,
@@ -20,12 +18,8 @@ from paperflow.core.llm.structured import (
 )
 
 __all__ = [
-    "CloudEmbedder",
-    "CloudReranker",
-    "Embedder",
     "LLMClient",
     "Message",
-    "Reranker",
     "StructuredOutput",
     "StructuredOutputConfig",
     "StructuredOutputError",

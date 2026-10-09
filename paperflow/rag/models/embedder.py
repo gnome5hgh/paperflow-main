@@ -1,4 +1,4 @@
-# paperflow/core/llm/embedding.py
+# paperflow/rag/models/embedder.py
 """稠密编码：Embedder 协议与云端实现（OpenAI 兼容 /v1/embeddings）。
 
 core 定义接口，rag/services 与 cli 向下依赖。云端 only：构造不碰网络、不校验
@@ -55,7 +55,7 @@ class Embedder(Protocol):
 RETRY_BACKOFF_BASE = 0.5
 
 
-class CloudEmbedder:
+class RagEmbedder:
     """OpenAI 兼容 /v1/embeddings 云端编码器（默认端点：硅基流动）。
 
     重试语义与主 LLM 客户端对齐：连接错误/5xx 指数退避重试 max_retries 次，

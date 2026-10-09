@@ -1,4 +1,4 @@
-# paperflow/core/llm/rerank.py
+# paperflow/rag/models/reranker.py
 """精排：Reranker 协议与云端实现（硅基流动 /v1/rerank，Jina/Cohere 风格）。
 
 返回值契约：按相关度降序的文档下标列表（长度 ≤ top_k），调用方零适配。
@@ -8,7 +8,7 @@ from typing import Protocol
 
 import httpx
 
-from paperflow.core.llm.embedding import RETRY_BACKOFF_BASE
+from paperflow.rag.models.embedder import RETRY_BACKOFF_BASE
 from paperflow.core.security.text import sanitize_surrogates
 
 
@@ -29,7 +29,7 @@ class Reranker(Protocol):
         ...
 
 
-class CloudReranker:
+class RagReranker:
     """/v1/rerank 云端精排器。失败重试后抛 RuntimeError("云端精排不可用: …")。
 
     服务端返回 {"results": [{"index": int, "relevance_score": float}]}；

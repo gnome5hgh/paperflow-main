@@ -50,8 +50,8 @@ class RAGService:
         self.lock = threading.RLock()
 
         # ---- 惰性加载的组件槽位 ----
-        self._embedder = None          # 稠密向量编码器 (CloudEmbedder)
-        self._reranker = None          # 精排模型 (CloudReranker)
+        self._embedder = None          # 稠密向量编码器 (RagEmbedder)
+        self._reranker = None          # 精排模型 (RagReranker)
         self._grobid = None            # GROBID 客户端 (GrobidClient)
         self._pymupdf_parser = None    # PyMuPDF 备用解析器
         self._grobid_available = None  # 缓存 GROBID 可用性探测结果 (bool | None)
@@ -83,16 +83,16 @@ class RAGService:
         """惰性获取编码器：首次访问时构造并缓存。
 
         Returns:
-            CloudEmbedder: 云端编码器实例（构造不碰网络，失败在调用时暴露）。
+            RagEmbedder: 云端编码器实例（构造不碰网络，失败在调用时暴露）。
         """
         # 双重检查加锁：先检查实例变量是否为空，为空则获取锁后再次检查，
         # 确保并发下只有一个线程执行构造，其余线程复用已构造的实例。
         if self._embedder is None:
             with self.lock:
                 if self._embedder is None:
-                    from paperflow.core.llm.embedding import CloudEmbedder
+                    from paperflow.rag.models.embedder import RagEmbedder
                     emb = self.config.rag.embedding
-                    self._embedder = CloudEmbedder(emb.base_url, emb.api_key,
+                    self._embedder = RagEmbedder(emb.base_url, emb.api_key,
                                                    emb.embed_model,
                                                    batch_size=emb.batch_size,
                                                    timeout=emb.timeout,
@@ -103,17 +103,17 @@ class RAGService:
         """惰性获取重排模型：首次访问时构造并缓存。
 
         Returns:
-            CloudReranker: 云端重排器实例（构造不碰网络，失败在调用时暴露）。
+            RagReranker: 云端重排器实例（构造不碰网络，失败在调用时暴露）。
         """
         if self._reranker is None:
             with self.lock:
                 if self._reranker is None:
-                    from paperflow.core.llm.rerank import CloudReranker
+                    from paperflow.rag.models.reranker import RagReranker
                     # 直接构造 config 的调用方（测试/嵌入宿主）未必经过 from_env 的继承回填，
                     # 故此处对空的端点/key 再兜底继承 embedding 一次。
                     rr = self.config.rag.rerank
                     emb = self.config.rag.embedding
-                    self._reranker = CloudReranker(rr.base_url or emb.base_url,
+                    self._reranker = RagReranker(rr.base_url or emb.base_url,
                                                    rr.api_key or emb.api_key,
                                                    rr.model,
                                                    timeout=rr.timeout,

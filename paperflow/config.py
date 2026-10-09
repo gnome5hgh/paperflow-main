@@ -254,7 +254,7 @@ class EmbeddingConfig:
     仅云端：api_key 缺失不阻塞启动，由调用方按降级语义处理（路由退稀疏、
     检索跳稠密路）。
 
-    batch_size/timeout/max_retries 是 CloudEmbedder 传输参数（改它们不改变
+    batch_size/timeout/max_retries 是 RagEmbedder 传输参数（改它们不改变
     向量结果，无需重建索引）。精排连接在 rag.rerank，本段只负责嵌入。
 
     Attributes:
