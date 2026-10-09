@@ -10,12 +10,12 @@ class IntentType(StrEnum):
 
     枚举 = 契约 = 当前实现集——不允许"枚举允许但系统无处理路径"的悬空值。
     18 值按三类组织（category 见 INTENT_META），类别是消费分组不是路由层级。
-    历史收敛：switch_topic 并入 set_research_topic、refine_query 并入
+    历史收敛：switch_topic 并入 record_user_info、refine_query 并入
     search_paper——两者与近邻意图的边界是对话史信号，路由器原理上不可学，
     且派发行为与保留值完全一致。
     """
 
-    SET_RESEARCH_TOPIC = "set_research_topic"  # 研究 topic 管理：设定/切换（业务；记录+归档，不派发）
+    RECORD_USER_INFO = "record_user_info"  # 用户信息记录：研究方向/专业/偏好（业务；由 memory-agent 写入）
     MENU_SELECTION = "menu_selection"          # 菜单选项答复（对话管理；选择动作不重分类，派发权在 supervisor 对照菜单）
     SEARCH_PAPER = "search_paper"              # 搜索/查找论文（业务；含对上轮检索的修正重搜；槽位 query/source/year/download）
     ASK_QUESTION = "ask_question"              # 具体问答：即问即答的单点问题（业务）

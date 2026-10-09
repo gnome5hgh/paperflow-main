@@ -934,7 +934,7 @@ routes:
   - 重置整个记忆系统
   score_threshold: 0.331313
   steps_threshold: 0.6508
-- name: set_research_topic
+- name: record_user_info
   utterances:
   - 我的课题是做circRNA关联预测
   - 我的研究方向是异构图神经网络
@@ -1891,8 +1891,8 @@ routes:
   - 让检索能搜到这些新论文
   - 知识库需要更新一下
   - 索引和我的论文对不上了
-  score_threshold: 0.75
-  steps_threshold: 0.5
+  score_threshold: 0.71
+  steps_threshold: 0.8687
 - name: delete_note
   utterances:
   - 删掉这篇笔记
@@ -1903,8 +1903,8 @@ routes:
   - 清理一下那篇论文的笔记
   - 我不要这个笔记文件了
   - 把笔记从磁盘上删掉
-  score_threshold: 0.75
-  steps_threshold: 0.5
+  score_threshold: 0.8431
+  steps_threshold: 0.7071
 - name: delete_research
   utterances:
   - 删掉这个研究计划
@@ -1914,8 +1914,8 @@ routes:
   - 删除上次生成的 survey
   - gap 分析那份也删了
   - 清理研究目录下的产物
-  score_threshold: 0.75
-  steps_threshold: 0.5
+  score_threshold: 0.7564
+  steps_threshold: 0.3838
 - name: delete_pdf
   utterances:
   - 删掉这篇下载错的论文
@@ -1925,5 +1925,5 @@ routes:
   - 那份 PDF 下错了，删除
   - 清掉这个下载失败的 PDF
   - 把 pdf 目录里那篇删掉
-  score_threshold: 0.75
-  steps_threshold: 0.5
+  score_threshold: 0.7675
+  steps_threshold: 0.5455

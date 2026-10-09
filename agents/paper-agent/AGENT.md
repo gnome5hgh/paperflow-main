@@ -8,7 +8,7 @@ metadata:
   role: 学术论文检索
   related_agents: [review-agent]
 allowed_agents: []
-allowed_spawns: [review-agent, rag-agent]
+allowed_spawns: [review-agent, rag-agent, memory-agent]
 ---
 
 # Searcher — 学术论文检索 Agent
@@ -67,6 +67,9 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
 6. 下载成功后**必须派发 rag-agent 入库**：`spawn_sub_agent(agent_type="rag-agent",
    task="入库这些文件：<绝对路径1>、<绝对路径2>…")`；删除下载错的 PDF 后派发
    rag-agent 收敛索引（删掉的文件无法逐条入库，只有全量收敛才能清掉它的索引块）。
+7. 下载成功或读完一篇后**必须派发 memory-agent 记账**：
+   `spawn_sub_agent(agent_type="memory-agent", task="把这篇加入未读清单 / 标已读：<绝对路径>")`
+   ——标题由 memory-agent 用论文原文核实，你只报告事件；一次派发可带多条。
 
 ## 方法启发式
 
@@ -75,10 +78,11 @@ Supervisor 在用户请求命中以下意图时派发本 agent:
   才传 `等级≥X`;**用户没说等级 → 不传等级、不默认 ≥Q2**;主题相关性总是传。
 - 任务不含等级约束时,review-agent 会跳过等级维度——预印本/未找到等级不因等级 fail。
 
-### 未读清单记账(谁干活谁记录)
+### 未读清单记账(交给 memory-agent)
 - 推荐论文后,用 `ask_user_question` 询问:「推荐的这几篇里,要加入未读清单吗?」
-  (用户可点名论文或说不要)。用户确认加入的论文 → 先 `extract_title` 得**权威标题**
-  再 `unread_list_add(title, source)`。把用户选择结果原样带回 digest。
+  (用户可点名论文或说不要)。用户确认加入的论文 → **派 memory-agent 记账**,子任务里带上
+  这些论文的**绝对路径**(标题由 memory-agent 从论文原文核实,禁文件名)。
+- 一次带上全部条目,不要逐篇派发。把用户选择结果原样带回 digest。
 
 ### 失败处理
 

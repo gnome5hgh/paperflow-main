@@ -210,7 +210,7 @@ class IntentPipeline:
         # ====== 第2级：选项答复检测（确定性正则，在追问之前） ======
         # 纯编号菜单选择是「选择」动作而非自由文本，不经 NLU 重分类——
         # 否则 score_threshold=0.0 的路由会以微小分数误命中任意意图（如把
-        # 「1」路由到 set_research_topic），spawn 门禁随之误拦真实意图。
+        # 「1」路由到 record_user_info），spawn 门禁随之误拦真实意图。
         # 命中即短路：MENU_SELECTION 可派发，派发权在 supervisor 对照其菜单。
         if is_option_reply(query):
             return IntentOutput(

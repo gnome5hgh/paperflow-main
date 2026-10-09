@@ -4,15 +4,11 @@
 回答开放问题)、glob/grep(定位文件)、ask_user_question 交互工具(回答模式/深度
 歧义时中途问用户)、analyze_figures(图表问答 mode,定位论文后按 figure=N 单图
 分析作答)。已读记录随对话落盘自动完成,不单独装配 mark_read 工具。
-长期发现写 reference_findings 块(memory_insert;块不存在先 memory create)。
+不装配任何记忆工具——记忆读写已收归 memory-agent,本角色要记账只能派发它。
 不装配任何"格式化最终回答"类的工具——回答的内容安全由安全中间件的 on_finish
 钩子统一兜底。
 """
 from paperflow.config import PaperFlowConfig
-from paperflow.tools.memory import (
-    ConversationSearchTool, MemoryInsertTool, MemoryTool,
-    ExtractTitleTool, UnreadListAddTool, UnreadListRemoveTool, HistoryAppendTool,
-)
 from paperflow.tools.common.factory import make_tools
 from paperflow.tools import (
     ReadFileTool, ReadPdfTool, GlobTool, GrepTool, AskUserQuestionTool,
@@ -22,7 +18,5 @@ from paperflow.tools.vision.analyze_figures import AnalyzeFiguresTool
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
     RagRetrieveTool, ReadPdfTool, ReadFileTool, GlobTool, GrepTool, AskUserQuestionTool,
-    ConversationSearchTool, MemoryInsertTool, MemoryTool,
-    ExtractTitleTool, UnreadListAddTool, UnreadListRemoveTool, HistoryAppendTool,
     AnalyzeFiguresTool(),
 ])

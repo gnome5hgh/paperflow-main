@@ -9,13 +9,13 @@ from paperflow.core.intent.schemas.route import Route
 from paperflow.core.intent.constants import IntentType
 
 
-#: 枚举收敛时已移除的旧值：switch_topic 并入 set_research_topic、
-#: refine_query 并入 search_paper。加载侧对这两个旧值**过滤并告警**而非报错：
+#: 枚举收敛时已移除的旧值：switch_topic 并入 record_user_info、
+#: refine_query 并入 search_paper；set_research_topic 改名为 record_user_info（同一意图，只换了名字）。加载侧对这些旧值**过滤并告警**而非报错：
 #: 过滤掉的旧路由不可能再被路由器选中，其 query 落到近邻意图或 LLM 兜底（正是
 #: 合并后的预期行为）；若照旧放行，pipeline 的 IntentType(choice.name) 会在旧
 #: 路由胜出时崩溃。保留此表是防御历史备份/分支数据回流—— routes/eval 数据里
 #: 不应再出现这两个值，此表变成死防御后可手动删除。
-_REMOVED_VALUES = {"switch_topic", "refine_query"}
+_REMOVED_VALUES = {"switch_topic", "refine_query", "set_research_topic"}
 
 
 #: 仓库安装根（本文件位于 paperflow/core/intent/routing/，向上四级即仓库根）。

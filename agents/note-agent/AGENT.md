@@ -8,7 +8,7 @@ metadata:
   role: 论文笔记生成
   related_agents: [review-agent]
 allowed_agents: []
-allowed_spawns: [review-agent, rag-agent]
+allowed_spawns: [review-agent, rag-agent, memory-agent]
 ---
 
 # Noter — 论文笔记生成 Agent
@@ -69,6 +69,9 @@ supervisor 据此重派即可,比在这里原地超时快得多。
 6. 删除笔记后**必须派发 rag-agent 收敛**：`spawn_sub_agent(agent_type="rag-agent",
    task="删除后收敛索引")`（它会跑全量收敛）。已删除的文件无法逐条入库，只有
    全量收敛才能清掉它的索引块。
+7. 笔记落盘后**必须派发 memory-agent 记一条历史**：
+   `spawn_sub_agent(agent_type="memory-agent", task="记账：写完《标题》的笔记")`
+   ——历史与清单的写入归 memory-agent，你只报告事件。
 
 ## 方法启发式(领域知识,按需取用,不规定先后)
 
@@ -95,10 +98,10 @@ supervisor 据此重派即可,比在这里原地超时快得多。
   再继续;用户有约束(篇幅/语言/侧重/深度等)→ 原样拼进审稿任务文本,让 review-agent
   据此审查。
 
-### 清单记账(谁干活谁记录)
-- 笔记落盘后 `history_append(写笔记, 论文标题)`;若该论文在未读清单,
-  `ask_user_question("《{title}》笔记已生成,还要保留在未读清单吗?")`,确认移除 →
-  `unread_list_remove(title)`。
+### 清单记账(交给 memory-agent)
+- 笔记落盘后**派 memory-agent 记一条历史**(写笔记, 论文标题);若该论文在未读清单,先
+  `ask_user_question("《{title}》笔记已生成,还要保留在未读清单吗?")`,确认移除后再让它一并移出。
+  清单与历史的写入归 memory-agent,你只报告事件。
 
 ## 反模式
 

@@ -1,37 +1,25 @@
-"""Supervisor 工具装配——Spawn / AskUser + 7 个记忆工具（核心块编辑 + 检索）。
+"""Supervisor 工具装配——只有两个调度工具（派发 + 提问）。
 
 SpawnSubAgentTool 在共享层 paperflow/tools/orchestration/spawn.py 定义,
 本文件装配后供 supervisor 使用。Supervisor 是唯一装配 spawn 工具的 agent
 (权限最小化:子 agent 不能递归调度)。spawn 结果自带结构化摘要 digest,
-supervisor 直接读各结果的 digest + needs_attention 组织最终回答。
-记忆工具按「谁干活谁记录」分发:supervisor 只保留核心记忆管理(blocks/ 的
-persona/human 自编辑)与组织回答用的检索工具;清单/历史写入工具下放
-paper-agent/note-agent/qa-agent(见各自 tools.py)。工具是 paperflow.tools.memory
-的无状态类,经 make_tools 实例化,执行时才取运行时上下文。
+supervisor 按交付物类型读各结果组织回答。
+
+记忆工具一件不装:记忆读写全部归 memory-agent,supervisor 要记录只能派发它。
+「只调度,不直接执行」因此没有例外——可以直接被断言。
 """
 from paperflow.config import PaperFlowConfig
-from paperflow.tools.memory import (
-    MemoryReplaceTool, MemoryInsertTool, MemoryRethinkTool, MemoryFinishEditsTool,
-    MemoryTool, MemoryApplyPatchTool, ConversationSearchTool,
-)
 from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
 from paperflow.tools.orchestration.ask_user import AskUserQuestionTool
 
-#: supervisor 保留的记忆工具类：blocks/ 核心块编辑（persona/human 自编辑）+ 检索
-_MEMORY_TOOLS = [
-    MemoryReplaceTool, MemoryInsertTool, MemoryRethinkTool, MemoryFinishEditsTool,
-    MemoryTool, MemoryApplyPatchTool, ConversationSearchTool,
-]
-
 
 def _make_supervisor_tools() -> list:
-    """装配 2 个调度工具 + 7 个记忆工具。config 在 import 时构造（每进程静态、
-    无副作用）；记忆工具是无状态类，执行时才取运行时上下文。"""
+    """装配 2 个调度工具。config 在 import 时构造（每进程静态、无副作用）。"""
     cfg = PaperFlowConfig.from_env()
     return [
         SpawnSubAgentTool(agent_timeouts=cfg.agents.timeouts),
         AskUserQuestionTool(),
-    ] + [cls() for cls in _MEMORY_TOOLS]
+    ]
 
 
 # 注：supervisor 工具无 root_hints（无文件访问），无需 make_tools 装配——
