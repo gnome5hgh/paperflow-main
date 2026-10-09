@@ -368,18 +368,6 @@ class ChunkerConfig:
 
 
 @dataclass
-class IndexerConfig:
-    """索引器参数。
-
-    Attributes:
-        table_text_limit: int，表格块文本截断上限（字符）
-    """
-
-    #: 表格块文本截断上限（字符；Milvus text 字段 65535 的防御性截断）。
-    table_text_limit: int = 8000
-
-
-@dataclass
 class StorageConfig:
     """Milvus 向量库连接配置。
 
@@ -451,7 +439,6 @@ class RagConfig:
         retriever: RetrieverConfig，混合检索参数
         query_rewrite: QueryRewriteConfig，query 改写
         chunker: ChunkerConfig，切块参数（改动触发配方哈希全量重索引）
-        indexer: IndexerConfig，索引器参数
         storage: StorageConfig，向量库连接
         grobid: GrobidConfig，GROBID 解析服务
         tools: RagToolsConfig，检索工具输出参数
@@ -462,7 +449,6 @@ class RagConfig:
     retriever: RetrieverConfig = field(default_factory=RetrieverConfig)
     query_rewrite: QueryRewriteConfig = field(default_factory=QueryRewriteConfig)
     chunker: ChunkerConfig = field(default_factory=ChunkerConfig)
-    indexer: IndexerConfig = field(default_factory=IndexerConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     grobid: GrobidConfig = field(default_factory=GrobidConfig)
     tools: RagToolsConfig = field(default_factory=RagToolsConfig)

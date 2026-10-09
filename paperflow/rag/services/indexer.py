@@ -8,22 +8,17 @@
 显式清除，否则会永远残留在索引里。BM25 是向量库文档在内存里的投影，
 删除和写入必须与向量库成对执行才能保持一致。
 
-切块产物：章节块由切块器切出（带「标题 > 章节」前缀首行），表格与图注
-由本模块转成独立块接在章节块之后——GROBID 解析出的表格式数据（如基准
-评测数字）在章节正文中不出现，不独立成块就永远检索不到。
+解析来源单一：PDF 与笔记都走「抽取出文本 → 按 ``#`` 行分节」这一条路，PDF 的
+文本与结构由本地版面解析给出（见 ``paperflow.rag.parsers.pdf_extract``），不依赖
+任何外部解析服务，因此不存在「解析器降级」这种状态。
 
 状态版本门控：状态文件记录「配方哈希」（见 ``_recipe_hash``）而非手写版本号。
-所有决定「产出哪些块」的配置输入（切块 max/overlap、表格截断上限、embed_model）
-连同 ``RECIPE_LOGIC_REVISION`` 一起做 sha256；YAML 里改任一参数即指纹变化 →
+所有决定「产出哪些块」的配置输入（切块 max/overlap、embed_model）连同
+``RECIPE_LOGIC_REVISION`` 一起做 sha256；YAML 里改任一参数即指纹变化 →
 下次启动放弃旧状态、全量重扫重嵌——否则旧配方的块会因文件 mtime 未变而永远
-残留（如解析器改为全文档遍历表格/图注后，已索引文档不会重解析，媒体块静默缺失）。
-纯算法逻辑改动无法被参数枚举，改 ``RECIPE_LOGIC_REVISION`` 手动 +1 兜底。
+残留。纯算法逻辑改动无法被参数枚举，改 ``RECIPE_LOGIC_REVISION`` 手动 +1 兜底。
 
-状态文件另带一个旁挂的 ``parsers`` 映射（``{绝对路径: "grobid"|"pymupdf"}``，
-仅 PDF 有键），记录每篇 PDF 本次实际使用的解析器——纯诊断，**不参与**上述
-版本门控（GROBID 服务抖动若触发全量重扫代价过高，是刻意折中）。它用于
-识别「GROBID 降级期间被索引、恢复后因 mtime 未变而永不刷新」的 PDF。``docs``
-的取值形状保持 ``{绝对路径: mtime 浮点数}`` 不变——外部消费方按数值
+``docs`` 的取值形状保持 ``{绝对路径: mtime 浮点数}`` 不变——外部消费方按数值
 比对 mtime，改成对象会静默破坏其增量跳过能力。
 """
 import hashlib
@@ -32,32 +27,32 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from paperflow.rag.constants import RagSource
-from paperflow.rag.parsers.chunker import CHUNK_ID_LEN, Chunk, context_prefix
+from paperflow.rag.parsers.chunker import Chunk
+from paperflow.rag.parsers.pdf_extract import extract_pdf
 
 #: 配方哈希的逻辑版本号：切块/解析「算法逻辑」修订号（非参数）。参数
-#: （``rag.chunker.*``、``rag.indexer.table_text_limit``、embed_model）自动进
-#: ``_recipe_hash`` 指纹；算法逻辑改动（如 ``_pack_sentences`` 改写、章节/媒体块
-#: 产出规则变更、丢弃判据词表调整）无法被参数枚举，只能手动 +1 → 下次
-#: ``index_all`` 全量重扫重嵌。仅当切块/解析逻辑改动、产出块集合可能变化时才改，
-#: 不要为参数调整而动它。
+#: （``rag.chunker.*``、embed_model）自动进 ``_recipe_hash`` 指纹；算法逻辑改动
+#: （如 ``_pack_sentences`` 改写、章节产出规则变更、丢弃判据词表调整）无法被参数
+#: 枚举，只能手动 +1 → 下次 ``index_all`` 全量重扫重嵌。仅当切块/解析逻辑改动、
+#: 产出块集合可能变化时才改，不要为参数调整而动它。
 #: 修订 2：split_doc 新增期刊样板章节（致谢/资助/利益冲突/数据可用性等）与
 #: 正文残渣（不成句微碎片）的丢弃判据，产出块集合变小。
-RECIPE_LOGIC_REVISION = 2
+#: 修订 3：PDF 解析从外部解析服务换成本地版面解析 + 统一按 ``#`` 行分节，
+#: 章节划分与标题来源都变了，产出块集合与文本随之改变。
+RECIPE_LOGIC_REVISION = 3
 
 
 def _recipe_hash(cfg) -> str:
     """把「决定产出哪些块」的配置输入散列成状态版本指纹。
 
-    输入四要素：
+    输入三要素：
     - ``RECIPE_LOGIC_REVISION``：切块/解析算法逻辑的手动修订号（参数枚举不到的改动兜底）；
     - ``rag.chunker.max_tokens`` / ``overlap_tokens``：切块窗口参数；
-    - ``rag.indexer.table_text_limit``：表格块截断上限（改变表格块内容）；
     - ``rag.embedding.embed_model``：换模型（即便同维）旧向量也必须失效，否则新旧
       向量混在同一 Milvus 集合、检索质量静默下降。
 
     ``sort_keys=True`` 保证同输入稳定；``ensure_ascii=False`` 让中文模型名可读
-    （不影响哈希值）。GROBID 降级不纳入指纹（服务抖动若触发全量
-    重扫代价过高，作为已知折中）。
+    （不影响哈希值）。
 
     Args:
         cfg: PaperFlowConfig 实例。
@@ -69,32 +64,55 @@ def _recipe_hash(cfg) -> str:
         "logic": RECIPE_LOGIC_REVISION,
         "chunk_max_tokens": cfg.rag.chunker.max_tokens,
         "chunk_overlap_tokens": cfg.rag.chunker.overlap_tokens,
-        "table_text_limit": cfg.rag.indexer.table_text_limit,
         "embed_model": cfg.rag.embedding.embed_model,
     }, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _split_markdown(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """按 ``#`` 行把 markdown 文本切成章节，顺带取首个一级标题作文档标题。
+
+    PDF（本地版面解析还原出的 markdown）与笔记文件走同一条路，因此这里不分来源。
+
+    Args:
+        text: markdown 文本。
+
+    Returns:
+        tuple[str, list[tuple[str, str]]]：(文档标题, [(章节标题, 正文), …])。
+        标题只认 ``# `` 开头的一级标题且取第一个，``##`` 及更深的不算；
+        取不到时为空串。
+    """
+    title = ""
+    sections: list[tuple[str, str]] = []
+    cur_head, cur_body = "", []
+    for ln in text.splitlines():
+        if ln.startswith("#"):
+            # 遇到新标题，保存当前章节（如果有内容）
+            if cur_head or cur_body:
+                sections.append((cur_head, "\n".join(cur_body)))
+            cur_head, cur_body = ln.lstrip("# "), []   # 去掉 # 和后面的空格
+            if not title and ln.startswith("# "):
+                title = ln[2:].strip()
+        else:
+            cur_body.append(ln)
+    # 保存最后一个章节
+    if cur_head or cur_body:
+        sections.append((cur_head, "\n".join(cur_body)))
+    return title, sections
 
 
 @dataclass
 class _FileContent:
     """单篇文档解析产物：切块所需的全部原料。
 
-    source: pdf | note；
-    title: 文档标题（PDF=GROBID 主标题，笔记=H1，取不到为空串）；
-    tables/figures: GROBID 提取的表格文本与图注（笔记与 PyMuPDF 回退路径为空）。
-
     Attributes:
         source: RagSource，来源类型：pdf | note
-        title: str，文档标题（PDF=GROBID 主标题，笔记=首个 H1；取不到为空串）
+        title: str，文档标题（PDF=版面/元数据标题，笔记=首个 H1；取不到为空串）
         sections: list[tuple[str, str]]，(章节标题, 正文) 列表
-        tables: list[str]，GROBID 提取的表格文本（笔记与 PyMuPDF 回退路径为空）
-        figures: list[str]，GROBID 提取的图注（同上为空）
     """
     source: RagSource
     title: str
     sections: list[tuple[str, str]]
-    tables: list[str]
-    figures: list[str]
 
 
 @dataclass
@@ -143,7 +161,6 @@ class IndexStatus:
         store_chunks: int，向量库中的块数
         store_docs: int，向量库涉及的文档数（去重）
         bm25_docs: int，内存关键词索引里的文档数
-        parsers: dict[str, int]，旁挂的解析器分布（如 {"grobid": 12, "pymupdf": 3}）
         ghost: list[str]，状态有记录但磁盘已不存在的文档（相对路径）——删除未收敛的残留
         not_indexed: list[str]，语料根下有文件但状态里没有（相对路径）——新增未入库
         corpus_docs: int，语料根下扫描到的 .md / .pdf 文件数
@@ -158,7 +175,6 @@ class IndexStatus:
     store_chunks: int = 0
     store_docs: int = 0
     bm25_docs: int = 0
-    parsers: dict = field(default_factory=dict)
     ghost: list = field(default_factory=list)
     not_indexed: list = field(default_factory=list)
     corpus_docs: int = 0
@@ -174,7 +190,6 @@ class RagIndexer:
     - 自动清理已被删除的文档的索引数据。
     - 维护索引状态文件（rag/index_state.json，带配方哈希版本），保证跨进程的增量一致性；
       配方哈希不符时放弃旧状态走全量重扫（切块参数/逻辑升级后的自愈机制）。
-      状态文件另带旁挂的 `parsers` 诊断映射（PDF 实际解析器），不参与门控。
 
     Attributes:
         service: RAGService 单例，与检索器共享底层组件
@@ -259,20 +274,15 @@ class RagIndexer:
         # 文件已不存在，回退到笔记目录（仅用于状态重建，实际删除操作会后续清理）
         return str(Path(self.service.config.corpus.note_dir) / rel)
 
-    def _read_state(self) -> tuple[object, dict, dict] | None:
-        """读原始状态文件，返回 (版本号, docs, parsers)。
+    def _read_state(self) -> tuple[object, dict] | None:
+        """读原始状态文件，返回 (版本号, docs)。
 
         返回值不做版本判断——版本门控由调用方决定（增量更新要求同版本，
         index_all 遇到不符版本则全量重扫）。版本号即配方哈希（字符串）；
         旧格式裸 dict 按版本 0 处理。
 
-        ``parsers`` 是旁挂的**诊断**映射（{绝对路径: "grobid"|"pymupdf"}，
-        仅 PDF 有键），记录每篇 PDF 本次实际使用的解析器，**不参与任何失效
-        判断**（GROBID 降级不纳入配方哈希）。老状态文件缺该
-        键、或为裸 dict 旧格式时，一律返回 ``{}``——不触发重扫。
-
         Returns:
-            tuple[object, dict, dict] | None: (version, {绝对路径: mtime}, {绝对路径: 解析器 id})；
+            tuple[object, dict] | None: (version, {绝对路径: mtime})；
             文件不存在或 JSON 非法返回 None。
         """
         if not self._state_path.exists():
@@ -283,13 +293,11 @@ class RagIndexer:
             # JSON 损坏等同于状态缺失：调用方走全量重扫，绝不让坏文件炸掉索引
             return None
         if isinstance(raw, dict) and isinstance(raw.get("docs"), dict):
-            parsers = raw.get("parsers")
-            return (raw.get("version", 0), dict(raw["docs"]),
-                    dict(parsers) if isinstance(parsers, dict) else {})
-        # 旧格式（裸 {abs_path: mtime}）按版本 0 处理，无解析器诊断信息
-        return 0, dict(raw) if isinstance(raw, dict) else {}, {}
+            return raw.get("version", 0), dict(raw["docs"])
+        # 旧格式（裸 {abs_path: mtime}）按版本 0 处理
+        return 0, dict(raw) if isinstance(raw, dict) else {}
 
-    def _save_state(self, state: dict, parsers: dict | None = None) -> None:
+    def _save_state(self, state: dict) -> None:
         """把状态按当前配方哈希格式写入（自动创建父目录）。
 
         Args:
@@ -297,132 +305,34 @@ class RagIndexer:
                    调用方只管 docs 内容。**取值形状必须是 float**——外部消费方
                    按数值比对 mtime，改成对象会使其永远
                    判定「已变更」而静默丢失增量能力。
-            parsers: 旁挂诊断映射 {绝对路径: 解析器 id}，仅 PDF 有键；缺省空。
-                     始终写入 ``parsers`` 键（空即 ``{}``），纯诊断、不参与失效判断。
         """
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         self._state_path.write_text(
-            json.dumps({"version": self._recipe, "docs": state,
-                        "parsers": parsers or {}}))
-
-    def _parser_id(self, path: Path) -> str | None:
-        """返回该文档实际使用的解析器 id（诊断用，仅 PDF 有值）。
-
-        Markdown 不走 PDF 解析器 → ``None``；PDF 则按 ``grobid_available()``
-        给出 ``"grobid"`` 或 ``"pymupdf"``（可用性已缓存，逐文件调用无额外探测）。
-
-        记录用途：识别「GROBID 降级期间被索引、恢复后因 mtime 未变而永不刷新」
-        的 PDF（其块缺表格/图注块）。本字段纯诊断，不参与状态失效判断
-        （GROBID 抖动纳入指纹会引发大量重扫，故不纳入）。
-
-        Args:
-            path: 文档路径。
-
-        Returns:
-            解析器 id（"grobid" | "pymupdf"）；非 PDF 返回 None。
-        """
-        if path.suffix.lower() != ".pdf":
-            return None
-        return "grobid" if self.service.grobid_available() else "pymupdf"
+            json.dumps({"version": self._recipe, "docs": state}))
 
     # ---------- 文档解析 → 分块 ----------
     def _parse_file(self, path: Path) -> _FileContent:
         """读取并解析文档，产出 chunker 切块所需的全部原料。
 
-        - PDF: 解析器（GROBID 优先 / PyMuPDF 回退）给出章节、表格、图注与主
-          标题；回退路径 title/tables/figures 为空，切块退化为「章节标题前缀 +
-          裸正文」，表格图注不产生块。
-        - Markdown: 按 # 行切章节；标题取首个一级标题（"# " 开头）文本，
-          绝不用文件名充当标题（与 TitleExtractor 同一纪律）。
+        两条来源共用同一套分节逻辑（按 ``#`` 行切章节）：PDF 的文本与章节由本地
+        版面解析还原成 markdown 后再切，笔记文件本身已是 markdown。文档标题都取自
+        内容（PDF 取版面/元数据标题、笔记取首个一级标题），绝不用文件名充当标题。
 
         Args:
             path: 文档路径。
 
         Returns:
-            _FileContent: 解析产物（source/title/sections/tables/figures）。
+            _FileContent: 解析产物（source/title/sections）。
         """
-        # PDF 论文：使用（GROBID 优先 / PyMuPDF 回退）解析
         if path.suffix.lower() == ".pdf":
-            # parsed：ParsedDoc
-            # grobid 解析 PDF 时，除了章节正文，还从 TEI XML 里抽出 <table>（表格文本）和 <figDesc>（图注），
-            # 装进 ParsedDoc.tables / ParsedDoc.figures
-            parsed = self.service.pdf_parser().parse_pdf(str(path))
-            return _FileContent(RagSource.PDF, parsed.title or "", parsed.sections,
-                                parsed.tables, parsed.figures)
+            extracted = extract_pdf(str(path))
+            _, sections = _split_markdown(extracted.body)
+            # PDF 的正文里不出现一级标题（级别从二级起），标题只能来自版面/元数据
+            return _FileContent(RagSource.PDF, extracted.title or "", sections)
 
-        # Markdown 笔记：按 # / ## 标题分段，顺带捕获首个一级标题作文档标题
-        lines = path.read_text(encoding="utf-8").splitlines()
-        title = ""
-        sections: list[tuple[str, str]] = []
-        cur_head, cur_body = "", []
-        for ln in lines:
-            if ln.startswith("#"):
-                # 遇到新标题，保存当前章节（如果有内容）
-                if cur_head or cur_body:
-                    sections.append((cur_head, "\n".join(cur_body)))
-                cur_head, cur_body = ln.lstrip("# "), [] # 去掉 # 和后面的空格
-                # 标题只认 "# " 开头的一级标题，取第一个；## 及更深的不算
-                if not title and ln.startswith("# "):
-                    title = ln[2:].strip()
-            else:
-                cur_body.append(ln)
-        # 保存最后一个章节
-        if cur_head or cur_body:
-            sections.append((cur_head, "\n".join(cur_body)))
-        return _FileContent(RagSource.NOTE, title, sections, [], [])
-
-    def _media_chunks(self, rel: str, parsed: _FileContent,
-                      start_index: int) -> list[Chunk]:
-        """把表格与图注转成独立检索块，接在章节块之后。实验数字与图表结论
-        常在表格里，而表格并不出现在章节正文中，不独立成块就检索不到。
-
-        GROBID 的表格文本是单元格拼接，先折叠连续空白压掉换行噪声；空白项
-        不产生块；超长表格截断到 rag.indexer.table_text_limit（改 YAML 即生效，
-        并由配方哈希触发全量重扫）。前缀规则与章节块一致
-        （{title} > [表格]/[图注]），id 沿用 sha1(rel:index) 幂等方案、序号顺延。
-
-        Args:
-            rel: 文档相对路径（进块 id 与元数据）。
-            parsed: _parse_file 的解析产物。
-            start_index: 起始块序号（章节块数量），保证与章节块的 id 空间不重叠。
-
-        Returns:
-            list[Chunk]: 表格块与图注块（可能为空）。
-        """
-        chunks: list[Chunk] = []
-        idx = start_index
-
-        def _add(heading: str, text: str) -> None:
-            """折叠空白、跳过空白项后把一个表格/图注块追加进 chunks（序号自增）。
-
-            Args:
-                heading: 块标题（"[表格]" 或 "[图注]"）。
-                text: 表格/图注原始文本。
-            """
-            nonlocal idx
-            # ① 折叠连续空白：GROBID 表格是单元格拼接，换行/多空格只是噪声，压平后对 BM25 分词更干净
-            text = " ".join(text.split())
-
-            # ② 空白项跳过
-            if not text:
-                return
-
-            # ③ 表格与图注块 id 与章节块 id 的生成是同一套规则
-            chunk_id = hashlib.sha1(f"{rel}:{idx}".encode()).hexdigest()[:CHUNK_ID_LEN]
-
-            # ④ 表格与图注块前缀规则也与章节块一致
-            chunks.append(Chunk(
-                id=chunk_id, text=context_prefix(parsed.title, heading, text),
-                path=rel, source=parsed.source, heading=heading, chunk_index=idx,
-            ))
-            idx += 1
-
-        table_text_limit = self.service.config.rag.indexer.table_text_limit
-        for table in parsed.tables:
-            _add("[表格]", table[:table_text_limit])
-        for caption in parsed.figures:
-            _add("[图注]", caption)
-        return chunks
+        text = path.read_text(encoding="utf-8")
+        title, sections = _split_markdown(text)
+        return _FileContent(RagSource.NOTE, title, sections)
 
     def _embed_chunks(self, chunks: list[Chunk]):
         """把一批块文本编码成向量（供写入向量库）。
@@ -477,10 +387,6 @@ class RagIndexer:
         记录，是删除清理的依据），此时覆盖写单篇状态会抹掉这份依据（半更新），
         让下次全量重扫的清理环节失效。
 
-        状态文件同时更新旁挂的 `parsers` 诊断映射：记录本篇实际使用的解析器
-        （PDF → "grobid"/"pymupdf"，Markdown 不入表）。该字段纯诊断，不参与
-        上面的版本门控。
-
         Args:
             path: 文档的绝对路径（或相对路径，会被解析）。
 
@@ -500,7 +406,7 @@ class RagIndexer:
             # 若不跳过，记忆目录下与笔记目录同名的文件会撞上同一个相对路径和块 id，导致笔记的块被静默覆盖删除。
             return IndexOutcome("skipped", reason="不在语料根目录下（只索引笔记与 PDF）")
 
-        # 1. 解析文档，获得切块原料（章节 + 标题 + 表格图注）
+        # 1. 解析文档，获得切块原料（章节 + 标题）
         parsed = self._parse_file(p)
         store = self.service._ensure_vector_store()
         bm25 = self.service._ensure_bm25()
@@ -511,13 +417,9 @@ class RagIndexer:
             bm25.remove_document(did)
         store.delete_doc(rel) # 按相对路径删除所有块
 
-        # 3. 切分：章节块 + 表格/图注块，过滤空白块
-        # 3.1 处理章节块
+        # 3. 切分章节，过滤空白块
         chunks = self.service.chunker.split_doc(rel, parsed.sections, parsed.source,
                                                 title=parsed.title)
-        # 3.2 处理表格/图注块
-        chunks.extend(self._media_chunks(rel, parsed, start_index=len(chunks)))
-
         chunks = [c for c in chunks if c.text.strip()]   # 过滤空白文本的块，避免产生无意义向量
         if not chunks:
             # 文档被清空：旧块已删，无需写新内容
@@ -538,16 +440,8 @@ class RagIndexer:
         raw = self._read_state()
         if raw is None or raw[0] == self._recipe:
             docs = raw[1] if raw else {}
-            parsers = raw[2] if raw else {}
-            key = str(p.resolve())
-            docs[key] = mtime
-            # 旁挂诊断：记录本篇实际解析器；Markdown（None）不在 parsers 里出现。
-            pid = self._parser_id(p)
-            if pid is None:
-                parsers.pop(key, None)
-            else:
-                parsers[key] = pid
-            self._save_state(docs, parsers)
+            docs[str(p.resolve())] = mtime
+            self._save_state(docs)
 
         return IndexOutcome("indexed", chunks=len(chunks))
 
@@ -576,11 +470,6 @@ class RagIndexer:
         增量索引策略：
         - 对于变更的文档，直接调用 `index_document`（内部会先删后建），保证每个文档的一致性。
 
-        解析器诊断字段：
-        - 状态文件另带旁挂的 `parsers` 映射（{绝对路径: 解析器 id}，仅 PDF），
-          记录每篇 PDF 本次实际使用的解析器。纯诊断，**不参与版本门控**；
-          未变更文档保留原记录、已删除文档随 `seen` 扫描自动剪掉。
-
         Returns:
             IndexRunOutcome，本次扫描的统计：重索引文档数（changed）、清理文档数
             （removed）、写入块数合计（chunks）、重建后 BM25 文档数（bm25_docs）
@@ -594,17 +483,15 @@ class RagIndexer:
             # 全量重扫重嵌。不能从向量库元数据恢复——库内块无法确认由当前配方
             # 产出，恢复会让旧配方块因 mtime 未变而永久残留。
             recipe_reset = True
-            state, parsers = {}, {}
+            state = {}
         else:
             recipe_reset = False
-            state, parsers = raw[1], raw[2]
+            state = raw[1]
             # 同版本下保留原有两兜底：向量库被清空 → 状态作废；状态空 → 从元数据恢复。
-            # 两兜底里 parsers 一并置空——旧解析器记录对应的块已不可信/无从得知。
             if store.count() == 0 and state:
-                state, parsers = {}, {}
+                state = {}
             elif not state and store.count() > 0:
                 state = self._derive_state_from_store(store)
-                parsers = {}
 
         # 2. 从向量库的全部文档整体重建 BM25（因为 BM25 是内存索引，进程重启后为空）。
         all_docs = list(store.all_documents())
@@ -614,7 +501,6 @@ class RagIndexer:
         roots = [Path(self.service.config.corpus.note_dir),
                  Path(self.service.config.corpus.pdf_dir)]
         new_state: dict = {}
-        new_parsers: dict = {}
         changed: list[Path] = []
         seen: set[Path] = set()
 
@@ -633,17 +519,7 @@ class RagIndexer:
                 mtime = p.stat().st_mtime
                 if state.get(key) != mtime:
                     changed.append(p)
-                    # 变更文档：记录本次实际解析器（Markdown 为 None，不出现）。
-                    pid = self._parser_id(p)
-                    if pid is not None:
-                        new_parsers[key] = pid
-                else:
-                    # 未变更文档：沿用原诊断记录（老状态无记录则为空）。
-                    prev_pid = parsers.get(key)
-                    if prev_pid is not None:
-                        new_parsers[key] = prev_pid
                 new_state[key] = mtime
-        # new_parsers 只由本次 seen 的文件构建 → 已删除文档的解析器记录自动剪掉。
 
         # 5. 从状态中找出已删除的文件（状态里有记录但本次扫描没见到的）。
         removed = [k for k in state if k not in {str(s) for s in seen}]
@@ -671,8 +547,8 @@ class RagIndexer:
             outcome = self.index_document(str(p))
             total_chunks += outcome.chunks
 
-        # 8. 保存新的状态文件（_save_state 自动带当前配方哈希；parsers 旁挂诊断）。
-        self._save_state(new_state, new_parsers)
+        # 8. 保存新的状态文件（_save_state 自动带当前配方哈希）。
+        self._save_state(new_state)
 
         # bm25_docs 取扫描结束后的实际条数：重建在扫描前用旧库内容完成，
         # 变更文档是重建之后才增量写入 BM25 的，故不能拿重建输入的长度充当
@@ -697,14 +573,11 @@ class RagIndexer:
         raw = self._read_state()
         docs: dict = {}
         if raw is not None:
-            version, docs, parsers = raw
+            version, docs = raw
             st.state_present = True
             st.state_version = version
             st.recipe_in_sync = version == st.recipe
             st.indexed_docs = len(docs)
-            # 解析器分布：旁挂诊断，仅 PDF 有键，能看出有多少篇是 GROBID 降级解析的
-            for pid in parsers.values():
-                st.parsers[str(pid)] = st.parsers.get(str(pid), 0) + 1
 
         # 语料根扫描：磁盘有而状态没有 = 新增未入库；状态有而磁盘没有 = 删除未收敛。
         # 同一套 .md/.pdf 过滤与 _rel_path 围栏，保证口径与索引扫描一致。

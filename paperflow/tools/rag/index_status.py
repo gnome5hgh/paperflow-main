@@ -2,7 +2,7 @@
 
 索引器（rag-agent）的**只读**诊断工具。回答「库里现在到底有什么、和语料是否一致」：
 已索引多少篇、多少块、有没有删除未收敛的残留（幽灵）、有没有新增未入库的文件、
-状态文件与当前切块配方是否一致、PDF 里有多少篇走了 GROBID 降级解析。
+状态文件与当前切块配方是否一致。
 
 不写任何东西、不触发重扫。查出不一致时由调用方决定是否跑一次 reindex_all 收敛。
 """
@@ -28,7 +28,7 @@ class IndexStatusTool(Tool):
     name = "index_status"
     description = (
         "体检语料索引：报告已索引文档数与块数、状态文件与当前切块配方是否一致、"
-        "删除后未收敛的残留（幽灵块）、新增未入库的文件、以及 PDF 的解析器分布。"
+        "删除后未收敛的残留（幽灵块）、新增未入库的文件。"
         "只读、不触发重建。用户问「索引里有什么 / 索引好像不对 / 是不是漏了几篇」时先用它，"
         "再据结论决定是否调 reindex_all 收敛。")
     parameters = {"type": "object", "properties": {}, "required": []}
@@ -64,9 +64,6 @@ class IndexStatusTool(Tool):
                 "切块配方：与当前配置一致" if st.recipe_in_sync
                 else "切块配方：**与当前配置不一致**（切块参数或解析逻辑改过）"
                      "→ 下次 reindex_all 会全量重扫重嵌")
-            if st.parsers:
-                dist = "、".join(f"{k} {v} 篇" for k, v in sorted(st.parsers.items()))
-                lines.append(f"PDF 解析器分布：{dist}（pymupdf 为 GROBID 降级）")
 
         if st.ghost:
             lines.append(f"⚠ 幽灵块 {len(st.ghost)} 篇（已删除但索引残留）：{_fmt(st.ghost)}"
@@ -81,7 +78,7 @@ class IndexStatusTool(Tool):
             "milvus_ok": st.milvus_ok, "recipe_in_sync": st.recipe_in_sync,
             "indexed_docs": st.indexed_docs, "corpus_docs": st.corpus_docs,
             "store_chunks": st.store_chunks, "store_docs": st.store_docs,
-            "bm25_docs": st.bm25_docs, "parsers": st.parsers,
+            "bm25_docs": st.bm25_docs,
             "ghost": len(st.ghost), "not_indexed": len(st.not_indexed)})
 
 
