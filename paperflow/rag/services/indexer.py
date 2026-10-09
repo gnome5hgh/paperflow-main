@@ -28,7 +28,7 @@
 """
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from paperflow.rag.constants import RagSource
@@ -128,6 +128,41 @@ class IndexRunOutcome:
     chunks: int = 0
     bm25_docs: int = 0
     recipe_reset: bool = False
+
+
+@dataclass
+class IndexStatus:
+    """索引体检快照（只读，不触发任何写入）。
+
+    Attributes:
+        state_present: bool，状态文件是否存在且可解析
+        state_version: object，状态文件里记的配方哈希（None = 无状态）
+        recipe: str，当前配置算出的配方哈希
+        recipe_in_sync: bool，状态版本是否与当前配方一致（不一致 → 下次收敛会全量重扫）
+        indexed_docs: int，状态文件记录的文档数
+        store_chunks: int，向量库中的块数
+        store_docs: int，向量库涉及的文档数（去重）
+        bm25_docs: int，内存关键词索引里的文档数
+        parsers: dict[str, int]，旁挂的解析器分布（如 {"grobid": 12, "pymupdf": 3}）
+        ghost: list[str]，状态有记录但磁盘已不存在的文档（相对路径）——删除未收敛的残留
+        not_indexed: list[str]，语料根下有文件但状态里没有（相对路径）——新增未入库
+        corpus_docs: int，语料根下扫描到的 .md / .pdf 文件数
+        milvus_ok: bool，Milvus 可连性（探测带 TTL）
+    """
+
+    state_present: bool = False
+    state_version: object = None
+    recipe: str = ""
+    recipe_in_sync: bool = False
+    indexed_docs: int = 0
+    store_chunks: int = 0
+    store_docs: int = 0
+    bm25_docs: int = 0
+    parsers: dict = field(default_factory=dict)
+    ghost: list = field(default_factory=list)
+    not_indexed: list = field(default_factory=list)
+    corpus_docs: int = 0
+    milvus_ok: bool = False
 
 
 class RagIndexer:
@@ -646,3 +681,50 @@ class RagIndexer:
                                chunks=total_chunks,
                                bm25_docs=self.service._ensure_bm25().count(),
                                recipe_reset=recipe_reset)
+
+    def status(self) -> IndexStatus:
+        """体检：把状态文件、向量库、关键词索引与语料根对照一遍（只读）。
+
+        回答「库里现在到底有什么、和语料是否一致」，不写任何东西、也不触发重扫——
+        发现 `ghost` 或 `not_indexed` 时要不要收敛由调用方决定（跑一次 index_all）。
+
+        Returns:
+            IndexStatus 快照。Milvus 不可达时库侧三个计数留 0（避免为探测白等 RPC 超时），
+            其余数值仍按状态文件与磁盘算出。
+        """
+        st = IndexStatus(recipe=self._recipe, milvus_ok=self.service.milvus_available())
+
+        raw = self._read_state()
+        docs: dict = {}
+        if raw is not None:
+            version, docs, parsers = raw
+            st.state_present = True
+            st.state_version = version
+            st.recipe_in_sync = version == st.recipe
+            st.indexed_docs = len(docs)
+            # 解析器分布：旁挂诊断，仅 PDF 有键，能看出有多少篇是 GROBID 降级解析的
+            for pid in parsers.values():
+                st.parsers[str(pid)] = st.parsers.get(str(pid), 0) + 1
+
+        # 语料根扫描：磁盘有而状态没有 = 新增未入库；状态有而磁盘没有 = 删除未收敛。
+        # 同一套 .md/.pdf 过滤与 _rel_path 围栏，保证口径与索引扫描一致。
+        corpus: set[str] = set()
+        for root in (Path(self.service.config.corpus.note_dir),
+                     Path(self.service.config.corpus.pdf_dir)):
+            if not root.exists():
+                continue
+            for p in root.rglob("*"):
+                if p.is_file() and p.suffix.lower() in (".md", ".pdf"):
+                    corpus.add(str(p.resolve()))
+        st.corpus_docs = len(corpus)
+        known = set(docs)
+        st.not_indexed = [rel for rel in (self._rel_path(p) for p in sorted(corpus - known)) if rel]
+        st.ghost = [rel for rel in (self._rel_path(p) for p in sorted(known - corpus)) if rel]
+
+        if st.milvus_ok:
+            store = self.service._ensure_vector_store()
+            st.store_chunks = store.count()
+            # all_documents() 的每项是 (id, text, path, mtime)，文档身份取 path
+            st.store_docs = len({d[2] for d in store.all_documents()})
+            st.bm25_docs = self.service._ensure_bm25().count()
+        return st

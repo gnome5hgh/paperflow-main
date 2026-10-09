@@ -12,7 +12,7 @@ from paperflow.config import PaperFlowConfig
 from paperflow.rag.parsers.chunker import AcademicChunker
 from paperflow.rag.parsers.grobid_client import ParsedDoc
 from paperflow.rag.services.breaker import RetrievalBreaker
-from paperflow.rag.services.indexer import IndexOutcome, IndexRunOutcome
+from paperflow.rag.services.indexer import IndexOutcome, IndexRunOutcome, IndexStatus
 
 #: Milvus 可连性探测结果的缓存秒数。带时限才跟得上外部服务的崩溃与恢复；
 #: 探测本身要构造客户端并发 RPC，也不便宜，故不每次调用都探。
@@ -346,6 +346,17 @@ class RAGService:
         """
         with self.lock:
             return self.get_indexer().index_all()
+
+    def index_status(self) -> IndexStatus:
+        """索引体检快照（持锁，只读）。
+
+        与索引写入共用同一把锁：体检要读状态文件与向量库，不持锁会读到写一半的中间态。
+
+        Returns:
+            IndexStatus，状态文件 / 向量库 / 关键词索引 / 语料根的对照结果。
+        """
+        with self.lock:
+            return self.get_indexer().status()
 
     def retrieve(self, query: str, top_k: int | None = None):
         """检索入口（持锁），返回按相关度排序的块列表。

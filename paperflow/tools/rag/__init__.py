@@ -2,5 +2,6 @@
 from paperflow.tools.rag.rag_retrieve import RagRetrieveTool
 from paperflow.tools.rag.index_paths import IndexPathsTool
 from paperflow.tools.rag.reindex_all import ReindexAllTool
+from paperflow.tools.rag.index_status import IndexStatusTool
 
-__all__ = ["RagRetrieveTool", "IndexPathsTool", "ReindexAllTool"]
+__all__ = ["RagRetrieveTool", "IndexPathsTool", "ReindexAllTool", "IndexStatusTool"]

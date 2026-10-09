@@ -15,7 +15,7 @@ tools/
 │                  #   format_check：笔记标题树对模板；模板是 review-note skill 的资源，经 SkillRegistry 解析（needs_skill_registry）
 ├─ rank/           # lookup_venue_rank（期刊/会议等级）
 ├─ citations/      # 6 引用工具（lookup/add/format/list/sync/remove；全部只装 citation-agent）
-├─ rag/            # rag_retrieve + index_paths + reindex_all（读写同域，只装 rag-agent）
+├─ rag/            # rag_retrieve + index_paths + reindex_all + index_status（读写与体检同域，只装 rag-agent）
 ├─ vision/         # analyze_figures（needs_parent=True，视觉调用归属父轮次审计）
 ├─ memory/         # 11 个记忆工具：get_memory_tools() 惰性单例 + set/get_memory_context（全装 memory-agent）
 ├─ orchestration/  # spawn_sub_agent + ask_user_question + confirm 原语；constants/ 放 SubAgentStatus

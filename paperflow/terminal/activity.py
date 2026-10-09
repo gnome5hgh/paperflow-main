@@ -22,6 +22,7 @@ ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
     "rag_retrieve": ("📚 检索", "次"),
     "index_paths": ("🗂️ 入库", "次"),
     "reindex_all": ("🔄 收敛", "次"),
+    "index_status": ("🩺 体检", "次"),
     "fetch_pdf": ("📥 下载", "次"),
     "format_check": ("✅ 校验", "次"),
     # ── 写入与删除 ──
