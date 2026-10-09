@@ -1,148 +1,17 @@
-# paperflow/terminal/io.py
-"""REPL 输入适配器——把「读输入」与终端类型解耦。
+# paperflow/terminal/io/interactive.py
+"""TTY 输入适配：prompt_toolkit 的主输入框、历史落盘与两套键绑定。
 
-契约：read(prompt) 读主输入；confirm(text) 做 yes/no 确认（Ctrl-D/EOF → False，
-fail-safe 拒绝）；ask(question) 读开放问题答案（Ctrl-D/EOF → 空串）。
-TTY 下用 prompt_toolkit（多行编辑、历史落盘、自动建议），非 TTY 退化为内置
-input()——管道/CI/测试走后者，两套实现行为可替换。
-
-并发确认（并行子 agent 同时触发 confirm/ask）由 _confirm_lock 串行化：提示不
-交错，且 prompt_toolkit 的 session 多线程并发读不安全——锁是硬性要求。
+主输入框支持多行编辑（Alt+Enter 换行、Enter 提交）、历史落盘（跨会话保留）与
+基于历史的自动建议；确认框是独立的一次性 prompt，只识别字母键（y/a/n/Enter），
+不依赖方向键（部分终端不可靠）。键绑定与 fail-safe 语义与 fallback.py 的非 TTY
+实现刻意对齐（空输入即拒绝），两个实现可互换。
 """
-import sys
-import threading
-from pathlib import Path
-
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 
-#: 并发确认/提问串行化锁：并行子 agent 同时弹确认框时保证提示不交错
-_confirm_lock = threading.Lock()
-
-
-class InputIO:
-    """输入适配器抽象基类，定义输入操作的统一契约。
-
-    所有输入操作都应实现 read/confirm/ask，以便在 TTY 和非 TTY 环境下提供一致的行为。
-    测试时可通过注入假实现（鸭子类型）进行单元测试。
-    """
-
-    def read(self, prompt: str) -> str:
-        """
-        读取一行用户输入（用于主 REPL 循环）。
-
-        Args:
-            prompt (str): 显示给用户的提示符。
-
-        Returns:
-            str: 用户输入的字符串（不包含换行符）。
-
-        Raises:
-            EOFError: 用户按下 Ctrl-D（或输入流结束）且输入框为空。
-            KeyboardInterrupt: 用户按下 Ctrl+C 且输入框为空（或有内容时由键绑定处理）。
-        """
-        raise NotImplementedError
-
-    def confirm(self, text: str) -> bool:
-        """
-        执行 yes/no 确认操作。
-
-        Args:
-            text (str): 确认提示文本。
-
-        Returns:
-            bool: 用户确认返回 True，否则返回 False。
-                  当遇到 EOF（Ctrl-D）或中断时，返回 False（fail-safe 拒绝）。
-        """
-        raise NotImplementedError
-
-    def confirm_choice(self, text: str) -> str:
-        """三态确认：返回 "y"（本次放行）/ "a"（本会话同路径放行）/ "n"（拒绝）。
-
-        默认实现基于 confirm() 折叠为二态（"y"/"n"）；TTY 实现识别 a 键。
-        EOF/中断返回 "n"（fail-safe 拒绝）。
-
-        Args:
-            text: str，确认提示文本
-
-        Returns:
-            "y"（本次放行）/ "a"（本会话同路径放行）/ "n"（拒绝）；基类默认折叠为二态。
-        """
-        return "y" if self.confirm(text) else "n"
-
-
-
-
-class FallbackIO(InputIO):
-    """非 TTY 环境下的输入适配器，基于内置 input() 实现。
-
-    适用于管道、CI 环境或测试场景，不依赖 prompt_toolkit。
-    所有输入操作均串行化（通过 _confirm_lock）以保持一致性和安全性。
-    """
-
-    def read(self, prompt: str) -> str:
-        """
-        直接使用内置 input() 读取一行输入。
-
-        Args:
-            prompt (str): 提示符。
-
-        Returns:
-            str: 用户输入。
-
-        Raises:
-            EOFError: 输入流结束。
-            KeyboardInterrupt: 用户中断。
-        """
-        return input(prompt)
-
-    def confirm(self, text: str) -> bool:
-        """
-        使用内置 input() 进行确认，接受 y/yes/是/确定（不区分大小写），其余（含空回车）拒绝。
-
-        Args:
-            text (str): 确认提示。
-
-        Returns:
-            bool: 用户确认返回 True，否则 False。EOF 或中断时返回 False。
-
-        Notes:
-            - 使用锁 _confirm_lock 保证并发调用时提示不交错。
-            - 默认选项为 N（提示中显示 (y/N)），与 TTY 实现行为一致。
-            - EOF 按拒绝处理（fail-safe），防止误操作。
-        """
-        with _confirm_lock:
-            # 显示提示，并标记默认值为 N（回车即拒绝）
-            print(f"{text} (y/N) ", end="", flush=True)
-            try:
-                return input().strip().lower() in {"y", "yes", "是", "确定"}
-            except EOFError:
-                # EOF/Ctrl-D：无法获得输入时保守拒绝
-                return False
-
-    def confirm_choice(self, text: str) -> str:
-        """
-        三态确认：y=yes / a=all（本会话同路径放行）/ 其余拒绝。
-
-        Args:
-            text (str): 确认提示。
-
-        Returns:
-            str: "y" / "a" / "n"。EOF 返回 "n"（fail-safe）。
-        """
-        with _confirm_lock:
-            print(f"{text} (y/a/N) ", end="", flush=True)
-            try:
-                raw = input().strip().lower()
-            except EOFError:
-                return "n"
-            if raw in {"y", "yes", "是", "确定"}:
-                return "y"
-            if raw in {"a", "all", "全部"}:
-                return "a"
-            return "n"
+from .base import InputIO, _confirm_lock
 
 
 def _session_key_bindings() -> KeyBindings:
@@ -282,7 +151,7 @@ class PromptToolkitIO(InputIO):
         - 自动建议（根据历史记录灰色提示）。
         - 光标移动、搜索历史等。
 
-    并发安全：confirm 和 ask 方法使用 _confirm_lock 串行化，避免多个线程同时弹出提示。
+    并发安全：confirm 和 confirm_choice 方法使用 _confirm_lock 串行化，避免多个线程同时弹出提示。
     此外，每个 confirm/ask 使用独立的 prompt 会话，不与主输入 session 共享，避免多线程下
     的 session 状态污染。
 
@@ -374,21 +243,3 @@ class PromptToolkitIO(InputIO):
                 return "n"
             return result if result in ("y", "a") else "n"
 
-def make_input_io(config) -> InputIO:
-    """
-    工厂函数，根据终端类型装配合适的输入适配器。
-
-    Args:
-        config: 配置对象，需要包含 workspace 属性（字符串），用于存放历史文件。
-
-    Returns:
-        InputIO: 若标准输入为 TTY，则返回 PromptToolkitIO 实例，历史文件保存在 workspace 下；
-                 否则返回 FallbackIO 实例（用于管道/CI/测试）。
-
-    Note:
-        TTY 环境下历史文件固定命名为 repl_history.txt，存放在 workspace 的 session/ 目录中。
-    """
-    if sys.stdin.isatty():
-        # 主输入历史文件放在 workspace 下，跨会话保留
-        return PromptToolkitIO(str(Path(config.runtime.workspace) / "session" / "repl_history.txt"))
-    return FallbackIO()

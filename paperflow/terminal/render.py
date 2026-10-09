@@ -42,7 +42,7 @@ from rich.text import Text
 
 from paperflow.core.agent import StreamEvent
 from .activity import activity_label, format_activity
-from .diff import truncate_diff
+from .common import truncate_diff
 
 
 class BlockRenderer:

@@ -28,8 +28,8 @@ from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, MaxTurnsExceeded
 from paperflow.terminal.commands import (
     CommandContext, CommandRegistry, build_default_registry)
-from paperflow.terminal.diff import compute_diff, truncate_diff
-from paperflow.terminal.errors import translate_error
+from paperflow.terminal.common import compute_diff, truncate_diff
+from paperflow.terminal.common import translate_error
 from paperflow.terminal.io import InputIO
 from paperflow.terminal.render import StreamRenderer
 from paperflow.terminal.resume import ResumeReplay, render_resume_replay

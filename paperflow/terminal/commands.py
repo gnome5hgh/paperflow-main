@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from paperflow.terminal.errors import translate_error
+from paperflow.terminal.common import translate_error
 from paperflow.terminal.io import InputIO
 from paperflow.terminal.render import StreamRenderer
 
