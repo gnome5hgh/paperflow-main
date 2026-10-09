@@ -4,21 +4,21 @@
 
 | 文件 | 说明 |
 |---|---|
-| `routes.yaml` | 路由知识库：12 条路由 × 例句 + 每条路由的 `score_threshold`（阈值由标定实验写回，2026-10-05 起非零） |
-| `routes_vectors.npz` | 路由语料的稠密向量缓存（启动零网络；按模型名分键，当前为 Qwen3-Embedding-8B，4096 维） |
+| `taxonomy.yaml` | 类别知识库：11 个类别 × {判定口径, 示例句}。口径与示例一起构成判定模型的 criteria——**口径要写清「是什么 / 不包什么」**，类别之间的边界才是判定的全部难点 |
+| `rules.yaml` | 规则层的高精度模式：每条 = {目标类别, 正则, 为什么这条算高精度}。命中即定类、不命中即放行 |
 
-**题集（评测集）不在这里**——2026-10-05 起按实验归属移出：
+两份资产由 `paperflow/core/intent/taxonomy.py` 的 `load_taxonomy` 装载并做 **fail-closed** 校验：类别缺条目、出现未知类别、缺描述、缺示例、规则指向未知类别、模式非法正则、模式与示例逐字重复——都在启动期报错并**点名具体类别**。类别集合必须与 `IntentType` 枚举（11 值）逐项一致。
 
-| 题集 | 位置 | 谁用 |
-|---|---|---|
-| 意图标定的原始/审计终版题集 | `scripts/intent/calibration/goldens/{source,audited}/` | `scripts/intent/calibration/` |
-| 将来的可用性指标题集 | `scripts/intent/eval/goldens/` | `scripts/intent/eval/`（计划中） |
+## 改动这两份资产
 
-理由：题集是实验资产（随实验版本演进、可被替换/重建），`routes.yaml` 是生产知识库
-（随代码发布、被 `paperflow/core/intent/routing/route_loader.load_routes` 直接加载）。
-`load_eval` 因此不再设默认路径——调用方显式传入题集路径。
+直接改文件即可，没有需要重跑的标定流程：类别与规则都是声明式的，装载期校验会挡住写错的情况。
 
-改动 `routes.yaml` 的两种方式：
-- 标定阈值：`scripts/intent/calibration/apply_calibration.py`（行级替换，保留注释）；
-- 增删例句/新建路由：手改本文件，然后**必须重跑标定**（分数、阈值、判据三层都依赖语料，
-  `results/cache/` 的矩阵缓存按语料指纹失效重算；路由向量缓存按语料指纹失效重算）。
+加规则前先做一次自检：**有没有一句正常的话会被它误吸？** 举不出反例才加——规则层命中即短路，误命中没有下游兜底。`tests/intent/test_taxonomy_kb.py` 里有一组**明确不该命中**的输入，新规则应当先拿它过一遍。
+
+## 题集（评测集）不在这里
+
+标定题集按实验归属放在 `scripts/intent/calibration/goldens/{source,audited}/`——**实验资产、`scripts/` 不入库**，所以本机那份是唯一副本，清理脚本目录时不要连它一起删。
+
+## 已退役
+
+旧的 `routes.yaml`（按 18 类标注的例句 + 每条路由的标定阈值）与 `routes_vectors.npz`（路由语料的稠密向量缓存）已随混合路由层退役——判定层现在只有「规则层（本目录的模式）+ 判定服务」两层，没有阈值概念。`routes.yaml` 是入库文件，需要查旧语料可从 git 历史取回。

@@ -72,7 +72,7 @@ class CloudEmbedder:
     def __init__(self, base_url: str, api_key: str, model: str, *,
                  batch_size: int, max_retries: int, timeout: float,
                  transport: httpx.BaseTransport | None = None):
-        """生产值来自 ``rag.embedding.*`` / ``intent.encoder.*``（唯一声明点
+        """生产值来自 ``rag.embedding.*``（唯一声明点
         config.py，装配侧注入）；batch_size/timeout/max_retries 不改变向量结果。
 
         Args:

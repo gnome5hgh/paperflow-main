@@ -155,7 +155,7 @@ Every agent lives in `agents/<name>/` with two files:
 
 `Agent.run(task) -> str` 是 async ReAct 循环:
 
-1. 构造 head：① AGENT.md(system_prompt) ② SKILLS 清单（若有）③ `<available_agents>` 可派发子 agent 清单（按能力选型；非派发方为空串整块省略）④ `Memory.compile()`（仅渲染 `system/` 块 assistant/profile + 文件树索引，渐进暴露）⑤ INTENT 块（意图启用且管线成功时）；末尾 user task。**澄清同步问**：管线产出 clarification → `IntentService.begin` 在构建 head 时同步调 ask 回调问用户（routing.confirm 原语解析编号选择），答案代码级落地为意图（source=user）后本 run 直接以正确意图启动——无跨轮挂起、无 force_dispatch 通道。意图关闭时 `intent_service` 为 None，以上各步全部 no-op（零残留）
+1. 构造 head：① AGENT.md(system_prompt) ② SKILLS 清单（若有）③ `<available_agents>` 可派发子 agent 清单（按能力选型；非派发方为空串整块省略）④ `Memory.compile()`（仅渲染 `system/` 块 assistant/profile + 文件树索引，渐进暴露）⑤ INTENT 块（意图启用且本轮判定有结果时）；末尾 user task。构建 head **之前**先加载会话历史（`_load_in_context`）并把最近若干轮对话文本递给意图层（`begin(task, history=…)`）——否则判定读不懂「再下载一篇」这类指代。意图关闭时 `intent_service` 为 None，以上各步全部 no-op（零残留）
 2. 从 MessageManager 加载该会话 in-context 消息（跨轮回放，Letta 语义）；当前 user task 落盘
 3. 调 LLM 前检查压缩（`should_compress` → `run_compaction`，只改 in-context 窗口不删 SQL）；随后 `chat()` 或 `chat_stream()`（挂 stream_callback 才走流式）
 4. 无 tool_calls → 顺序执行各中间件 `on_finish` 钩子（可改写最终回答）→ 落盘 → 返回。**截断续写**：`finish_reason=="length"` 时暂存半截、把「半截 + 续写提示」放回 in-context 继续循环，绝不把残缺内容当最终回答交付
@@ -211,7 +211,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | 服务 | 角色 |
 |---|---|
 | `BlockManager` / `GitEnabledBlockManager` | 核心记忆块 CRUD。写入是**一次持锁的原子读-改-写 + 写入 CAS**（带期望版本的条件更新，版本被并发写者推进即拒绝而非静默覆盖）；**读-改-写类块写入（工具与 Sleeptime 的块更新）必须经 `mutate_block`**——追加/替换类操作把「读旧值→算新值→写回」整段放进一次持锁事务，避免两个并发写者各自基于同一份旧值计算后互相抹掉（CAS 冲突重读最新值重放 mutator）；整体设值的 `update_block_value` 是同款原子 + CAS 路径；写前 `block_history` 快照（undo/redo）；`read_only` 块拒绝读写、块长上限 2000；`ensure_default_blocks()` 播种 assistant/profile（幂等，不覆盖用户已编辑块）。Git 变体每次变更同步 MemFS markdown 投影并 git commit |
-| `MessageManager` | 对话全量落盘（Recall）。`get_in_context_messages()` 按 `AgentState.message_ids` 回放窗口；`make_ask_recorder()` 把子 agent 的 ask 问答也落盘 |
+| `MessageManager` | 对话全量落盘（Recall）。`get_in_context_messages()` 按 `AgentState.message_ids` 回放窗口；`get_messages_by_agent_id()` 按会话直查全量 |
 | `AgentManager` | Agent 生命周期：`AgentState` JSON 行（keyed by agent_id；message_ids = in-context 窗口） |
 | `MemFS` | Git 托管的 markdown 投影层：`system/assistant.md` + `system/profile.md` + 其他块；自动生成 `memory_filesystem.md` 索引；`detect_file_changes()` 检测手工编辑回写块（双向同步） |
 | `TitleExtractor` | 论文标题权威提取：5 级回退链（搜索元数据 > GROBID > LLM > pdftitle > PyMuPDF 启发式），**绝不回退到 PDF 文件名** |
@@ -226,19 +226,24 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 ### Intent recognition
 
-`paperflow/core/intent/` — 意图识别框架——**可选的预处理层**，由总开关 `config.intent.enabled` 控制（默认关：不构造编码器/路由器/管线，不注入 INTENT 块与规则块，代码路径全为 no-op，关掉零残留）。集成逻辑收在 `IntentService`（`core/intent/service.py`）——Agent 侧只持一个可选的 `intent_service`（`None` 即关），CLI 在启用时直接构造 `IntentService(pipeline=…, conversation=…, ask_user_callback=…)` 并注入；子 agent 不做意图识别。开启后只做三件朴素的事：明确请求走零 LLM 快路径、抽确定性实体、模糊时先消歧——**意图只作信号 + 消歧 + 审计，不决定派发**（不是路由器、不是安全层、不是派发许可）。`IntentPipeline` 五级级联，前一级未裁决才进下一级：
+`paperflow/core/intent/` — 意图识别是**可选的预处理层**（总开关 `config.intent.enabled`，默认关——关掉即纯 ReAct：不装载知识库、不注入 INTENT 块与规则块，代码路径全为 no-op）。
 
-1. **实体抽取**（`routing/entities.py`）— 确定性正则，抽 pdf_path/arxiv_id/doi/note_path/figure（只抽实体不判意图）
-2. **选项答复检测**（`routing/option_reply.py`）— 确定性正则识别纯编号菜单选择（`1`/`1.`/`选项2`/`第3个`）；命中直接产出 `MENU_SELECTION`（confidence=1.0），**不经路由/LLM 重分类**——对齐 Rasa 按钮 payload 惯例：选择动作的语义由发菜单的一方（supervisor 对照上轮菜单）承载，避免 0 阈值路由以微小分数误命中任意意图后误判意图
-3. **追问判别**（`routing/followup.py`）— 词表启发式（那/这/呢/然后 + 无动词无数量词）；命中则继承上一轮意图并合并实体
-4. **混合路由**（`HybridRouter`）— 稠密（千问嵌入）+ 稀疏（jieba BM25）融合（真实融合 = `sim_d + (1-α)²·sim_s`——α 只衰减稀疏路、非凸组合，见 `scripts/intent/calibration/README.md`；生产 alpha 读 `config.intent.router.alpha`（唯一声明点 `paperflow/config.py`），**2026-10-05 阈值标定实验取 0.15**（CV 平台区覆盖整个扫描区间，α 不敏感））；`load_routes()` 读 `data/intent/routes.yaml`（唯一知识库源，含各意图示例句 + 标定阈值，阈值自 2026-10-05 起非零）；命中阈值则产出
-5. **LLM 兜底** — 无路由命中时注入 top-3 近失候选，经 `StructuredOutput` 分类，解析失败/判定失败兜底 `IntentionResult(intents=[UNCLASSIFIED])`（unclassified 是显式失败信号，路由层不建兜底路由）；提示词交代 `clarification` 的填写条件（指代/动作不明才填，能推断则留空用列表本身表达判断），该字段的 pydantic `description` 随 schema 展开进 system 消息——两处都给模型交代过条件，它才会产出澄清。**兜底面与承载面同形**：`IntentionResult` 与 `IntentOutput` 一样以 `intents` 列表承载单/多意图（单意图即长度 1、首项即主意图），复合拆分的触发契约同样走 `Field(description)`（≥2 个独立业务动作才拆），两边共用同一套列表规则（按类型保序去重 / 首要项恒保留 / 主意图之外的非业务成员剔除 / 长度 ≥2 时澄清让位）；差异只在置信度——**LLM 兜底面整列不产置信度**（模型写的数字与路由面的融合分数不是同一尺度，且该路径的判定由 `source` 短路、那个数字没有消费方，两条路径产出的列表长得一样、把没根据的数字混进统一字段只会让它们难以分辨），校验器把每项 `confidence` 清空；路由面逐项填自己算出的真实融合分数（仲裁轮是另一个 LLM 面：`ArbitrationChoice` 带模型自报把握，不经本校验器）。这件事对模型是**明说**的：`IntentUnit.confidence` 的 `description` 随 schema 展开进兜底提示词（「这里不用填——填了也会被忽略」），而 `_build_llm_prompt` 的模板与指引完全不提该字段（不邀请模型填一个随后会被丢掉的数字）。兜底结果直通承载面、无形状转换步骤。意图列表只是**信号**：随 INTENT 块注入；实际派发顺序与并行由 supervisor 自主决定，框架不强制。意图相关的字段语义与「非派发意图」处理说明由 `IntentService.rules_block` 产出、仅在启用时随 `begin` 注入（与 INTENT 块同层）——关掉时提示词零意图痕迹
+**它只做一件事：把本轮输入归到一个类别，连同确定性实体一起注入 head 的 `INTENT` 块。** 它不决定派发、不作门禁、不持跨轮状态——`spawn.py` 与整个 `tools/orchestration/` 对意图零引用，子 agent 不传 `intent_service`。选型与编排由 supervisor 读 `<available_agents>` 按能力自主决定。
 
-阈值与常量标定（`scripts/intent/` 下，gitignored；每个实验目录自成 `goldens/`（题集）+ `results/`（存档与报告），题集**不放在 `data/intent/`**——那里只留生产知识库 `routes.yaml` 与路由向量缓存）：`scripts/intent/calibration/`（2026-10-05 完成：编码器模型 + BM25 k1/b/idf + top_k + alpha + 12 条路由阈值 + 判据三常量 + 拟合超参 + 结构常量的分层序贯标定，交付值已写回；报告 `results/report.md`）；`scripts/intent/eval/`（计划中：用指标反映模块可用性）。
+**两层，前一层不命中才进下一层：**
 
-产出 `IntentOutput`（`intents` 列表 + 轮级 entities/rewritten_query/source，另含 prev_intent/clarification/clarify_candidates）注入 ReAct head 的 `INTENT:` 块——`intents` 每项自带 `intent_type` 与可空 `confidence`（路由面逐项带融合分数；LLM 兜底面整列为空 = 该阶段不产置信度，不是低置信；仲裁轮同为 `source=llm` 但带一个模型自报数）；`confidence`/`source` 是审计/展示字段，无判定消费者——那条「`confidence < 0.5` 或 `source=llm` → 先向用户澄清」的提示词规则已退，消歧只留代码一条路，**主意图是列表首项**（只读派生属性 `intent_type`，不进序列化，单意图即长度 1 的列表）；块内只序列化 intents/entities/rewritten_query/source，prev_intent/clarification/clarify_candidates 被排除。`INTENT_META` 是意图元数据的**单一真相源**：18 个 `IntentType` 值分 3 类（业务 business / 会话状态 dialogue / 直接回答 system）。收敛与新增史：switch_topic 并入用户信息记录（该值现名 `record_user_info`——它记的是画像/偏好，不只是选题方向）、refine_query 并入 search_paper；另有 `manage_index` / `delete_note` / `delete_research` / `delete_pdf` 四条业务路由。`dispatch_allowed` 是管线内部的业务/非业务标记（chitchat/out_of_scope 等非领域意图不进拆分列表，以免误导选型；`feedback` 例外——它是 system 类但按业务处理，反馈要落到记忆块）；**不再作派发门禁**（spawn 已对意图零耦合）。**意图是信号不是选型依据**：supervisor 读 system 里的 `<available_agents>` 清单（各 agent 的 description 即其职责与边界说明），按能力挑角色、自行决定顺序与并行，不按意图名对号入座；`menu_selection`（选项答复，对话管理可派发）由 supervisor 对照上轮菜单转换成对应动作/派发，无法对应先向用户问清。
+1. **规则层**（已实现，纯代码零成本）— ① `entities.extract_entities`：确定性正则抽 pdf_path / arxiv_id / doi / note_path / figure（只抽实体不判意图）；② `taxonomy.Taxonomy.match`：读 `data/intent/rules.yaml` 的高精度模式，命中即定类（`source=rule`，置信度记 1.0），**不命中即放行**。规则层**永不猜测**，也不做「抑制」——命中与不命中是两件事，没有分值也没有阈值。
+2. **判定服务**（未接入）— 规则不命中时由结合对话史的模型判定（`source=jev`）。**这一段尚未实现**：当前规则不命中就**不产块**（宁可没有提示，也不硬猜一个类别塞给 supervisor）。接入后本层的输入是运行时递进来的最近若干轮对话文本（`intent.history_messages`，默认 6，只取 user/assistant 正文、不含工具结果——**assistant 侧必须保留**，否则「再下载一篇」这类指代读不懂）。
 
-澄清（仅在启用意图识别时）：触发权在代码（`_ambiguous` 的 S1 贴线/S2 竞争分数判据）→ `IntentService.begin` 同步调 ask 回调问用户（问题文本由强制澄清 LLM 调用生成、末尾代码追加编号选项行）→ `routing.confirm.match_option_choice` 解析回复，命中候选 → 合成 `source=USER` 的确认意图（跳过路由复判），未命中 → 答案附录进任务按最佳猜测继续（单次问答、无循环）。`prev_intent`/`prev_user_input` 供追问判别——上一轮是单一意图才继承，多意图轮的 `prev_intent` 置 `None`（追问判别随即返回 False）。agent 执行中途不再有提问工具（需要用户给信息就把问题写进最终回答，见 Orchestration）；意图层自身的澄清仍由 `IntentService.begin` 在本轮内调问询回调完成。
+**类别 11 值（`INTENT_META` 单一真相源，`IntentType` 即类别词汇的唯一声明点，知识库按它 fail-closed 校验）**：业务 7 个——`paper`（论文事务：检索/下载/读指定论文/分析图表/删 PDF）、`note`（撰写/删除笔记）、`research`（选题/研究计划/删产物）、`citation`（references.bib 同步/增删/查询导出）、`index`（语料入库/重建/体检）、`memory`（记忆与清单查询、记账，**用户陈述自身信息也归此类**）、`question`（即问即答，supervisor 先自答）；系统 4 个——`chitchat` / `out_of_scope` / `help` / `feedback`。**类别按产物主人划分**：值得单列的区别要两条同时成立——supervisor 的动作确实不同，且这个区别从用户原句里读不出来；能从文本读出的动作（读/写/删/查）与类别正交，单列只会制造误差（三个删除类因此并入了各自领域）。
+
+**知识库**（`data/intent/`，随仓库发布）两份：`taxonomy.yaml`（每类的判定口径 + 示例句，两者一起构成判定模型的 criteria；口径写清「是什么 / 不包什么」——类别之间的边界才是难点）+ `rules.yaml`（高精度模式，每条带说明）。`taxonomy.load_taxonomy` 装载并做 **fail-closed** 校验：类别缺条目、缺描述、缺示例、规则指向未知类别、模式非法正则、模式与示例逐字重复，都在启动期报错并**点名具体类别**。
+
+**产出契约**：`IntentOutput` = `intent`（单类别，不是列表）+ `confidence`（规则命中记 1.0；**没有判定消费者**，只作展示与排查）+ `entities` + `source`（`rule` / `jev`）。注入形态是一行 `INTENT: {json}`，序列化全部四个字段。
+
+**集成缝**：`IntentService`（`core/intent/service.py`）——Agent 侧只持一个可选的 `intent_service`（`None` 即关），唯一的钩子是 `begin(task, history)`，返回要注入的块与可用任务文本（**不改写任务**）。字段语义与各类别的动作说明由 `IntentService.rules_block` 产出、仅在启用时注入（关掉时提示词零意图痕迹），其中**必须写明两处从类别降级到提示层的区分**：`memory` 类内「用户在陈述自身信息」vs「在查询记忆」，`out_of_scope` 的「明确越界」vs「看不出要做什么」。
+
+**旧实现已整体退役**（勿复活）：混合路由器与稠密/稀疏编码、路由知识库与向量缓存、LLM 兜底面（`IntentionResult`）、澄清（判据 / 强制轮 / 编号选项原语）、追问检测与跨轮状态（`ConversationState` / `prev_intent`）、选项答复检测、边界仲裁、意图确认通道、`IntentType` 的旧 18 值、`INTENT_LABELS_ZH`、`dispatch_allowed`。旧知识库 `data/intent/routes.yaml`（按 18 类标注的例句 + 标定阈值）与路由向量缓存随之一并退役；**题集数据仍保留在 `scripts/intent/calibration/goldens/`**（`scripts/` 不入库，删掉不可恢复），标定与评测脚本已删。
 
 ### RAG
 
@@ -251,9 +256,9 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `RetrievalBreaker`（`rag/services/breaker.py`）— 检索侧熔断器（closed/open/half-open，冷却 60s）：Milvus 不可达时跳闸，跳闸期间 `rag_retrieve` 直接返回降级文本、不进检索（省掉每次白等一轮连接超时），冷却到期自动放行一次探测、成功即复位，因此 Milvus 恢复不需要重启进程。只保护检索侧，索引写入不被检索侧的瞬时故障牵连；`RAGService.milvus_available()` 是带 TTL 的可连性探测（30s），不在热路径上
 - `Bm25Index` — rank_bm25 + jieba；是向量库文本的**投影**，启动时从 `store.all_documents()` 重建
 - `CloudEmbedder`（`core/llm/embedding.py`）— 云端 `Qwen/Qwen3-Embedding-0.6B`（OpenAI 兼容 `/v1/embeddings`，默认硅基流动；1024 维，客户端 L2 归一化，维度走静态映射不发网络）；`CloudReranker`（`core/llm/rerank.py`）— 云端 `Qwen/Qwen3-Reranker-0.6B`（`/v1/rerank`，返回降序下标）。协议 `Embedder`/`Reranker` 与实现同文件同层（spec 2026-10-05-embedding-cloud-startup）
-- 端点/模型经 `config.rag.embedding`（RAG 用）与 `config.intent.encoder`（意图路由独立实例）配置；本地 sentence-transformers 栈已退役（无 `resolve_model_dir`、无本地权重下载），api_key 缺失时路由退纯 BM25、检索跳过稠密路、索引明确报错
+- 端点/模型经 `config.rag.embedding` 配置；本地 sentence-transformers 栈已退役（无 `resolve_model_dir`、无本地权重下载），api_key 缺失时路由退纯 BM25、检索跳过稠密路、索引明确报错
 
-消费方：`RagRetrieveTool`（`tools/rag/`，`rag_retrieve`：参数 query / top_k / source（enum 限定 note=笔记 / pdf=论文，缺省两处都搜），每条命中展示来源、路径与正文摘录前 400 字）**装配进 `rag-agent`**——RAG 一域的读写同归一处（检索是读侧、索引是写侧，都由它的责任人独占）；note-agent / research-agent / paper-agent 需要检索时派发 `rag-agent`。**索引写入已与写工具解耦**：`write_file` / `edit_file` / `fetch_pdf` 写盘后不再内联触发入库，改由内容生产者（note-agent / research-agent / paper-agent）写盘或删除成功后**派发 `rag-agent`**（`index_paths` 入库 / `reindex_all` 删除后收敛）；代价是这层一致性由契约承担而非代码保证。**`ReadPdfTool` 不经本栈**——它走工具层自己的本地抽取（`tools/file/pdf_extract.py`：PyMuPDF 直读、按版面还原章节标题、`(路径, mtime, 大小)` 进程内缓存），本栈的 GROBID/PyMuPDF 解析只服务索引与语料标题索引（`corpus.py`）。RAG 的 `CloudEmbedder` 由 `RAGService` 内部按 `config.rag.embedding` 惰性构造，意图路由的实例在启用意图时由 `cli.py` 按 `config.intent.encoder` 构造——两实例互不共享（记忆检索为纯 SQL LIKE，不用向量）。
+消费方：`RagRetrieveTool`（`tools/rag/`，`rag_retrieve`：参数 query / top_k / source（enum 限定 note=笔记 / pdf=论文，缺省两处都搜），每条命中展示来源、路径与正文摘录前 400 字）**装配进 `rag-agent`**——RAG 一域的读写同归一处（检索是读侧、索引是写侧，都由它的责任人独占）；note-agent / research-agent / paper-agent 需要检索时派发 `rag-agent`。**索引写入已与写工具解耦**：`write_file` / `edit_file` / `fetch_pdf` 写盘后不再内联触发入库，改由内容生产者（note-agent / research-agent / paper-agent）写盘或删除成功后**派发 `rag-agent`**（`index_paths` 入库 / `reindex_all` 删除后收敛）；代价是这层一致性由契约承担而非代码保证。**`ReadPdfTool` 不经本栈**——它走工具层自己的本地抽取（`tools/file/pdf_extract.py`：PyMuPDF 直读、按版面还原章节标题、`(路径, mtime, 大小)` 进程内缓存），本栈的 GROBID/PyMuPDF 解析只服务索引与语料标题索引（`corpus.py`）。RAG 的 `CloudEmbedder` 由 `RAGService` 内部按 `config.rag.embedding` 惰性构造——**现在全仓只此一处用它**（意图层曾有自己的编码器实例，随混合路由退役，记忆检索为纯 SQL LIKE 不用向量）。
 
 ### Citations
 
@@ -311,13 +316,13 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 ### Config
 
-`PaperFlowConfig.from_env()` 按优先级加载：环境变量（`PAPERFLOW_*`）> `config.yaml` > dataclass 默认值（DeepSeek 端点、`deepseek-v4-flash` 模型）。加载器是 **dataclass 树 + 通用递归合并** `_merge`（沿 `fields()` 下行、任意深度，未知键运行期忽略）+ **env 按路径派生**（`PAPERFLOW_` + 配置路径大写、`_` 连接：`rag.storage.uri` → `PAPERFLOW_RAG_STORAGE_URI`，`intent.router.alpha` → `PAPERFLOW_INTENT_ROUTER_ALPHA`）。`config.yaml` 顶层按模块分区（与 dataclass 树同构）：
+`PaperFlowConfig.from_env()` 按优先级加载：环境变量（`PAPERFLOW_*`）> `config.yaml` > dataclass 默认值（DeepSeek 端点、`deepseek-v4-flash` 模型）。加载器是 **dataclass 树 + 通用递归合并** `_merge`（沿 `fields()` 下行、任意深度，未知键运行期忽略）+ **env 按路径派生**（`PAPERFLOW_` + 配置路径大写、`_` 连接：`rag.storage.uri` → `PAPERFLOW_RAG_STORAGE_URI`，`intent.history_messages` → `PAPERFLOW_INTENT_HISTORY_MESSAGES`）。`config.yaml` 顶层按模块分区（与 dataclass 树同构）：
 
 ```
 llm / vision                    # 保留顶层（全局共用、最高频调整）
 runtime:  workspace / agents_dir / max_risk
 corpus:   note_dir / pdf_dir / research_dir / citations_bib_path
-intent:   enabled / encoder{base_url,api_key,model} / router{alpha,top_k}
+intent:   enabled / history_messages
 rag:      embedding{...,batch_size,timeout,max_retries} / retriever{top_k,bm25_topk,vector_topk,rerank_candidates,rrf_k}
           query_rewrite{...,history_messages} / chunker{max_tokens,overlap_tokens}
           indexer{table_text_limit} / storage{uri,collection,batch_size}
@@ -348,14 +353,13 @@ mcp_servers                     # 保留顶层（本身即映射）
 | `rag.chunker` (`ChunkerConfig`) | max_tokens / overlap_tokens（唯一声明点 `paperflow/config.py`；改动触发配方哈希全量重索引） |
 | `rag.indexer.table_text_limit` | 表格块文本截断上限（默认 8000） |
 | `rag.tools.excerpt_chars` | 工具输出单条命中正文摘录上限（默认 400） |
-| `intent.enabled` | 意图识别总开关（bool，默认 False = 纯 ReAct；env `PAPERFLOW_INTENT_ENABLED`）。关时整套意图层不装配：不构造编码器/路由器/管线、不注入 INTENT 块与规则块 |
-| `intent.encoder` (`IntentEncoderConfig`) | 意图路由独立稠密编码器：base_url / api_key / model（仅 `base_url` / `api_key` 留空时 from_env 回填 `rag.embedding` 同名项；`model` 不继承，须显式配置）；**当前标定值 `Qwen/Qwen3-Embedding-8B`**；换非同款模型需重标阈值 |
-| `intent.router` (`RouterConfig`) | alpha（稠密分支权重，默认来自 `ROUTER_ALPHA`，现值 0.15）/ top_k（默认来自 `ROUTER_TOP_K`，现值 3） |
+| `intent.enabled` | 意图识别总开关（bool，默认 `False` = 纯 ReAct；env `PAPERFLOW_INTENT_ENABLED`）。关时整套意图层不挂载：不装载知识库、不注入 INTENT 块与规则块 |
+| `intent.history_messages` | 判定参考的最近对话条数（int，默认 6）。运行时按它截历史切片——只取 user/assistant 正文，不含工具结果 |
 | `session.resume_replay` / `session.resume_replay_limit` | --resume 屏上历史回放开关 / 条数上限（0 = 整窗） |
 | `agents.timeouts` | 子 agent 超时覆盖表（note-agent 900 / paper-agent 420 / review-agent 300 / research-agent 1800 / rag-agent 900;按审计数据校准,见 spec 2026-09-05-agent-timeout-recalibration）；未命中的 agent 回退类默认 120s；自由 dict，**仅 YAML**（不派生 env） |
 | `mcp_servers` | MCP server 接入配置（顶层 dict，仅 YAML 无环境变量形态）：每 server 声明 transport(stdio/http)/command/args/url/agents/超时/工具名单；连接失败跳过不挡启动，写类工具默认禁用。可注释示例段见 `docs/learning/11-MCP客户端.md`（gitignored 本地文档） |
 
-环境变量（按路径派生，示例非全集）：`PAPERFLOW_LLM_API_KEY` / `PAPERFLOW_LLM_BASE_URL` / `PAPERFLOW_LLM_MODEL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_RUNTIME_WORKSPACE` / `PAPERFLOW_RUNTIME_AGENTS_DIR` / `PAPERFLOW_RUNTIME_MAX_RISK` / `PAPERFLOW_CORPUS_NOTE_DIR` / `PAPERFLOW_CORPUS_PDF_DIR` / `PAPERFLOW_CORPUS_RESEARCH_DIR` / `PAPERFLOW_CORPUS_CITATIONS_BIB_PATH` / `PAPERFLOW_INTENT_ENABLED` / `PAPERFLOW_INTENT_ENCODER_BASE_URL` / `PAPERFLOW_INTENT_ENCODER_API_KEY` / `PAPERFLOW_INTENT_ENCODER_MODEL` / `PAPERFLOW_INTENT_ROUTER_ALPHA` / `PAPERFLOW_INTENT_ROUTER_TOP_K` / `PAPERFLOW_RAG_EMBEDDING_API_KEY` / `PAPERFLOW_RAG_EMBEDDING_BASE_URL` / `PAPERFLOW_RAG_EMBEDDING_EMBED_MODEL` / `PAPERFLOW_RAG_EMBEDDING_RERANK_MODEL` / `PAPERFLOW_RAG_RETRIEVER_TOP_K` / `PAPERFLOW_RAG_RETRIEVER_RERANK_CANDIDATES` / `PAPERFLOW_RAG_QUERY_REWRITE_MODEL` / `PAPERFLOW_RAG_CHUNKER_MAX_TOKENS` / `PAPERFLOW_RAG_CHUNKER_OVERLAP_TOKENS` / `PAPERFLOW_RAG_INDEXER_TABLE_TEXT_LIMIT` / `PAPERFLOW_RAG_STORAGE_URI` / `PAPERFLOW_RAG_STORAGE_COLLECTION` / `PAPERFLOW_RAG_STORAGE_TIMEOUT` / `PAPERFLOW_RAG_STORAGE_WRITE_TIMEOUT` / `PAPERFLOW_RAG_GROBID_ENDPOINT` / `PAPERFLOW_RAG_TOOLS_EXCERPT_CHARS` / `PAPERFLOW_MEMORY_SLEEPTIME_ENABLE` / `PAPERFLOW_MEMORY_SLEEPTIME_AGENT_FREQUENCY` / `PAPERFLOW_SESSION_RESUME_REPLAY` / `PAPERFLOW_SESSION_RESUME_REPLAY_LIMIT`。`agents.timeouts` 与 `mcp_servers` 是自由 dict，仅 YAML 可配。env 恒为字符串，按目标字段当前类型做 bool/int 转换。运营类 env（`PAPERFLOW_SKIP_BOOTSTRAP` / `PAPERFLOW_FILE_MODE`）与 `PaperFlowConfig` 无关，不在本表。
+环境变量（按路径派生，示例非全集）：`PAPERFLOW_LLM_API_KEY` / `PAPERFLOW_LLM_BASE_URL` / `PAPERFLOW_LLM_MODEL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_RUNTIME_WORKSPACE` / `PAPERFLOW_RUNTIME_AGENTS_DIR` / `PAPERFLOW_RUNTIME_MAX_RISK` / `PAPERFLOW_CORPUS_NOTE_DIR` / `PAPERFLOW_CORPUS_PDF_DIR` / `PAPERFLOW_CORPUS_RESEARCH_DIR` / `PAPERFLOW_CORPUS_CITATIONS_BIB_PATH` / `PAPERFLOW_INTENT_ENABLED` / `PAPERFLOW_INTENT_HISTORY_MESSAGES` / `PAPERFLOW_RAG_EMBEDDING_API_KEY` / `PAPERFLOW_RAG_EMBEDDING_BASE_URL` / `PAPERFLOW_RAG_EMBEDDING_EMBED_MODEL` / `PAPERFLOW_RAG_EMBEDDING_RERANK_MODEL` / `PAPERFLOW_RAG_RETRIEVER_TOP_K` / `PAPERFLOW_RAG_RETRIEVER_RERANK_CANDIDATES` / `PAPERFLOW_RAG_QUERY_REWRITE_MODEL` / `PAPERFLOW_RAG_CHUNKER_MAX_TOKENS` / `PAPERFLOW_RAG_CHUNKER_OVERLAP_TOKENS` / `PAPERFLOW_RAG_INDEXER_TABLE_TEXT_LIMIT` / `PAPERFLOW_RAG_STORAGE_URI` / `PAPERFLOW_RAG_STORAGE_COLLECTION` / `PAPERFLOW_RAG_STORAGE_TIMEOUT` / `PAPERFLOW_RAG_STORAGE_WRITE_TIMEOUT` / `PAPERFLOW_RAG_GROBID_ENDPOINT` / `PAPERFLOW_RAG_TOOLS_EXCERPT_CHARS` / `PAPERFLOW_MEMORY_SLEEPTIME_ENABLE` / `PAPERFLOW_MEMORY_SLEEPTIME_AGENT_FREQUENCY` / `PAPERFLOW_SESSION_RESUME_REPLAY` / `PAPERFLOW_SESSION_RESUME_REPLAY_LIMIT`。`agents.timeouts` 与 `mcp_servers` 是自由 dict，仅 YAML 可配。env 恒为字符串，按目标字段当前类型做 bool/int 转换。运营类 env（`PAPERFLOW_SKIP_BOOTSTRAP` / `PAPERFLOW_FILE_MODE`）与 `PaperFlowConfig` 无关，不在本表。
 
 ### Key design decisions
 
@@ -368,7 +372,7 @@ mcp_servers                     # 保留顶层（本身即映射）
 - **编排归 supervisor，意图只作信号**：意图不决定派发顺序、也不作派发门禁（门禁已退役）——选型按 `<available_agents>` 的能力说明，顺序与并行由 supervisor 自主决定。契约里写明「**一个对象一路**」：批量同类对象（目录 / glob 结果 / 清单 / 「这几篇」）先枚举成逐项子任务，再一头一个 `spawn_sub_agent`，不让一个子 agent 承包整批——单个子 agent 只有一份预算，整批压在它身上时预算先被串行处理耗光，中途超时则整批都拿不到结果
 - **`Agent.run()` 返回 str**；子 agent 结果经 `SubAgentResult`（status/summary/digest/needs_attention）结构化回传 supervisor
 - **流式零开销**：`stream_callback`/`telemetry_callback` 为 None 时全链路保持原非流式行为（mock/无 UI 调用方不受影响）
-- **意图是可选的预处理层、只进根 agent**：`config.intent.enabled` 默认关，开启时由 `IntentService` 注入根 agent 的 head；spawn 的子 agent 不做意图识别。意图只作信号 + 消歧 + 审计，不作派发门禁；澄清由 `IntentService` 在本轮内同步问用户，不暴露给 supervisor（避免与 supervisor 的问题双问）
+- **意图是可选的预处理层、只进根 agent**：`config.intent.enabled` 默认关，开启时由 `IntentService` 把一条类别信号注入根 agent 的 head；spawn 的子 agent 不做意图识别。**意图只作信号**——不决定派发、不作门禁、不持跨轮状态（`spawn.py` 对意图零耦合，可断言）
 - **契约式 prompt,两层装配**:编排决策 LLM 运行时自主(AGENT.md 只写契约+启发式);硬不变式下沉代码——诚实性协议在 BASE_PROMPT、审稿轮数预算在 spawn 闸门
 
 ## 调查规则

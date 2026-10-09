@@ -23,15 +23,11 @@ corpus:
   citations_bib_path: ""
 
 # 意图识别（可选预处理层）：默认关——关掉即整套意图层不挂载，系统走纯 ReAct
-# （不构造编码器/路由器、不注入 INTENT 块）；要用必须显式 enabled: true 打开。
-# 编码器 base_url/api_key 留空继承 rag.embedding 同名字段；model 不继承，
-# 默认 Qwen/Qwen3-Embedding-8B（与路由阈值同属一个标定包；注意 rag.embedding.embed_model
-# 仍是 0.6B）。换非同款模型需重标路由阈值。
+# （不装载知识库、不注入 INTENT 块与规则块）。判定层是「规则层（data/intent/ 的
+# 高精度模式）+ 判定服务（结合对话史，尚未接入）」，不再有编码器/路由器配置。
 # intent:
 #   enabled: true
-#   history_messages: 6                # 判定时参考的最近对话条数（只取 user/assistant 文本）
-#   encoder:
-#     model: Qwen/Qwen3-Embedding-8B   # 覆盖示例（默认即此值）
+#   history_messages: 6                # 判定时参考的最近对话条数（只取 user/assistant 正文）
 
 # RAG 检索栈：嵌入/精排端点、检索参数、切块、存储等的默认值见 paperflow/config.py
 rag:
