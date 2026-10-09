@@ -50,6 +50,7 @@ from paperflow.core.intent.routing.router import HybridRouter
 from paperflow.core.llm.embedding import CloudEmbedder
 from paperflow.rag.parsers.grobid_client import GrobidClient
 from paperflow.core.intent.routing.route_loader import VECTOR_CACHE_PATH, load_routes
+from paperflow.core.intent.service import IntentService
 from paperflow.terminal.io import make_input_io
 from paperflow.terminal.render import make_renderer
 from paperflow.terminal.repl import (
@@ -517,6 +518,12 @@ def main(argv: list[str] | None = None) -> int | None:
     pipeline = None
     conversation = None
     if config.intent.enabled:
+        # 真实混合路由器 + LLM 兜底。意图编码器为云端实例（intent_encoder 段，
+        # 与 RAG 的编码器互不共享）；各意图阈值由离线标定写回 routes.yaml——
+        # 这里只读阈值，不做训练或阈值搜索。alpha 是稠密/稀疏信号的融合权重，
+        # alpha/top_k 读 config.intent.router（唯一声明点 config.py）。
+        # 路由向量缓存锚安装根（与 routes.yaml 同锚，语料源自那里，不随 workspace
+        # 重定向）：命中即零网络启动，未命中现算回写，断网降级零向量见 _encode_dense。
         router = HybridRouter(
             encoder=intent_encoder,
             routes=load_routes(), alpha=config.intent.router.alpha,
@@ -537,6 +544,14 @@ def main(argv: list[str] | None = None) -> int | None:
     from paperflow.terminal.confirm_center import ConfirmCenter
     center = ConfirmCenter(io, renderer)
 
+    # 问询回调：ask_user_question 工具与意图层的同步澄清共用同一个——两者都在
+    # worker 线程里读 stdin，指向同一份记录器才能让子 agent 的问答也落盘。
+    _ask_cb = message_manager.make_ask_recorder(
+        _make_ask_callback(io, renderer, center), session_id)
+    intent_service = (
+        IntentService(pipeline=pipeline, conversation=conversation,
+                      ask_user_callback=_ask_cb) if config.intent.enabled else None)
+
     supervisor = Agent(
         llm=llm, agent_registry=registry, agent_type="supervisor",
         skill_registry=skill_registry,
@@ -546,10 +561,9 @@ def main(argv: list[str] | None = None) -> int | None:
         compaction=config.compaction,
         structured=structured,
         security_middleware=middlewares,
-        intent_enabled=config.intent.enabled, intent_pipeline=pipeline, conversation=conversation,
+        intent_service=intent_service,
         confirm_callback=_make_confirm_callback(io, renderer, center),
-        ask_user_callback=message_manager.make_ask_recorder(_make_ask_callback(io, renderer, center),
-                                                            session_id),
+        ask_user_callback=_ask_cb,
         session_id=session_id,
     )
     sleeptime = Sleeptime(

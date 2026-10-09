@@ -137,7 +137,7 @@ class IntentOutput(_IntentListRules, BaseModel):
     #: 澄清的候选意图（仅 clarification 非空时填充，业务候选 top2，按展示顺序）。
     #: 澄清回路的代码级回传锚点：调用方问用户后带走，用户回复经
     #: routing.confirm.match_option_choice 解析回其中之一，直接落地会话意图——
-    #: 不进 INTENT 块（对模型是噪声），_intent_block 序列化时排除。
+    #: 不进 INTENT 块（对模型是噪声，序列化时排除）。
     clarify_candidates: list["IntentType"] = []
 
     @property

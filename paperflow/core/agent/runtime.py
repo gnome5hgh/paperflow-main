@@ -43,7 +43,6 @@ ReAct 循环流程::
 import asyncio
 import difflib
 import json
-import logging
 import sys
 import time
 import uuid
@@ -66,13 +65,9 @@ from paperflow.core.tool import ToolResult
 from paperflow.core.security.text import sanitize_surrogates
 from paperflow.core.constants import SideEffect
 from paperflow.core.agent.state import get_run_state
-from paperflow.core.intent.constants import INTENT_LABELS_ZH, IntentStep, IntentType
-from paperflow.core.intent.schemas.intent import IntentOutput, IntentUnit
-from paperflow.core.intent.routing.confirm import match_option_choice
-from paperflow.core.intent.routing.entities import extract_entities
 
-#: 模块级 logger:意图管线的网络异常/解析失败降级时在此留痕,供运维排查而不是静默吞掉。
-logger = logging.getLogger(__name__)
+#: Agent 与意图识别之间只有一个缝：可选的集成适配器。未装配时整套意图层不存在。
+from paperflow.core.intent.service import IntentService
 
 #: 同路径写/编辑串行锁注册表（键 = 目标文件路径）。同一 message
 #: 并行发两个 edit_file 改同一文件时，双方都在对方决策前弹确认（「a」授权只覆盖
@@ -111,65 +106,6 @@ def _is_writer(tool) -> bool:
         True 表示该工具会写文件、要按写目标参与同路径互斥。
     """
     return bool(set(getattr(tool, "side_effects", None) or ()) & _WRITE_EFFECTS)
-
-
-def _intent_block(intent) -> str:
-    """把 IntentOutput 格式化为 INTENT 块（ReAct context 的强提示，非命令）。
-
-    排除 clarification 与 prev_intent：澄清由 runtime 在本轮内同步问用户，不暴露给
-    Supervisor（避免其用 AskUserQuestionTool 双问）；prev_intent 是 conversation 内部状态；
-    clarify_candidates 是澄清回传锚点（运行时消费），对模型是噪声。
-
-    Args:
-        intent: IntentOutput，本轮意图产出
-
-    Returns:
-        注入 ReAct head 的 INTENT 块文本（排除 clarification/prev_intent/clarify_candidates）。
-    """
-    return "INTENT: " + intent.model_dump_json(
-        exclude={"clarification", "prev_intent", "clarify_candidates"})
-
-
-def _needs_ledger(agent) -> bool:
-    """是否需要注入收尾核对账本：识别到多意图（≥2 项）、且本次 run 尚未核对过。
-
-    单意图轮次不注入——`_recognized_steps` 现在恒含主意图，用「非空」判断会让
-    每一轮都注入核对，所以判据是列表长度 ≥2。
-
-    Args:
-        agent: Agent，待检查的实例
-
-    Returns:
-        True 表示本轮需注入收尾核对账本（识别到 ≥2 个意图且尚未核对过）。
-    """
-    return len(getattr(agent, "_recognized_steps", []) or []) >= 2 \
-        and not agent._steps_checked
-
-
-def _render_ledger(agent) -> str:
-    """渲染收尾核对消息：识别到的意图 + 实际派发记录 + 产物清单（只摆事实，不下结论）。
-
-    把三列事实拼成一段文本交给模型自查——代码不替它判断「有没有漏派、失败该不该
-    汇报」，所以不会替模型说错话。意图名用 INTENT_LABELS_ZH 的中文标签；派发记录
-    取自本次 run 的派发账本（无则「无」）；产物清单取自 run 状态容器的产物账本。
-
-    Args:
-        agent: Agent，账本数据来源（_recognized_steps 与 run 状态容器）
-
-    Returns:
-        收尾核对消息文本（识别到的意图 + 派发记录 + 产物清单，只摆事实不下结论）。
-    """
-    from paperflow.core.agent.state import get_run_state
-    steps = "、".join(INTENT_LABELS_ZH.get(t, t.value) for t in agent._recognized_steps)
-    dispatched = "、".join(f"{a}({s})" for a, s in agent._run_dispatches) or "无"
-    artifacts = get_run_state(getattr(agent, "_trace_id", "") or "").artifacts
-    produced = "、".join(artifacts) or "无"
-    return ("（系统核对）本轮识别出的意图：{steps}。\n"
-            "本轮已派发的子任务记录：{dispatched}。\n"
-            "本轮新落盘的产物：{produced}。\n"
-            "请核对：若有意图未派发、或某次派发失败/超时/被拒，必须在最终回答中如实说明；"
-            "全部完成则正常汇报，不要提及本条提示。").format(
-                steps=steps, dispatched=dispatched, produced=produced)
 
 
 #: 取消路径合成的 tool 消息（历史自愈）。用自解释措辞：裸的
@@ -393,8 +329,8 @@ class Agent:
         confirm_callback: 确认回调（None 时用 fail-safe 的 _default_confirm，始终拒绝）
         session_id: str，会话标识（跨多轮 run 一致）
         memory / block_manager / message_manager / agent_manager / compaction / structured: 记忆与结构化输出服务句柄（None 时相关路径零开销跳过）
-        intent_enabled / intent_pipeline / conversation / ask_user_callback: 意图识别装配（仅 CLI 构造的 supervisor 开启）
-        last_intent: IntentOutput | None，本轮意图（供 spawn 门禁与收尾核对读取）
+        intent_service / ask_user_callback: 意图识别集成适配器与问询回调（None = 意图层不存在；仅 CLI 构造的 supervisor 装配）
+        last_intent: IntentOutput | None，本轮意图（只读委托给 intent_service，供 spawn 门禁与收尾核对读取）
         max_turns: int，ReAct 循环轮次上限（超过抛 MaxTurnsExceeded）
         stream_callback: 回调 | None，流式事件回调（None = 非流式路径）
         skill_registry: SkillRegistry | None，skill 体系（L1 清单注入与工具并入）
@@ -405,9 +341,7 @@ class Agent:
         _current_turn: int，当前 ReAct 轮次（spawn 摘要提取借此归属父轮次）
         _tool_schemas: list[dict]，预计算的 function calling JSON Schema
         _has_human_confirm: bool，是否有真实人工确认回调（区分 auto_denied 与 user_denied）
-        _recognized_steps: list[IntentType]，本轮识别出的意图列表（收尾核对的事实来源，非强制派发队列）
         _run_dispatches: list[tuple[str, str]]，本轮派发账本（属性视图，直连 run 状态容器）
-        _steps_checked: bool，本轮是否已做过收尾核对（防重复注入）
     """
 
     def __init__(
@@ -417,9 +351,7 @@ class Agent:
         agent_type: str,
         security_middleware: list[SecurityMiddleware] | None = None,
         confirm_callback: Callable[[ConfirmRequired], bool] | None = None,
-        intent_enabled: bool = False,
-        intent_pipeline=None,      # IntentPipeline | None
-        conversation=None,              # ConversationState | None
+        intent_service: "IntentService | None" = None,
         ask_user_callback=None,    # Callable[[str], str] | None
         session_id: str | None = None,
         memory=None,                # Memory | None
@@ -440,9 +372,9 @@ class Agent:
             agent_type: Agent 类型标识符（对应 agents/<agent_type>/ 目录）
             security_middleware: 安全中间件列表，按顺序执行 before / 逆序执行 after；每轮 run 结束时顺序执行 on_finish
             confirm_callback: async 确认回调，接收 ConfirmRequired，返回 bool；None 时使用 fail-safe 的 _default_confirm（始终拒绝）
-            intent_enabled: 意图识别门控:仅 CLI 构造的 Supervisor 置 True;spawn 工具构造的子 agent 不传管线/会话 → 门控关闭
-            intent_pipeline: 意图识别管线实例(IntentPipeline | None),run() 前置钩子消费;None 时跳过
-            conversation: 会话状态容器(ConversationState | None),提供跨轮 prev_intent/ prev_user_input 并在 run 结束后回写
+            intent_service: 意图识别集成适配器（可选预处理层）。提供时 ReAct 循环在
+                开头调 begin、收尾调 finish、需要时注入账本；None 时整套意图层不存在
+                （纯 ReAct，无 INTENT 块、无澄清、无追问继承）。
             ask_user_callback: 向用户提问的回调(Callable[[str], str] | None),供 ask_user_question 工具消费;None 时该工具不可用
             session_id: 会话标识,跨多次 run 保持一致,便于审计聚合;None 时 自动生成 8 位 hex
             memory: Memory 实例(可选),compile() 输出 system 记忆块注入 head (每轮重建);None 时跳过
@@ -546,26 +478,14 @@ class Agent:
         #: 读父 agent 的此属性归属轮次(父在做摘要提取,归父的 trace/轮次)。
         self._current_turn: int = 0
 
-        # 意图识别门控:只有 CLI 构造的 Supervisor 置 True;spawn 工具构造的子 agent
-        # 不传管线/会话 → 门控关闭(子任务是结构化任务而非用户意图,跑管线会误分类
-        # 且白花 LLM 调用)
-        self.intent_enabled = intent_enabled
-        self.intent_pipeline = intent_pipeline
-        self.conversation = conversation
+        # 意图识别（可选预处理层）：只持一个适配器引用，None 即「关」——ReAct
+        # 循环对意图的内部一无所知，几个钩子点全走它。
+        self.intent_service = intent_service
         self.ask_user_callback = ask_user_callback
-        #: 本轮 run 的 IntentOutput。澄清已由本 run 内的 _resolve_clarification 同步问过
-        #: 用户并代码级落地，不再是 CLI 跨轮挂起；它同时供 spawn 门禁与收尾核对读取。
-        self.last_intent = None
         #: 实例唯一标识：跨 run 稳定，供按「父实例」键控的预算计数使用（如审稿预算），
         #: 与按 run 生成的 _trace_id 区分——子 agent 继承父 trace_id，用 trace_id 键控
         #: 会把同一轮里多个同类父实例的预算混在一起。构造即固定，不再变化。
         self._instance_id: str = uuid.uuid4().hex
-        #: 本轮识别出的完整意图列表（来自 IntentOutput.intents，首项即主意图）。只作为
-        #: 收尾核对的事实来源——不是强制派发顺序的队列，顺序与并行由 supervisor 自主决定。
-        #: 每轮 run 装载意图时赋值覆盖（而非突变），避免跨轮残留。
-        self._recognized_steps: list[IntentType] = []
-        #: 本次 run 是否已注入过收尾核对（每个 run 至多注入一次）。
-        self._steps_checked: bool = False
         #: 本次 run 的派发账本（supervisor 自身的派发）。赋值走属性 setter，让
         #: spawn 写入与收尾核对读到 run 状态容器里的同一份列表。
         self._run_dispatches: list[tuple[str, str]] = []
@@ -603,6 +523,24 @@ class Agent:
         cb = self.stream_callback
         if cb is not None:
             cb(ev)
+
+    @property
+    def last_intent(self):
+        """本轮意图产出（委托给意图服务；未装配意图时为 None）。
+
+        Returns:
+            IntentOutput | None，本轮意图；无意图服务时恒 None。
+        """
+        return self.intent_service.last_intent if self.intent_service is not None else None
+
+    @property
+    def conversation(self):
+        """跨轮意图会话状态（委托给意图服务；未装配意图时为 None）。
+
+        Returns:
+            ConversationState | None，跨轮状态；无意图服务时恒 None。
+        """
+        return self.intent_service.conversation if self.intent_service is not None else None
 
     @property
     def _run_dispatches(self) -> list[tuple[str, str]]:
@@ -705,19 +643,19 @@ class Agent:
             2. system: SKILLS 清单块（L1 渐进披露清单，若装配了 SkillRegistry 且有可见 skill）
             3. system: 可派发子 agent 清单块（仅 supervisor，列出各子 agent 的 name + description）
             4. system: 记忆块（Memory.compile() 输出的 assistant/profile + 文件树索引，若有）
-            5. system: 意图识别块（若启用意图管线且管线成功，格式化为 system 消息的 INTENT 块）
+            5. system: 意图规则块与 INTENT 块（仅装配意图服务时；规则块给出字段语义与
+               非派发意图的处理说明，INTENT 块是路由先验）
             6. 末尾追加 user task。
 
-        澄清：管线判据认定该问时，由本方法内**同步**调 ask 回调
-        问用户（_resolve_clarification）——不经 supervisor 的 LLM 转手（「要问」由
-        代码强制，不靠提示词自觉），答案在代码层落地为意图后 ReAct 直接以正确意图
-        启动，无跨轮挂起。
+        意图层的澄清：装配意图服务时由 begin 内部**同步**调 ask 回调（不经 supervisor
+        的 LLM 转手——「要问」由代码强制、不靠提示词自觉），答案在代码层落地为意图后
+        ReAct 直接以正确意图启动，无跨轮挂起。
 
         Args:
             task: 本轮用户输入文本（原始任务）。
 
         Returns:
-            list[Message]: 头部消息列表 [system_prompt, skills(可选), available_agents(可选), memory(可选), intent(可选), user_task]。
+            list[Message]: 头部消息列表 [system_prompt, skills(可选), available_agents(可选), memory(可选), rules(可选), intent(可选), user_task]。
         """
         # ====== 第1层：AGENT.md 系统提示 ======
         head: list[Message] = [Message(role="system", content=self.system_prompt)]
@@ -739,90 +677,22 @@ class Agent:
             if m is not None:
                 head.append(m)
 
-        # ====== 第4层：意图识别块 ======
-        if self.intent_enabled and self.intent_pipeline is not None and self.conversation is not None:
-            try:
-                # 调用意图管线，传入上一轮意图和输入（用于追问检测）
-                intent = await self.intent_pipeline.run(
-                    task, prev_intent=self.conversation.prev_intent,
-                    prev_user_input=self.conversation.prev_user_input)
-            except Exception:
-                # 管线失败（如 LLM 调用超时）：降级处理，不阻断主流程，
-                # 不阻断本轮:记日志 + 跳过 INTENT 块 + 普通 ReAct 继续。
-                # last_intent 显式置 None:conversation 的上一轮意图不更新。
-                logger.warning("intent pipeline failed, degraded to plain ReAct", exc_info=True)
-                self.last_intent = None
-                self._recognized_steps = []
-                self._run_dispatches = []
-                self._steps_checked = False
-                intent = None
-
-            if intent is not None:
-                # ---------- 澄清：本轮内同步问用户 ----------
-                # 代码判据（S1/S2）说该问就一定问出去：直接调 ask 回调，不经
-                # supervisor 的 LLM 转手（提示词契约在这上面失守过）。答案在
-                # _resolve_clarification 内代码级落地（source=USER），本 run 以
-                # 确认后的意图启动，无跨轮挂起。
-                if intent.clarification:
-                    intent, task = await self._resolve_clarification(task, intent)
-                self.last_intent = intent
-                # 意图列表装载：完整意图列表只作收尾核对的事实来源，不强制派发顺序。
-                # 同时清空上一轮的派发账本与核对标记（每轮 run 独立）。
-                self._recognized_steps = [u.intent_type for u in intent.intents]
-                self._run_dispatches = []
-                self._steps_checked = False
-
-                # 正常路径：将意图结果序列化为 INTENT 块，注入 system 消息，
-                # 让 LLM 在执行任务时获得路由先验。
-                head.append(Message(role="system", content=_intent_block(intent)))
+        # ====== 第4层：意图识别（可选预处理层）======
+        # 未装配意图服务时整块零开销跳过。装配时：先注入规则块（字段语义与
+        # 非派发意图的处理说明，由意图层产出而非写死在 AGENT.md），再跑前置
+        # 预处理拿 INTENT 块与可能被澄清答案附录过的任务文本。
+        if self.intent_service is not None:
+            if self.intent_service.rules_block:
+                head.append(Message(role="system", content=self.intent_service.rules_block))
+            turn = await self.intent_service.begin(task)
+            task = turn.task
+            if turn.head_block:
+                head.append(Message(role="system", content=turn.head_block))
 
         # ====== 第5层：用户任务 ======
-        # 最后将当前用户输入作为 user 消息追加（含澄清答案附录，见 _resolve_clarification）。
+        # 最后将当前用户输入作为 user 消息追加（含澄清答案附录，见 IntentService.begin）。
         head.append(Message(role="user", content=task))
         return head
-
-    async def _resolve_clarification(self, task: str, intent) -> tuple:
-        """同步澄清：把管线的澄清问题问出去，答案在代码层落地为意图。
-
-        统一后的唯一自动问询通道（agent 中途问走 ask_user_question 工具，同一
-        confirm 原语）。流程：
-          1. 无回调（程序化环境）→ 放弃澄清，按管线最佳猜测继续（fail-safe）；
-          2. 调 ask 回调展示问题（问题文本已由管线追加编号选项行）；
-          3. 回复可解析为候选之一 → 合成 source=USER 的确认意图（跳过复判——
-             同一句话复判只会复现同一误判）；
-          4. 解析不出/空回答 → 原文附录进任务，带用户上下文按最佳猜测继续，
-             绝不再问（单次问答，无循环）。
-
-        返回 (最终意图, 最终任务文本)；澄清问题已问过即从意图上抹除（clarification
-        字段只承载「待问」状态，repl 不再挂起）。
-
-        Args:
-            task: str，原始任务文本
-            intent: IntentOutput，管线产出的意图（含 clarification）
-
-        Returns:
-            (最终意图, 最终任务文本)；无回调时放弃澄清、按管线最佳猜测继续。
-        """
-        cb = self.ask_user_callback
-        question = intent.clarification
-        if cb is None:
-            intent.clarification = None
-            return intent, task
-        answer = await asyncio.to_thread(cb, question)
-        candidates = intent.clarify_candidates or []
-        confirmed = match_option_choice(answer, candidates) if answer.strip() else None
-        if confirmed is not None:
-            resolved = IntentOutput(
-                intents=[IntentUnit(intent_type=confirmed, confidence=1.0)],
-                entities=extract_entities(task), rewritten_query=task,
-                source=IntentStep.USER,
-                prev_intent=self.conversation.prev_intent)
-            resolved.clarification = None
-            return resolved, f"{task}（用户澄清：{answer}）"
-        if answer.strip():
-            task = f"{task}（用户澄清：{answer}）"
-        intent.clarification = None
-        return intent, task
 
     def _refresh_head_memory(self, head: list[Message]) -> None:
         """会话内刷新 head 里的记忆 system 消息（memory 工具编辑后即时生效）。
@@ -1009,9 +879,9 @@ class Agent:
             1. 生成本次 run 的 trace_id（trace_<12位hex）并清洗 task 的未配对 surrogate
             2. 构建 head：① AGENT（AGENT.md 系统提示）→ ② SKILLS 清单块（若装配
                SkillRegistry 且有可见 skill）→ ③ 可派发子 agent 清单块（仅 supervisor）
-               → ④ Memory.compile()（system/ 记忆块，若有）→ ⑤ INTENT 块
-               （intent_enabled 且管线成功时）→ user_task。
-               管线判据说该澄清时，在本步内同步问用户并代码级落地意图
+               → ④ Memory.compile()（system/ 记忆块，若有）→ ⑤ 意图规则块与 INTENT 块
+               （装配意图服务时）→ user_task。
+               意图层的澄清在本步内同步问用户并代码级落地意图
             3. 从 MessageManager 加载该会话的 in-context 消息（跨轮回放），当前
                user task 落盘；消息归属 self._messages（in-context 窗口）
             4. 调用 LLM 前检查压缩（compaction.should_compress → run_compaction
@@ -1034,8 +904,11 @@ class Agent:
         # conversation.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 
-        # head:① AGENT ② SKILLS ③ 可派发子 agent 清单 ④ Memory ⑤ INTENT 块,每轮重建
-        # 不进累积;末尾 user task。澄清在 _build_head 内同步问用户并落地。
+        # 每轮 run 独立：清空上一轮的派发账本（收尾核对读它）。账本是 runtime 状态，
+        # 与意图是否装配无关。
+        self._run_dispatches = []
+        # head:① AGENT ② SKILLS ③ 可派发子 agent 清单 ④ Memory ⑤ 意图规则块+INTENT 块,每轮重建
+        # 不进累积;末尾 user task。意图层澄清在 _build_head 内(经 begin)同步问用户并落地。
         head = await self._build_head(task)
 
         #: in-context 窗口每轮重建:跨轮回放统一经 MessageManager(SQL) 加载,避免: self._messages 跨 run 残留导致下一轮重复加载(每步都从权威源重新 load)。
@@ -1127,13 +1000,16 @@ class Agent:
                 # 摆给模型，由它自己核对并如实汇报。代码不下结论，所以不会说错话；
                 # 每个 run 至多注入一次，max_turns 是第二道保险。注入后 continue，
                 # 让模型基于账本给出最终回答——本轮这条回答先不落盘。
-                if _needs_ledger(self):
-                    self._steps_checked = True
+                if self.intent_service is not None and self.intent_service.needs_ledger():
+                    self.intent_service.mark_ledger_injected()
                     # 注入账本后本轮这条纯文本先不落盘、直接 continue:若此前发生过截断
                     # 续写,累积器里的半截不清空就会在下一轮与完整重答拼成「重复交付」。
                     # 与压缩重建、正常完成两处的清空保持一致。
                     accumulated.clear()
-                    ledger_msg = Message(role="user", content=_render_ledger(self))
+                    from paperflow.core.agent.state import get_run_state
+                    ledger_msg = Message(role="user", content=self.intent_service.render_ledger(
+                        self._run_dispatches,
+                        get_run_state(getattr(self, "_trace_id", "") or "").artifacts))
                     self._append_to_messages(ledger_msg)
                     self._persist_conversation([ledger_msg])
                     continue
@@ -1147,13 +1023,9 @@ class Agent:
                 for mw in self.security_middleware:
                     content = await mw.on_finish(self, content)
 
-                # 如果启用了意图识别功能，并且本轮产生了意图（last_intent 非空） → 更新会话状态：记录本轮意图类型和用户输入，供下一轮追问或上下文理解使用。
-                # 上一轮意图只在「单一意图」时有值：多意图轮的追问不做位置猜测，取 None。
-                if self.intent_enabled and self.last_intent is not None:
-                    intents = self.last_intent.intents
-                    self.conversation.prev_intent = (
-                        intents[0].intent_type if len(intents) == 1 else None)
-                    self.conversation.prev_user_input = task
+                # 意图层回写跨轮状态（prev_intent / prev_user_input）；未装配时零开销。
+                if self.intent_service is not None:
+                    self.intent_service.finish(task)
 
                 # 最终回答(经 on_finish 改写——回放给下轮的是"用户看到的事实",
                 # SAFE_PROMPT 等安全声明跨轮保留)落盘 + 进 in-context,供下轮回放
