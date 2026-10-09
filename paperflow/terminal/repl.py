@@ -3,7 +3,7 @@
 
 从 cli.py 迁入（行为保持重构）：cli.py 保留装配组合根（main），本模块承载
 「读输入 → 驱动 supervisor → 渲染输出」的每轮交互。与 io.py/render.py 同层
-——依赖 core 的类型（Agent/ConversationState）但不组装对象图，对象图仍由
+——依赖 core 的类型（如 Agent）但不组装对象图，对象图仍由
 cli.main 装配后注入；不进包级 __init__ 导出（避免包级导入拖入 core 依赖链）。
 
 每轮:读 stdin → 斜杠命令分发（注册表命中则就地处理）→ supervisor.run(query)
@@ -26,7 +26,6 @@ from pathlib import Path
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent, MaxTurnsExceeded
-from paperflow.core.intent.conversation_state import ConversationState
 from paperflow.terminal.commands import (
     CommandContext, CommandRegistry, build_default_registry)
 from paperflow.terminal.diff import compute_diff, truncate_diff
@@ -236,7 +235,7 @@ def _render_banner(model: str, workspace: str) -> str:
     return f"{top}\n{body}\n{bottom}"
 
 
-async def _repl(supervisor: Agent, conversation: ConversationState, *,
+async def _repl(supervisor: Agent, *,
                 io: InputIO, renderer: StreamRenderer, sleeptime=None,
                 config: PaperFlowConfig | None = None,
                 resume_hint: str | None = None, confirm_center=None,
@@ -263,7 +262,6 @@ async def _repl(supervisor: Agent, conversation: ConversationState, *,
 
     Args:
         supervisor: 主 Agent 实例。
-        conversation: 跨轮状态。
         io: 输入适配器。
         renderer: 渲染器。
         sleeptime: 后台记忆整合调度器（可选）。

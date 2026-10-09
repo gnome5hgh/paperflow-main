@@ -428,17 +428,7 @@ def main(argv: list[str] | None = None) -> int | None:
     block_manager = GitEnabledBlockManager(db, memfs_dir=memory_dir)
     block_manager.migrate_legacy_labels()   # 旧 human/persona label 一次性迁移为 profile/assistant（幂等）
     block_manager.ensure_default_blocks()   # 首启播种默认 profile/assistant 核心记忆块
-    # 意图路由独立编码器（云端）：与 RAG 的编码器（rag_service 内部按
-    # config.rag.embedding 构造）互不共享——两段配置、两个实例，换模型互不影响。
-    # MessageManager 的 embedder 参数当前未被使用（检索为纯 SQL），注入同实例
-    # 仅为兼容既有签名。
-    intent_encoder = CloudEmbedder(config.intent.encoder.base_url,
-                                   config.intent.encoder.api_key,
-                                   config.intent.encoder.model,
-                                   batch_size=config.intent.encoder.batch_size,
-                                   timeout=config.intent.encoder.timeout,
-                                   max_retries=config.intent.encoder.max_retries)
-    message_manager = MessageManager(db, embedder=intent_encoder)
+    message_manager = MessageManager(db)
     agent_manager = AgentManager(db, block_manager, message_manager)
 
     resume_hint: str | None = None
@@ -511,15 +501,23 @@ def main(argv: list[str] | None = None) -> int | None:
         PolicyEngineMiddleware(max_risk=config.runtime.max_risk),
     ]
 
-    # 意图识别装配（可选预处理层）：总开关关时整段跳过——不构造路由器/管线/
-    # 会话，supervisor 走纯 ReAct。意图编码器是流程内首次需要时才用的实例，
-    # 关闭时不构造也不打告警（见上）。
+    # 意图识别装配（可选预处理层）：总开关关时整段跳过——不构造编码器/路由器/
+    # 管线/会话，supervisor 走纯 ReAct。
     router = None
     pipeline = None
     conversation = None
     if config.intent.enabled:
-        # 真实混合路由器 + LLM 兜底。意图编码器为云端实例（intent_encoder 段，
-        # 与 RAG 的编码器互不共享）；各意图阈值由离线标定写回 routes.yaml——
+        # 意图编码器（云端实例）：只有意图开启这条路会用到它，构造因此收在本
+        # 开关里——关闭意图识别时不为一个用不上的实例付出构造代价。它与 RAG 的
+        # 编码器（rag_service 内部按 config.rag.embedding 构造）互不共享——两段
+        # 配置、两个实例，换模型互不影响。
+        intent_encoder = CloudEmbedder(
+            config.intent.encoder.base_url, config.intent.encoder.api_key,
+            config.intent.encoder.model,
+            batch_size=config.intent.encoder.batch_size,
+            timeout=config.intent.encoder.timeout,
+            max_retries=config.intent.encoder.max_retries)
+        # 真实混合路由器 + LLM 兜底。各意图阈值由离线标定写回 routes.yaml——
         # 这里只读阈值，不做训练或阈值搜索。alpha 是稠密/稀疏信号的融合权重，
         # alpha/top_k 读 config.intent.router（唯一声明点 config.py）。
         # 路由向量缓存锚安装根（与 routes.yaml 同锚，语料源自那里，不随 workspace
@@ -572,7 +570,7 @@ def main(argv: list[str] | None = None) -> int | None:
         frequency=config.memory.sleeptime_agent_frequency)
 
     try:
-        asyncio.run(_repl(supervisor, conversation,
+        asyncio.run(_repl(supervisor,
                           io=io, renderer=renderer, sleeptime=sleeptime,
                           config=config, resume_hint=resume_hint,
                           confirm_center=center, resume_replay=resume_replay,

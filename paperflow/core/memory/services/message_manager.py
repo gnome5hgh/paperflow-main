@@ -73,21 +73,18 @@ class MessageManager:
 
     Attributes:
         db: MemoryDB，messages 表的连接
-        embedder: 可选嵌入模型（语义检索预留，当前未使用）
         agent_manager: AgentManager | None，用于读取 AgentState.message_ids 确定 in-context 窗口
     """
 
-    def __init__(self, db: MemoryDB, embedder=None, agent_manager=None):
+    def __init__(self, db: MemoryDB, agent_manager=None):
         """初始化消息管理器。
 
         Args:
             db: 数据库连接。
-            embedder: 可选的 embedding 模型（用于语义检索，当前未使用）。
             agent_manager: 可选的 AgentManager 实例，用于读取 AgentState.message_ids
                 以确定 in-context 窗口。
         """
         self.db = db
-        self.embedder = embedder          # 可选：千问 embedder（语义检索）
         self.agent_manager = agent_manager  # 可选：读 AgentState.message_ids（in-context 窗口）
 
     def add_message(self, agent_id: str, wire: WireMessage) -> Message:
