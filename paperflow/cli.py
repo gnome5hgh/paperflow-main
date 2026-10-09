@@ -41,7 +41,6 @@ from paperflow.core.memory.orm.database import MemoryDB
 from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
 from paperflow.core.memory.services.message_manager import MessageManager
 from paperflow.tools.memory import set_memory_context, MemoryToolsContext
-from paperflow.core.memory.services.title_extractor import TitleExtractor
 from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.sleeptime import Sleeptime
 from paperflow.core.intent.services.jev import JevClient, JevUnavailable
@@ -313,7 +312,7 @@ def main(argv: list[str] | None = None) -> int | None:
         4. 意图编码器（云端实例）注入 MessageManager。
         5. AgentManager 回填到 MessageManager（用于读取 AgentState）。
         6. 创建 AgentState 和结构化输出。
-        7. 设置记忆工具上下文（包括标题提取器）。
+        7. 设置记忆工具上下文。
         8. 构造安全中间件、意图管线。
         9. 构造 Supervisor Agent 和 Sleeptime。
         10. 运行 REPL 主循环。
@@ -321,7 +320,6 @@ def main(argv: list[str] | None = None) -> int | None:
     关键依赖顺序：
         - AgentManager 依赖 BlockManager 和 MessageManager；MessageManager 需要 AgentManager 来获取 in-context 窗口，
           因此创建顺序为：先建 AgentManager，再回填 MessageManager.agent_manager。
-        - 记忆工具上下文需要 TitleExtractor，它依赖 GrobidClient 和 StructuredOutput。
 
     Args:
         argv: list[str] | None，命令行参数（None 时读 sys.argv）
@@ -466,18 +464,10 @@ def main(argv: list[str] | None = None) -> int | None:
 
     structured = StructuredOutput(llm)
 
-    # extract_title 工具的标题提取器注入记忆工具运行时上下文（LLM 层走
-    # StructuredOutput 真实接线）。GROBID 层用 config.rag.grobid.endpoint 装配：
-    # extract_title 走本地 REST header 接口，不可达或解析失败时返回 None，
-    # 自动落到 LLM 层兜底。
     set_memory_context(MemoryToolsContext(
         agent_id=session_id,
         block_manager=block_manager,
         message_manager=message_manager,
-        title_extractor=TitleExtractor(
-            grobid=GrobidClient(config.rag.grobid.endpoint,
-                                timeout=config.rag.grobid.timeout),
-            llm=structured),
     ))
 
     # 安全管道：四中间件（经验记忆中间件已移除——工具调用经验不再注入 prompt，

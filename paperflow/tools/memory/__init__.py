@@ -21,20 +21,19 @@ from paperflow.tools.memory.recall.conversation_search import ConversationSearch
 from paperflow.tools.memory.paper_lists.unread_list_add import UnreadListAddTool
 from paperflow.tools.memory.paper_lists.unread_list_remove import UnreadListRemoveTool
 from paperflow.tools.memory.paper_lists.history_append import HistoryAppendTool
-from paperflow.tools.memory.paper_lists.extract_title import ExtractTitleTool
 
 __all__ = [
     "get_memory_tools", "set_memory_context", "get_memory_context", "MemoryToolsContext",
     "MemoryReplaceTool", "MemoryInsertTool", "MemoryRethinkTool", "MemoryFinishEditsTool",
     "MemoryTool", "MemoryApplyPatchTool", "ConversationSearchTool", "UnreadListAddTool",
-    "UnreadListRemoveTool", "HistoryAppendTool", "ExtractTitleTool",
+    "UnreadListRemoveTool", "HistoryAppendTool",
 ]
 
-#: 11 个工具类的装配清单（顺序即 get_memory_tools 返回顺序）
+#: 10 个工具类的装配清单（顺序即 get_memory_tools 返回顺序）
 _TOOL_CLASSES = [
     MemoryReplaceTool, MemoryInsertTool, MemoryRethinkTool, MemoryFinishEditsTool,
     MemoryTool, MemoryApplyPatchTool, ConversationSearchTool, UnreadListAddTool,
-    UnreadListRemoveTool, HistoryAppendTool, ExtractTitleTool,
+    UnreadListRemoveTool, HistoryAppendTool,
 ]
 
 _tools: list[Tool] | None = None

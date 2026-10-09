@@ -8,8 +8,9 @@
 
 ```text
 tools/
-├─ file/           # 读/写/编辑/glob/grep/read_pdf + atomic.py 原子写盘（文本/bytes 两入口）
-│                  #   read_pdf 的抽取实现（PyMuPDF 直读）在 rag/parsers/pdf_extract.py
+├─ file/           # 读/写/编辑/glob/grep/read_pdf/extract_title + atomic.py 原子写盘（文本/bytes 两入口）
+│                  #   read_pdf 与 extract_title 的实现都在 rag/parsers/pdf_extract.py
+│                  #   extract_title：只取标题的轻路径（元数据 + 首页版面），别为标题读整篇
 ├─ search/         # fetch_pdf(SSRF 校验+写盘后索引热更新) + _common.py 标题规范化/运行期状态再导出
 ├─ review/         # submit_review / submit_download_review（审查裁决工具）+ format_check + lookup_venue_rank
 │                  #   format_check：笔记标题树对模板；模板是 review-note skill 的资源，经 SkillRegistry 解析（needs_skill_registry）

@@ -1,13 +1,16 @@
 """本地 PDF 文本抽取（PyMuPDF）：把一个 PDF 读成 markdown 文本，不依赖任何外部服务。
 
-与 ``paperflow/rag/parsers/`` 的分工：那边是带结构化语义（TEI 章节、表格、书目元数据）
-的解析，服务向量库索引与语料标题索引；这里只做「把 PDF 读成可读文本」这一件事，供
-read_pdf 工具使用。两条路径刻意互不牵连——读一篇论文既不该依赖 GROBID 服务是否健康，
-也不该排在索引/检索共用的那把全局锁后面等。
+是本项目「读 PDF」的唯一实现，服务三个消费方：`read_pdf` 工具要 markdown 全文、
+RAG 索引要带版面坐标的渲染块、引用语料索引只要一个标题（轻路径 `pdf_title`，
+不抽全文）。三条路共用同一处标题判据，取到的标题必然一致。
 
 输出形态由版面推断：PyMuPDF 只给出带字号与坐标的文本行，本模块按字号识别章节标题并
 分级，其余行按原文换行合成段落。文本顺序**沿用 PyMuPDF 给出的块顺序**——那是版面的
 阅读顺序，双栏论文靠它才是「先左栏到底、再右栏」；按坐标重排反而会把两栏交错。
+
+标题口径是**宁空勿错**：判据只看「明确不是标题」的形态（占位词、文件名、页码戳、
+页眉/期刊行、水印、署名行），过了判据也不代表一定是标题，所以拿不准就返回空串，
+绝不用文件名或页眉顶替——空标题只是不索引这一篇，错标题会同时进每块前缀与引用匹配。
 
 表格不单独识别：实测 ``page.find_tables()`` 在常规学术 PDF 上几乎检不出东西（表格以
 文字与线条绘制），而表格里的数字本就躺在文本层，随普通文本一起读出来即可。
@@ -136,50 +139,131 @@ def _block_of(text: str, lines: list[_Line]) -> Block:
 
 # ---------- 标题 ----------
 
-def _metadata_title(doc) -> str:
-    """读 PDF 元数据里的标题，明显不可用时返回空串。
+#: 标题的最短字符数：短于此的行/字段几乎不可能是论文标题（页眉、页码、栏目名）。
+_TITLE_MIN_CHARS = 8
 
-    很多 PDF 的 title 字段被生成工具写成了文件名、路径甚至工具名，这类值当标题用
-    会污染笔记头部与引用标注，所以只接受看起来像标题的值，其余交给首页启发式。
+#: 一眼就知道「不是论文标题」的后缀（元数据标题常被写成文件名）。
+_TITLE_BAD_SUFFIXES = (".pdf", ".dvi", ".tex", ".docx", ".doc", ".ps", ".html")
+
+#: 一眼就知道「不是论文标题」的整行形态。元数据字段常被生成工具写进工具名、
+#: 占位词或打印系统的页码戳；这类值当标题用会同时污染每块前缀与引用匹配。
+_TITLE_JUNK_RE = (
+    re.compile(r"^untitled$", re.IGNORECASE),
+    re.compile(r"^microsoft word\s*[-–—]\s*", re.IGNORECASE),
+    re.compile(r"^\d+$"),                                        # 纯数字
+    re.compile(r"^[A-Z]{2,}[-_][A-Z0-9]{3,}\s+\d+\.{2,}\d+$"),   # 页码戳（OP-CBIO220080 2246..2253）
+    re.compile(r"^arxiv\s*:", re.IGNORECASE),                    # arXiv 页眉
+    re.compile(r"^(?:journal|proceedings|volume|vol\.|issue)\b", re.IGNORECASE),
+    re.compile(r"^https?://", re.IGNORECASE),
+)
+
+#: 出版流程水印/声明字样（子串匹配）：出现在候选里就判它不是标题。
+_TITLE_WATERMARKS = (
+    "journal pre-proof", "accepted manuscript", "this is a preprint",
+    "downloaded from", "all rights reserved", "see discussions",
+    "cc-by", "cc by", "©",
+)
+
+#: 作者行的标志：姓名标记（∗ † ‡）、iD 标识、上标数字。
+_AUTHOR_MARK_RE = re.compile(r"[∗*†‡§]|\biD\b|\bdoi\b|[\u00b9\u00b2\u00b3\u2074-\u2079]")
+
+
+def _looks_like_author_line(text: str) -> bool:
+    """判断一行是不是作者署名行。
+
+    作者行的形态：带姓名标记（∗/†/iD/上标数字）且是逗号分隔的多个短人名串。
+    要求「有标记」是为了不误伤标题——标题里出现逗号很常见，但几乎不会带上标
+    数字或姓名符号。
+
+    Args:
+        text: 候选行文本。
+
+    Returns:
+        bool: 像作者署名为 True。
+    """
+    if _AUTHOR_MARK_RE.search(text) is None:
+        return False
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    if len(parts) < 2:
+        return False
+    # 每个逗号段都以大写字母开头、且短到像人名（不超过 5 个词）
+    return all(p[:1].isupper() and len(p.split()) <= 5 for p in parts)
+
+
+def _looks_like_title(text: str) -> bool:
+    """判断一段文本是否够格当论文标题（形态判据，宁空勿错）。
+
+    判据只看「明确不是标题」的形态：占位词、文件名、页码戳、页眉/期刊行、
+    水印声明、作者署名行、纯数字。过了判据不代表一定是标题，只是没有被这些
+    形态排除——所以调用方在拿不到候选时返回空串，绝不用别的字段顶替。
+
+    Args:
+        text: 候选文本。
+
+    Returns:
+        bool: 通过判据为 True。
+    """
+    candidate = " ".join(text.split())
+    if len(candidate) < _TITLE_MIN_CHARS:
+        return False
+    # 文件名/路径：元数据标题常被生成工具写成文件位置
+    if candidate.lower().endswith(_TITLE_BAD_SUFFIXES) or "/" in candidate or "\\" in candidate:
+        return False
+    if any(rx.search(candidate) for rx in _TITLE_JUNK_RE):
+        return False
+    low = candidate.lower()
+    if any(mark in low for mark in _TITLE_WATERMARKS):
+        return False
+    return not _looks_like_author_line(candidate)
+
+
+def _raw_metadata_title(doc) -> str:
+    """读 PDF 元数据里的标题原文（连续空白折叠）。
 
     Args:
         doc: 已打开的 PDF 文档对象。
 
     Returns:
-        str: 可用的元数据标题；不可用时为空串。
+        str: 原始标题；字段为空或读不出来时为空串。
     """
     try:
         raw = (doc.metadata or {}).get("title") or ""
     except Exception:
         # 元数据读不出来不该影响正文——标题退化为启发式即可
         return ""
-    title = " ".join(raw.split())
-    if len(title) < 8:
-        return ""
-    if title.lower().endswith(".pdf") or "/" in title or "\\" in title:
-        return ""
-    return title
+    return " ".join(raw.split())
 
 
 def _heuristic_title(doc) -> str:
-    """从首页版面猜标题：字号最大、位置最靠上的那一行。
+    """从首页版面猜标题：字号最大、位置最靠上的那组连续同字号行。
 
-    标题提取在本项目另有权威链路（搜索元数据 > GROBID > 大模型 > pdftitle > PyMuPDF
-    启发式，见记忆层的 TitleExtractor）。这里不复用那条链路：工具层不该反向依赖记忆
-    服务，而且此处只需要「连元数据都没有时」的兜底，能用即可。
+    标题在版面上换行是常态（长标题跨两三行），只取一行会把标题截断，所以先按
+    「字号相同 + 相邻行」把页面上部的行分组成候选，再逐组过形态判据，取**第一个
+    通过的**。分组不要求同块——PyMuPDF 常把每行拆成独立块，按块分组就合并不了
+    换行标题；改用「下一行起始位置在上一样高的两倍以内」判相邻，版面上隔开的
+    无关同字号行（页眉与期刊名）自然被切开。
+
+    候选按字号降序、位置升序依次试，**不通过判据的组跳过、继续试下一组**：页眉、
+    水印这类东西往往字号最大，跳过后仍可能拿到真正的标题；全都不过才返回空。
+    这仍然是「宁空勿错」——「空」留给一组候选都没有的情况，而不是被一个坏候选堵死。
+
+    候选只收**明显大于正文字号**的行（与章节标题判据同一口径）：不加这道下限，
+    跳过一个坏候选后会一路退到正文行，把一句话当标题——那正是错标题的来路。
 
     Args:
         doc: 已打开的 PDF 文档对象。
 
     Returns:
-        str: 猜到的标题；无从判断时为空串。
+        str: 猜到的标题；没有候选或候选全部不过形态判据时为空串。
     """
     if doc.page_count == 0:
         return ""
     page = doc[0]
     page_height = page.rect.height or 1.0
-    best_size = 0.0
-    best_text = ""
+    body_size = _dominant_size(_page_lines(page, 1))
+
+    # 逐块、逐行收集页面上部且足够长的行（阅读顺序），按字号与相邻性分组
+    groups: list[list[tuple[float, float, str]]] = []   # [(字号, y, 文本), …]
     for block in page.get_text("dict").get("blocks", []):
         if block.get("type") != 0:      # 非文本块（图片等）没有文字可作标题
             continue
@@ -187,17 +271,53 @@ def _heuristic_title(doc) -> str:
             spans = line.get("spans", [])
             if not spans:
                 continue
-            # 标题几乎只出现在页面上部；限高可避免把正文里的粗体小标题当成标题
             y_top = spans[0].get("bbox", (0, 0, 0, 0))[1]
-            if y_top > page_height * 0.4:
-                continue
             size = max(float(s.get("size", 0.0)) for s in spans)
             text = " ".join("".join(s.get("text", "") for s in spans).split())
-            if len(text) < 8:
+            if not text or len(text) < _TITLE_MIN_CHARS:
                 continue
-            if size > best_size:
-                best_size, best_text = size, text
-    return best_text
+            # 标题几乎只出现在页面上部；限高可避免把正文里的粗体小标题当成标题
+            if y_top > page_height * 0.4:
+                continue
+            # 字号下限：不大于正文的行走不到这里（正文行当标题是错标题的主要来源）
+            if body_size > 0 and size <= body_size * _HEADING_SIZE_RATIO:
+                continue
+            if groups:
+                last = groups[-1][-1]
+                same_size = abs(last[0] - size) <= 0.5
+                # 相邻：下一行的起点在上一样高的两倍以内（换行标题的续行满足，
+                # 版面上隔开的另一处同字号文本不满足）
+                adjacent = y_top - last[1] <= 2.0 * max(size, 1.0)
+                if same_size and adjacent:
+                    groups[-1].append((size, y_top, text))
+                    continue
+            groups.append([(size, y_top, text)])
+
+    # 字号最大者优先，同字号取最靠上的一组；逐个试判据，第一个过判据的即答案
+    for group in sorted(groups, key=lambda g: (-round(g[0][0], 1), g[0][1])):
+        candidate = " ".join(text for _size, _y, text in group)
+        if _looks_like_title(candidate):
+            return candidate
+    return ""
+
+
+def _title_of(doc) -> str:
+    """从已打开的文档决定标题（``_extract`` 与轻路径出口共用这一处判据）。
+
+    元数据里**有**标题时，就由它的形态判据定生死——判为垃圾也不退回版面启发式：
+    这类 PDF 是工具生成的，版面启发式多半只会捞到页眉或水印，宁可空着。空标题是
+    安全降级（调用方跳过它即可），错标题不是——它会同时进每块前缀与引用匹配。
+
+    Args:
+        doc: 已打开的 PDF 文档对象。
+
+    Returns:
+        str: 论文标题；拿不准时为空串。
+    """
+    raw = _raw_metadata_title(doc)
+    if raw:
+        return raw if _looks_like_title(raw) else ""
+    return _heuristic_title(doc)
 
 
 # ---------- 正文 ----------
@@ -412,7 +532,7 @@ def _extract(path: str) -> PdfText:
     # C 层遇到畸形字体/编码会往 stderr 刷告警，糊住终端输出；这里只静音 C 层。
     fitz.TOOLS.mupdf_display_errors(False)
     with fitz.open(path) as doc:
-        title = _metadata_title(doc) or _heuristic_title(doc)
+        title = _title_of(doc)
         pages = [_page_lines(page, i + 1) for i, page in enumerate(doc)]
 
         # 正文字号与级别映射跨页统一：同一篇论文里同级标题字号一致，
@@ -459,3 +579,55 @@ def extract_pdf(path: str) -> PdfText:
         while len(_cache) > _CACHE_MAX_ENTRIES:
             _cache.popitem(last=False)
     return result
+
+
+def first_page_text(path: str) -> str:
+    """取 PDF 首页的纯文本（每行一条，按版面阅读顺序）。
+
+    给「只需首页信息」的调用方用：作者、年份、期刊、版权行都印在首页最上面，
+    为此抽整篇是浪费。行内连续空白已折叠，行间用换行连接——保留行边界，调用方
+    自己能看出哪几行是署名区。
+
+    Args:
+        path: PDF 文件路径（可含 ~，可为相对路径）。
+
+    Returns:
+        str: 首页文本；文档没有页面时为空串。
+
+    Raises:
+        FileNotFoundError: 路径不存在。
+        Exception: 文件损坏、加密或不是 PDF 时按原样上抛。
+    """
+    import fitz
+
+    fitz.TOOLS.mupdf_display_errors(False)
+    resolved = Path(path).expanduser().resolve()
+    with fitz.open(str(resolved)) as doc:
+        if doc.page_count == 0:
+            return ""
+        return "\n".join(ln.text for ln in _page_lines(doc[0], 1))
+
+
+def pdf_title(path: str) -> str:
+    """只取一个 PDF 的标题（轻路径：读元数据 + 首页版面，不抽全文）。
+
+    与 `extract_pdf` 共用同一处标题判据（`_title_of`），所以两条路取到的标题
+    必然一致——为一个标题去抽整篇正文是纯浪费，而两处各写一套判据迟早会漂移。
+    不缓存：只读首页，代价远小于整篇抽取，缓存反而要处理失效。
+
+    Args:
+        path: PDF 文件路径（可含 ~，可为相对路径）。
+
+    Returns:
+        str: 标题；判据不过时为空串（宁空勿错，见 `_looks_like_title`）。
+
+    Raises:
+        FileNotFoundError: 路径不存在。
+        Exception: 文件损坏、加密或不是 PDF 时按原样上抛。
+    """
+    import fitz
+
+    fitz.TOOLS.mupdf_display_errors(False)
+    resolved = Path(path).expanduser().resolve()
+    with fitz.open(str(resolved)) as doc:
+        return _title_of(doc)

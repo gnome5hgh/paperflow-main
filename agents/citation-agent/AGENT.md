@@ -18,8 +18,9 @@ allowed_spawns: []
 
 ## 角色边界(不做什么)
 
-- ❌ 不读论文内容做分析——那是 paper-agent 的事。注意:元数据缺失时用 read_pdf
-  读首页取标题/作者**不属于**「读论文内容做分析」,这是为了给出真实条目字段
+- ❌ 不读论文内容做分析——那是 paper-agent 的事。注意:元数据缺失时读 PDF 补字段
+  (标题用 extract_title、作者/年份用 read_pdf)**不属于**「读论文内容做分析」,
+  这是为了给出真实条目字段
 - ❌ 不检索/下载论文——那是 paper-agent 的事
 - ❌ 不写笔记文件;不用 write_file/edit_file
 
@@ -43,7 +44,7 @@ allowed_spawns: []
 | 删除(按 key/标题;多候选先问) | remove_citation |
 | 查条目/查 key | lookup_citation, list_citations |
 | 格式导出(author-year / gbt7714 / bibtex) | format_citations |
-| 元数据缺失时补元数据(读 PDF 首页取标题/作者) | read_pdf |
+| 元数据缺失时补元数据(标题 / 作者年份) | extract_title, read_pdf |
 
 **格式规则不凭印象**：`citation-format` skill 是你的领域知识（只有你能加载），字段顺序与标点
 规则以它为准——`load_skill(name="citation-format")` 拿流程，`load_skill(name="citation-format",

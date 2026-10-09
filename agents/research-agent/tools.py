@@ -9,14 +9,15 @@
 from paperflow.config import PaperFlowConfig
 from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
 from paperflow.tools import (
-    ReadFileTool, ReadPdfTool, WriteFileTool, EditFileTool, DeleteFileTool,
-    GlobTool, GrepTool,
+    ReadFileTool, ReadPdfTool, ExtractTitleTool, WriteFileTool, EditFileTool,
+    DeleteFileTool, GlobTool, GrepTool,
 )
 from paperflow.tools.common.factory import make_tools
 
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
-    ReadPdfTool, ReadFileTool, WriteFileTool, EditFileTool, DeleteFileTool,
+    ReadPdfTool, ExtractTitleTool,
+    ReadFileTool, WriteFileTool, EditFileTool, DeleteFileTool,
     GlobTool, GrepTool,
     SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts),
 ], default_write_root="research")

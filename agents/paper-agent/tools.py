@@ -12,11 +12,12 @@ from paperflow.config import PaperFlowConfig
 from paperflow.tools.common.factory import make_tools
 from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
 from paperflow.tools import (
-    FetchPdfTool, DeleteFileTool, GlobTool, GrepTool, ReadPdfTool,
+    FetchPdfTool, DeleteFileTool, GlobTool, GrepTool, ReadPdfTool, ExtractTitleTool,
 )
 from paperflow.tools.vision.analyze_figures import AnalyzeFiguresTool
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
     FetchPdfTool, DeleteFileTool, GlobTool, GrepTool,
-    ReadPdfTool, AnalyzeFiguresTool(),
+    ReadPdfTool, ExtractTitleTool,
+    AnalyzeFiguresTool(),
 ]) + [SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts)]

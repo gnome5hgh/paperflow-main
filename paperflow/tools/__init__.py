@@ -13,6 +13,7 @@ from paperflow.tools.file.write_file import WriteFileTool
 from paperflow.tools.file.edit_file import EditFileTool
 from paperflow.tools.file.delete_file import DeleteFileTool
 from paperflow.tools.file.read_pdf import ReadPdfTool
+from paperflow.tools.file.extract_title import ExtractTitleTool
 from paperflow.tools.review.format_check import FormatCheckTool
 from paperflow.tools.review.submit_review import SubmitReviewTool
 from paperflow.tools.review.lookup_venue_rank import LookupVenueRankTool
@@ -21,7 +22,7 @@ from paperflow.tools.review.submit_download_review import SubmitDownloadReviewTo
 
 __all__ = [
     "GlobTool", "GrepTool", "ReadFileTool", "WriteFileTool", "EditFileTool",
-    "DeleteFileTool", "ReadPdfTool", "FormatCheckTool",
+    "DeleteFileTool", "ReadPdfTool", "ExtractTitleTool", "FormatCheckTool",
     "SubmitReviewTool", "FetchPdfTool",
     "LookupVenueRankTool", "SubmitDownloadReviewTool",
 ]
