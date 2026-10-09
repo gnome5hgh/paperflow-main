@@ -33,6 +33,7 @@ class WriteFileTool(Tool):
         "② filename=纯文件名（可选 dir=绝对目录，缺省落本 agent 默认根）。"
         "已存在的文件将被覆盖（小范围修改请用 edit_file 定向替换）；"
         "写入语料库（note/pdf 根内）的文件需另行派发 rag-agent 入库，临时文件请显式给 dir。"
+        "任务文本指定了保存位置时必须显式传 dir 或 path——默认根只是没指定时的兜底。"
     )
     parameters = {
         "type": "object",

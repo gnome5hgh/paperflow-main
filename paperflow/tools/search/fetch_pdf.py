@@ -34,7 +34,9 @@ class FetchPdfTool(Tool):
 
     name = "fetch_pdf"
     # description 与行为对齐:纯下载,url 取检索结果（含 MCP 工具结果）中的 PDF 链接(LLM 据此传参)
-    description = "下载 PDF 到本地资料库（SSRF 校验 + 写盘；入库需另行派发 rag-agent）。url 取检索结果（含 MCP 工具结果）中的 PDF 链接。"
+    description = ("下载 PDF 到本地资料库（SSRF 校验 + 写盘；入库需另行派发 rag-agent）。"
+                   "url 取检索结果（含 MCP 工具结果）中的 PDF 链接。"
+                   "任务文本指定了保存位置时必须用它填 download_to——缺省落 pdf 根只是没指定时的兜底。")
     parameters = {
         "type": "object",
         "properties": {
