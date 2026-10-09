@@ -59,7 +59,7 @@ def context_prefix(title: str, heading: str, body: str) -> str:
 
     前缀随块文本同时进入 embedding、BM25 与检索展示（Anthropic contextual
     retrieval 的标题路径版：任一块被单独检回时都自带所属论文与章节）。
-    标题与章节都缺省时返回原正文（PyMuPDF 回退与无标题笔记兼容）。
+    标题与章节都缺省时返回原正文（笔记与无标题文档兼容）。
 
     Args:
         title: 文档标题（可为空串）。
@@ -71,6 +71,37 @@ def context_prefix(title: str, heading: str, body: str) -> str:
     """
     label = " > ".join(x for x in (title.strip(), heading.strip()) if x)
     return f"{label}\n{body}" if label else body
+
+
+def section_label(chunk: "Chunk") -> str:
+    """块的「章节位」：章节名，媒体块则是表注/图注原文。
+
+    文本块的章节在 `heading`；媒体块没有章节名、注文在 `caption`——两者在块前缀与
+    检索结果的章节列里是**同一个位置**，取值规则只此一处。
+
+    Args:
+        chunk: 检索块。
+
+    Returns:
+        str: 章节名或注文；两者皆空时为空串。
+    """
+    return chunk.heading or chunk.caption
+
+
+def indexed_text(chunk: "Chunk") -> str:
+    """块进 embedding 与 BM25 时使用的文本：正文 + 「标题 > 章节位」前缀。
+
+    库里存的是干净正文（见 `Chunk.text`），前缀在使用点现拼——它是派生的展示视图，
+    改前缀规则不必重写库。索引侧编码与检索侧 BM25 重建都必须用它，两处若各拼各的，
+    同一个块的稠密向量与稀疏索引就会基于不同文本，检索质量静默下降。
+
+    Args:
+        chunk: 检索块。
+
+    Returns:
+        str: 带前缀的文本；无标题无章节位时即正文本身。
+    """
+    return context_prefix(chunk.title, section_label(chunk), chunk.text)
 
 
 @dataclass(frozen=True)
@@ -96,7 +127,8 @@ class Chunk:
     Attributes:
         id: str，块唯一标识 ``sha1(绝对路径 + 块序号)[:16]``；与内容无关，同位置
             重复切分得到相同 id（写入幂等）。
-        text: str，块正文。
+        text: str，块正文。**不含**「标题 > 章节」前缀——前缀由使用点现拼
+            （见 `indexed_text`），所以它与被编码的文本并不相同，这是刻意设计。
         path: str，文档的**绝对路径**（兼作文档 id 与元数据）。
         title: str，文档标题（取不到为空串）。
         heading: str，所属章节标题（媒体块为空）。
@@ -395,15 +427,14 @@ class AcademicChunker:
             if self._is_fragment(text):
                 continue
             # 3. 否则，对章节正文调用 `_split_long` 分割（可能返回一个或多个片段）。
-            # 4. 前缀逐窗拼接（而非拼进原文再切）：长章节切多窗时每个窗口都自带「标题 > 章节」上下文，任一窗口被单独检回都不丢所属信息。
-            # split_doc 逐章节调 _split_long，每得到一个窗口片段就拼上「标题>章节」前缀、哈希出 块 id
+            # 4. 逐窗生成块，**存干净正文**——「标题 > 章节」前缀由使用点现拼
+            #    （见 indexed_text），不写进库：前缀是派生的展示视图，改它不必重写库。
             for part in self._split_long(text):
                 # 5. 为每个片段生成一个 Chunk 对象，其中 id 由 `sha1(绝对路径 + 全局序号)[:16]` 生成。
                 chunk_id = hashlib.sha1(f"{path}:{idx}".encode()).hexdigest()[:CHUNK_ID_LEN]
                 chunks.append(Chunk(
-                    id=chunk_id, text=context_prefix(title, heading, part),
-                    path=path, title=title, heading=heading, position=sec.positions,
-                    chunk_index=idx,
+                    id=chunk_id, text=part, path=path, title=title, heading=heading,
+                    position=sec.positions, chunk_index=idx,
                 ))
                 # 6. 全局序号 `idx` 从 0 开始递增，保证同一文档内不同位置的块 ID 唯一且稳定。
                 idx += 1

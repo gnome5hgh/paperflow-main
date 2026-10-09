@@ -4,7 +4,7 @@
 """
 import logging
 
-from paperflow.rag.parsers.chunker import Chunk
+from paperflow.rag.parsers.chunker import Chunk, indexed_text
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ class Retriever:
         # 不触碰索引状态与文档块（那是 index_all 全量重扫的职责，个人语料规模下两者开销差一个量级）。
         # 重建失败（Milvus 读取异常）不置位，下次查询重试；本次退化为纯向量路。
         if not self._bm25_synced:
-            bm25.rebuild([(d[0], d[1]) for d in vs.all_documents()])
+            bm25.rebuild([(c.id, indexed_text(c)) for c, _mtime in vs.all_documents()])
             self._bm25_synced = True
 
         # ---- 多查询双路检索，全部排名累计进同一 RRF 池 ----

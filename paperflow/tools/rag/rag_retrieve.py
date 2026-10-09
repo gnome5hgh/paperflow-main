@@ -7,6 +7,7 @@ query），再持锁检索。检索与融合算法本身在 `rag/services/retrie
 import logging
 
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.rag.parsers.chunker import section_label
 from paperflow.rag.services.rag_service import get_rag_service
 from paperflow.tools.memory.runtime_context import get_memory_context
 
@@ -147,11 +148,18 @@ class RagRetrieveTool(Tool):
 
         # 4. 若无结果，返回结构化提示信息。
         if not chunks:
-            return ToolResult(text="检索无命中（索引可能为空，可先写几篇笔记）")
+            return ToolResult(text="检索无命中（索引可能为空，可先入库若干 PDF）")
 
-        # 5. 否则，每条命中格式化为 `- [路径] 正文摘录前 N 字` 的列表。
-        # 摘录上限读 rag.tools.excerpt_chars：块的首行是「论文标题 > 章节标题」前缀，
-        # 需要足够窗口才能让上层同时拿到节号与可用的正文上下文。
+        # 5. 每条命中一行、固定四列：绝对路径 | 论文标题 | 章节 | 摘录。
+        # 固定列序与「一行一条」是给下游的契约——元数据靠子任务的最终回答逐字上行，
+        # 上游按这个顺序读列（见 rag-agent 的检索契约），格式一乱就对不上。
+        # 章节列取「章节名或注文」（媒体块的注文就在这个位置，不是块类型标签）；
+        # 摘录压平换行，避免把一条命中撑成多行。
         excerpt_chars = svc.config.rag.tools.excerpt_chars
-        lines = [f"- [{c.path}] {c.text[:excerpt_chars]}" for c in chunks]
-        return ToolResult(text="检索到以下相关段落：\n" + "\n".join(lines))
+        lines = [
+            f"{c.path} | {c.title} | {section_label(c)} | "
+            f"{' '.join(c.text.split())[:excerpt_chars]}"
+            for c in chunks
+        ]
+        return ToolResult(text="字段顺序：绝对路径 | 论文标题 | 章节 | 摘录\n"
+                               + "\n".join(lines))

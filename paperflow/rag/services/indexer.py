@@ -26,7 +26,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from paperflow.rag.parsers.chunker import Chunk, Section
+from paperflow.rag.parsers.chunker import Chunk, Section, indexed_text
 from paperflow.rag.parsers.pdf_extract import extract_pdf
 
 #: 配方哈希的逻辑版本号：切块/解析「算法逻辑」修订号（非参数）。参数
@@ -327,7 +327,10 @@ class RagIndexer:
         return _FileContent(title, sections)
 
     def _embed_chunks(self, chunks: list[Chunk]):
-        """把一批块文本编码成向量（供写入向量库）。
+        """把一批块编码成向量（供写入向量库）。
+
+        编码用的是带前缀的文本（`indexed_text`），与 BM25 侧的输入同源——库里存的
+        则是干净正文。
 
         Args:
             chunks: Chunk 对象列表。
@@ -336,7 +339,7 @@ class RagIndexer:
             np.ndarray: 向量矩阵，形状为 (len(chunks), dim)。
         """
         embedder = self.service._ensure_embedder()
-        vecs = embedder([c.text for c in chunks])
+        vecs = embedder([indexed_text(c) for c in chunks])
         return vecs
 
     def _derive_state_from_store(self, store) -> dict:
@@ -352,10 +355,10 @@ class RagIndexer:
             dict: {绝对路径: 修改时间戳}，用于后续增量比对。
         """
         state: dict = {}
-        for _id, _doc, path, mtime in store.all_documents():
+        for chunk, mtime in store.all_documents():
             # 同一文档可能有多块，取最新的 mtime
-            if path not in state or mtime > state[path]:
-                state[path] = mtime
+            if chunk.path not in state or mtime > state[chunk.path]:
+                state[chunk.path] = mtime
         return state
 
     # ---------- 公开 API ----------
@@ -418,10 +421,10 @@ class RagIndexer:
         # 4. 编码并写入
         vecs = self._embed_chunks(chunks)
         mtime = p.stat().st_mtime
-        # 向量数据库存：① 块正文；② 正文压缩成的一个 1024 维浮点向量；③ 元数据
+        # 向量数据库存：① 块正文；② 正文（带前缀）压缩成的一个 1024 维浮点向量；③ 元数据
         store.upsert(chunks, vecs, mtime=mtime)
-        # bm25存的是：① 正文分词后的 token 列表，比如：["多意图","执行","clarification","触发","判定",...]；② 词频矩阵 + idf 表（“这个词在几篇文档里出现过”的统计）
-        bm25.add_documents([(c.id, c.text) for c in chunks])
+        # bm25存的是：① 带前缀文本分词后的 token 列表，比如：["多意图","执行","clarification","触发","判定",...]；② 词频矩阵 + idf 表（“这个词在几篇文档里出现过”的统计）
+        bm25.add_documents([(c.id, indexed_text(c)) for c in chunks])
 
         # 5. 更新状态文件——仅「状态缺失或同版本」时写入。状态缺失时没有可
         #    丢失的清理依据，正常写入让热更新路径的状态记录照常生效；版本
@@ -484,8 +487,8 @@ class RagIndexer:
                 state = self._derive_state_from_store(store)
 
         # 2. 从向量库的全部文档整体重建 BM25（因为 BM25 是内存索引，进程重启后为空）。
-        all_docs = list(store.all_documents())
-        self.service._ensure_bm25().rebuild([(d[0], d[1]) for d in all_docs])
+        self.service._ensure_bm25().rebuild(
+            [(c.id, indexed_text(c)) for c, _mtime in store.all_documents()])
 
         # 收集待索引文档：扫描两个知识库根目录，按修改时间比对找出变更项。
         roots = [Path(self.service.config.corpus.note_dir),
@@ -586,7 +589,7 @@ class RagIndexer:
         if st.milvus_ok:
             store = self.service._ensure_vector_store()
             st.store_chunks = store.count()
-            # all_documents() 的每项是 (id, text, path, mtime)，文档身份取 path
-            st.store_docs = len({d[2] for d in store.all_documents()})
+            # all_documents() 的每项是 (块, mtime)，文档身份取块路径
+            st.store_docs = len({c.path for c, _ in store.all_documents()})
             st.bm25_docs = self.service._ensure_bm25().count()
         return st

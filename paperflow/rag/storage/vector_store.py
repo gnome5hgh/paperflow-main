@@ -334,8 +334,8 @@ class VectorStore:
         # 写入后调用 flush，使 count() 立即反映删除结果。
         self._client.flush(self._collection, timeout=self._write_timeout)
 
-    def all_documents(self) -> list[tuple[str, str, str, float]]:
-        """返回全部块，每块为 (块 id, 原文, 路径, 修改时间)。
+    def all_documents(self) -> list[tuple[Chunk, float]]:
+        """返回全部块，每块为 (块, 文档修改时间)。
 
         为什么用 query_iterator 分页：
         - Milvus 单次 ``query`` 操作有 16384 行的返回上限（默认配置），
@@ -343,17 +343,20 @@ class VectorStore:
         - ``query_iterator`` 自动分页，无此限制，可以遍历全部数据。
 
         使用场景：
-        - BM25 索引重建：从向量库读取全部块的文本。
-        - 索引状态重建：从元数据恢复 state 文件。
+        - BM25 索引重建：从向量库读取全部块（用它算索引文本）。
+        - 索引状态重建：从元数据恢复 state 文件（用块路径与 mtime 做增量比对）。
 
         Returns:
-            list[tuple[str, str, str, float]]: 列表，每项为 (id, text, path, mtime)。
+            list[tuple[Chunk, float]]: 列表，每项为 (块, 文档修改时间)。
+            **修改时间必须保持浮点数**——消费方按数值比对 mtime，改成对象会让
+            它永远判定「已变更」，静默丢掉增量能力。
         """
-        out: list[tuple[str, str, str, float]] = []
+        out: list[tuple[Chunk, float]] = []
         it = self._client.query_iterator(
             collection_name=self._collection,
             filter="", # 空过滤 = 全量
-            output_fields=["text", "path", "mtime"],
+            output_fields=["text", "path", "title", "heading", "caption",
+                           "chunk_type", "page_num_int", "position_int", "mtime"],
             batch_size=self._batch_size,
             timeout=self._read_timeout,
         )
@@ -367,7 +370,7 @@ class VectorStore:
                 if not batch:
                     break
                 for row in batch:
-                    out.append((row["id"], row["text"], row["path"], float(row["mtime"])))
+                    out.append((_to_chunk(row), float(row["mtime"])))
         finally:
             # 分页中途抛非 StopIteration 异常也要关闭迭代器，避免游标泄漏
             it.close()
