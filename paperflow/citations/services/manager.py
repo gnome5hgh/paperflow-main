@@ -28,20 +28,18 @@ class CitationManager:
         _lock: threading.RLock，保证「刷新索引 → 查 corpus → 查 bib」为原子快照
     """
 
-    def __init__(self, config, rag_service=None, title_extractor=None):
+    def __init__(self, config, meta_extractor=None):
         """构造轻量（不读 bib、不建索引）；重状态首次使用时惰性加载。
 
         Args:
             config: 应用配置对象，需包含 workspace、citations_bib_path 等。
-            rag_service: 可注入的 RAG 服务实例（测试用），缺省惰性获取。
-            title_extractor: 可注入的标题提取器（测试用），缺省惰性获取。
+            meta_extractor: 可注入的首页书目提取器（测试用），缺省惰性获取。
         """
         self.config = config
         # bib 路径：优先使用 config 指定，否则 fallback 到 workspace/citations/references.bib
         self.bib_path = Path(config.corpus.citations_bib_path or
                              Path(config.runtime.workspace) / "citations" / "references.bib")
-        self._index = CorpusIndex(config, rag_service=rag_service,
-                                  title_extractor=title_extractor)
+        self._index = CorpusIndex(config, meta_extractor=meta_extractor)
         self._lock = threading.RLock()
 
     # —— 解析 ——
@@ -139,7 +137,7 @@ class CitationManager:
             若 PDF 元数据缺少作者或年份，则**拒绝入库**并返回错误提示。
             这是为了防止写出 `@article{key, title={…}}` 这种空壳条目——
             缺少作者/年份的条目无法支撑任何有意义的引用格式（author-year 或 gbt7714 都依赖它们）。
-            用户应启动 GROBID 服务或手动补充元数据后再试。
+            用户可用 read_pdf 读出首页的作者/年份，或手动补充元数据后再试。
 
         Returns:
             dict 包含以下字段：
@@ -160,7 +158,7 @@ class CitationManager:
                 # 给出三条明确出路，任选其一，不允许带着「已确认」的假引用继续
                 return {"key": None, "created": False,
                         "note": "PDF 元数据不足（缺作者/年份），拒绝入库。三选一："
-                                "① 启动 GROBID 后重试（解析作者/年份）；"
+                                "① 用 read_pdf 读 PDF 首页自己读出作者与年份，再重试；"
                                 "② 用 add_external 手动提供作者/年份入库（需用户确认字段）；"
                                 "③ 笔记中该引用降级标注为 [⚠未入库]，不得写「经 lookup_citation 确认」。"}
             # 标题去重：若已存在同标题条目，直接返回已有 key（不重复追加）
@@ -236,7 +234,7 @@ class CitationManager:
         枚举源是语料标题索引（CorpusIndex，论文中心快照）：只对带 pdf_path
         的记录入库，纯笔记记录天然跳过。已在库的条目按标题去重跳过，因此
         重复调用安全；缺作者/年份的记录沿用宁缺毋滥防御拒绝入库，在
-        rejected 中逐条列出（启动 GROBID 后重跑即可补齐）。
+        rejected 中逐条列出（补齐作者/年份后重跑即可）。
 
         Returns:
             dict: total=带 PDF 的记录数；added=新入库 key；skipped=已在库 key；
@@ -292,7 +290,7 @@ class CitationManager:
 
         设计原则（真相源稳定）：
             references.bib 是权威真相源，绝不重写。但 PDF 文件可能在入库后更新了元数据
-            （如 GROBID 重新解析后获得了更全的期刊/页码信息）。
+            （如首页书目重新提取后获得了更全的期刊信息）。
             `_merged_entry` 在不触碰 bib 文件的前提下，将 bib 中缺失的字段
             （author/journal/year/volume/pages）用 PDF 最新元数据补齐，供渲染使用。
 

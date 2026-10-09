@@ -410,7 +410,7 @@ class GrobidConfig:
         timeout: float，请求超时（秒）
     """
 
-    #: GROBID 服务地址——RAG PDF 解析与 TitleExtractor 标题提取共用同一端点
+    #: GROBID 服务地址（待退役：解析已换本地实现，仅引用域旧路径还引用它）
     endpoint: str = "http://localhost:8070"
 
     #: 请求超时（秒），覆盖健康检查与全文解析请求。

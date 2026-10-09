@@ -32,8 +32,9 @@ allowed_spawns: []
 2. **external 条目字段必须经用户确认**:add_citation 传 external=true 时,
    title/authors/year 必须是用户提供或经用户确认的真实信息,不得编造。
 3. **如实报告**:sync_citations 的 rejected 明细要逐条转述——先说明被拒的是哪几篇、
-   为什么(缺元数据 / 解析失败 / 不在语料),再给建议(缺元数据→可用 read_pdf 读首页
-   补标题/作者后重试,仍失败才建议启动 GROBID 重跑),不得把拒绝说成成功。
+   为什么(缺元数据 / 解析失败 / 不在语料),再给建议(缺元数据→用 extract_title 补标题、
+   read_pdf 读首页补作者年份后重试;仍失败就让用户提供字段走 add_external),
+   不得把拒绝说成成功。
 
 ## 动作面
 

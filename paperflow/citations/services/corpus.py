@@ -1,22 +1,16 @@
-"""语料标题索引：note H1 + PDF 解析标题 → 论文中心索引（易变投影）。
+"""语料标题索引：PDF 解析标题 → 论文中心索引（易变投影）。
 
 corpus_titles.json 是「语料里有哪些论文」的快照，供引用解析做全标题精确
-匹配。标题提取**复用现有代码**（ParsedDoc.title / TitleExtractor 5 级链），
-不新写提取逻辑。索引按 (path, mtime_ns) 增量重建：只对新增/变更文件重提
-标题，删除的文件从索引移除。索引是易变投影——bib 才是稳定真相源。
+匹配。标题与书目都来自既有实现：标题走 RAG 解析器的轻路径标题出口（元数据 +
+首页版面，判据宁空勿错），书目走首页书目提取器（一次 LLM 调用）。索引按
+(path, mtime_ns) 增量重建：只对新增/变更文件重提标题，删除的文件从索引移除。
+索引是易变投影——bib 才是稳定真相源。
 """
 from __future__ import annotations
 
 import json
 import threading
 from pathlib import Path
-
-from paperflow.core.memory.constants import TitleSource
-
-#: TitleExtractor 回退层级中可信任的来源：只有这些层级产出的标题可入索引/建条目。
-#: pymupdf 字体启发式会把期刊名/页眉/arXiv 头当标题（GROBID 不可用时会污染 corpus
-#: 与 bib），宁缺毋滥——提取不可靠就返回空，让调用方不索引/不建条目。
-_TRUSTED_TITLE_SOURCES = frozenset({TitleSource.GROBID, TitleSource.PDFTITLE})
 
 
 class CorpusIndex:
@@ -26,9 +20,8 @@ class CorpusIndex:
     解析出书目元数据时存在；笔记只贡献 note_path + title。
 
     Attributes:
-        config: PaperFlowConfig，语料目录与 GROBID 端点来源
-        _rag_service: RAGService | None，惰性获取（提供 parse_pdf_cached）
-        _title_extractor: TitleExtractor | None，惰性获取（PDF 无标题时的 5 级链兜底）
+        config: PaperFlowConfig，语料目录来源
+        _meta: PaperMetaExtractor | None，惰性获取（首页书目提取）
         _lock: threading.RLock，保护索引重建与查询
         _cache_path: Path，语料标题缓存文件（workspace/citations/corpus_titles.json）
         _records: dict[str, dict]，归一化标题 → 论文记录
@@ -36,49 +29,34 @@ class CorpusIndex:
         _loaded: bool，是否已尝试读回磁盘缓存（首次 refresh 读一次，之后不再读）
     """
 
-    def __init__(self, config, rag_service=None, title_extractor=None):
-        """注入 config；rag_service/title_extractor 可注入桩（测试），缺省惰性获取。
-
-        rag_service 提供 parse_pdf_cached（复用 GROBID 解析）；
-        title_extractor 是 TitleExtractor（PDF 解析无标题时的 5 级链兜底）。
+    def __init__(self, config, meta_extractor=None):
+        """注入 config；书目提取器可注入桩（测试），缺省惰性获取。
 
         Args:
             config: PaperFlowConfig，配置来源
-            rag_service: RAGService | None，可注入桩（缺省惰性获取）
-            title_extractor: TitleExtractor | None，可注入桩（缺省惰性获取）
+            meta_extractor: PaperMetaExtractor | None，可注入桩（缺省惰性获取）
         """
         self.config = config
-        self._rag_service = rag_service
-        self._title_extractor = title_extractor
+        self._meta_extractor = meta_extractor
         self._lock = threading.RLock()
         self._cache_path = Path(config.runtime.workspace) / "citations" / "corpus_titles.json"
         self._records: dict[str, dict] = {}   # norm_title -> 论文记录
         self._mtime: dict[str, int] = {}      # path -> mtime_ns（增量判据）
         self._loaded = False                  # 磁盘缓存只读回一次
 
-    # —— 惰性依赖（RAG 式，首次访问才构造重组件）——
-    def _rag(self):
-        """惰性获取 RAG 服务实例，仅在首次调用 PDF 解析时初始化。
+    # —— 惰性依赖（首次访问才构造重组件）——
+    def _meta(self):
+        """惰性获取首页书目提取器（要动 LLM 才构造，只在真需要书目时才付这个代价）。
 
-        避免在仅使用笔记索引时加载重量级的 GROBID 客户端及相关依赖。
+        Returns:
+            PaperMetaExtractor: 书目提取器实例。
         """
-        if self._rag_service is None:
-            from paperflow.rag.services.rag_service import get_rag_service
-            self._rag_service = get_rag_service()
-        return self._rag_service
-
-    def _te(self):
-        """惰性获取 TitleExtractor 实例，作为 GROBID 解析失败时的回退。
-
-        回退链包含 pdftitle/pymupdf 等层级，但最终入库前会经 _TRUSTED_TITLE_SOURCES 过滤。
-        """
-        if self._title_extractor is None:
-            from paperflow.core.memory.services.title_extractor import TitleExtractor
-            from paperflow.rag.parsers.grobid_client import GrobidClient
-            self._title_extractor = TitleExtractor(grobid=GrobidClient(
-                self.config.rag.grobid.endpoint,
-                timeout=self.config.rag.grobid.timeout))
-        return self._title_extractor
+        if self._meta_extractor is None:
+            from paperflow.citations.parsers import PaperMetaExtractor
+            from paperflow.core.llm import LLMClient
+            self._meta_extractor = PaperMetaExtractor(
+                LLMClient(self.config.llm))
+        return self._meta_extractor
 
     @staticmethod
     def normalize(title: str) -> str:
@@ -97,8 +75,8 @@ class CorpusIndex:
     def refresh(self) -> None:
         """增量重建：扫描语料库目录，只对新增/变更文件重提标题，删除的移除。
 
-        先读回上次的磁盘缓存再扫描，否则进程每次启动都会把语料库里每一篇 PDF
-        重新解析一遍（解析走 GROBID，单篇数秒）。
+        先读回上次的磁盘缓存再扫描，否则进程每次启动都会把每一篇 PDF 重新读一遍
+        首页、并重跑一次书目提取的模型调用。
         """
         with self._lock:
             self.ensure_loaded()
@@ -224,40 +202,36 @@ class CorpusIndex:
                 del self._records[norm]
 
     def _pdf_meta(self, path: str) -> tuple[str, dict]:
-        """标题+书目：复用 GROBID 解析（ParsedDoc.title/biblio），空时回退 TitleExtractor。
+        """取一篇 PDF 的标题与书目元数据。
 
-        解析策略（可靠层级优先）：
-            1. 优先使用 RAG 服务（内部调用 GROBID）解析，获得 ParsedDoc.title 与 biblio。
-            2. 若 GROBID 返回空标题或抛出异常，则回退到 TitleExtractor（5 级链）。
-            3. **关键过滤**：TitleExtractor 的结果中，只接受 source 为 "grobid" 或 "pdftitle"
-               的层级。pymupdf 等字体启发式层级容易将期刊名、页眉、arXiv 头误识别为标题，
-               会严重污染索引与 bib，因此宁缺毋滥——不可靠来源直接返回空串。
+        **触发点必须在这里（建立语料索引时）**，不能推后到「入库登记那一刻」：
+        引用解析先算**预备 key**、入库时算**正式 key**，两者都调
+        ``gen_key(title, authors, year)`` 且都读同一份记录里的 biblio。把取数推后，
+        预备 key 会退化成短标题形态、与正式 key 对不上，产物里的 `[来源:key§节]`
+        就失效了。结果随磁盘缓存按 mtime 增量，所以只在文件新增/变更时才付这次
+        调用；冷启动成本与「整库交给外部解析服务」相比只低不高。
 
-        Returns:
-            (title, biblio)。若无法提取可靠标题，title 返回空字符串，调用方将不索引该 PDF。
+        两路都自带降级：标题取不到、书目取不到都不抛——标题为空即不索引该 PDF
+        （调用方的既有分支），书目为空则退化为缺字段的引用条目。
 
         Args:
-            path: str，PDF 文件路径
+            path: str，PDF 文件路径。
+
+        Returns:
+            tuple[str, dict]: (标题, 书目字段字典)。标题拿不准时为空串。
         """
-        # 1. 首选 GROBID 解析（RAG 服务内部有缓存）
         try:
-            doc = self._rag().parse_pdf_cached(path)
-            if doc.title:
-                return doc.title, doc.biblio
+            from paperflow.rag.parsers.pdf_extract import pdf_title
+            title = pdf_title(path)
         except Exception:
-            pass
-
-        # 2. 回退到 TitleExtractor，但仅信任指定层级
+            # 读不动（损坏/加密/不存在）等同「没标题」——不索引该 PDF
+            title = ""
         try:
-            r = self._te().extract(pdf_path=path)
-            # TitleExtractor 回退只接受 grobid/pdftitle 层级（见 _TRUSTED_TITLE_SOURCES）
-            if r.title and r.source in _TRUSTED_TITLE_SOURCES:
-                return r.title, {}
+            biblio = self._meta().from_pdf(path).as_dict()
         except Exception:
-            pass
-
-        # 3. 不可靠或提取失败：返回空标题，调用方跳过索引
-        return "", {}
+            # 书目是加分项，取不到不影响标题与索引
+            biblio = {}
+        return title, biblio
 
     @staticmethod
     def _note_title(path: str) -> str:
