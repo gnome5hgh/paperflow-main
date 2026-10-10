@@ -154,7 +154,7 @@ class MemFS:
             # Memory Filesystem（自动生成，请勿编辑）
 
             - `system/assistant.md` — 助手工作方式记忆
-            - `unread_list.md` — 待读文献列表
+            - `unread_list.md` — 未读清单
             ...
 
         用途：供 LLM 通过读取该索引文件了解有哪些记忆块及其描述，便于按需读取。

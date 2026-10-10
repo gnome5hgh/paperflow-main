@@ -24,18 +24,51 @@ logger = logging.getLogger(__name__)
 __all__ = ["MemoryConsolidator", "MemoryEditBatch", "MemoryEdit",
            "MemoryEditValidationError"]
 
-#: 可写块的 label 形态：两个核心块精确枚举，三类前缀家族（前缀之后是日期分册，
-#: 也可能是早期按主题命名的块）。用来挑出「旧值要喂进 prompt」的块。
-_WRITABLE_LABELS = frozenset({"profile", "assistant"})
-_WRITABLE_PREFIXES = ("feedback_", "project_", "reference_")
-
-#: 日期分册的块类型（label = <类型>_<日期>，写满续号 <类型>_<日期>_2）。
+#: 日期分册的块类型（label = `<类型>_<YYYY-MM-DD>`，写满续号 `<类型>_<YYYY-MM-DD>_2`）。
 #: 核心块不参与分册——它们靠整块重写收敛。
 _PREFIX_TARGETS = ("feedback", "project", "reference")
+
+#: 可写块的 label 形态：两个核心块精确枚举 + 三类前缀家族（前缀之后是日期分册，
+#: 也可能是早期按主题命名的块）。用来挑出「旧值要喂进 prompt」的块。
+_WRITABLE_LABELS = frozenset({"profile", "assistant"})
+_WRITABLE_PREFIXES = tuple(f"{target}_" for target in _PREFIX_TARGETS)
 
 #: 连续失败多少次后强制推进游标：同一批坏编辑若反复失败，每个 REPL 轮次都会
 #: 重新尝试，不推进就把管道卡死。推进即放弃这批消息（已如实记日志）。
 _MAX_CONSECUTIVE_FAILURES = 3
+
+
+def _pick_date(label: str) -> str:
+    """取 label 尾部的 YYYY-MM-DD（只校形状，不校日历合法性）。
+
+    Args:
+        label: str，分册 label（可带类型前缀与续号）。
+
+    Returns:
+        str，日期串；尾部不是日期形状时为空串。
+    """
+    tail = label[-10:]
+    shaped = (len(tail) == 10 and tail[4] == "-" and tail[7] == "-"
+              and tail[:4].isdigit() and tail[5:7].isdigit() and tail[8:].isdigit())
+    return tail if shaped else ""
+
+
+def _shard_sort_key(label: str) -> tuple[str, int]:
+    """分册排序键：(日期, 续号)。
+
+    跨日期找人时用它取「最近的那一条」：分册 label 是 `<类型>_<日期>`，写满续号后是
+    `<类型>_<日期>_<n>`；早期按主题命名的块抽不出日期，记空串（只影响尝试顺序）。
+
+    Args:
+        label: str，分册 label。
+
+    Returns:
+        tuple[str, int]，可直接比较的排序键。
+    """
+    head, _, tail = label.rpartition("_")
+    if head and tail.isdigit():
+        return (_pick_date(head), int(tail))
+    return (_pick_date(label), 0)
 
 
 def _today() -> str:
@@ -44,7 +77,7 @@ def _today() -> str:
     由代码拼装而非让模型给：模型写错日期会让内容散进错误的分册。
 
     Returns:
-        str，形如 "2026-10-10"。
+        str，形如 YYYY-MM-DD。
     """
     return datetime.now().strftime("%Y-%m-%d")
 
@@ -73,14 +106,14 @@ class MemoryEdit(BaseModel):
     Attributes:
         target: Literal["profile","assistant","feedback","project","reference"]，目标类型
         action: Literal["add","supersede","drop","rewrite"]，动作（rewrite 仅限核心块）
-        content: str，新行内容（add/supersede）或整块新内容（rewrite），上限 8000 字符
-        match: str，行首前缀；supersede/drop 据此命中旧行，上限 500 字符
+        content: str，新行内容（add/supersede）或整块新内容（rewrite），上限取块的字符上限
+        match: str，行首前缀；supersede/drop 据此命中旧行，上限 200 字符
     """
 
     target: Literal["profile", "assistant", "feedback", "project", "reference"]
     action: Literal["add", "supersede", "drop", "rewrite"]
-    content: str = Field(default="", max_length=8000)
-    match: str = Field(default="", max_length=500)
+    content: str = Field(default="", max_length=2000)
+    match: str = Field(default="", max_length=200)
 
 
 class MemoryEditBatch(BaseModel):
@@ -171,13 +204,13 @@ class MemoryConsolidator:
         1. **全量预验证**（_validate_edit）：任一编辑非法则**一条都不写**，并把
            MemoryEditValidationError 上抛给调用方（原子性）。
         2. **逐条应用**（_apply_edit）：单条失败**只跳过该条**、写日志后继续——
-           一条坏编辑不该带走同批其余编辑。整批一条都没成功才算一次失败。
+           一条坏编辑不该带走同批其余编辑。
         3. **结算**（_cleanup_empty_shards）：清掉空分册；失败只记日志，不影响已落地的编辑。
 
-        任何失败都留日志，绝不静默。连续失败达 _MAX_CONSECUTIVE_FAILURES 次则强制
-        推进游标（防死锁：同一批坏编辑若反复失败，每个 REPL 轮次都会重试）。
+        任何失败都写日志，绝不静默。游标是否推进取决于「这批消息有没有被消费」：抽取阶段
+        就失败时一条编辑都没落盘，保留游标重试（连败达 _MAX_CONSECUTIVE_FAILURES 次才
+        强制推进防死锁）；应用阶段失败时已有编辑落盘，照常推进——重放会产生重复写入。
         """
-        # 获取该 agent 当前所有消息
         new_msgs = self.message_manager.get_messages_by_agent_id(
             self.agent_state.agent_id)
 
@@ -189,10 +222,8 @@ class MemoryConsolidator:
             self._cursor = self.message_manager.size(self.agent_state.agent_id)
             return
 
-        # 构建提示词
         prompt = self._build_prompt(new_msgs)
         try:
-            # 调用 LLM 获取编辑指令批次
             batch = await self.structured.extract(
                 prompt=prompt, schema=MemoryEditBatch,
                 fallback=lambda: MemoryEditBatch(edits=[]))
@@ -231,15 +262,20 @@ class MemoryConsolidator:
             self.block_manager._commit(f"consolidation: {len(new_msgs)} 条消息")
 
         if failures:
-            self._record_failure("；".join(failures))
-            return
+            # 应用期部分失败：这批消息已被消费（成功的那几条已落盘），**不再重放**——
+            # 重放同一批编辑会在 add 上产生重复行。失败如实写日志，游标照常推进。
+            logger.warning("整合部分失败，跳过 %d 条：%s", len(failures), "；".join(failures))
 
-        # 全部成功：推进游标到当前总行数，并重置失败计数
+        # 推进游标到当前总行数，并重置失败计数
         self._cursor = self.message_manager.size(self.agent_state.agent_id)
         self._failures = 0
 
     def _record_failure(self, reason: str) -> None:
-        """记一次整合失败：日志 + 连败计数；达阈值强制推进游标（防死锁）。
+        """记一次**未落盘任何编辑**的整批失败：日志 + 连败计数；达阈值强制推进游标。
+
+        只在「抽取阶段就失败」时调用——此时一条编辑都没写进块，重试是安全的，所以保留
+        游标让下一轮重试，连败达阈值才放弃（防死锁：同一批坏编辑反复失败会把管道卡住）。
+        应用阶段的失败不走这里：那批消息已经消费掉，重放会产生重复写入。
 
         Args:
             reason: str，失败原因（写进日志，便于定位是模型输出还是落盘环节的问题）。
@@ -337,7 +373,7 @@ class MemoryConsolidator:
             target: str，目标类型（profile/assistant/feedback/project/reference）。
 
         Returns:
-            str，块 label，形如 "feedback_2026-10-10" 或 "profile"。
+            str，块 label，形如 `<类型>_<YYYY-MM-DD>` 或 `profile`。
         """
         if target in _PREFIX_TARGETS:
             return f"{target}_{_today()}"
@@ -439,7 +475,11 @@ class MemoryConsolidator:
         return _mutate
 
     def _existing_shard_labels(self, target: str) -> list[str]:
-        """该类型当前**已存在**的分册 label（主册在前，续号按数字升序）。
+        """该类型当前**已存在**的全部分册 label（最近的日期在前）。
+
+        supersede/drop 必须在**整个家族**里找人，不能只找当天的分册：条目按日期分册，
+        同一主题的旧条目散在往日的分册里，而 prompt 把往日分册也喂给了模型——只找当天
+        会让「看得到、改不到」的旧条目永远留在原处，矛盾越攒越多、旧分册也永远不空。
 
         Args:
             target: str，目标类型。
@@ -447,18 +487,13 @@ class MemoryConsolidator:
         Returns:
             list[str]，label 列表；核心块返回自身（不存在则为空）。
         """
-        base = self._label_for(target)
         if target not in _PREFIX_TARGETS:
+            base = self._label_for(target)
             return [base] if self.block_manager.get_block_by_label(base) else []
+        prefix = f"{target}_"
         found = [b.label for b in self.block_manager.list_blocks()
-                 if b.label and (b.label == base or b.label.startswith(base + "_"))]
-
-        def _key(label: str) -> int:
-            """分册排序键：主册 0，续号取其数字。"""
-            suffix = label[len(base):]          # "" 或 "_2"
-            return int(suffix[1:]) if suffix else 0
-
-        return sorted(found, key=_key)
+                 if b.label and b.label.startswith(prefix)]
+        return sorted(found, key=_shard_sort_key, reverse=True)
 
     def _cleanup_empty_shards(self) -> list[str]:
         """删掉已经空掉的条目分册（取代/删除留下的空壳）。

@@ -6,7 +6,6 @@
 
 from .constants import (
     BASE_MEMORY_TOOLS,
-    CONSOLIDATION_EDIT_TOOLS,
     DEFAULT_ASSISTANT,
     DEFAULT_PROFILE,
 )
@@ -15,7 +14,6 @@ from .enums import MessageRole
 __all__ = [
     "MessageRole",
     "BASE_MEMORY_TOOLS",
-    "CONSOLIDATION_EDIT_TOOLS",
     "DEFAULT_PROFILE",
     "DEFAULT_ASSISTANT",
 ]
