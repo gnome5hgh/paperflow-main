@@ -15,6 +15,10 @@ dependencies = [
     "numpy>=1.24",
     "httpx>=0.27",
     "pymupdf>=1.24",
+    # 书目提取：pdf2bib 自己是 MIT，但它依赖的 pdf2doi 会**硬导入** GPL-3.0 的
+    # pdftitle（该库只在 Google 搜索兜底里用，本项目关掉了 websearch，因此从不被
+    # 调用）。仓库不含 GPL 代码、只声明依赖，GPL 义务在分发组合作品时才产生；
+    # 若要彻底避开，替代方案与实测代价见 ADR 0008 的「标题与书目」一节。
     "pdf2bib>=1.2",
     "rank_bm25>=0.2.2",
     "pymilvus[milvus-lite]>=2.4.2",

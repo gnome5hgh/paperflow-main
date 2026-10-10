@@ -1,27 +1,49 @@
-"""书目元数据提取：用 pdf2bib 定位标识符并取回作者 / 年份 / 期刊。
+"""书目元数据提取：先经 pdf2bib 取权威书目，取不到再用模型读首页兜底。
 
 **只做这一件事**——标题不从这里取（标题是解析器的一层产出，见
 `rag/parsers/pdf_extract.pdf_title`）。书目元数据只有引用域消费（语料索引是唯一调用点），
 所以代码归引用域。
 
-**取数方式**：交给 pdf2bib——它先在本地从 PDF 元数据、文件名、正文里找出 DOI 或
-arXiv 标识符，再拿标识符去公开档案（Crossref / arXiv）换回权威书目。相比自己读首页，
-它的作者、年份、期刊来自登记库而非版面猜测，拿不到标识符时如实返回空，不编造。
-代价是这里需要联网：联网失败、无标识符、文件读不动，一律降级为空书目，不抛。
+**两级取数**：
+1. **pdf2bib（首选）**：先在本地从 PDF 元数据、文件名、正文里找出 DOI 或 arXiv
+   标识符，再拿标识符去公开档案换回作者 / 年份 / 期刊。数据来自出版方登记，最可信。
+   需要联网；找不到标识符、联网失败或取数超时都会落到第二级。
+2. **模型读首页（兜底）**：pdf2bib 拿不到时，把首页文本交给 `StructuredOutput` 让
+   模型读出三项。模型可能读不到、也可能读错，所以只作兜底——它拿不到就如实留空。
+   未配置 LLM 时这一级直接不可用（返回空），不影响第一级。
 
 **副作用已在配置里关掉**：pdf2bib 默认会把找到的标识符写回 PDF 元数据，并打印逐步骤
 日志。这里在首次调用前统一关掉写回与日志，绝不改动语料文件。
 """
+import asyncio
 import logging
 import threading
 from dataclasses import dataclass
 
+from pydantic import BaseModel
+
 logger = logging.getLogger(__name__)
 
-#: 单篇 PDF 的取数超时（秒）。pdf2bib 内部的 HTTP 请求没有超时设置，网络半开
+#: pdf2bib 单篇取数的超时（秒）。pdf2bib 内部的 HTTP 请求没有超时设置，网络半开
 #: （能连上但不响应）时会一直挂住；语料刷新持着引用管理的锁，挂住会拖垮整个
 #: 引用域，所以这里兜一个上限，超时按「取不到」降级。
 _CALL_TIMEOUT_SECONDS = 60.0
+
+#: 送进模型的首页文本上限（字符）——只是防畸形文件的兜底，**不是**「书目都在最上面
+#: 一段」的假设。首页文本的顺序沿用解析器的版面块顺序（双栏不按坐标重排），有的 PDF
+#: 会把正文块排在页眉之前，标题/作者/刊名因此落在很后面（实测一篇综述里署名在 3400
+#: 字处）；按下限截断会把署名整段切掉、这一级就静默失效。所以上限给得足够宽松。
+FIRST_PAGE_CHARS = 20000
+
+_PROMPT = (
+    "从下面的论文首页文本里读出版权信息中的书目元数据。只读文本里真的写了的内容，"
+    "任何一项读不到就留空字符串——**不要推测、不要用常识补全**，宁可空着。\n"
+    "输出 JSON：{{authors, year, journal}}。\n"
+    "authors 用 BibTeX 形式给作者（每位写成「姓, 名」，多位之间用 and 连接，"
+    "例如 `Zhang, Alice and Li, Bob`，不要用逗号分隔全名）；year 给四位年份；"
+    "journal 给期刊或会议名。\n"
+    "首页文本：\n{text}"
+)
 
 _config_lock = threading.Lock()
 _configured = False
@@ -175,6 +197,20 @@ def _to_bibmeta(result) -> "BibMeta":
     )
 
 
+class PaperMeta(BaseModel):
+    """首页兜底提取的结构化输出模型。
+
+    Attributes:
+        authors: 作者串（BibTeX 形式「姓, 名」，多位用 and 连接）；读不到为空串。
+        year: 四位年份字符串；读不到为空串。
+        journal: 期刊或会议名；读不到为空串。
+    """
+
+    authors: str = ""
+    year: str = ""
+    journal: str = ""
+
+
 @dataclass(frozen=True)
 class BibMeta:
     """取到的书目元数据。
@@ -200,29 +236,47 @@ class BibMeta:
 
 
 class PaperMetaExtractor:
-    """PDF → 书目元数据（pdf2bib 取标识符再联网取权威书目，失败即返回空）。
+    """PDF → 书目元数据（pdf2bib 取权威书目，取不到再用模型读首页兜底）。
 
     Attributes:
-        _lookup: 取数函数（默认走 pdf2bib；测试可注入桩，避免联网）
-        _timeout: 单次取数超时（秒）
+        _llm: LLMClient | None，兜底那一级的文本模型客户端；None 且未注入
+            ``structured`` 时兜底不可用（只走 pdf2bib）
+        _lookup: pdf2bib 取数函数（测试可注入桩，避免联网）
+        _structured: StructuredOutput | None，结构化输出通道（惰性构造，测试可注入）
+        _timeout: pdf2bib 单次取数超时（秒）
     """
 
-    def __init__(self, lookup=None, timeout: float = _CALL_TIMEOUT_SECONDS):
-        """绑定取数函数；取数实现可注入（测试传桩，避免真实联网）。
+    def __init__(self, llm=None, lookup=None, structured=None,
+                 timeout: float = _CALL_TIMEOUT_SECONDS):
+        """绑定两级取数依赖；两级的实现都可注入（测试传桩，避免真实联网/调模型）。
 
         Args:
+            llm: LLMClient | None，首页兜底用的文本模型；None 表示不配兜底。
             lookup: 可调用 ``(pdf_path) -> dict | None``；None 时用 pdf2bib。
-            timeout: 单次取数超时（秒）。
+            structured: StructuredOutput | None，兜底的结构化输出通道（测试可注入）。
+            timeout: pdf2bib 单次取数超时（秒）。
         """
+        self._llm = llm
         self._lookup = lookup
+        self._structured = structured
         self._timeout = timeout
 
-    def from_pdf(self, pdf_path: str) -> BibMeta:
-        """取一篇 PDF 的书目元数据；任何失败都返回空书目且不抛。
+    def _ensure_structured(self):
+        """惰性构造兜底用的结构化输出通道（避免构造期就拉起 LLM 依赖）。
 
-        降级语义：依赖缺失、标识符找不到、联网失败、文件读不动、取数超时——一律
-        返回空 `BibMeta`。调用方据此退化为「缺书目的引用」并如实上报，绝不因书目
-        取不到而中断引用流程。
+        Returns:
+            StructuredOutput: 结构化输出通道。
+        """
+        if self._structured is None:
+            from paperflow.core.llm import StructuredOutput
+            self._structured = StructuredOutput(self._llm)
+        return self._structured
+
+    def from_pdf(self, pdf_path: str) -> BibMeta:
+        """取一篇 PDF 的书目元数据；两级都失败就返回空书目且不抛。
+
+        先走标识符取数，拿到任意一项即返回；取不到（无标识符 / 联网失败 / 超时 /
+        文件读不动）才落到首页兜底。两级都自带降级，绝不因书目取不到而中断引用流程。
 
         Args:
             pdf_path: PDF 文件路径。
@@ -230,10 +284,56 @@ class PaperMetaExtractor:
         Returns:
             BibMeta: 取到的书目元数据；拿不到时各项为空串。
         """
+        meta = self._via_identifier(pdf_path)
+        if meta.as_dict():
+            return meta
+        return self._via_first_page(pdf_path)
+
+    def _via_identifier(self, pdf_path: str) -> BibMeta:
+        """第一级：pdf2bib 取权威书目；失败返回空（由调用方决定是否兜底）。
+
+        Args:
+            pdf_path: PDF 文件路径。
+
+        Returns:
+            BibMeta: 取到的书目；失败或无标识符时各项为空。
+        """
         fn = self._lookup or _lookup
         try:
             result = _run_with_timeout(lambda: fn(pdf_path), self._timeout)
         except Exception as e:
-            logger.warning("书目提取失败，按空处理（%s）：%s", pdf_path, e)
+            logger.warning("标识符取数失败，转首页兜底（%s）：%s", pdf_path, e)
             return BibMeta()
         return _to_bibmeta(result)
+
+    def _via_first_page(self, pdf_path: str) -> BibMeta:
+        """第二级：模型读首页取书目；未配模型或失败返回空。
+
+        Args:
+            pdf_path: PDF 文件路径。
+
+        Returns:
+            BibMeta: 模型读到的书目；读不到时各项为空。
+        """
+        if self._llm is None and self._structured is None:
+            # 没配模型 = 这一级不可用，不是错误（第一级失败就如实为空）
+            return BibMeta()
+        try:
+            from paperflow.rag.parsers.pdf_extract import first_page_text
+            text = first_page_text(pdf_path)[:FIRST_PAGE_CHARS]
+        except Exception as e:
+            logger.warning("读 PDF 首页失败，书目留空：%s", e)
+            return BibMeta()
+        if not text.strip():
+            return BibMeta()
+        try:
+            out = asyncio.run(self._ensure_structured().extract(
+                _PROMPT.format(text=text), PaperMeta))
+        except Exception as e:
+            logger.warning("首页书目兜底提取失败，书目留空：%s", e)
+            return BibMeta()
+        return BibMeta(
+            authors=(out.authors or "").strip(),
+            year=(out.year or "").strip(),
+            journal=(out.journal or "").strip(),
+        )

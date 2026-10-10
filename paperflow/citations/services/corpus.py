@@ -11,8 +11,11 @@ corpus_titles.json 是「语料里有哪些论文」的快照，供引用解析�
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class CorpusIndex:
@@ -49,12 +52,22 @@ class CorpusIndex:
     def _meta(self):
         """惰性获取书目提取器（首次用才构造，避免无谓拉起取数依赖）。
 
+        首选 pdf2bib 取数（不需要模型）；模型只在 pdf2bib 取不到时作首页兜底，
+        所以这里顺手把 LLM 客户端备好。LLM 未配置（无 api_key）时 LLMClient 构造即
+        抛——这不该拖垮整条取数链，捕获后按「无兜底」继续（pdf2bib 那一级照常工作）。
+
         Returns:
             PaperMetaExtractor: 书目提取器实例。
         """
         if self._meta_extractor is None:
             from paperflow.citations.parsers import PaperMetaExtractor
-            self._meta_extractor = PaperMetaExtractor()
+            llm = None
+            try:
+                from paperflow.core.llm import LLMClient
+                llm = LLMClient(self.config.llm)
+            except Exception as e:
+                logger.warning("LLM 未配置，书目提取无首页兜底：%s", e)
+            self._meta_extractor = PaperMetaExtractor(llm=llm)
         return self._meta_extractor
 
     @staticmethod
