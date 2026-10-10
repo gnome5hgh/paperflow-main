@@ -356,6 +356,49 @@ class RagIndexer:
                 chunk.image_key = key
 
 
+    def _drop_media_images(self, chunk_ids: list[str]) -> None:
+        """把给定块的图表原图从对象存储里删掉。
+
+        键取块行上记的 `image_key`，不靠「按块 id 猜命名」——命名规则将来变了也不会删错。
+        因此**必须在块行被删除之前调用**。开关关掉 / 查到失败都只告警。
+
+        Args:
+            chunk_ids: 要清理的块 id 列表。
+        """
+        store = self.service.image_store
+        if not chunk_ids or not getattr(store, "enabled", False):
+            return
+        try:
+            rows = self.service._ensure_vector_store().fetch_by_ids(chunk_ids)
+        except Exception as e:
+            logger.warning("清理图表原图时查不到旧块，跳过删图：%s", e)
+            return
+        for key in [c.image_key for c in rows if c.image_key]:
+            store.remove(key)
+
+    def _sweep_orphan_images(self) -> int:
+        """删掉「桶里有、库里已无对应块」的孤儿对象（全量收敛用）。
+
+        Returns:
+            int: 清掉的对象数；拿不到清单时返回 0（宁可少删，不可误删）。
+        """
+        store = self.service.image_store
+        if not getattr(store, "enabled", False):
+            return 0
+        keys = set(store.list_keys())
+        if not keys:
+            return 0
+        try:
+            live = {c.image_key for c, _mtime in
+                    self.service._ensure_vector_store().all_documents() if c.image_key}
+        except Exception as e:
+            logger.warning("全量收敛取不到库内对象键，跳过孤儿清理：%s", e)
+            return 0
+        orphans = keys - live
+        for key in orphans:
+            store.remove(key)
+        return len(orphans)
+
     def _embed_chunks(self, chunks: list[Chunk]):
         """把一批块编码成向量（供写入向量库）。
 
@@ -436,7 +479,9 @@ class RagIndexer:
         bm25 = self.service._ensure_bm25()
 
         # 2. 清除该文档的旧索引（定点查询替代全表扫描）。存储键与块 id 都用绝对路径。
+        #    图的删除必须在块行被删掉**之前**做——对象键记在块行上，行没了就查不到键了。
         old_ids = store.doc_chunk_ids(key)
+        self._drop_media_images(old_ids)
         for did in old_ids:
             bm25.remove_document(did)
         store.delete_doc(key)
@@ -557,6 +602,7 @@ class RagIndexer:
                 continue
             # 定点查询该文档的所有块 ID（替代全表扫描后按路径过滤）
             rm_ids = store.doc_chunk_ids(abs_path)
+            self._drop_media_images(rm_ids)
             for did in rm_ids:
                 self.service._ensure_bm25().remove_document(did)
             store.delete_doc(abs_path)
@@ -571,13 +617,18 @@ class RagIndexer:
         # 8. 保存新的状态文件（_save_state 自动带当前配方哈希）。
         self._save_state(new_state)
 
+        # 9. 收敛孤儿图表原图：扫描期间删掉的文档、配方重置丢弃的旧块，都可能留下没有
+        #    块指向的对象。放在最后做——此时库内块集合已是最终状态。
+        images_swept = self._sweep_orphan_images()
+
         # bm25_docs 取扫描结束后的实际条数：重建在扫描前用旧库内容完成，
         # 变更文档是重建之后才增量写入 BM25 的，故不能拿重建输入的长度充当
         # （首次扫描时旧库为空，那样会恒为 0）。
         return IndexRunOutcome(changed=len(changed), removed=removed_count,
                                chunks=total_chunks,
                                bm25_docs=self.service._ensure_bm25().count(),
-                               recipe_reset=recipe_reset)
+                               recipe_reset=recipe_reset,
+                               images_swept=images_swept)
 
     def status(self) -> IndexStatus:
         """体检：把状态文件、向量库、关键词索引与语料根对照一遍（只读）。

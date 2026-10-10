@@ -68,6 +68,14 @@ class ImageStore(Protocol):
         """
         ...
 
+    def list_keys(self) -> list[str]:
+        """列出桶里全部对象键（供全量收敛找出孤儿对象）。
+
+        Returns:
+            list[str]: 对象键列表；存储不可用时为空列表。
+        """
+        ...
+
 
 class NullImageStore:
     """不存图的空实现（`rag.store_images` 关掉时用）。"""
@@ -86,6 +94,10 @@ class NullImageStore:
     def remove(self, key: str) -> None:
         """没有对象可删。"""
         return
+
+    def list_keys(self) -> list[str]:
+        """空实现：桶里什么都没有。"""
+        return []
 
 
 class MinioImageStore:
@@ -211,6 +223,23 @@ class MinioImageStore:
             client.remove_object(self._config.bucket, key)
         except Exception as e:
             logger.warning("图表原图删除失败（%s）：%s", key, e)
+
+    def list_keys(self) -> list[str]:
+        """列出桶里全部对象键。
+
+        Returns:
+            list[str]: 对象键列表；存储不可用或列举失败时为空列表（调用方据此跳过收敛，
+            不会因为拿不到清单就误删）。
+        """
+        client = self._ensure_client()
+        if client is None:
+            return []
+        try:
+            return [obj.object_name for obj in
+                    client.list_objects(self._config.bucket, recursive=True)]
+        except Exception as e:
+            logger.warning("图表原图列举失败：%s", e)
+            return []
 
 
 def make_image_store(config) -> ImageStore:
