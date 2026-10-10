@@ -56,6 +56,7 @@ class RAGService:
         self._indexer = None           # 索引器视图 (RagIndexer)
         self._retriever = None         # 检索器视图 (Retriever)
         self._rewriter = None          # 改写器 (QueryRewriter)
+        self._image_store = None       # 图表原图存取器 (ImageStore)
 
         # 纯逻辑组件，无副作用，直接构造。切块参数读配置（rag.chunker.*），
         # 配方哈希据此失效——改 YAML 即触发全量重索引。
@@ -196,6 +197,31 @@ class RAGService:
         """
         from paperflow.vision import FigureExtractor
         return FigureExtractor().extract(path, render_images=False)
+
+    def render_figures(self, path: str, figures) -> None:
+        """只渲染给定的这批图表区域（就地把图像字节填进这些对象）。
+
+        索引侧先 `extract_figures` 定位，再只渲染最终会入库的那批——整篇渲染会为
+        一堆不产块的区域白栅格化。
+
+        Args:
+            path: PDF 文件绝对路径。
+            figures: 要渲染的 Figure 列表（就地修改）。
+        """
+        from paperflow.vision import FigureExtractor
+        FigureExtractor().render(path, figures)
+
+    @property
+    def image_store(self):
+        """图表原图的存取器（惰性单例；关掉开关时是空实现）。
+
+        Returns:
+            ImageStore: 存取器。
+        """
+        if self._image_store is None:
+            from paperflow.rag.storage import make_image_store
+            self._image_store = make_image_store(self.config)
+        return self._image_store
 
     # ---------- 索引器/检索器视图（延迟创建） ----------
     def get_indexer(self):

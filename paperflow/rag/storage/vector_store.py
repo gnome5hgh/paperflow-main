@@ -25,12 +25,12 @@ logger = logging.getLogger(__name__)
 
 #: 读路径要取回的块字段：检索结果直接交给上层，缺字段会让上层拿不到元数据。
 _CHUNK_OUTPUT_FIELDS = ("text", "path", "title", "heading", "caption",
-                        "chunk_type", "page_num_int", "position_int")
+                        "chunk_type", "image_key", "page_num_int", "position_int")
 
 #: 建集合与启动校验共用的字段名集合（改这里等于改集合结构：老集合会被重建）。
 _REQUIRED_FIELDS = (
     "id", "vector", "text", "path", "mtime",
-    "title", "heading", "caption", "chunk_type",
+    "title", "heading", "caption", "chunk_type", "image_key",
     "page_num_int", "top_int", "position_int", "created_at",
 )
 
@@ -45,6 +45,7 @@ _FIELD_LIMITS = {
     "heading": 1024,
     "caption": 4096,
     "chunk_type": 16,
+    "image_key": 1024,
 }
 
 
@@ -92,7 +93,8 @@ def _to_chunk(row: dict, chunk_id: str = "") -> Chunk:
         id=chunk_id or row.get("id", ""), text=row.get("text", ""),
         path=row.get("path", ""), title=row.get("title", ""),
         heading=row.get("heading", ""), caption=row.get("caption", ""),
-        chunk_type=row.get("chunk_type", CHUNK_TYPE_TEXT), position=position,
+        chunk_type=row.get("chunk_type", CHUNK_TYPE_TEXT),
+        image_key=row.get("image_key", ""), position=position,
     )
 
 
@@ -208,6 +210,7 @@ class VectorStore:
         schema.add_field("heading", DataType.VARCHAR, max_length=1024)
         schema.add_field("caption", DataType.VARCHAR, max_length=4096)
         schema.add_field("chunk_type", DataType.VARCHAR, max_length=16)
+        schema.add_field("image_key", DataType.VARCHAR, max_length=1024)
         schema.add_field("page_num_int", DataType.ARRAY,
                          element_type=DataType.INT64, max_capacity=_PAGE_CAPACITY)
         schema.add_field("top_int", DataType.INT64)
@@ -262,6 +265,7 @@ class VectorStore:
                 "heading": _fit(c.heading, "heading", c.id),
                 "caption": _fit(c.caption, "caption", c.id),
                 "chunk_type": _fit(c.chunk_type, "chunk_type", c.id),
+                "image_key": _fit(c.image_key, "image_key", c.id),
                 "page_num_int": list(c.page_num),
                 "top_int": c.top,
                 # 展平位置：每 5 个一组 (页, left, right, top, bottom)

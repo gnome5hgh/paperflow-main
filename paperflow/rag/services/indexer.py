@@ -274,6 +274,10 @@ class RagIndexer:
         ——没有图注的图不产块（它的 `text` 恒空，若还产块，向量只能由论文标题算出来，
         任何问到这篇论文的查询都会把它召回，是纯噪声）。
 
+        **原图**：先定下哪些区域要成块，再**只对这批**渲染并存入对象存储（整篇渲染会为
+        一堆不产块的区域白栅格化），块上回写对象键。存图开关关掉或存储不可达时，这一步
+        整体跳过——只丢图，块照常入库。
+
         Args:
             path: 文档绝对路径（进块 id 与元数据）。
             start_index: 起始块序号（章节块数量），保证 id 空间不重叠。
@@ -291,7 +295,9 @@ class RagIndexer:
         # 惰性 import：vision 有自己的重依赖，不在包导入期拉起
         from paperflow.vision.constants import FigureType
 
+        # 第一遍：定下哪些区域成块（此时不渲染）
         chunks: list[Chunk] = []
+        kept: list = []                      # 与 chunks 一一对应的原 Figure，供渲染用
         idx = start_index
         for f in figures:
             caption = " ".join((f.caption or "").split())
@@ -315,8 +321,40 @@ class RagIndexer:
                 id=chunk_id, text=body, path=path, heading="", caption=caption,
                 chunk_type=ctype, position=position, chunk_index=idx,
             ))
+            kept.append(f)
             idx += 1
+
+        self._store_media_images(path, chunks, kept)
         return chunks
+
+    def _store_media_images(self, path: str, chunks: list[Chunk], figures: list) -> None:
+        """把入选媒体块的原图渲染出来存进对象存储，并在块上回写对象键。
+
+        只渲染 `chunks` 对应的这批区域。开关关掉 / 存储不可达 / 渲染失败都只丢图，
+        块照常入库——图是加分项，不该拖累文本索引。
+
+        Args:
+            path: PDF 绝对路径。
+            chunks: 与 `figures` 一一对应的媒体块（就地回填 `image_key`）。
+            figures: 入选的原 Figure 列表。
+        """
+        store = self.service.image_store
+        if not chunks or not getattr(store, "enabled", False):
+            return                           # 关掉开关（空实现）连渲染都不做
+        try:
+            # 一次打开、批量渲染这批区域（逐个渲染会把同一篇 PDF 反复打开）
+            self.service.render_figures(path, figures)
+        except Exception as e:
+            logger.warning("图表原图渲染失败，本篇媒体块不落图：%s", e)
+            return
+        for chunk, figure in zip(chunks, figures):
+            data = getattr(figure, "image_bytes", b"") or b""
+            if not data:
+                continue                       # 区域为空或渲染没产出图
+            key = f"{chunk.id}.png"
+            if store.put(key, data):
+                chunk.image_key = key
+
 
     def _embed_chunks(self, chunks: list[Chunk]):
         """把一批块编码成向量（供写入向量库）。

@@ -22,6 +22,8 @@ dependencies = [
     "pdf2bib>=1.2",
     "rank_bm25>=0.2.2",
     "pymilvus[milvus-lite]>=2.4.2",
+    # 图表原图的对象存储客户端（复用依赖栈里的 MinIO；见 rag/storage/image_store.py）
+    "minio>=7.2",
     "rich>=13.0.0",
     "prompt_toolkit>=3.0.0",
 ]

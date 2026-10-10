@@ -1,6 +1,7 @@
 # paperFlow 依赖服务栈：Milvus Standalone（etcd 元数据 + minio 对象存储 + milvus 计算）。
 # 启动: docker compose up -d   验证: curl http://localhost:9091/healthz → OK
 # 数据卷统一收进 ./.paperflow/（运行时数据根，gitignore 已盖）：Milvus 走 ./.paperflow/infra/milvus/。
+# minio 除服务 milvus 外，还供 paperFlow 存图表原图（独立 bucket），故对宿主回环暴露 9000。
 services:
   etcd:
     container_name: milvus-etcd
@@ -33,6 +34,10 @@ services:
       # Docker 为未覆盖的 /data 自动创建匿名卷（落在 OrbStack volumes 目录的 hash 目录）。
       - ./.paperflow/infra/milvus/minio:/data
     command: minio server /data --console-address ":9001"
+    ports:
+      # 只绑回环：默认凭证是 minioadmin/minioadmin，绝不能对整个局域网开放。
+      # 暴露出来是因为 paperFlow 跑在宿主上，要往这里放图表原图（自有 bucket）。
+      - "127.0.0.1:9000:9000"
     restart: unless-stopped
     healthcheck:
       # minio/minio 镜像不带 curl（用 curl 探活会永远 unhealthy），用镜像自带的 mc

@@ -96,6 +96,30 @@ class FigureExtractor:
         finally:
             doc.close()
 
+    def render(self, path: str, figures: list[Figure]) -> None:
+        """只渲染给定的这批区域：就地把 PNG 字节与 MIME 填进这些 Figure。
+
+        索引侧先用 `render_images=False` 定位（那一步很便宜），再只对**最终会入库**的
+        区域付渲染成本——整篇渲染会为一堆不产块的区域白栅格化。区域为空或页码越界的
+        跳过（该图保持无图像，调用方按无图处理）。
+
+        Args:
+            path: PDF 文件绝对路径。
+            figures: 要渲染的 Figure 列表（就地修改）。
+        """
+        if not figures:
+            return
+        doc = fitz.open(path)
+        try:
+            for figure in figures:
+                region = getattr(figure, "region_boundary", None)
+                page_no = getattr(figure, "page", 0)
+                if region is None or not 0 <= page_no < doc.page_count:
+                    continue
+                figure.image_bytes, figure.mime = render_figure(doc[page_no], region)
+        finally:
+            doc.close()
+
     def _process_pages(
         self, doc, pages: list[Page], starts, layout, render_images: bool = True
     ) -> list[Figure]:

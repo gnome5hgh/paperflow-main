@@ -76,6 +76,8 @@ class Chunk:
         title: str，文档标题（取不到为空串）。
         heading: str，所属章节标题（媒体块为空）。
         caption: str，表注/图注原文（媒体块用，文本块为空）。
+        image_key: str，图表原图在对象存储里的**对象键**（媒体块且存图时有值，其余为空）。
+            存键不存 URL/路径：换存储地址或前面加分发层都不需要重索引。
         chunk_type: str，块类型：``text`` / ``table`` / ``figure``。
         position: tuple[tuple[int, int, int, int, int], ...]，块覆盖到的区域，
             每项为 ``(页, left, right, top, bottom)``；同一章节切多窗时各窗共享
@@ -90,6 +92,7 @@ class Chunk:
     title: str = ""    # 文档标题
     heading: str = ""  # 该块所属章节的标题（可能为空）。
     caption: str = ""  # 表注/图注原文（媒体块用，文本块为空）
+    image_key: str = ""  # 图表原图的对象键（媒体块且存图时有值；文本块为空）
     chunk_type: str = CHUNK_TYPE_TEXT   # text | table | figure
     position: tuple = ()                 # 覆盖到的区域：(页, left, right, top, bottom) 元组序列
     chunk_index: int = 0   # 块在文档中的全局序号（从0开始），用于生成 ID。

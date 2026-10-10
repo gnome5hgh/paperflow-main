@@ -343,6 +343,32 @@ class ChunkerConfig:
 
 
 @dataclass
+class MinioConfig:
+    """图表原图的对象存储连接（复用依赖栈里的 MinIO 实例）。
+
+    Attributes:
+        endpoint: str，``host:port``（不带 scheme）
+        access_key / secret_key: str，凭证
+        bucket: str，存放图表原图的 bucket（**自有名字**，不要用向量库自己的 bucket）
+        secure: bool，是否走 TLS
+    """
+
+    #: MinIO 地址（host:port）。默认对齐 docker-compose 里的服务：
+    #: 该实例原本只服务向量库，现在同时给 paperFlow 放图表原图。
+    endpoint: str = "localhost:9000"
+
+    #: 凭证默认值与 compose 里的 MinIO 一致——那只绑回环，不对外网开放。
+    access_key: str = "minioadmin"
+    secret_key: str = "minioadmin"
+
+    #: 存图表原图的 bucket（与向量库自己的 bucket 分开）。
+    bucket: str = "paperflow-images"
+
+    #: 是否用 TLS（本机 compose 走明文）。
+    secure: bool = False
+
+
+@dataclass
 class StorageConfig:
     """Milvus 向量库连接配置。
 
@@ -352,6 +378,7 @@ class StorageConfig:
         batch_size: int，分页遍历每页行数
         timeout: float，读路径单次 RPC 截止时间（秒）
         write_timeout: float，写路径单次 RPC 截止时间（秒）
+        minio: MinioConfig，图表原图的对象存储连接
     """
 
     #: Milvus 连接地址。本地文件路径 → Milvus Lite（内嵌，单测用）；
@@ -372,8 +399,11 @@ class StorageConfig:
     timeout: float = 5.0
 
     #: 写路径（upsert / flush / delete / 建集合）单次 RPC 的超时（秒）。
-    #: 比读路径宽松：批量入库本身就要若干秒，用读路径那档会把合法写入判成超时。
+    #: 比读路径宽松：批量入库本来就要若干秒，用读路径那档会把合法写入判成超时。
     write_timeout: float = 60.0
+
+    #: 图表原图的对象存储（与向量库同属依赖栈，但 bucket 分开）。
+    minio: MinioConfig = field(default_factory=MinioConfig)
 
 
 @dataclass
@@ -400,6 +430,7 @@ class RagConfig:
         chunker: ChunkerConfig，切块参数（改动触发配方哈希全量重索引）
         storage: StorageConfig，向量库连接
         tools: RagToolsConfig，检索工具输出参数
+        store_images: bool，是否把图表原图存进对象存储（默认存）
     """
 
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
@@ -409,6 +440,10 @@ class RagConfig:
     chunker: ChunkerConfig = field(default_factory=ChunkerConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     tools: RagToolsConfig = field(default_factory=RagToolsConfig)
+
+    #: 是否把图表原图存进对象存储。默认存——检索命中媒体块后可以把原图交给带视觉的
+    #: 模型看；关掉即退回「只有文字」，索引不再渲染、也不再写对象。
+    store_images: bool = True
 
 
 # ── memory / session / agents ───────────────────────────────────────────────
