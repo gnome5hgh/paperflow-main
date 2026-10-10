@@ -9,17 +9,7 @@ import re
 from dataclasses import dataclass
 
 from paperflow.core.tokenization import get_token_encoder
-
-#: 块 id 的哈希前缀长度（字符）：块 id 取 ``sha1(绝对路径:序号)`` 十六进制串的
-#: 前 N 个字符。结构契约——改它所有块 id 变化，必须全量重建索引，否则旧块残留、
-#: 新块 id 对不上（indexer 的「先删后建」依赖 id 稳定，与 chunker 共用同一规则）。
-CHUNK_ID_LEN = 16
-
-#: 块类型取值：普通正文块 / 表格块 / 插图块。媒体块（表、图）的正文是区域内
-#: 文字、字幕字段另存注文原文，两者在检索结果里分开呈现。
-CHUNK_TYPE_TEXT = "text"
-CHUNK_TYPE_TABLE = "table"
-CHUNK_TYPE_FIGURE = "figure"
+from paperflow.rag.constants import CHUNK_ID_LEN, CHUNK_TYPE_TEXT
 
 #: 需丢弃的引用段标题前缀（中英文）。匹配这些标题的章节内容不进入检索块，
 #: 因为参考文献列表对语义检索价值较低，且包含大量外部文献信息可能干扰检索。

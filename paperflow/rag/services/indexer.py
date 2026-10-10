@@ -32,14 +32,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from paperflow.rag.parsers.chunker import (
-    CHUNK_ID_LEN,
-    CHUNK_TYPE_FIGURE,
-    CHUNK_TYPE_TABLE,
-    Chunk,
-    Section,
-    indexed_text,
-)
+from paperflow.rag.constants import CHUNK_ID_LEN, CHUNK_TYPE_FIGURE, CHUNK_TYPE_TABLE
+from paperflow.rag.parsers.chunker import Chunk, Section, indexed_text
 from paperflow.rag.parsers.pdf_extract import extract_pdf
 
 logger = logging.getLogger(__name__)
