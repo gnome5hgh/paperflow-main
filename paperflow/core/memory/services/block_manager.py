@@ -31,6 +31,10 @@ _CAS_MAX_RETRIES = 3
 #: 旧核心块 label → 新 label（一次性迁移映射：human/persona 收敛为 profile/assistant）
 _LEGACY_LABELS = {"human": "profile", "persona": "assistant"}
 
+#: 已下线功能的块 label：启动时一次性清除（幂等）。这些块的写入者已退役，
+#: 留着既没有读者、又会出现在 MemFS 索引里误导模型。
+_REMOVED_BLOCKS = ("history_list",)
+
 
 class BlockManager:
     """核心块业务层：持有 read_only / limit 不变式，维护写前快照历史链。
@@ -183,6 +187,23 @@ class BlockManager:
                 self.create_block(label, value)
                 created.append(label)
         return created
+
+    def purge_removed_blocks(self) -> list[str]:
+        """删除已下线功能的块（幂等）：这些块的写入者已退役，留着只会出现在索引里误导模型。
+
+        git 变体随之删掉 markdown 投影并提交，不留孤儿投影。
+
+        Returns:
+            实际删除的 label 列表（无删除时为空）。
+        """
+        removed: list[str] = []
+        for label in _REMOVED_BLOCKS:
+            block = self.get_block_by_label(label)
+            if block is None:
+                continue
+            self.delete_block(block.id)
+            removed.append(label)
+        return removed
 
     def list_blocks(self) -> list[Block]:
         """返回全部块（按创建时间排序），供 Memory 重建与 head 编译。

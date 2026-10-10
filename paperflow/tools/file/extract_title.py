@@ -9,8 +9,7 @@ class ExtractTitleTool(Tool):
     归属工具层（与 read_pdf / analyze_figures 同批装配），实现调 RAG 解析器的
     标题出口——那处判据与索引/RAG 用的是同一套「宁空勿错」，所以工具取到的标题
     与语料索引里的标题必然一致。绝不用文件名充当标题：文件名是存储产物（下载时
-    可能是乱码或编号），拿它当标题会污染 unread_list / history_list，让后续按标题
-    去重与移除全部失准。
+    可能是乱码或编号），拿它当标题会污染未读清单，让后续按标题去重与移除全部失准。
 
     Attributes:
         name: str，工具名 "extract_title"

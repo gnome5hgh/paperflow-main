@@ -10,8 +10,7 @@ __all__ = ["ensure_block", "append_line", "remove_line_by_key"]
 #: 建块时预置的 markdown 标题——MemFS 投影「正文==块值」的比对机制不被破坏，
 #: 标题进块值（方案 a），人工阅读/手改体验更好。
 _BLOCK_TITLES = {
-    "unread_list": "# 待读清单",
-    "history_list": "# 浏览历史",
+    "unread_list": "# 未读清单",
 }
 
 

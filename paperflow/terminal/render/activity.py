@@ -40,7 +40,6 @@ ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
     # ── 视觉 ──
     "analyze_figures": ("🖼️ 解析", "次"),   # 视觉解析 PDF 插图（note-agent 高频、耗时数秒）
     # ── 记忆与笔记 ──
-    "history_append": ("🧠 记忆", "次"),
     "memory": ("🧠 记忆", "次"),
     "memory_insert": ("🧠 记忆", "次"),
     "memory_replace": ("🧠 记忆", "次"),
@@ -48,8 +47,8 @@ ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
     "memory_rethink": ("🧠 记忆", "次"),
     "memory_finish_edits": ("🧠 记忆", "次"),
     "extract_title": ("🏷️ 摘题", "次"),
-    "unread_list_add": ("📋 待读", "次"),
-    "unread_list_remove": ("📋 待读", "次"),
+    "unread_list_add": ("📋 未读", "次"),
+    "unread_list_remove": ("📋 未读", "次"),
     "conversation_search": ("💬 回溯", "次"),
     # ── 编排与技能 ──
     "spawn_sub_agent": ("🤖 子任务", "次"),

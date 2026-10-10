@@ -404,6 +404,7 @@ def main(argv: list[str] | None = None) -> int | None:
     db = MemoryDB(memory_dir / "memory.db")
     block_manager = GitEnabledBlockManager(db, memfs_dir=memory_dir)
     block_manager.migrate_legacy_labels()   # 旧 human/persona label 一次性迁移为 profile/assistant（幂等）
+    block_manager.purge_removed_blocks()    # 已下线功能的块（历史清单）一次性清除（幂等）
     block_manager.ensure_default_blocks()   # 首启播种默认 profile/assistant 核心记忆块
     message_manager = MessageManager(db)
     agent_manager = AgentManager(db, block_manager, message_manager)

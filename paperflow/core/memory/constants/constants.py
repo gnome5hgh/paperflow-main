@@ -1,9 +1,8 @@
 """记忆模块的常量——工具名集合与首启播种的核心块文案。
 
-BASE_MEMORY_TOOLS 是装配在 supervisor 上的记忆编辑工具名；CONSOLIDATION_EDIT_TOOLS
-是 MemoryConsolidator 后台整合允许生成的编辑工具子集（MemoryConsolidator 只做块级增改，不做
-unread_list/history_append 这类清单维护）。两者都只声明「工具名集合」，供
-装配与校验读取。
+BASE_MEMORY_TOOLS 是装配在 memory-agent 上的记忆编辑工具名；CONSOLIDATION_EDIT_TOOLS
+是 MemoryConsolidator 后台整合允许生成的编辑工具子集（整合只做块级增改，不做
+unread_list 这类清单维护）。两者都只声明「工具名集合」，供装配与校验读取。
 """
 
 __all__ = ["BASE_MEMORY_TOOLS", "CONSOLIDATION_EDIT_TOOLS", "DEFAULT_PROFILE", "DEFAULT_ASSISTANT"]
@@ -11,7 +10,7 @@ __all__ = ["BASE_MEMORY_TOOLS", "CONSOLIDATION_EDIT_TOOLS", "DEFAULT_PROFILE", "
 BASE_MEMORY_TOOLS = {
     "memory_replace", "memory_insert", "memory_rethink",
     "memory_finish_edits", "memory", "memory_apply_patch",
-    "unread_list_add", "unread_list_remove", "history_append",
+    "unread_list_add", "unread_list_remove",
 }
 CONSOLIDATION_EDIT_TOOLS = {
     "memory_replace", "memory_insert", "memory_rethink", "memory_finish_edits",
