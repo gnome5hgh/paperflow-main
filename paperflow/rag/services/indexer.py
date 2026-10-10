@@ -44,7 +44,12 @@ from paperflow.rag.domain import (
 from paperflow.rag.parsers.pdf_extract import extract_pdf
 from paperflow.rag.parsers.table import table_markdown
 
+from concurrent.futures import ThreadPoolExecutor
+
 logger = logging.getLogger(__name__)
+
+#: 媒体块描述的并发度：一次全量重建有数百张图，串行会把建索引拖到不可接受
+_DESCRIBE_CONCURRENCY = 4
 
 #: 配方哈希的逻辑版本号：切块/解析「算法逻辑」修订号（非参数）。参数
 #: （``rag.chunker.*``、embed_model）自动进 ``_recipe_hash`` 指纹；算法逻辑改动
@@ -57,17 +62,21 @@ logger = logging.getLogger(__name__)
 #: 章节划分与标题来源都变了，产出块集合与文本随之改变。
 #: 修订 4：媒体块的文本形态改了——表块由「区域内文字拍平」改为按几何重建的
 #: markdown 表格，图块正文置空且改为「有图注才产块」，文本与产出块集合都变。
-RECIPE_LOGIC_REVISION = 4
+#: 修订 5：媒体块正文追加视觉模型生成的描述（图块正文不再是空串、表块变成
+#: 「markdown + 描述」），块的文本整体改变。
+RECIPE_LOGIC_REVISION = 5
 
 
 def _recipe_hash(cfg) -> str:
     """把「决定产出哪些块」的配置输入散列成状态版本指纹。
 
-    输入三要素：
+    输入四要素：
     - ``RECIPE_LOGIC_REVISION``：切块/解析算法逻辑的手动修订号（参数枚举不到的改动兜底）；
     - ``rag.chunker.max_tokens`` / ``overlap_tokens``：切块窗口参数；
     - ``rag.embedding.embed_model``：换模型（即便同维）旧向量也必须失效，否则新旧
-      向量混在同一 Milvus 集合、检索质量静默下降。
+      向量混在同一 Milvus 集合、检索质量静默下降；
+    - ``vision.model``：媒体块正文里的描述由它生成，换视觉模型等于换了块的文本，
+      旧描述必须一起失效。
 
     ``sort_keys=True`` 保证同输入稳定；``ensure_ascii=False`` 让中文模型名可读
     （不影响哈希值）。
@@ -83,6 +92,7 @@ def _recipe_hash(cfg) -> str:
         "chunk_max_tokens": cfg.rag.chunker.max_tokens,
         "chunk_overlap_tokens": cfg.rag.chunker.overlap_tokens,
         "embed_model": cfg.rag.embedding.embed_model,
+        "vision_model": getattr(cfg.vision, "model", ""),
     }, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()
 
@@ -262,21 +272,23 @@ class RagIndexer:
     def _media_chunks(self, path: str, start_index: int) -> list[Chunk]:
         """把一篇 PDF 的图/表区域转成检索块，序号接在章节块之后。
 
-        两种媒体块的 `text` 取值**不同**（契约写在 `Chunk.text` 的注释里）：
+        两种媒体块的 `text` 起始取值**不同**（契约写在 `Chunk.text` 的注释里）：
 
-        - **表块**：`text` 是区域文字按版面几何重建出的 **markdown 表格**（见
+        - **表块**：起点是区域文字按版面几何重建出的 **markdown 表格**（见
           `parsers/table.py`）。重建判据刻意保守，拼不出可信行列时退回纯文字。
-        - **图块**：`text` **恒为空串**——图内文字零散（多数字体压根抽不出字），做检索
-          信号价值低。图的可检索内容在图注里：检索结果的「章节」列取
-          `heading or caption`，而媒体块没有 heading，取的就是注文。
+        - **图块**：起点是**空串**——图内文字零散（多数字体压根抽不出字），且图内文字本身
+          也不构成完整的可检索内容。
 
-        因此产块判据也跟着分开：表块要求「有表注或有区域文字」，**图块要求「有图注」**
-        ——没有图注的图不产块（它的 `text` 恒空，若还产块，向量只能由论文标题算出来，
-        任何问到这篇论文的查询都会把它召回，是纯噪声）。
+        两者随后都会**追加视觉模型生成的描述**（``_enrich_media``）：图块的可检索正文因此
+        就是描述本身，表块是「markdown + 描述」。图注（``caption``）始终单独保留——检索前缀
+        取它、题集判据与引用核对也用它。
 
-        **原图**：先定下哪些区域要成块，再**只对这批**渲染并存入对象存储（整篇渲染会为
-        一堆不产块的区域白栅格化），块上回写对象键。存图开关关掉或存储不可达时，这一步
-        整体跳过——只丢图，块照常入库。
+        产块判据按类型分开：表块要求「有表注或有区域文字」，**图块要求「有图注」**——
+        没有图注的图不产块。
+
+        **渲染**：先定下哪些区域要成块，再**只对这批**渲染（整篇渲染会为一堆不产块的区域
+        白栅格化）。渲染结果供两处用：生成描述（**一直做**）与存入对象存储（由存图开关决定）。
+        存储不可达只丢图，块照常入库。
 
         Args:
             path: 文档绝对路径（进块 id 与元数据）。
@@ -315,7 +327,7 @@ class RagIndexer:
                 if not caption and not body:
                     continue
             else:
-                body = ""                      # 图块 text 恒空：可检索内容只有图注
+                body = ""                      # 图块正文从空起，视觉描述在 _enrich_media 里追加
                 if not caption:
                     continue
             ctype = CHUNK_TYPE_TABLE if is_table else CHUNK_TYPE_FIGURE
@@ -330,28 +342,72 @@ class RagIndexer:
             kept.append(f)
             idx += 1
 
-        self._store_media_images(path, chunks, kept)
+        self._enrich_media(path, chunks, kept)
         return chunks
 
-    def _store_media_images(self, path: str, chunks: list[Chunk], figures: list) -> None:
-        """把入选媒体块的原图渲染出来存进对象存储，并在块上回写对象键。
+    def _enrich_media(self, path: str, chunks: list[Chunk], figures: list) -> None:
+        """渲染入选区域 → 给媒体块追加视觉描述 →（可选）把原图存进对象存储。
 
-        只渲染 `chunks` 对应的这批区域。开关关掉 / 存储不可达 / 渲染失败都只丢图，
-        块照常入库——图是加分项，不该拖累文本索引。
+        三步的失败面互相独立、都**只降级不抛**：渲染失败则这篇的媒体块既不带描述也不落图；
+        描述失败逐块退回原形态；存储不可达只丢图。索引不能因为「加分项」而失败。
 
         Args:
             path: PDF 绝对路径。
-            chunks: 与 `figures` 一一对应的媒体块（就地回填 `image_key`）。
-            figures: 入选的原 Figure 列表。
+            chunks: 媒体块（就地追加描述、回填 ``image_key``）。
+            figures: 与 ``chunks`` 一一对应的原 Figure 列表。
         """
-        store = self.service.image_store
-        if not chunks or not getattr(store, "enabled", False):
-            return                           # 关掉开关（空实现）连渲染都不做
+        if not chunks:
+            return
         try:
             # 一次打开、批量渲染这批区域（逐个渲染会把同一篇 PDF 反复打开）
             self.service.render_figures(path, figures)
         except Exception as e:
-            logger.warning("图表原图渲染失败，本篇媒体块不落图：%s", e)
+            logger.warning("图表区域渲染失败，本篇媒体块不带描述也不落图：%s", e)
+            return
+        self._append_descriptions(chunks, figures)
+        self._store_images(chunks, figures)
+
+    def _append_descriptions(self, chunks: list[Chunk], figures: list) -> None:
+        """给媒体块正文追加视觉模型生成的描述（图块 = 描述，表块 = markdown + 描述）。
+
+        描述**一直开启、没有开关**：图块正文若不带它，就只剩「标题 > 图注」可检索，
+        实测 12 条图块题一个都召不回（正文块会把槽位占满）。视觉模型不可用时整批跳过并
+        告警——块照常入库，只是退回没有描述的形态。
+
+        并发跑（一次全量重建有数百张图，串行会把建索引拖到不可接受）；单张失败只让那一块
+        退回原形态。
+        """
+        from paperflow.vision.services.describer import FigureDescriber
+
+        describer = FigureDescriber(self.service.config)
+        if not describer.available:
+            logger.warning("视觉模型未配置，媒体块不带描述入库（图块将只剩图注可检索）")
+            return
+
+        def _one(figure):
+            try:
+                return describer.describe(figure)
+            except Exception as e:              # noqa: BLE001 —— 单张失败不阻断该篇其它块
+                logger.warning("媒体块描述失败，该块退回原形态：%s", e)
+                return ""
+
+        with ThreadPoolExecutor(max_workers=_DESCRIBE_CONCURRENCY) as pool:
+            descriptions = list(pool.map(_one, figures))
+        for chunk, desc in zip(chunks, descriptions):
+            if desc:
+                chunk.text = f"{chunk.text}\n{desc}" if chunk.text else desc
+
+    def _store_images(self, chunks: list[Chunk], figures: list) -> None:
+        """把媒体块的原图存进对象存储，并在块上回写对象键。
+
+        开关关掉 / 存储不可达 / 单块无字节都只丢图，块照常入库。
+
+        Args:
+            chunks: 已渲染的媒体块（就地回填 `image_key`）。
+            figures: 与 `chunks` 一一对应的原 Figure 列表。
+        """
+        store = self.service.image_store
+        if not getattr(store, "enabled", False):
             return
         for chunk, figure in zip(chunks, figures):
             data = getattr(figure, "image_bytes", b"") or b""
