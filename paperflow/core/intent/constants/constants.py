@@ -20,7 +20,7 @@ INTENT_CLASSES: tuple[str, ...] = tuple(t.value for t in IntentType)
 _INSTALL_ROOT = Path(__file__).resolve().parents[4]
 
 #: 知识库目录：随仓库发布的意图知识资产（类别口径/示例句、规则模式）
-INTENT_KB_DIR = _INSTALL_ROOT / "data" / "intent"
+INTENT_KB_DIR = _INSTALL_ROOT / ".paperflow" / "intent"
 
 #: 类别知识库与规则表的默认路径（单测与生产共用；显式传参可指向替身文件）
 TAXONOMY_PATH = INTENT_KB_DIR / "taxonomy.yaml"

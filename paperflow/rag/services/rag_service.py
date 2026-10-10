@@ -9,9 +9,9 @@ import threading
 import time
 
 from paperflow.config import PaperFlowConfig
+from paperflow.rag.domain import IndexOutcome, IndexRunOutcome, IndexStatus
 from paperflow.rag.parsers.chunker import AcademicChunker
 from paperflow.rag.services.breaker import RetrievalBreaker
-from paperflow.rag.services.indexer import IndexOutcome, IndexRunOutcome, IndexStatus
 
 #: Milvus 可连性探测结果的缓存秒数。带时限才跟得上外部服务的崩溃与恢复；
 #: 探测本身要构造客户端并发 RPC，也不便宜，故不每次调用都探。
@@ -237,7 +237,7 @@ class RAGService:
         if self._rewriter is None:
             from dataclasses import replace
 
-            from paperflow.core.llm.client import LLMClient
+            from paperflow.core.llm.services.client import LLMClient
             from paperflow.rag.services.query_rewriter import QueryRewriter
             # 以主 LLM 配置为基底，query_rewrite 三元组逐项覆盖（空值回退主配置）。
             # 直接构造 config 的调用方（测试/嵌入宿主）未必经过 from_env 的继承回填，

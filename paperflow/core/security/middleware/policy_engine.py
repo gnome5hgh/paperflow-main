@@ -17,9 +17,10 @@
 """
 
 from paperflow.core.constants import RISK_ORDER
-from paperflow.core.security.base import (
-    SecurityMiddleware, ToolContext, PolicyDenied, ConfirmRequired,
+from paperflow.core.security.middleware.base import (
+    SecurityMiddleware, PolicyDenied, ConfirmRequired,
 )
+from paperflow.core.security.domain import ToolContext
 
 
 class PolicyEngineMiddleware(SecurityMiddleware):

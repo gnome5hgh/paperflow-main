@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from paperflow.core.security.text import sanitize_surrogates
+from paperflow.core.common.text import sanitize_surrogates
 
 logger = logging.getLogger(__name__)
 

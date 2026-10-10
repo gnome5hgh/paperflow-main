@@ -23,8 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from itertools import product
 
-from paperflow.vision.parsers.caption import Caption, CaptionParagraph
-from paperflow.vision.parsers.document_layout import DocumentLayout
+from paperflow.vision.schemas import Caption, CaptionParagraph, DocumentLayout
 from paperflow.vision.common.geometry import (
     Box,
     Box_container,

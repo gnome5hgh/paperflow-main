@@ -4,7 +4,7 @@
 """
 import logging
 
-from paperflow.rag.parsers.chunker import Chunk, indexed_text
+from paperflow.rag.domain import Chunk, indexed_text
 
 logger = logging.getLogger(__name__)
 

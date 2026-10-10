@@ -10,10 +10,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from typing import Any, Sequence
 
 from pydantic import BaseModel, Field
+
+from paperflow.rag.domain import RewriteResult
 
 #: 改写结构化输出的解析失败重试次数（次）：0 = 不重试，失败即降级为 [原 query]，
 #: 单次检索的失败延迟上限 = 1 次 LLM 调用，与业界主流做法一致。
@@ -69,23 +70,6 @@ def _make_output_schema(rewrite_num: int) -> type[BaseModel]:
             description=f"{rewrite_num} 条语义等价但措辞不同的检索查询")
 
     return RewriteOutput
-
-
-@dataclass
-class RewriteResult:
-    """改写结果：queries 是最终查询集（queries[0] 即主查询，供 reranker 打分）。
-
-    degraded=True 表示 LLM 失败已降级——queries 退化为 [原query]。
-
-    Attributes:
-        queries: list[str]，最终查询集（queries[0] 即主查询，供 reranker 打分）
-        standalone: str，消解指代后的自包含查询
-        degraded: bool，True 表示 LLM 失败已降级（queries 退化为 [原query]）
-    """
-
-    queries: list[str]
-    standalone: str
-    degraded: bool = False
 
 
 def _finalize(original: str, out: RewriteOutput, *, max_query_chars: int,
@@ -223,7 +207,7 @@ class QueryRewriter:
             max_queries: 最终查询集封顶（含原 query）。
             max_query_chars: 单条改写查询的字符上限（超限丢弃）。
         """
-        from paperflow.core.llm.structured import StructuredOutput, StructuredOutputConfig
+        from paperflow.core.llm.services.structured import StructuredOutput, StructuredOutputConfig
         self._history_limit = history_limit
         self._max_queries = max_queries
         self._max_query_chars = max_query_chars

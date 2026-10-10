@@ -15,7 +15,7 @@ from paperflow.core.memory.constants import MessageRole
 from paperflow.core.memory.storage import message as message_orm
 from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.schemas.message import Message
-from paperflow.core.security.text import sanitize_surrogates
+from paperflow.core.common.text import sanitize_surrogates
 
 __all__ = ["MessageManager"]
 

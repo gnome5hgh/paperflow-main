@@ -1,7 +1,7 @@
 """意图层的词汇：类别与判定来源。
 
 类别回答的是「用户要哪一类工作」，按**产物主人**划分——一个类别对应一类产物/事务
-的责任人，而不是一个具体动作。枚举值即类别名，与知识库 `data/intent/taxonomy.yaml`
+的责任人，而不是一个具体动作。枚举值即类别名，与知识库 `.paperflow/intent/taxonomy.yaml`
 的键逐项一致（装载期 fail-closed 校验，见 `taxonomy.py`）。
 """
 from enum import StrEnum

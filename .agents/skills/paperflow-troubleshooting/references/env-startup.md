@@ -14,7 +14,7 @@
 
 ### Milvus 容器反复重启 / crash loop（Standalone 崩溃循环）
 - **根因**：Docker VM 内存不足（曾默认 1.9G，Milvus Standalone 崩溃循环）。
-- **修法**：Docker Desktop 调 VM 内存 ≥4GB 后 `docker compose up -d` 重建；数据卷在 `data/infra/milvus/` 不用动。
+- **修法**：Docker Desktop 调 VM 内存 ≥4GB 后 `docker compose up -d` 重建；数据卷在 `.paperflow/infra/milvus/` 不用动。
 - **验证**：`docker compose ps` 中 milvus 状态 Up 且 9091 健康检查通过，不再重启。
 
 ### `index_all` 被某一篇 PDF 中断

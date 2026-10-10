@@ -9,7 +9,7 @@ from typing import Protocol
 import httpx
 
 from paperflow.rag.encoders.embedder import RETRY_BACKOFF_BASE
-from paperflow.core.security.text import sanitize_surrogates
+from paperflow.core.common.text import sanitize_surrogates
 
 
 class Reranker(Protocol):

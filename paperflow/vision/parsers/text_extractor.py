@@ -16,12 +16,12 @@ PyMuPDF 的 page.get_text("rawdict")(char 级 bbox + span 的 size/font),分组�
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from typing import Optional
 
 import fitz
 fitz.TOOLS.mupdf_display_errors(False)  # C 层 stderr 告警（损坏对象/字体）不糊屏：失败仍经工具返回值可见
 
+from paperflow.vision.schemas.page import Page
 from paperflow.vision.common.geometry import (
     Box,
     Box_container,
@@ -39,19 +39,6 @@ _PAGE_NUMBER_RE = re.compile(r"^[1-9][0-9]*$")
 _PARA_GAP_RATIO = 1.5
 # 新行相对前一行右缩进超过 0.3 倍行高 → 段落首行缩进,视为新段
 _PARA_INDENT_RATIO = 0.3
-
-
-@dataclass(frozen=True)
-class Page:
-    """一页文本:页码 + 按阅读顺序排列的段落列表。
-
-    Attributes:
-        page_number: int，页码（0 起，与 fitz 一致）
-        paragraphs: list[Paragraph]，按阅读顺序排列的段落
-    """
-
-    page_number: int
-    paragraphs: list[Paragraph]
 
 
 def extract_text(path_or_doc) -> list[Page]:

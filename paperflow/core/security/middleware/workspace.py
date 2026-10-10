@@ -15,7 +15,8 @@ path 工具统一「任意绝对路径 + 黑名单」：
 import os
 from pathlib import Path
 
-from paperflow.core.security.base import SecurityMiddleware, ToolContext, SecurityBlocked
+from paperflow.core.security.middleware.base import SecurityMiddleware, SecurityBlocked
+from paperflow.core.security.domain import ToolContext
 
 
 def _is_relative_to_ci(resolved: Path, prefix: Path) -> bool:

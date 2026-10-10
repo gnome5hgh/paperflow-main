@@ -18,6 +18,6 @@
 - **验证**：门禁声明按预期控制澄清是否提问。
 
 ### 路由结果与例句库对不上 / 向量缓存行为异常
-- **根因**：`data/intent/routes_vectors.npz`（gitignored 运行时产物，路径声明在 `paperflow/core/intent/routing/route_loader.py`）与路由例句不同步——例句改了缓存没重建。
+- **根因**：`.paperflow/intent/routes_vectors.npz`（gitignored 运行时产物，路径声明在 `paperflow/core/intent/routing/route_loader.py`）与路由例句不同步——例句改了缓存没重建。
 - **修法**：删除该 npz 重建路由向量缓存，重启会话。
 - **验证**：改例句后路由行为随之变化；缓存文件时间戳晚于例句修改时间。

@@ -3,13 +3,12 @@
 对外入口：McpClientManager（client.py）、
 build_mcp_tools / collect_mcp_agent_tools（bridge.py）。
 """
-from paperflow.core.mcp.bridge import (  # noqa: F401
-    McpToolSpec,
+from paperflow.core.mcp.services.bridge import (  # noqa: F401
     build_mcp_tools,
     collect_mcp_agent_tools,
 )
-from paperflow.core.mcp.client import (  # noqa: F401
+from paperflow.core.mcp.services.client import (  # noqa: F401
     McpClientManager,
     McpToolError,
-    ServerStatus,
 )
+from paperflow.core.mcp.domain import McpToolSpec, ServerStatus  # noqa: F401

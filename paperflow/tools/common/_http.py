@@ -4,7 +4,7 @@
 搜索与 lookup_venue_rank 等级查询共用同一 SSRF mixin。PDF 下载的抓取与 SSRF 校验见
 FetchPdfTool（paperflow/tools/search/fetch_pdf.py）。
 """
-from paperflow.core.security.network import resolve_url_target
+from paperflow.core.security.services.network import resolve_url_target
 
 
 class _HttpClientMixin:

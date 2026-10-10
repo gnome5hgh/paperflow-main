@@ -46,7 +46,6 @@ import json
 import sys
 import time
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -54,7 +53,8 @@ from typing import Callable
 from paperflow.core.llm import (
     LLMClient, Message, tool_to_openai_schema,
 )
-from paperflow.core.llm.client import _message_to_openai
+from paperflow.core.llm.services.client import _message_to_openai
+from paperflow.core.agent.domain.dto.stream_event import StreamEvent
 from paperflow.core.agent.registry import AgentRegistry
 from paperflow.core.skills import SkillRegistry
 from paperflow.core.agent.base_prompt import BASE_PROMPT
@@ -62,7 +62,7 @@ from paperflow.core.security import (
     ToolContext, ConfirmRequired, SecurityError, SecurityMiddleware,
 )
 from paperflow.core.tool import ToolResult
-from paperflow.core.security.text import sanitize_surrogates
+from paperflow.core.common.text import sanitize_surrogates
 from paperflow.core.constants import SideEffect
 from paperflow.core.agent.state import get_run_state
 
@@ -145,32 +145,6 @@ class MaxTurnsExceeded(Exception):
     （例如 LLM 反复调用同一个工具但不用其结果给出最终回答）。
     调用方（Supervisor 或 CLI）捕获此异常后应终止任务并向用户报告。
     """
-
-
-@dataclass
-class StreamEvent:
-    """流式事件：kind ∈ {"content","tool_start","tool_end"}；text 为片段；agent_type 区分 root/child。
-
-    结构化字段仅 tool_* 事件携带：tool_name/summary（start+end 都有）、
-    duration_ms/diffstat（仅 end；diffstat=(path, added, removed)，仅写类工具）。
-    全部带默认值：旧位置构造（content 事件）兼容不变。
-
-    Attributes:
-        kind: str，事件类型：content | tool_start | tool_end
-        text: str，文本片段（content 事件为增量内容）
-        agent_type: str，产出事件的 agent（root/child 区分）
-        tool_name: str | None，工具名（仅 tool_* 事件）
-        summary: str | None，活动行摘要（仅 tool_* 事件）
-        duration_ms: int | None，耗时毫秒（仅 tool_end）
-        diffstat: tuple | None，(path, added, removed)，仅写类工具的 tool_end
-    """
-    kind: str
-    text: str
-    agent_type: str
-    tool_name: str | None = None
-    summary: str | None = None
-    duration_ms: int | None = None
-    diffstat: tuple | None = None
 
 
 def _compact(v) -> str:

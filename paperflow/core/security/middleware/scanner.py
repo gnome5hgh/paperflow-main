@@ -17,7 +17,8 @@
 
 import re
 
-from paperflow.core.security.base import SecurityMiddleware, ToolContext, SecurityBlocked
+from paperflow.core.security.middleware.base import SecurityMiddleware, SecurityBlocked
+from paperflow.core.security.domain import ToolContext
 
 
 # =========================================================================

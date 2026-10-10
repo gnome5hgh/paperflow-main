@@ -8,15 +8,18 @@
 
 ```text
 rag/
+├─ domain/         # 领域模型（各层公共词汇）：entity/(Chunk 检索块 + Section 章节 + 块文本派生函数)
+│                  #   + dto/(PdfText/Block 解析产物、IndexOutcome/IndexRunOutcome/IndexStatus 索引结果、RewriteResult 改写结果)
 ├─ constants/      # 跨文件共享常量：CHUNK_ID_LEN(块 id 前缀长度) + CHUNK_TYPE_(TEXT|TABLE|FIGURE)
 ├─ services/       # 门面与编排：rag_service.py(RAGService 单例门面) + indexer.py(增量索引) + retriever.py(混合检索) + query_rewriter.py
-├─ parsers/        # pdf_extract.py(PDF → markdown + 版面坐标 + 标题) + chunker.py(学术分块)
+├─ parsers/        # pdf_extract.py(PDF → markdown + 版面坐标 + 标题) + chunker.py(分块算法本体；Chunk/Section 已移入 domain/)
 ├─ encoders/       # bm25.py(jieba BM25，向量库文本的投影) + embedder.py(云端稠密编码) + reranker.py(云端交叉精排)
 └─ storage/        # vector_store.py(Milvus：Standalone 走 gRPC，本地文件路径走 Lite)
 ```
 
 ## Core Rules
 
+- **领域模型收 `domain/`**：跨层共享的数据模型（实体与层间载体）是各层的公共词汇，只依赖 `constants/` 的取值、不依赖服务实现——消费方一律 `from paperflow.rag.domain import ...`，模型不散落在产出它的实现文件里。分 `entity/`（业务里的「东西」）与 `dto/`（层间搬运的数据）两个子包，一模型一文件。
 - **RAGService 是唯一门面**：indexer 与 retriever 是同一实例的两个视图，共享一把锁——增量写入对查询立即可见。外部只经 `get_rag_service()` 惰性单例访问，不直连内部组件。
 - **解析来源单一**：PDF 与笔记都走「抽取出文本 → 按 `#` 行分节」，PDF 的文本与章节由 `parsers/pdf_extract.py` 本地版面还原，不存在解析器降级。
 - **跨文件常量收 `constants/`**：`CHUNK_ID_LEN`（chunker 生成块 id、indexer 生成媒体块 id，同一规则）与 `CHUNK_TYPE_*`（chunker 打默认值、indexer 打图/表类型、vector_store 反序列化补默认值，同一套词）都是跨越消费方的结构契约，改一边就会让两边对不上——故有唯一声明点。正则、提示词、退避基数、容量阈值这类只服务单一消费方的结构常量留在消费处就地声明。

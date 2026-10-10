@@ -29,11 +29,18 @@
 import hashlib
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from paperflow.rag.constants import CHUNK_ID_LEN, CHUNK_TYPE_FIGURE, CHUNK_TYPE_TABLE
-from paperflow.rag.parsers.chunker import Chunk, Section, indexed_text
+from paperflow.rag.domain import (
+    Chunk,
+    IndexOutcome,
+    IndexRunOutcome,
+    IndexStatus,
+    Section,
+    indexed_text,
+)
 from paperflow.rag.parsers.pdf_extract import extract_pdf
 
 logger = logging.getLogger(__name__)
@@ -124,72 +131,6 @@ class _FileContent:
     """
     title: str
     sections: list[Section]
-
-
-@dataclass
-class IndexOutcome:
-    """单篇文档的入库结果。
-
-    Attributes:
-        status: str，"indexed"（已入库）/ "skipped"（未入库：文件不存在或不在语料根下）
-            / "empty"（旧块已清理但新内容切不出块）
-        chunks: int，本次写入的块数（仅 "indexed" 有意义）
-        reason: str | None，跳过或空结果的原因，供调用方如实转述
-    """
-    status: str
-    chunks: int = 0
-    reason: str | None = None
-
-
-@dataclass
-class IndexRunOutcome:
-    """全量扫描的结果统计。
-
-    Attributes:
-        changed: int，本次重新索引的文档数
-        removed: int，本次清理的已删除文档数
-        chunks: int，本次写入的块数合计
-        bm25_docs: int，重建后 BM25 中的文档数
-        recipe_reset: bool，是否因配方哈希不符（或状态缺失）放弃旧状态走了全量重扫
-    """
-    changed: int = 0
-    removed: int = 0
-    chunks: int = 0
-    bm25_docs: int = 0
-    recipe_reset: bool = False
-
-
-@dataclass
-class IndexStatus:
-    """索引体检快照（只读，不触发任何写入）。
-
-    Attributes:
-        state_present: bool，状态文件是否存在且可解析
-        state_version: object，状态文件里记的配方哈希（None = 无状态）
-        recipe: str，当前配置算出的配方哈希
-        recipe_in_sync: bool，状态版本是否与当前配方一致（不一致 → 下次收敛会全量重扫）
-        indexed_docs: int，状态文件记录的文档数
-        store_chunks: int，向量库中的块数
-        store_docs: int，向量库涉及的文档数（去重）
-        bm25_docs: int，内存关键词索引里的文档数
-        ghost: list[str]，状态有记录但磁盘已不存在的文档（相对路径）——删除未收敛的残留
-        not_indexed: list[str]，语料根下有文件但状态里没有（相对路径）——新增未入库
-        corpus_docs: int，语料根下扫描到的 PDF 篇数
-        milvus_ok: bool，Milvus 可连性（探测带 TTL）
-    """
-
-    state_present: bool = False
-    state_version: object = None
-    recipe: str = ""
-    recipe_in_sync: bool = False
-    indexed_docs: int = 0
-    store_chunks: int = 0
-    store_docs: int = 0
-    bm25_docs: int = 0
-    ghost: list = field(default_factory=list)
-    not_indexed: list = field(default_factory=list)
-    corpus_docs: int = 0
-    milvus_ok: bool = False
 
 
 class RagIndexer:

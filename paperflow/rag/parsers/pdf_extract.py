@@ -23,6 +23,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
+from paperflow.rag.domain import Block, PdfText
+
 # 缓存上限：一篇论文的正文可达数百 KB，留几十篇的量级足以覆盖一次会话里
 # 「同一篇被多个 agent 反复读」的重复，又不至于让进程内存无界增长。
 _CACHE_MAX_ENTRIES = 32
@@ -49,52 +51,6 @@ _KNOWN_HEADING = re.compile(r"^(?:" + "|".join(_KNOWN_HEADINGS) + r")\b", re.IGN
 
 _cache: OrderedDict[tuple[str, int, int], "PdfText"] = OrderedDict()
 _cache_lock = threading.Lock()
-
-
-@dataclass(frozen=True)
-class PdfText:
-    """一个 PDF 的本地抽取结果。
-
-    ``blocks`` 是唯一真相源：它既给出正文，也给出每块在原页上的位置（索引侧据此给
-    检索块标注页码与坐标）。``body`` 是它的投影——不单独存一份，避免两处不一致。
-
-    Attributes:
-        title: 论文标题；元数据与首页启发式都拿不到时为空串。
-        pages: 页数。
-        blocks: 正文按渲染块拆开的明细（阅读顺序）。
-    """
-
-    title: str
-    pages: int
-    blocks: tuple["Block", ...] = ()
-
-    @property
-    def body(self) -> str:
-        """正文 markdown 文本（各渲染块按空行连接）。"""
-        return "\n\n".join(b.text for b in self.blocks)
-
-
-@dataclass(frozen=True)
-class Block:
-    """一个已渲染的 markdown 块（一段正文或一个标题行）及其在原页上的位置。
-
-    Attributes:
-        text: 块文本（标题行带 ``#`` 前缀；段落内部用换行连接）。
-        page: 页码，1 起（PDF 页序）。
-        left: 包围盒左边界（点，向下取整）。
-        right: 包围盒右边界。
-        top: 包围盒上边界。
-        bottom: 包围盒下边界。
-
-    边界条件：跨行合并的标题取其首行的页码，包围盒取各行的并集。
-    """
-
-    text: str
-    page: int
-    left: int
-    right: int
-    top: int
-    bottom: int
 
 
 @dataclass

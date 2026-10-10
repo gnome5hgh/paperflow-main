@@ -5,7 +5,7 @@
 `rules/`（规则层：实体抽取 + 知识库装载校验）、`services/`（判定服务客户端 + 集成缝）。
 
 集成缝是 `IntentService`（Agent 只持一个可选的它，`None` 即「关」）；类别与规则
-来自知识库 `data/intent/`，由 `rules.taxonomy.load_taxonomy` 装载并做 fail-closed 校验。
+来自知识库 `.paperflow/intent/`，由 `rules.taxonomy.load_taxonomy` 装载并做 fail-closed 校验。
 """
 from paperflow.core.intent.constants import INTENT_CLASSES, IntentStep, IntentType
 from paperflow.core.intent.rules.entities import extract_entities

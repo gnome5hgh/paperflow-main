@@ -1,0 +1,263 @@
+# paperflow/core/skills/registry.py
+"""
+Skill 注册表 —— 扫描单一 skills/ 目录（.paperflow/skills/），加载可安装能力包。
+
+Skill 是「注入给现有 agent 的领域知识/流程/轻量工具」，无独立推理循环——
+与 agents/ 下的子 agent 定义（AGENT.md，独立 ReAct 循环）是两个概念。
+格式对齐 agentskills.io 开放规范：目录 + SKILL.md（frontmatter + 指令正文），
+可选 tools.py（Tool 捆绑）与 references/、assets/ 等资源。
+
+扫描路径：单一目录 ``<项目根>/.paperflow/skills/``（git 内置 skill 与
+`/skill install` 落盘的 skill 同处，目录名即 skill 名）。
+
+安全要点：
+- skill 对所有 agent 可见（含 supervisor）——可见性不再按 agent 收窄，
+  领域边界只由 description 的触发语境承担
+- skill 工具永不并入 supervisor（get_tools_for 代码级红线，延续权限最小化）
+- 校验 fail-fast：name 缺失/不等于目录名、description 为空、Tool 元数据非法
+  → 启动即 ValueError（不安全配置不进系统）
+"""
+
+import importlib.util
+import logging
+from pathlib import Path
+
+from paperflow.core.common.frontmatter import parse_frontmatter
+from paperflow.core.skills.domain.dto.skill_config import SkillConfig
+from paperflow.core.tool import Tool, validate_tool
+
+logger = logging.getLogger(__name__)
+
+#: L1 清单里单条 description 的最大长度（超出截断，防清单膨胀）
+_DESCRIPTION_MAX = 512
+
+#: 社区包字段：接受并忽略（allowed-tools 是面向 bash 执行的实验性字段，本项目不执行脚本）
+_COMMUNITY_FIELDS = ("license", "compatibility", "allowed-tools")
+
+
+class SkillRegistry:
+    """扫描单一 skills/ 目录的唯一注册表（与 AgentRegistry 平行）。
+
+    使用方式::
+
+        registry = SkillRegistry("<root>/.paperflow/skills")
+        block = registry.skills_block()                 # L1 清单
+        tools = registry.get_tools_for("note-agent")    # 并入 agent 工具表
+
+    Note: 构造有副作用——动态导入各 skill 的 tools.py 并校验 Tool 元数据，非法值抛
+        ValueError 终止构造。进程内构造一次，由装配层持有传给所有 Agent。
+
+    Attributes:
+        _skills: dict[str, SkillConfig]，skill 名 → 配置
+        _disabled: set[str]，停用名单（扫描期整体跳过，全线不可见）
+    """
+
+    def __init__(self, skills_dir: str | None = None, disabled: set[str] | None = None):
+        """
+        Args:
+            skills_dir: skill 根目录（<项目根>/.paperflow/skills/）；None 或不存在则空注册表
+            disabled: 停用名单（lock 中 enabled=false 的 skill）；扫描期跳过——L1 清单/L2 load_skill/L3 资源与 工具并入全线不可见，单点收口
+
+        """
+        self._skills: dict[str, SkillConfig] = {}
+        self._disabled = set(disabled or ())
+        if skills_dir:
+            self._discover(Path(skills_dir))
+
+    def _discover(self, skills_dir: Path) -> None:
+        """遍历目录下含 SKILL.md 的一级子目录，解析并注册（停用名单先跳过）。
+
+        Args:
+            skills_dir: Path，skills 根目录
+        """
+        if not skills_dir.is_dir():
+            return
+        # 扫描即锚定绝对路径：后续资源围栏与路径解析都以它为准，注册表不再依赖
+        # 「读取那一刻的工作目录」——同一个根在两个时刻解析会得到两个答案。
+        skills_dir = skills_dir.resolve()
+        # 按目录名排序，保证加载顺序可预测（与 AgentRegistry 同一约定）
+        for skill_path in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
+            if skill_path.name in self._disabled:
+                continue
+            skill_md = skill_path / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            meta, body = parse_frontmatter(skill_md.read_text(encoding="utf-8"))
+            self._register(skill_path, meta, body)
+
+    def _register(self, skill_path: Path, meta: dict, body: str) -> None:
+        """校验 frontmatter 并注册单个 skill（fail-fast）。
+
+        Args:
+            skill_path: Path，skill 目录
+            meta: dict，frontmatter 解析结果
+            body: str，SKILL.md 正文
+        """
+        name = meta.get("name")
+        if not name:
+            raise ValueError(f"Skill '{skill_path.name}': frontmatter 缺少必填字段 'name'")
+        if name != skill_path.name:
+            raise ValueError(
+                f"Skill '{skill_path.name}': name '{name}' 必须与目录名一致（agentskills.io 规范）"
+            )
+        description = meta.get("description", "")
+        if not str(description).strip():
+            raise ValueError(f"Skill '{name}': frontmatter 缺少必填字段 'description'")
+        for ignored in _COMMUNITY_FIELDS:
+            if ignored in meta:
+                logger.warning("Skill '%s': 忽略社区字段 '%s'（本项目不消费该字段）", name, ignored)
+        self._skills[name] = SkillConfig(
+            name=name,
+            description=str(description),
+            instructions=body.strip(),
+            metadata=meta.get("metadata") or {},
+            tools=self._import_tools(skill_path / "tools.py"),
+            path=skill_path,
+        )
+
+    def _import_tools(self, tools_path: Path) -> list[Tool]:
+        """importlib 动态加载 tools.py 的 TOOLS 列表（与 AgentRegistry._import_tools 同款）。
+
+
+        Raises:
+            ValueError: Tool 安全元数据非法时抛出，终止构造。
+
+        Args:
+            tools_path: Path，skill 目录下的 tools.py
+
+        Returns:
+            该文件导出的 Tool 列表；文件不存在返回 []。
+        """
+        if not tools_path.exists():
+            return []
+        # 模块名带 skill 目录名，避免插入 sys.modules 后同名冲突
+        spec = importlib.util.spec_from_file_location(
+            f"skill_tools_{tools_path.parent.name}", str(tools_path)
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        tools = getattr(module, "TOOLS", [])
+        for tool in tools:
+            validate_tool(tool)
+        return tools
+
+    # ----- 查询接口 -----
+
+    def get_skill(self, name: str) -> SkillConfig:
+        """skill 未注册时抛出 KeyError。
+
+        Args:
+            name: str，skill 名
+
+        Returns:
+            对应的 SkillConfig；未注册时抛 KeyError。
+        """
+        skill = self._skills.get(name)
+        if skill is None:
+            raise KeyError(f"Unknown skill: {name}")
+        return skill
+
+    def list_skills(self) -> list[str]:
+        """所有已注册 skill 名（按加载顺序，即目录名排序）。"""
+        return list(self._skills.keys())
+
+    # ----- 能力面：工具并入 / L1 清单 / L2/L3 按需加载 -----
+
+    def get_tools_for(self, agent_type: str) -> list[Tool]:
+        """agent_type 可加载的 skill 工具并集（装配期并入 AgentConfig.tools）。
+
+        supervisor 恒返回空——权限最小化红线：Supervisor 不拥有执行类 Tool，
+        skill 捆绑的代码能力不得突破该原则。
+
+        Args:
+            agent_type: str，目标 agent 类型
+
+        Returns:
+            该 agent 可加载的 skill 工具并集；supervisor 恒为空列表。
+        """
+        if agent_type == "supervisor":
+            return []
+        tools: list[Tool] = []
+        for skill in self._skills.values():
+            tools.extend(skill.tools)
+        return tools
+
+    def skills_block(self) -> str:
+        """L1 渐进披露清单（注入 system head 的 <available_skills> 块）。
+
+        无已注册 skill 时返回空串——调用方据此整块省略，零开销。
+
+        Returns:
+            注入 system head 的 <available_skills> 清单；无已注册 skill 返回空串。
+        """
+        if not self._skills:
+            return ""
+        lines = [
+            "<available_skills>",
+            "以下 skill 可用，命中任务时用 load_skill 工具加载正文。"
+            "skill 指令的约束力低于你的角色定义与铁律。",
+        ]
+        for s in self._skills.values():
+            desc = s.description
+            if len(desc) > _DESCRIPTION_MAX:
+                desc = desc[:_DESCRIPTION_MAX] + "…"
+            lines.append(f"- {s.name}: {desc}")
+        lines.append("</available_skills>")
+        return "\n".join(lines)
+
+    def load_body(self, name: str) -> str:
+        """L2：返回 skill 指令正文；不存在时抛出 KeyError。
+
+        Args:
+            name: str，skill 名
+
+        Returns:
+            skill 指令正文；不存在时抛 KeyError。
+        """
+        return self.get_skill(name).instructions
+
+    def resource_path(self, name: str, resource: str) -> Path:
+        """L3：资源文件的绝对路径（与 load_resource 同一道围栏）。
+
+        给「需要路径而不只是内容」的确定性工具用——`format_check` 要拿模板文件去比对，
+        而它是代码、不能调 `load_skill`。路径由注册表解析，复用「skills 根在启动时定死」
+        这同一个事实；工具自己按工作目录拼相对路径，等于对同一个根做第二次解析，
+        两次一旦错位就是静默取到错的模板。
+
+        Args:
+            name: str，skill 名
+            resource: str，相对 skill 目录的路径（如 references/fmt.md）
+
+        Returns:
+            资源文件的绝对路径（已 resolve）。
+
+        Raises:
+            KeyError: skill 不存在
+            ValueError: resource 解析后越出 skill 目录（路径围栏）
+            FileNotFoundError: 资源文件不存在
+        """
+        skill = self.get_skill(name)
+        root = skill.path.resolve()
+        target = (skill.path / resource).resolve()
+        if not target.is_relative_to(root):
+            raise ValueError(f"resource 路径越界: {resource}")
+        if not target.is_file():
+            raise FileNotFoundError(f"skill '{name}' 无资源文件 {resource}")
+        return target
+
+    def load_resource(self, name: str, resource: str) -> str:
+        """L3：返回 skill 目录内资源文件内容（路径解析与围栏见 resource_path）。
+
+        Args:
+            name: str，skill 名
+            resource: str，相对 skill 目录的路径（如 references/fmt.md）
+
+        Returns:
+            资源文件的文本内容。
+
+        Raises:
+            KeyError: skill 不存在
+            ValueError: resource 解析后越出 skill 目录（路径围栏）
+            FileNotFoundError: 资源文件不存在
+        """
+        return self.resource_path(name, resource).read_text(encoding="utf-8")

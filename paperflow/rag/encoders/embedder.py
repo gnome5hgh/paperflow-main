@@ -11,7 +11,7 @@ from typing import Protocol
 import httpx
 import numpy as np
 
-from paperflow.core.security.text import sanitize_surrogates
+from paperflow.core.common.text import sanitize_surrogates
 
 logger = logging.getLogger(__name__)
 

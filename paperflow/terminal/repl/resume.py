@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from paperflow.core.security.text import sanitize_surrogates
+from paperflow.core.common.text import sanitize_surrogates
 
 __all__ = ["ResumeReplay", "build_resume_replay", "render_resume_replay"]
 

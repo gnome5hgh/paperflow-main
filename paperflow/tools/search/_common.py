@@ -12,7 +12,7 @@ fetch_pdf.py 的 FetchPdfTool——本模块只做公共运行状态,不触碰�
 """
 import re
 
-from paperflow.core.agent.state import get_run_state   # noqa: F401  （兼容既有导入点）
+from paperflow.core.agent import get_run_state   # noqa: F401  （兼容既有导入点）
 
 
 def _norm_title(title: str) -> str:

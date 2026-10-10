@@ -1,6 +1,6 @@
 # paperFlow 依赖服务栈：Milvus Standalone（etcd 元数据 + minio 对象存储 + milvus 计算）。
 # 启动: docker compose up -d   验证: curl http://localhost:9091/healthz → OK
-# 数据卷统一收进 ./data/（workspace，gitignore 已盖）：Milvus 走 ./data/infra/milvus/。
+# 数据卷统一收进 ./.paperflow/（运行时数据根，gitignore 已盖）：Milvus 走 ./.paperflow/infra/milvus/。
 services:
   etcd:
     container_name: milvus-etcd
@@ -11,7 +11,7 @@ services:
       - ETCD_QUOTA_BACKEND_BYTES=4294967296
       - ETCD_SNAPSHOT_COUNT=50000
     volumes:
-      - ./data/infra/milvus/etcd:/etcd
+      - ./.paperflow/infra/milvus/etcd:/etcd
     command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
     restart: unless-stopped
     healthcheck:
@@ -31,7 +31,7 @@ services:
     volumes:
       # 必须挂 /data（minio 镜像声明的 VOLUME 路径）而非其他路径：挂别的路径会触发
       # Docker 为未覆盖的 /data 自动创建匿名卷（落在 OrbStack volumes 目录的 hash 目录）。
-      - ./data/infra/milvus/minio:/data
+      - ./.paperflow/infra/milvus/minio:/data
     command: minio server /data --console-address ":9001"
     restart: unless-stopped
     healthcheck:
@@ -50,7 +50,7 @@ services:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
     volumes:
-      - ./data/infra/milvus/milvus:/var/lib/milvus
+      - ./.paperflow/infra/milvus/milvus:/var/lib/milvus
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
       interval: 30s

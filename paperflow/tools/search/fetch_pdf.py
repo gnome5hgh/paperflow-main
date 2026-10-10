@@ -10,7 +10,7 @@ from httpx import HTTPStatusError as _HttpxStatusError
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
-from paperflow.core.security.network import validate_url_target
+from paperflow.core.security.services.network import validate_url_target
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.citations import get_citation_manager
 from paperflow.tools.file.atomic import atomic_write_bytes

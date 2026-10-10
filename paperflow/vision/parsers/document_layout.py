@@ -10,12 +10,10 @@ RegionClassifier 做字号/间距/边距分类、FigureDetector 做双栏中心�
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 
-from paperflow.vision.parsers.text_extractor import Page
-
-# 行宽分桶粒度(pt)：把相近行宽聚到 2pt 桶里，弱化浮动对象/公式造成的宽度噪声
-LINE_WIDTH_BUCKET_SIZE = 2
+from paperflow.vision.constants import LINE_WIDTH_BUCKET_SIZE
+from paperflow.vision.schemas.document_layout import DocumentLayout
+from paperflow.vision.schemas.page import Page
 
 # 双栏判定：两簇左边距「用量差」相对值上限（相近才算双栏，否则只是一栏加少量噪声）+ x1 距离下限
 _TWO_COLUMN_MAX_USAGE_DIFFERENCE = 0.40
@@ -29,33 +27,6 @@ _MIN_COMMON_LINE_WIDTH_USE = 0.4
 _TRUST_MARGINS_TWO_COLUMN_THRESHOLD = 0.65
 _TRUST_MARGINS_NUM_MARGINS_TO_COUNT = 3
 _TRUST_MARGINS_ONE_COLUMN_THRESHOLD = 0.55
-
-
-@dataclass(frozen=True)
-class DocumentLayout:
-    """文档级统计结果（字段照 DocumentLayout.scala）。
-
-    Attributes:
-        two_columns: 正文是否双栏（存在两簇用量相近、相距足够远的左边距）。
-        standard_font_size: 最常见字号；未过半即认为无主导字号，置 None。
-        standard_width_bucketed: 最常见行宽（2pt 桶粒度）；占比不足时置 None。
-        standard_width: 最常见行宽（未分桶的真实值）；占比不足时置 None。
-        average_word_spacing: 词间距均值（只统计间距为正的词对）。
-        trust_left_margin: 左边距分布是否可信（可信才可用于边距启发式）。
-        left_margins: 各左边距（x1 取整）→ 占全文字数的比例。
-        font_counts: 各字体名 → 出现字符数（原生计数，非比例）。
-        median_line_spacing: 正文行距的加权中位数（只统计水平重叠的正间距行对）。
-    """
-
-    two_columns: bool
-    standard_font_size: float | None
-    standard_width_bucketed: float | None
-    standard_width: float | None
-    average_word_spacing: float
-    trust_left_margin: bool
-    left_margins: dict[int, float]
-    font_counts: dict[str, int]
-    median_line_spacing: float
 
 
 def _weighted_median(inputs: list[tuple[float, int]]) -> float:

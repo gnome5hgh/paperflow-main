@@ -19,7 +19,7 @@ import time
 from pymilvus import DataType, MilvusClient
 
 from paperflow.rag.constants import CHUNK_TYPE_TEXT
-from paperflow.rag.parsers.chunker import Chunk
+from paperflow.rag.domain import Chunk
 
 logger = logging.getLogger(__name__)
 
