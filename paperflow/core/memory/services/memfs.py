@@ -58,7 +58,7 @@ class MemFS:
 
         设计原则：
             - 系统核心块（assistant/profile）单独放在 system/ 子目录，便于区分和管理。
-            - 其他块（如 unread_list, history_list 等）直接放在 memory_dir 根目录，
+            - 其他块（如 unread_list、feedback_* 分册等）直接放在 memory_dir 根目录，
               文件名为 {label}.md。
         """
         if block.label in _SYSTEM_LABELS:

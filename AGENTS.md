@@ -137,9 +137,9 @@ Every agent lives in `agents/<name>/` with two files:
 | `review-agent` | 审查域责任人:笔记审查 / 下载门禁 / 选题产物审查（开审前加载对应审查流程 skill） | `[citation-agent]` | 只读 + submit_review / submit_download_review + `format_check` + lookup_venue_rank + spawn（专为派 citation-agent 做溯源核验） |
 | `citation-agent` | 引用域责任人:references.bib 同步/新增/删除/查询导出 | `[]` | 6 引用工具全装 + read_pdf（元数据缺失时读首页取标题/作者，不属内容分析） |
 | `rag-agent` | 语料索引责任人:检索 + 入库 + 删除后全量收敛 + 索引体检 | `[]` | rag_retrieve + index_paths + reindex_all + index_status（RAG 一域读写与诊断同归一处） |
-| `memory-agent` | 记忆域责任人:记忆读写全归它 | `[]` | `get_memory_tools()` 全集 10 件（blocks 6 / recall 1 / paper_lists 3）+ read_file / glob（读块内容——MemFS 把块投影成 markdown，记忆工具本身没有读动作）；取标题不归它（那是 `tools/file/extract_title`） |
+| `memory-agent` | 记忆域责任人:记忆读写全归它 | `[]` | `get_memory_tools()` 全集 9 件（blocks 6 / recall 1 / 未读清单 2）+ read_file / glob（读块内容——MemFS 把块投影成 markdown，记忆工具本身没有读动作）；取标题不归它（那是 `tools/file/extract_title`） |
 
-`allowed_spawns` 已由 spawn 工具在运行时强制（同时是 head 里可派发清单的来源，见 Orchestration）。记忆工具经 `get_memory_tools()` 装配后**全装给 `memory-agent`、其余 agent 一件不装**——需要记账或查记忆时（如 note-agent 写完笔记要记一条历史、supervisor 要查清单）**派发 `memory-agent`**；读取惯例与写入惯例见各 agent 的 AGENT.md。
+`allowed_spawns` 已由 spawn 工具在运行时强制（同时是 head 里可派发清单的来源，见 Orchestration）。记忆工具经 `get_memory_tools()` 装配后**全装给 `memory-agent`、其余 agent 一件不装**——需要记账或查记忆时（如 paper-agent 下载完要记未读、supervisor 要查清单）**派发 `memory-agent`**；读取惯例与写入惯例见各 agent 的 AGENT.md。
 
 ### Agent and ReAct loop
 
@@ -199,11 +199,12 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 `paperflow/core/memory/` 是 **Letta 记忆栈的忠实移植**（取代旧的文件式 MemoryStore/GitStore/Dream）。分层：
 
+- `constants/` — 跨模块词汇（`MessageRole` 枚举 + 工具名集合与播种文案）
 - `schemas/` — pydantic 数据模型（`Block`/`Memory`/`Message`/`AgentState`）
-- `orm/` — SQLite 持久化：`MemoryDB`（stdlib sqlite3 单例，`threading.Lock` 包裹写事务，`check_same_thread=False`）；表：blocks/block_history/messages/agent_state
-- `services/` — 业务层管理器
-- `tools/` — 11 个 LLM 面记忆工具（一工具一文件，3 组）
-- 顶层 — `compaction.py`（上下文压缩）、`consolidation.py`（后台记忆整合）、`runtime_context.py`（运行时上下文）
+- `storage/` — SQLite 持久化：`MemoryDB`（stdlib sqlite3 单例，`threading.Lock` 包裹写事务，`check_same_thread=False`）；表：blocks/block_history/messages/agent_state
+- `common/` — 领域异常（并发写冲突、块字符上限）
+- `services/` — 业务层管理器 + `compaction.py`（上下文压缩）+ `consolidation.py`（记忆整合）
+- 记忆工具在 `paperflow/tools/memory/`（9 件，一工具一文件，blocks/recall/paper_lists 三组；`runtime_context.py` 提供它的运行时上下文）
 
 **核心服务**（装配顺序即依赖方向，见 `cli.py`）：
 
@@ -217,10 +218,10 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 **关键不变式**：
 - **SQL 块是真相源，markdown 是投影**——与旧 GitStore 的语义正好相反
-- 记忆工具在 **`paperflow/tools/memory/`**，经 **`get_memory_tools()`**（`tools/memory/__init__.py`）惰性构建 10 个工具（模块级单例，双重检查加锁，每次返回新列表副本）；执行时经 **`set_memory_context(MemoryToolsContext(...))`** 绑定一次（cli.py）+ `get_memory_context()` 取运行时上下文；未装配时工具降级为错误文本而非崩溃
-- 10 个记忆工具分 3 组：**blocks**（`memory`/`memory_replace`/`memory_insert`/`memory_rethink`/`memory_apply_patch`/`memory_finish_edits`）、**recall**（`conversation_search`，默认过滤 tool 消息防递归噪音）、**paper_lists**（`unread_list_add`/`unread_list_remove`/`history_append`——列表块工具，`unread_list_add` 要求真实标题绝不用文件名）
-- **Compaction**（`compaction.py`）：只压缩 in-context 窗口（驱逐旧对话 + 插 SummarySchema 摘要 + 保留尾部），**永不删 SQL 行**；`should_compress`（tiktoken 估算，超 `trigger_ratio × context_size` 触发）+ `run_compaction`（滑动窗口，保留 tool 消息与其结果的配对，尾部孤儿清理）
-- **MemoryConsolidator**（`consolidation.py`）：后台记忆整合，REPL 每轮循环顶部 `run_once_if_due()`（读 stdin 前）；LLM 产出 `MemoryEditBatch` 经 BlockManager 应用 + git commit；两阶段校验（类型枚举白名单：system/ 精确枚举 profile/assistant、顶层仅 feedback_/project_/reference_ 三前缀；动作仅 append/replace，delete 全量收禁），连续 3 次失败强制推进游标防死循环
+- 记忆工具在 **`paperflow/tools/memory/`**，经 **`get_memory_tools()`**（`tools/memory/__init__.py`）惰性构建 9 个工具（模块级单例，双重检查加锁，每次返回新列表副本）；执行时经 **`set_memory_context(MemoryToolsContext(...))`** 绑定一次（cli.py）+ `get_memory_context()` 取运行时上下文；未装配时工具降级为错误文本而非崩溃
+- 9 个记忆工具分 3 组：**blocks**（`memory`/`memory_replace`/`memory_insert`/`memory_rethink`/`memory_apply_patch`/`memory_finish_edits`）、**recall**（`conversation_search`，默认过滤 tool 消息防递归噪音）、**paper_lists**（`unread_list_add`/`unread_list_remove`——未读清单的行级增删，`unread_list_add` 要求真实标题绝不用文件名）
+- **Compaction**（`services/compaction.py`）：只压缩 in-context 窗口（驱逐旧对话 + 插 SummarySchema 摘要 + 保留尾部），**永不删 SQL 行**；`should_compress`（tiktoken 估算，超 `trigger_ratio × context_size` 触发）+ `run_compaction`（滑动窗口，保留 tool 消息与其结果的配对，尾部孤儿清理）
+- **MemoryConsolidator**（`services/consolidation.py`）：记忆整合，REPL **每轮对话收尾**调 `consolidate()`（本轮无新消息则不调 LLM）。输入 = 游标之后的新消息 + **全部可写块的当前内容**——喂旧值是「不产生矛盾条目」的前提，此前模型看不到旧值、该规则是空转的。产出 `MemoryEditBatch` 的**行级**指令（`add` 新增一行 / `supersede` 按行首前缀换掉旧行 / `drop` 删掉旧行 / `rewrite` 整块重写，仅 profile 与 assistant），**空批次即 NOOP**；目标块 label 由代码按「类型 + 当天日期」拼装（`feedback_2026-10-10`），写满自动续号 `_2`，条目被取代/删除后空掉的分册收尾整块删除（使「全量喂旧记忆」的总量有界——记忆 = 当前有效知识，历史交给 Recall）。流程：全量预验证（动作与目标匹配、必要字段齐全，一条不过整批不写）→ 逐条应用（单条失败只跳过该条并留日志）→ 结算；任何失败都记日志，连续失败 3 次强制推进游标防死锁
 - 装配不变式：CLI `session_id` == `AgentManager.create_agent` id == `Agent.session_id`，三者错位会各自读到空数据
 
 ### Intent recognition
@@ -280,7 +281,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 - `citations/` — 6 引用工具（`lookup_citation`/`add_citation`/`format_citations`/`list_citations` + `sync_citations`/`remove_citation`；只装配 **citation-agent**（全量六件 + `read_pdf` 补元数据），其余 agent 需要时派发它）
 - `rag/` — `rag_retrieve`（`RagRetrieveTool`：惰性取 RAGService 单例 + 持锁检索 + 格式化结果）+ `index_paths`（批量入库语料文件，逐条回报 indexed/skipped/empty/failed）+ `reindex_all`（全量收敛：补缺 + 清掉已删文件的索引块）+ `index_status`（只读体检：块数/篇数、幽灵块、未入库、配方是否一致）；四件只装 `rag-agent`
 - `vision/` — `analyze_figures`（`needs_parent=True`：视觉 LLM 调用归属父 agent 轮次进审计）。图提取走 pdffigures2 管线（proposal 候选 + 打分选优 + no-overlap 互斥），随后视觉模型结构化看图分析 + 嵌入落盘；key 缺失/无图/失败全降级
-- `memory/` — 10 个记忆工具（`get_memory_tools()` 惰性单例 + `set_memory_context`/`get_memory_context` 运行时上下文；blocks/recall/paper_lists 三组；装配 supervisor，子 agent 各装子集）
+- `memory/` — 9 个记忆工具（`get_memory_tools()` 惰性单例 + `set_memory_context`/`get_memory_context` 运行时上下文；blocks/recall/paper_lists 三组；全装给 `memory-agent`，其余 agent 一件不装）
 - `orchestration/` — `spawn_sub_agent`（唯一的调度工具；见下）
 - `common/` — `make_tools(config, tool_items, default_write_root=None)` 装配工厂：按 `root_hints` 生成 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）、`default_write_root` 盖章到 write_file（note-agent→note、research-agent→research；**只是没指定时的兜底**——supervisor 把用户点名的保存位置拼进子任务文本，领域 agent 收到位置就用它）、注入 `_config`；`_http.py` 共享 HTTP 基础设施
 
@@ -329,7 +330,7 @@ intent:   enabled / history_messages
 rag:      embedding{...,batch_size,timeout,max_retries} / retriever{top_k,bm25_topk,vector_topk,rerank_candidates,rrf_k}
           query_rewrite{...,history_messages} / chunker{max_tokens,overlap_tokens}
           storage{uri,collection,batch_size} / tools{excerpt_chars}
-memory:   consolidation_enabled / consolidation_agent_frequency
+memory:   consolidation_enabled
 session:  resume_replay / resume_replay_limit
 agents:   timeouts（自由 dict，YAML-only）
 mcp_servers                     # 保留顶层（本身即映射）
@@ -343,7 +344,7 @@ mcp_servers                     # 保留顶层（本身即映射）
 | `runtime.agents_dir` | 插件扫描目录，默认 `agents` |
 | `runtime.max_risk` | 策略引擎风险阈值，默认 "medium" |
 | `compaction` | `CompactionSettings`（惰性工厂避免 config→compaction→llm→config 循环导入） |
-| `memory.consolidation_enabled` / `memory.consolidation_agent_frequency` | 后台整合开关 / 每 N 条新消息检查一次（默认 50） |
+| `memory.consolidation_enabled` | 记忆整合开关（每轮对话结束后整合一次；关掉则整合路径不触发，记忆只靠 self-editing 维护） |
 | `corpus.note_dir` / `corpus.pdf_dir` / `corpus.research_dir` | 语料库数据源根（note/pdf/research，个人绝对路径，**无默认值**，须经 config.yaml/env） |
 | `corpus.citations_bib_path` | references.bib 路径（引用库真相源）。默认 `workspace/citations/references.bib`，可指向任意论文项目目录；空则回退默认 |
 | `rag.storage.uri` / `rag.storage.collection` / `rag.storage.batch_size` | Milvus 地址（默认 `http://localhost:19530`）/ 集合名（默认 `paperflow`）/ 全表分页行数（默认 1000） |
@@ -360,7 +361,7 @@ mcp_servers                     # 保留顶层（本身即映射）
 | `agents.timeouts` | 子 agent 超时覆盖表（note-agent 900 / paper-agent 420 / review-agent 300 / research-agent 1800 / rag-agent 900 / citation-agent 300 / memory-agent 180;按审计数据校准,见 spec 2026-09-05-agent-timeout-recalibration）；未命中的 agent 回退类默认 120s；自由 dict，**仅 YAML**（不派生 env） |
 | `mcp_servers` | MCP server 接入配置（顶层 dict，仅 YAML 无环境变量形态）：每 server 声明 transport(stdio/http)/command/args/url/agents/超时/工具名单；连接失败跳过不挡启动，写类工具默认禁用。可注释示例段见 `docs/learning/11-MCP客户端.md`（gitignored 本地文档） |
 
-环境变量（按路径派生，示例非全集）：`PAPERFLOW_LLM_API_KEY` / `PAPERFLOW_LLM_BASE_URL` / `PAPERFLOW_LLM_MODEL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_RUNTIME_WORKSPACE` / `PAPERFLOW_RUNTIME_AGENTS_DIR` / `PAPERFLOW_RUNTIME_MAX_RISK` / `PAPERFLOW_CORPUS_NOTE_DIR` / `PAPERFLOW_CORPUS_PDF_DIR` / `PAPERFLOW_CORPUS_RESEARCH_DIR` / `PAPERFLOW_CORPUS_CITATIONS_BIB_PATH` / `PAPERFLOW_INTENT_ENABLED` / `PAPERFLOW_INTENT_HISTORY_MESSAGES` / `PAPERFLOW_INTENT_JEV_API_KEY` / `PAPERFLOW_INTENT_JEV_BASE_URL` / `PAPERFLOW_INTENT_JEV_MODEL` / `PAPERFLOW_RAG_EMBEDDING_API_KEY` / `PAPERFLOW_RAG_EMBEDDING_BASE_URL` / `PAPERFLOW_RAG_EMBEDDING_EMBED_MODEL` / `PAPERFLOW_RAG_EMBEDDING_RERANK_MODEL` / `PAPERFLOW_RAG_RETRIEVER_TOP_K` / `PAPERFLOW_RAG_RETRIEVER_RERANK_CANDIDATES` / `PAPERFLOW_RAG_QUERY_REWRITE_MODEL` / `PAPERFLOW_RAG_CHUNKER_MAX_TOKENS` / `PAPERFLOW_RAG_CHUNKER_OVERLAP_TOKENS` / `PAPERFLOW_RAG_STORAGE_URI` / `PAPERFLOW_RAG_STORAGE_COLLECTION` / `PAPERFLOW_RAG_STORAGE_TIMEOUT` / `PAPERFLOW_RAG_STORAGE_WRITE_TIMEOUT` / `PAPERFLOW_RAG_TOOLS_EXCERPT_CHARS` / `PAPERFLOW_MEMORY_CONSOLIDATION_ENABLED` / `PAPERFLOW_MEMORY_CONSOLIDATION_AGENT_FREQUENCY` / `PAPERFLOW_SESSION_RESUME_REPLAY` / `PAPERFLOW_SESSION_RESUME_REPLAY_LIMIT`。`agents.timeouts` 与 `mcp_servers` 是自由 dict，仅 YAML 可配。env 恒为字符串，按目标字段当前类型做 bool/int 转换。运营类 env（`PAPERFLOW_SKIP_BOOTSTRAP` / `PAPERFLOW_FILE_MODE`）与 `PaperFlowConfig` 无关，不在本表。
+环境变量（按路径派生，示例非全集）：`PAPERFLOW_LLM_API_KEY` / `PAPERFLOW_LLM_BASE_URL` / `PAPERFLOW_LLM_MODEL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_RUNTIME_WORKSPACE` / `PAPERFLOW_RUNTIME_AGENTS_DIR` / `PAPERFLOW_RUNTIME_MAX_RISK` / `PAPERFLOW_CORPUS_NOTE_DIR` / `PAPERFLOW_CORPUS_PDF_DIR` / `PAPERFLOW_CORPUS_RESEARCH_DIR` / `PAPERFLOW_CORPUS_CITATIONS_BIB_PATH` / `PAPERFLOW_INTENT_ENABLED` / `PAPERFLOW_INTENT_HISTORY_MESSAGES` / `PAPERFLOW_INTENT_JEV_API_KEY` / `PAPERFLOW_INTENT_JEV_BASE_URL` / `PAPERFLOW_INTENT_JEV_MODEL` / `PAPERFLOW_RAG_EMBEDDING_API_KEY` / `PAPERFLOW_RAG_EMBEDDING_BASE_URL` / `PAPERFLOW_RAG_EMBEDDING_EMBED_MODEL` / `PAPERFLOW_RAG_EMBEDDING_RERANK_MODEL` / `PAPERFLOW_RAG_RETRIEVER_TOP_K` / `PAPERFLOW_RAG_RETRIEVER_RERANK_CANDIDATES` / `PAPERFLOW_RAG_QUERY_REWRITE_MODEL` / `PAPERFLOW_RAG_CHUNKER_MAX_TOKENS` / `PAPERFLOW_RAG_CHUNKER_OVERLAP_TOKENS` / `PAPERFLOW_RAG_STORAGE_URI` / `PAPERFLOW_RAG_STORAGE_COLLECTION` / `PAPERFLOW_RAG_STORAGE_TIMEOUT` / `PAPERFLOW_RAG_STORAGE_WRITE_TIMEOUT` / `PAPERFLOW_RAG_TOOLS_EXCERPT_CHARS` / `PAPERFLOW_MEMORY_CONSOLIDATION_ENABLED` / `PAPERFLOW_SESSION_RESUME_REPLAY` / `PAPERFLOW_SESSION_RESUME_REPLAY_LIMIT`。`agents.timeouts` 与 `mcp_servers` 是自由 dict，仅 YAML 可配。env 恒为字符串，按目标字段当前类型做 bool/int 转换。运营类 env（`PAPERFLOW_SKIP_BOOTSTRAP` / `PAPERFLOW_FILE_MODE`）与 `PaperFlowConfig` 无关，不在本表。
 
 ### Key design decisions
 

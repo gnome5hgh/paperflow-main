@@ -1,6 +1,6 @@
 """核心记忆块数据模型：BaseBlock（块内容与元数据）+ Block（含持久化字段）。
 
-一个 Block 就是一段「可被 LLM 编辑的命名记忆」——label 是名字（assistant、profile、unread_list、history_list等），value 是内容（文件内容），
+一个 Block 就是一段「可被 LLM 编辑的命名记忆」——label 是名字（assistant、profile、unread_list、feedback_* 分册等），value 是内容（文件内容），
 limit 是长度上限，read_only 表示保护块（不可改/删）。
 """
 from __future__ import annotations

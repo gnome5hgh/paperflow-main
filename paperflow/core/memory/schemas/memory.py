@@ -61,7 +61,7 @@ class Memory:
 
         设计意图：
             - 常驻核心块（assistant/profile）每轮都完整注入，保障基本身份和用户画像。
-            - 其他块（如 unread_list, history_list 等）不直接包含内容，只通过
+            - 其他块（如 unread_list、feedback_* 分册等）不直接包含内容，只通过
               文件树索引暴露存在性，LLM 可按需读取具体文件内容。
             - 这样在上下文窗口中节省大量 token，同时保持全量记忆可访问。
         """

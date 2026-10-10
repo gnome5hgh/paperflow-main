@@ -15,7 +15,7 @@ agents/
 ├─ review-agent/     # 审查域责任人：笔记审查 / 下载门禁 / 选题产物审查（开审前加载对应流程 skill）
 ├─ citation-agent/   # 引用域责任人：references.bib 同步/新增/删除/查询导出
 ├─ rag-agent/        # 语料索引责任人：检索 + 入库 + 删除后全量收敛
-└─ memory-agent/     # 记忆域责任人：11 件记忆工具全装，其余 agent 一件不装
+└─ memory-agent/     # 记忆域责任人：9 件记忆工具全装，其余 agent 一件不装
 ```
 
 命名一律 `<域>-agent`；`supervisor` 是唯一的例外（它是编排层，不是领域责任人）。
