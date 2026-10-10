@@ -1,4 +1,4 @@
-"""Sleeptime 记忆整合后台：把对话增量沉淀进核心记忆块。
+"""MemoryConsolidator 记忆整合后台：把对话增量沉淀进核心记忆块。
 
 CLI REPL 每轮循环顶部调 run_once_if_due()：读取未消费历史 → LLM 用记忆编辑
 工具语义输出编辑指令（append/replace）→ 全量预验证 → 经 BlockManager
@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Sleeptime", "MemoryEditBatch", "MemoryEdit",
+__all__ = ["MemoryConsolidator", "MemoryEditBatch", "MemoryEdit",
            "MemoryEditValidationError"]
 
 # ============================================================================
@@ -71,7 +71,7 @@ class MemoryEditValidationError(ValueError):
     """
 
 
-class Sleeptime:
+class MemoryConsolidator:
     """后台记忆整合器：把对话增量沉淀进核心记忆块。
 
     整合节奏由触发参数（frequency/min_interval_s）控制；进度由游标跟踪——
@@ -205,7 +205,7 @@ class Sleeptime:
 
             # 若 block_manager 支持 git，则提交变更
             if hasattr(self.block_manager, '_commit') and callable(self.block_manager._commit):
-                self.block_manager._commit(f"sleeptime: {len(new_msgs)} 条历史")
+                self.block_manager._commit(f"consolidation: {len(new_msgs)} 条历史")
 
             # 成功后推进游标到当前总行数，并重置失败计数
             self._cursor = self.message_manager.size(self.agent_state.agent_id)
@@ -236,7 +236,7 @@ class Sleeptime:
             构造好的提示文本（字符串）。
         """
         parts = [
-            "你是 paperFlow 的记忆整合器（sleeptime）。分析以下新对话，输出记忆编辑指令。",
+            "你是 paperFlow 的记忆整合器（consolidation）。分析以下新对话，输出记忆编辑指令。",
             "可写文件与定向规则（只能写下列文件，不得发明新文件）：",
             "- system/profile.md — 学到用户身份/研究方向/偏好/背景 → "
             "append（新增条目）或 replace（整理重写）",

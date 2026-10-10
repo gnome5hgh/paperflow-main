@@ -2,7 +2,7 @@
 """Token 计数编码单点共享。
 
 RAG 切块（``rag/parsers/chunker.py``）与 core.memory 上下文压缩
-（``core/memory/compaction.py``）共用同一 tiktoken 编码口径：改 ``TOKEN_ENCODING``
+（``core/memory/services/compaction.py``）共用同一 tiktoken 编码口径：改 ``TOKEN_ENCODING``
 会同时改变切块边界（需重建索引）与压缩 token 估算。放在 ``core`` 根下作叶子模块——
 ``rag`` 与 ``core.memory`` 都向下依赖它，不存在反向依赖。
 

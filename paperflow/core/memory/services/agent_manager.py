@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from paperflow.core.memory.orm.database import MemoryDB
+from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.schemas.agent import AgentState
 from paperflow.core.memory.schemas.memory import Memory
 from paperflow.core.memory.services.block_manager import BlockManager
@@ -177,7 +177,7 @@ class AgentManager:
 
         说明：逐会话查询消息表（单用户场景会话数量少，无需 JOIN）。
         """
-        from paperflow.core.memory.orm.message import count_messages
+        from paperflow.core.memory.storage.message import count_messages
 
         rows = [dict(r) for r in self.db.execute(
             "SELECT agent_id, created_at FROM agent_state"

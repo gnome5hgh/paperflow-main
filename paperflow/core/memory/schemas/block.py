@@ -89,7 +89,7 @@ class Block(BaseBlock):
 
     @classmethod
     def profile(cls, value: str) -> "Block":
-        """构造 label=profile 的块（用户画像块，Sleeptime 定向写入目标）。
+        """构造 label=profile 的块（用户画像块，MemoryConsolidator 定向写入目标）。
 
         Args:
             value: 用户画像文本内容。
@@ -98,7 +98,7 @@ class Block(BaseBlock):
             一个 label 固定为 "profile" 的 Block 实例。
 
         用途：
-            - Sleeptime 过程将用户身份/偏好/背景持续写入此块。
+            - MemoryConsolidator 过程将用户身份/偏好/背景持续写入此块。
             - 与 assistant 块共同构成 Memory.compile() 的常驻 system 内容。
         """
         return cls(label="profile", value=value)
@@ -116,7 +116,7 @@ class Block(BaseBlock):
         用途：
             - 记录与用户协作中学到的角色调整与工作方式偏好（区别于
               各子 agent 静态的 AGENT.md 系统提示）。
-            - Sleeptime 以 replace 整块重写的方式维护。
+            - MemoryConsolidator 以 replace 整块重写的方式维护。
         """
         return cls(label="assistant", value=value)
 

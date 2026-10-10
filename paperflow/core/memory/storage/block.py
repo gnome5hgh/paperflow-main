@@ -8,8 +8,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from paperflow.core.memory.errors import ConcurrentUpdateError
-from paperflow.core.memory.orm.database import MemoryDB
+from paperflow.core.memory.common.errors import ConcurrentUpdateError
+from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.schemas.block import Block
 
 __all__ = ["insert_block", "select_block", "select_block_by_label", "select_blocks",

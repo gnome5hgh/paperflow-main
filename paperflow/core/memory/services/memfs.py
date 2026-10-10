@@ -126,7 +126,7 @@ class MemFS:
         """
         if self.db is None:
             return []
-        from paperflow.core.memory.orm import block as block_orm
+        from paperflow.core.memory.storage import block as block_orm
 
         changed: list[Block] = []
         # 遍历数据库中所有块

@@ -37,12 +37,12 @@ from paperflow.core.security import (
     SecurityScanMiddleware, PolicyEngineMiddleware,
 )
 from paperflow.core.llm import StructuredOutput
-from paperflow.core.memory.orm.database import MemoryDB
+from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
 from paperflow.core.memory.services.message_manager import MessageManager
 from paperflow.tools.memory import set_memory_context, MemoryToolsContext
 from paperflow.core.memory.services.agent_manager import AgentManager
-from paperflow.core.memory.sleeptime import Sleeptime
+from paperflow.core.memory.services.consolidation import MemoryConsolidator
 from paperflow.core.intent.services.jev import JevClient, JevUnavailable
 from paperflow.core.intent.services.service import IntentService
 from paperflow.core.intent.rules.taxonomy import TaxonomyError, load_taxonomy
@@ -302,7 +302,7 @@ def main(argv: list[str] | None = None) -> int | None:
         6. 创建 AgentState 和结构化输出。
         7. 设置记忆工具上下文。
         8. 构造安全中间件、意图管线。
-        9. 构造 Supervisor Agent 和 Sleeptime。
+        9. 构造 Supervisor Agent 和 MemoryConsolidator。
         10. 运行 REPL 主循环。
 
     关键依赖顺序：
@@ -398,7 +398,7 @@ def main(argv: list[str] | None = None) -> int | None:
 
     # 会话标识：本次进程启动即一个会话；--resume 时复用已落盘会话 id。
     # AgentManager.create_agent 的 agent_id 与 Agent.session_id 必须一致——
-    # 记忆工具（SQL 按 agent_id 键控）与 Sleeptime 都挂在它下面，三者对不上
+    # 记忆工具（SQL 按 agent_id 键控）与 MemoryConsolidator 都挂在它下面，三者对不上
     # 会各自读到空数据。
     memory_dir = Path(config.runtime.workspace) / "memory"
     db = MemoryDB(memory_dir / "memory.db")
@@ -459,7 +459,7 @@ def main(argv: list[str] | None = None) -> int | None:
     ))
 
     # 安全管道：四中间件（经验记忆中间件已移除——工具调用经验不再注入 prompt，
-    # 改由 Sleeptime 后台整合进核心记忆块）。
+    # 改由 MemoryConsolidator 后台整合进核心记忆块）。
     middlewares = [
         # 审计目录从 workspace 派生：默认按 cwd 相对定位会让
         # PAPERFLOW_RUNTIME_WORKSPACE 重定向时审计仍写进仓库 data/security/audit，与其他会话的审计混写；
@@ -524,14 +524,14 @@ def main(argv: list[str] | None = None) -> int | None:
         confirm_callback=_make_confirm_callback(io, renderer, center),
         session_id=session_id,
     )
-    sleeptime = Sleeptime(
+    consolidator = MemoryConsolidator(
         agent_state, block_manager, message_manager,
-        structured, enable=config.memory.sleeptime_enable,
-        frequency=config.memory.sleeptime_agent_frequency)
+        structured, enable=config.memory.consolidation_enabled,
+        frequency=config.memory.consolidation_agent_frequency)
 
     try:
         asyncio.run(_repl(supervisor,
-                          io=io, renderer=renderer, sleeptime=sleeptime,
+                          io=io, renderer=renderer, consolidator=consolidator,
                           config=config, resume_hint=resume_hint,
                           confirm_center=center, resume_replay=resume_replay,
                           mcp_manager=mcp_manager))

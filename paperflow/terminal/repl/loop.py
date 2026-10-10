@@ -11,7 +11,7 @@ cli.py 保留装配组合根（main），本模块承载每轮交互。与 termi
 
 嵌套关系：
 进程
-└── _repl 主循环                      ← 每轮：sleeptime tick → 读输入 → 起 run_task → 渲染
+└── _repl 主循环                      ← 每轮：consolidation tick → 读输入 → 起 run_task → 渲染
      └── supervisor.run(“用户输入”)     ← 任务级：ReAct 循环（turn 0..max_turns）
           └── turn: LLM → 工具们
                └── spawn 工具 → child.run(“子任务”)   ← 嵌套的 run（子 agent）
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _repl(supervisor: Agent, *,
-                io: InputIO, renderer: StreamRenderer, sleeptime=None,
+                io: InputIO, renderer: StreamRenderer, consolidator=None,
                 config: PaperFlowConfig | None = None,
                 resume_hint: str | None = None, confirm_center=None,
                 resume_replay: ResumeReplay | None = None,
@@ -48,7 +48,7 @@ async def _repl(supervisor: Agent, *,
     REPL 主循环。
 
     每轮：
-        1. 触发后台记忆整合（Sleeptime）。
+        1. 触发后台记忆整合（MemoryConsolidator）。
         2. 读取用户输入（通过 io.read，工作线程）。
         4. 重置渲染器（renderer.reset），注册 SIGINT 处理器以取消运行中的任务。
         5. 异步执行 supervisor.run(query)。
@@ -66,7 +66,7 @@ async def _repl(supervisor: Agent, *,
         supervisor: 主 Agent 实例。
         io: 输入适配器。
         renderer: 渲染器。
-        sleeptime: 后台记忆整合调度器（可选）。
+        consolidator: 后台记忆整合调度器（可选）。
         config: 配置（仅用于横幅，若为 None 则从环境加载）。
         resume_hint: 无参启动检测到历史会话时的 dim 提示（可选）。
         confirm_center: 确认/提问的唯一消费者（可选，未注入则自建）。
@@ -122,11 +122,11 @@ async def _repl(supervisor: Agent, *,
         # 其余一切异常都在循环内消化并 continue——单轮失败不该带走整个会话。
         while True:
             # 每轮循环顶部触发后台记忆整合——放在读 stdin 之前，让用户思考期间累积的对话被整合，整合不阻塞本轮输入。
-            if sleeptime is not None:
+            if consolidator is not None:
                 try:
-                    await sleeptime.run_once_if_due()
-                except Exception:  # Sleeptime 失败不打断 REPL
-                    logger.warning("sleeptime tick failed", exc_info=True)
+                    await consolidator.run_once_if_due()
+                except Exception:  # MemoryConsolidator 失败不打断 REPL
+                    logger.warning("consolidation tick failed", exc_info=True)
             try:
                 # io.read 必须经 to_thread 在 worker 线程执行：
                 # PromptToolkitIO.read 内部session.prompt() 会自建事件循环（asyncio.run），

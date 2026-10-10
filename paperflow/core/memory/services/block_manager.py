@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Callable
 
 from paperflow.core.memory.constants import DEFAULT_ASSISTANT, DEFAULT_PROFILE
-from paperflow.core.memory.errors import ConcurrentUpdateError
-from paperflow.core.memory.orm import block as block_orm
-from paperflow.core.memory.orm.database import MemoryDB
+from paperflow.core.memory.common.errors import ConcurrentUpdateError
+from paperflow.core.memory.storage import block as block_orm
+from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.schemas.block import Block
 
 __all__ = ["BlockManager", "GitEnabledBlockManager"]

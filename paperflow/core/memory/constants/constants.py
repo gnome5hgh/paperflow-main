@@ -1,19 +1,19 @@
 """记忆模块的常量——工具名集合与首启播种的核心块文案。
 
-BASE_MEMORY_TOOLS 是装配在 supervisor 上的记忆编辑工具名；BASE_SLEEPTIME_TOOLS
-是 Sleeptime 后台整合允许生成的编辑工具子集（Sleeptime 只做块级增改，不做
+BASE_MEMORY_TOOLS 是装配在 supervisor 上的记忆编辑工具名；CONSOLIDATION_EDIT_TOOLS
+是 MemoryConsolidator 后台整合允许生成的编辑工具子集（MemoryConsolidator 只做块级增改，不做
 unread_list/history_append 这类清单维护）。两者都只声明「工具名集合」，供
 装配与校验读取。
 """
 
-__all__ = ["BASE_MEMORY_TOOLS", "BASE_SLEEPTIME_TOOLS", "DEFAULT_PROFILE", "DEFAULT_ASSISTANT"]
+__all__ = ["BASE_MEMORY_TOOLS", "CONSOLIDATION_EDIT_TOOLS", "DEFAULT_PROFILE", "DEFAULT_ASSISTANT"]
 
 BASE_MEMORY_TOOLS = {
     "memory_replace", "memory_insert", "memory_rethink",
     "memory_finish_edits", "memory", "memory_apply_patch",
     "unread_list_add", "unread_list_remove", "history_append",
 }
-BASE_SLEEPTIME_TOOLS = {
+CONSOLIDATION_EDIT_TOOLS = {
     "memory_replace", "memory_insert", "memory_rethink", "memory_finish_edits",
 }
 
@@ -25,6 +25,6 @@ DEFAULT_PROFILE = (
     "memory_insert 逐步积累用户的身份、偏好、背景。"
 )
 DEFAULT_ASSISTANT = (
-    "工作方式记忆（由 sleeptime 维护）：记录与用户协作中学到的"
+    "工作方式记忆（由 consolidation 维护）：记录与用户协作中学到的"
     "助手角色调整与工作方式偏好；当前为空。"
 )

@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timezone
 
 from paperflow.core.memory.constants import MessageRole
-from paperflow.core.memory.orm.database import MemoryDB
+from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.schemas.message import Message
 
 __all__ = ["insert_message", "select_messages_by_agent", "select_messages_by_ids",
@@ -165,7 +165,7 @@ def search_messages(db: MemoryDB, agent_id: str, query: str,
 
 
 def count_messages(db: MemoryDB, agent_id: str) -> int:
-    """返回该 agent 的消息总数（Sleeptime 游标与 size() 的数据源）。
+    """返回该 agent 的消息总数（MemoryConsolidator 游标与 size() 的数据源）。
 
     Args:
         db: 数据库连接。

@@ -833,7 +833,7 @@ class Agent:
         Returns:
             True 表示已超压缩阈值（无持久化层时恒 False）。
         """
-        from paperflow.core.memory.compaction import should_compress
+        from paperflow.core.memory.services.compaction import should_compress
         if self.compaction is None or self.message_manager is None:
             return False
         return should_compress(messages, self.compaction, self.llm.context_window)
@@ -916,7 +916,7 @@ class Agent:
             if self._needs_compaction(messages) and self.structured is not None:
                 # 截断续写与压缩重建互斥:压缩可能驱逐"半截+续写提示"(in-context 重建),先弃掉累积器里的半截——续写无参照即完整重答,避免「半截 + 完整重答」重复交付。
                 accumulated.clear()
-                from paperflow.core.memory.compaction import run_compaction
+                from paperflow.core.memory.services.compaction import run_compaction
                 new_window = await run_compaction(
                     self._messages, self.compaction, self.llm, self.structured)
                 # 摘要落盘 + message_ids 更新为「摘要 + 保留尾部」——压缩产物跨轮

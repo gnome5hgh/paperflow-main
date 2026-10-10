@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 
 from paperflow.core.llm import Message as WireMessage
 from paperflow.core.memory.constants import MessageRole
-from paperflow.core.memory.orm import message as message_orm
-from paperflow.core.memory.orm.database import MemoryDB
+from paperflow.core.memory.storage import message as message_orm
+from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.schemas.message import Message
 from paperflow.core.security.text import sanitize_surrogates
 
@@ -182,7 +182,7 @@ class MessageManager:
         return [_row_to_schema(r) for r in rows]
 
     def size(self, agent_id: str) -> int:
-        """返回该 agent 已落盘消息总数（Sleeptime 游标与进度判断的数据源）。
+        """返回该 agent 已落盘消息总数（MemoryConsolidator 游标与进度判断的数据源）。
 
         Args:
             agent_id: agent 标识。

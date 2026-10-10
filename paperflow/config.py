@@ -36,7 +36,7 @@ def _default_compaction():
     """CompactionSettings 惰性导入——compaction.py 依赖 llm.py、llm.py 依赖本模块，
     顶层 import 会构成 config→compaction→llm→config 循环（部分初始化导入失败）。
     字段默认值走此工厂，把导入推迟到首次构造时，此刻 config 已完整加载。"""
-    from paperflow.core.memory.compaction import CompactionSettings
+    from paperflow.core.memory.services.compaction import CompactionSettings
     return CompactionSettings()
 
 
@@ -443,15 +443,15 @@ class MemoryConfig:
     """记忆系统配置。
 
     Attributes:
-        sleeptime_enable: bool，Sleeptime 后台整合开关
-        sleeptime_agent_frequency: int，每 N 条新消息检查一次
+        consolidation_enabled: bool，MemoryConsolidator 后台整合开关
+        consolidation_agent_frequency: int，每 N 条新消息检查一次
     """
 
-    #: Sleeptime 后台整合开关
-    sleeptime_enable: bool = True
+    #: MemoryConsolidator 后台整合开关
+    consolidation_enabled: bool = True
 
-    #: Sleeptime 触发频率（每 N 条新消息检查一次）
-    sleeptime_agent_frequency: int = 50
+    #: MemoryConsolidator 触发频率（每 N 条新消息检查一次）
+    consolidation_agent_frequency: int = 50
 
 
 @dataclass
@@ -691,7 +691,7 @@ class PaperFlowConfig:
     #: RAG 检索栈（嵌入/检索/改写/切块/索引/存储/解析/工具）
     rag: RagConfig = field(default_factory=RagConfig)
 
-    #: 记忆系统（sleeptime 后台整合）
+    #: 记忆系统（consolidation 后台整合）
     memory: MemoryConfig = field(default_factory=MemoryConfig)
 
     #: 会话恢复（屏上历史回放）
