@@ -1,46 +1,175 @@
-"""首页书目元数据提取：读 PDF 首页文本，用结构化输出取作者 / 年份 / 期刊。
+"""书目元数据提取：用 pdf2bib 定位标识符并取回作者 / 年份 / 期刊。
 
 **只做这一件事**——标题不从这里取（标题是解析器的一层产出，见
 `rag/parsers/pdf_extract.pdf_title`）。书目元数据只有引用域消费（语料索引是唯一调用点），
 所以代码归引用域。
 
-**为什么用模型而不是本地启发式**：模型能把依据回显（读到的作者行、版权行），拿不到
-就如实上报；本地启发式「拿到了错的」不会触发兜底，会静默写出年份错误的 bib 条目——
-比缺字段更难发现。代价是这里有一次 LLM 调用，所以调用方按 mtime 缓存结果，别重复调用。
-"""
-import asyncio
-import logging
-from dataclasses import dataclass
+**取数方式**：交给 pdf2bib——它先在本地从 PDF 元数据、文件名、正文里找出 DOI 或
+arXiv 标识符，再拿标识符去公开档案（Crossref / arXiv）换回权威书目。相比自己读首页，
+它的作者、年份、期刊来自登记库而非版面猜测，拿不到标识符时如实返回空，不编造。
+代价是这里需要联网：联网失败、无标识符、文件读不动，一律降级为空书目，不抛。
 
-from pydantic import BaseModel
+**副作用已在配置里关掉**：pdf2bib 默认会把找到的标识符写回 PDF 元数据，并打印逐步骤
+日志。这里在首次调用前统一关掉写回与日志，绝不改动语料文件。
+"""
+import logging
+import threading
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-#: 送进模型的首页文本上限（字符）：作者、年份、期刊都印在首页最上面一段，
-#: 取多了只会把摘要正文也塞进去，白烧 token。
-FIRST_PAGE_CHARS = 2000
+#: 单篇 PDF 的取数超时（秒）。pdf2bib 内部的 HTTP 请求没有超时设置，网络半开
+#: （能连上但不响应）时会一直挂住；语料刷新持着引用管理的锁，挂住会拖垮整个
+#: 引用域，所以这里兜一个上限，超时按「取不到」降级。
+_CALL_TIMEOUT_SECONDS = 60.0
 
-_PROMPT = (
-    "从下面的论文首页文本里读出版权信息中的书目元数据。只读文本里真的写了的内容，"
-    "任何一项读不到就留空字符串——**不要推测、不要用常识补全**，宁可空着。\n"
-    "输出 JSON：{{authors, year, journal}}。\n"
-    "authors 给作者全名串（多人用逗号分隔）；year 给四位年份；journal 给期刊或会议名。\n"
-    "首页文本：\n{text}"
-)
+_config_lock = threading.Lock()
+_configured = False
 
 
-class PaperMeta(BaseModel):
-    """书目元数据的结构化输出模型。
+def _ensure_configured() -> None:
+    """首次调用前配置 pdf2bib / pdf2doi：关掉元数据写回、日志与 MuPDF 报错。
 
-    Attributes:
-        authors: 作者串（多人用逗号分隔）；读不到为空串。
-        year: 四位年份字符串；读不到为空串。
-        journal: 期刊或会议名；读不到为空串。
+    三项都是进程级全局设置，只会生效一次。关写回是硬要求——默认行为会往用户的
+    PDF 里加标签；关日志与 MuPDF 报错是为了不污染 REPL 输出。
     """
+    global _configured
+    with _config_lock:
+        if _configured:
+            return
+        import fitz
 
-    authors: str = ""
-    year: str = ""
-    journal: str = ""
+        import pdf2bib
+        import pdf2doi
+
+        for mod in (pdf2bib, pdf2doi):
+            mod.config.set("verbose", False)
+            mod.config.set("save_identifier_metadata", False)
+        # 关掉 Google 搜索兜底：它靠抓取网页、又慢又不稳，且对学术 PDF 命中率低；
+        # 关掉后仍会读元数据 / 文件名 / 正文找标识符，并做权威性校验。
+        pdf2doi.config.set("websearch", False)
+        # MuPDF 对损坏 PDF 的报错走 C 层直写 stderr，不走 logging，只能从源头关。
+        fitz.TOOLS.mupdf_display_errors(False)
+        _configured = True
+
+
+def _run_with_timeout(fn, timeout: float):
+    """在守护线程里跑 fn 并最多等 timeout 秒；超时抛 TimeoutError。
+
+    用守护线程而不是线程池：卡住的线程若一直不返回，守护线程不会拖住解释器退出
+    （REPL 场景下进程要能正常关掉）。超时后该线程仍在后台跑，但它做的事情是只读的
+    HTTP 取数与返回，不会再影响调用方。
+
+    Args:
+        fn: 无参可调用，返回取数结果。
+        timeout: 最长等待秒数。
+
+    Returns:
+        fn 的返回值。
+
+    Raises:
+        TimeoutError: 超过 timeout 仍未返回。
+        BaseException: fn 自身抛出的异常原样上抛。
+    """
+    box: dict = {}
+
+    def _target() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as e:      # noqa: BLE001 — 原样带回调用线程再上抛
+            box["error"] = e
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"书目提取超时（>{timeout:g}s）")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def _lookup(pdf_path: str) -> dict | None:
+    """调用 pdf2bib 取一篇 PDF 的原始结果（含标识符与书目元数据）。
+
+    Args:
+        pdf_path: PDF 文件路径。
+
+    Returns:
+        dict | None: pdf2bib 的原始返回；无标识符时其 ``metadata`` 为空或为 None。
+    """
+    _ensure_configured()
+    import pdf2bib
+
+    return pdf2bib.pdf2bib(str(pdf_path))
+
+
+def _authors_text(raw) -> str:
+    """把 pdf2bib 的作者列表拼成 BibTeX 风格的 ``Family, Given`` 串。
+
+    键生成取首个 ``[,\\s]`` 之前的分词当作者姓氏，各渲染器按 ``" and "`` 拆分作者，
+    所以这里必须产出「姓, 名 and 姓, 名」的形态，不能改成逗号分隔的全名串。
+
+    Args:
+        raw: pdf2bib 的作者字段：``[{"given": …, "family": …}, …]``，也可能是字符串。
+
+    Returns:
+        str: 拼好的作者串；无作者时为空串。
+    """
+    if not raw:
+        return ""
+    if isinstance(raw, str):
+        return raw.strip()
+    parts = []
+    for item in raw:
+        if isinstance(item, dict):
+            family = str(item.get("family") or "").strip()
+            given = str(item.get("given") or "").strip()
+            if family and given:
+                parts.append(f"{family}, {given}")
+            elif family or given:
+                parts.append(family or given)
+        elif isinstance(item, str) and item.strip():
+            parts.append(item.strip())
+    return " and ".join(parts)
+
+
+def _journal_text(meta: dict) -> str:
+    """从书目字段里取期刊名（期刊论文取 journal，会议取 booktitle，预印本取 ejournal）。
+
+    Args:
+        meta: pdf2bib 的 ``metadata`` 字典。
+
+    Returns:
+        str: 期刊 / 会议 / 预印本源名；都取不到时为空串。
+    """
+    for key in ("journal", "booktitle", "ejournal"):
+        value = meta.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _to_bibmeta(result) -> "BibMeta":
+    """把 pdf2bib 的返回映射成 BibMeta。
+
+    Args:
+        result: pdf2bib 的原始返回（dict 或 None）。
+
+    Returns:
+        BibMeta: 三项书目；任何一项缺失即留空串。
+    """
+    if not isinstance(result, dict):
+        return BibMeta()
+    meta = result.get("metadata")
+    if not isinstance(meta, dict):
+        return BibMeta()
+    year = meta.get("year")
+    return BibMeta(
+        authors=_authors_text(meta.get("author")),
+        year=str(year).strip() if year not in (None, "") else "",
+        journal=_journal_text(meta),
+    )
 
 
 @dataclass(frozen=True)
@@ -68,40 +197,29 @@ class BibMeta:
 
 
 class PaperMetaExtractor:
-    """首页文本 → 书目元数据（一次结构化 LLM 调用，失败即返回空）。
+    """PDF → 书目元数据（pdf2bib 取标识符再联网取权威书目，失败即返回空）。
 
     Attributes:
-        _llm: LLMClient，文本模型客户端（引用域从 config.llm 惰性构造）
-        _structured: StructuredOutput | None，结构化输出通道（惰性构造，测试可注入）
+        _lookup: 取数函数（默认走 pdf2bib；测试可注入桩，避免联网）
+        _timeout: 单次取数超时（秒）
     """
 
-    def __init__(self, llm, structured=None):
-        """绑定模型客户端；结构化输出通道可注入（测试传桩）。
+    def __init__(self, lookup=None, timeout: float = _CALL_TIMEOUT_SECONDS):
+        """绑定取数函数；取数实现可注入（测试传桩，避免真实联网）。
 
         Args:
-            llm: LLMClient 实例（书目提取用的文本模型）。
-            structured: StructuredOutput 实例；None 时按 llm 惰性构造。
+            lookup: 无参可调用 ``(pdf_path) -> dict | None``；None 时用 pdf2bib。
+            timeout: 单次取数超时（秒）。
         """
-        self._llm = llm
-        self._structured = structured
-
-    def _ensure_structured(self):
-        """惰性构造结构化输出通道（避免构造期就拉起 LLM 依赖）。
-
-        Returns:
-            StructuredOutput: 结构化输出通道。
-        """
-        if self._structured is None:
-            from paperflow.core.llm import StructuredOutput
-            self._structured = StructuredOutput(self._llm)
-        return self._structured
+        self._lookup = lookup
+        self._timeout = timeout
 
     def from_pdf(self, pdf_path: str) -> BibMeta:
-        """读 PDF 首页并取书目元数据；任何失败都返回空书目且不抛。
+        """取一篇 PDF 的书目元数据；任何失败都返回空书目且不抛。
 
-        降级语义：模型未配置、调用失败、首页读不出来、输出不合法——一律返回空
-        `BibMeta`。调用方据此退化为「缺书目的引用」并如实上报，绝不因书目取不到
-        而中断引用流程。
+        降级语义：依赖缺失、标识符找不到、联网失败、文件读不动、取数超时——一律
+        返回空 `BibMeta`。调用方据此退化为「缺书目的引用」并如实上报，绝不因书目
+        取不到而中断引用流程。
 
         Args:
             pdf_path: PDF 文件路径。
@@ -109,22 +227,10 @@ class PaperMetaExtractor:
         Returns:
             BibMeta: 取到的书目元数据；拿不到时各项为空串。
         """
+        fn = self._lookup or _lookup
         try:
-            from paperflow.rag.parsers.pdf_extract import first_page_text
-            text = first_page_text(pdf_path)[:FIRST_PAGE_CHARS]
+            result = _run_with_timeout(lambda: fn(pdf_path), self._timeout)
         except Exception as e:
-            logger.warning("读 PDF 首页失败，书目留空：%s", e)
+            logger.warning("书目提取失败，按空处理（%s）：%s", pdf_path, e)
             return BibMeta()
-        if not text.strip():
-            return BibMeta()
-        try:
-            out = asyncio.run(self._ensure_structured().extract(
-                _PROMPT.format(text=text), PaperMeta))
-        except Exception as e:
-            logger.warning("首页书目提取失败，书目留空：%s", e)
-            return BibMeta()
-        return BibMeta(
-            authors=(out.authors or "").strip(),
-            year=(out.year or "").strip(),
-            journal=(out.journal or "").strip(),
-        )
+        return _to_bibmeta(result)

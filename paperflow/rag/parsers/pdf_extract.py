@@ -594,33 +594,6 @@ def extract_pdf(path: str) -> PdfText:
     return result
 
 
-def first_page_text(path: str) -> str:
-    """取 PDF 首页的纯文本（每行一条，按版面阅读顺序）。
-
-    给「只需首页信息」的调用方用：作者、年份、期刊、版权行都印在首页最上面，
-    为此抽整篇是浪费。行内连续空白已折叠，行间用换行连接——保留行边界，调用方
-    自己能看出哪几行是署名区。
-
-    Args:
-        path: PDF 文件路径（可含 ~，可为相对路径）。
-
-    Returns:
-        str: 首页文本；文档没有页面时为空串。
-
-    Raises:
-        FileNotFoundError: 路径不存在。
-        Exception: 文件损坏、加密或不是 PDF 时按原样上抛。
-    """
-    import fitz
-
-    fitz.TOOLS.mupdf_display_errors(False)
-    resolved = Path(path).expanduser().resolve()
-    with fitz.open(str(resolved)) as doc:
-        if doc.page_count == 0:
-            return ""
-        return "\n".join(ln.text for ln in _page_lines(doc[0], 1))
-
-
 def pdf_title(path: str) -> str:
     """只取一个 PDF 的标题（轻路径：读元数据 + 首页版面，不抽全文）。
 

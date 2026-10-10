@@ -1,7 +1,7 @@
 """引用管理（溯源落地）：references.bib 读写 + 语料标题索引 + 编排。
 
 分层：`constants/`（枚举）· `schemas/`（数据模型）· `storage/`（bib 文件读写
-原语）· `parsers/`（首页书目提取）· `services/`（编排、语料索引、key 生成规则）。
+原语）· `parsers/`（pdf2bib 书目提取）· `services/`（编排、语料索引、key 生成规则）。
 对外只经本门面进入——懒加载单例 get_citation_manager() 让工具/CLI 共享同一实例；
 重组件（corpus 索引、书目提取器）在 CitationManager 内部首次使用时才构造。
 """

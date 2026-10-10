@@ -2,7 +2,7 @@
 
 corpus_titles.json 是「语料里有哪些论文」的快照，供引用解析做全标题精确
 匹配。标题与书目都来自既有实现：标题走 RAG 解析器的轻路径标题出口（元数据 +
-首页版面，判据宁空勿错），书目走首页书目提取器（一次 LLM 调用）。索引按
+首页版面，判据宁空勿错），书目走书目提取器（pdf2bib 联网取权威书目）。索引按
 (path, mtime_ns) 增量重建：只对新增/变更的 PDF 重提标题，删除的从索引移除。
 索引是易变投影——bib 才是稳定真相源。
 
@@ -22,7 +22,7 @@ class CorpusIndex:
 
     Attributes:
         config: PaperFlowConfig，语料目录来源
-        _meta: PaperMetaExtractor | None，惰性获取（首页书目提取）
+        _meta: PaperMetaExtractor | None，惰性获取（pdf2bib 书目提取）
         _lock: threading.RLock，保护索引重建与查询
         _cache_path: Path，语料标题缓存文件（workspace/citations/corpus_titles.json）
         _records: dict[str, dict]，归一化标题 → 论文记录
@@ -47,16 +47,14 @@ class CorpusIndex:
 
     # —— 惰性依赖（首次访问才构造重组件）——
     def _meta(self):
-        """惰性获取首页书目提取器（要动 LLM 才构造，只在真需要书目时才付这个代价）。
+        """惰性获取书目提取器（首次用才构造，避免无谓拉起取数依赖）。
 
         Returns:
             PaperMetaExtractor: 书目提取器实例。
         """
         if self._meta_extractor is None:
             from paperflow.citations.parsers import PaperMetaExtractor
-            from paperflow.core.llm import LLMClient
-            self._meta_extractor = PaperMetaExtractor(
-                LLMClient(self.config.llm))
+            self._meta_extractor = PaperMetaExtractor()
         return self._meta_extractor
 
     @staticmethod
@@ -77,7 +75,7 @@ class CorpusIndex:
         """增量重建：扫描语料库目录，只对新增/变更文件重提标题，删除的移除。
 
         先读回上次的磁盘缓存再扫描，否则进程每次启动都会把每一篇 PDF 重新读一遍
-        首页、并重跑一次书目提取的模型调用。
+        首页、并重跑一次书目提取（联网取标识符 + 权威书目，整库会拖上几分钟）。
         """
         with self._lock:
             self.ensure_loaded()
@@ -194,7 +192,7 @@ class CorpusIndex:
         ``gen_key(title, authors, year)`` 且都读同一份记录里的 biblio。把取数推后，
         预备 key 会退化成短标题形态、与正式 key 对不上，产物里的 `[来源:key§节]`
         就失效了。结果随磁盘缓存按 mtime 增量，所以只在文件新增/变更时才付这次
-        调用；冷启动成本与「整库交给外部解析服务」相比只低不高。
+        调用（书目那条会联网取标识符与权威书目）。
 
         两路都自带降级：标题取不到、书目取不到都不抛——标题为空即不索引该 PDF
         （调用方的既有分支），书目为空则退化为缺字段的引用条目。

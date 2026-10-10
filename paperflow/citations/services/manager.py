@@ -33,7 +33,7 @@ class CitationManager:
 
         Args:
             config: 应用配置对象，需包含 workspace、citations_bib_path 等。
-            meta_extractor: 可注入的首页书目提取器（测试用），缺省惰性获取。
+            meta_extractor: 可注入的书目提取器（测试用），缺省惰性获取。
         """
         self.config = config
         # bib 路径：优先使用 config 指定，否则 fallback 到 workspace/citations/references.bib
@@ -289,7 +289,7 @@ class CitationManager:
 
         设计原则（真相源稳定）：
             references.bib 是权威真相源，绝不重写。但 PDF 文件可能在入库后更新了元数据
-            （如首页书目重新提取后获得了更全的期刊信息）。
+            （如书目重新提取后获得了更全的期刊信息）。
             `_merged_entry` 在不触碰 bib 文件的前提下，将 bib 中缺失的字段
             （author/journal/year/volume/pages）用 PDF 最新元数据补齐，供渲染使用。
 
