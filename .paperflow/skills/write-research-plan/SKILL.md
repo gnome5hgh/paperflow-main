@@ -1,6 +1,6 @@
 ---
 name: write-research-plan
-description: 研究选题与计划的写作流程——从语料盘点到研究计划成稿，含盘点、survey/gaps 成稿、idea 卡、外部新颖性核查、方向确认与计划产出。触发：research-agent 收到「找研究方向 / 帮我选题 / 根据笔记定课题 / 梳理研究空白」的任务时，开工前先加载本流程。边界：素材不足即熔断，不硬凑方向、不编造证据。
+description: 研究选题与计划的写作流程——从语料盘点到研究计划成稿，含盘点、survey/gaps 成稿、idea 卡、外部新颖性核查、方向确认与计划产出。触发：research-agent 收到「找研究方向 / 帮我选题 / 梳理研究空白」的任务时，开工前先加载本流程。边界：素材不足即熔断，不硬凑方向、不编造证据。
 metadata:
   version: "1.1.0"
   author: paperFlow

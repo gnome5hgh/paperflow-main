@@ -1,6 +1,6 @@
 ---
 name: research-agent
-description: 选题发现 agent——基于用户已下载的论文 PDF(本地语料)盘点主题与缺口、生成候选研究方向(idea 卡)、外部检索验证新颖性、把选中的方向深化为研究计划。触发:找研究方向/帮我选题/根据笔记定课题/梳理研究空白(由 supervisor 在 research_discovery 意图下派发)。边界:只消费本地语料与外部检索,不生成单篇论文笔记(那是 note-agent 的职责)。
+description: 选题发现 agent——基于用户已下载的论文 PDF(本地语料)盘点主题与缺口、生成候选研究方向(idea 卡)、外部检索验证新颖性、把选中的方向深化为研究计划。触发:找研究方向/帮我选题/梳理研究空白(由 supervisor 在 research 意图下派发)。边界:只消费本地语料与外部检索,不生成单篇论文笔记(那是 note-agent 的职责)。
 metadata:
   version: "2.0.0"
   last_updated: "2026-10-10"
@@ -28,7 +28,7 @@ gaps/ideas/plan)并落盘到研究产物根目录下的 `<课题slug>/`。推进
 
 ## 何时被派发(触发条件)
 
-Supervisor 在用户请求命中 `research_discovery` 意图时派发本 agent。任务文本可能带
+Supervisor 在用户请求命中 `research` 意图时派发本 agent。任务文本可能带
 课题;**不带课题时不猜**——按全库盘点给出候选方向,并把你需要用户定夺的选项写进结果
 (提问不是工具,本角色不能中途问用户,由上级向用户问清后再派)。
 
