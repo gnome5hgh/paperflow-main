@@ -18,6 +18,7 @@ import time
 
 from pymilvus import DataType, MilvusClient
 
+from paperflow.rag.constants import CHUNK_TYPE_TEXT
 from paperflow.rag.parsers.chunker import Chunk
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,7 @@ def _to_chunk(row: dict, chunk_id: str = "") -> Chunk:
         id=chunk_id or row.get("id", ""), text=row.get("text", ""),
         path=row.get("path", ""), title=row.get("title", ""),
         heading=row.get("heading", ""), caption=row.get("caption", ""),
-        chunk_type=row.get("chunk_type", "text"), position=position,
+        chunk_type=row.get("chunk_type", CHUNK_TYPE_TEXT), position=position,
     )
 
 

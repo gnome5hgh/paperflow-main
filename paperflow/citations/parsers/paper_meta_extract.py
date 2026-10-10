@@ -60,23 +60,26 @@ def _run_with_timeout(fn, timeout: float):
     （REPL 场景下进程要能正常关掉）。超时后该线程仍在后台跑，但它做的事情是只读的
     HTTP 取数与返回，不会再影响调用方。
 
+    只收 ``Exception``：``KeyboardInterrupt`` / ``SystemExit`` 这类不该被吞掉——
+    它们在守护线程里终止该线程，调用方按「没拿到结果」处理（返回空书目）。
+
     Args:
         fn: 无参可调用，返回取数结果。
         timeout: 最长等待秒数。
 
     Returns:
-        fn 的返回值。
+        fn 的返回值（失败路径下为 None）。
 
     Raises:
         TimeoutError: 超过 timeout 仍未返回。
-        BaseException: fn 自身抛出的异常原样上抛。
+        Exception: fn 抛出的普通异常原样上抛。
     """
     box: dict = {}
 
     def _target() -> None:
         try:
             box["value"] = fn()
-        except BaseException as e:      # noqa: BLE001 — 原样带回调用线程再上抛
+        except Exception as e:
             box["error"] = e
 
     thread = threading.Thread(target=_target, daemon=True)
@@ -208,7 +211,7 @@ class PaperMetaExtractor:
         """绑定取数函数；取数实现可注入（测试传桩，避免真实联网）。
 
         Args:
-            lookup: 无参可调用 ``(pdf_path) -> dict | None``；None 时用 pdf2bib。
+            lookup: 可调用 ``(pdf_path) -> dict | None``；None 时用 pdf2bib。
             timeout: 单次取数超时（秒）。
         """
         self._lookup = lookup

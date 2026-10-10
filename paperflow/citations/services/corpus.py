@@ -18,7 +18,7 @@ from pathlib import Path
 class CorpusIndex:
     """论文中心索引：`{norm_title: {title, pdf_path, biblio}}`。
 
-    biblio 仅当首页读得出书目元数据时存在。
+    biblio 仅当取到书目元数据（pdf2bib 联网取）时存在。
 
     Attributes:
         config: PaperFlowConfig，语料目录来源
@@ -74,8 +74,8 @@ class CorpusIndex:
     def refresh(self) -> None:
         """增量重建：扫描语料库目录，只对新增/变更文件重提标题，删除的移除。
 
-        先读回上次的磁盘缓存再扫描，否则进程每次启动都会把每一篇 PDF 重新读一遍
-        首页、并重跑一次书目提取（联网取标识符 + 权威书目，整库会拖上几分钟）。
+        先读回上次的磁盘缓存再扫描，否则进程每次启动都会把每一篇 PDF 重新解析一遍
+        标题、并重跑一次书目提取（联网取标识符 + 权威书目，整库会拖上几分钟）。
         """
         with self._lock:
             self.ensure_loaded()

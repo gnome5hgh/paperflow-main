@@ -130,7 +130,7 @@ class Chunk:
         chunk_index: int，块在文档中的全局序号（从 0 起）。
     """
 
-    id: str            # 块唯一标识符，由 `sha1(绝对路径 + chunk_index)[:16]` 生成，
+    id: str            # 块唯一标识符，由 `sha1(绝对路径 + chunk_index)[:CHUNK_ID_LEN]` 生成，
                        # 该 ID 与内容无关，同一文档位置重复切分得到相同 ID，编辑同一位置会得到同 id，保证了索引写入的幂等性（覆盖而非追加）。
     text: str          # 块的文本内容。
     path: str          # 文档的绝对路径（同时用作文档 id 与元数据）
