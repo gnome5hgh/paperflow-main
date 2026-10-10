@@ -33,6 +33,10 @@ _WRITABLE_PREFIXES = ("feedback_", "project_", "reference_")
 #: 核心块不参与分册——它们靠整块重写收敛。
 _PREFIX_TARGETS = ("feedback", "project", "reference")
 
+#: 连续失败多少次后强制推进游标：同一批坏编辑若反复失败，每个 REPL 轮次都会
+#: 重新尝试，不推进就把管道卡死。推进即放弃这批消息（已如实记日志）。
+_MAX_CONSECUTIVE_FAILURES = 3
+
 
 def _today() -> str:
     """当天日期（YYYY-MM-DD）——分册键。
@@ -160,20 +164,18 @@ class MemoryConsolidator:
             self._running = False
 
     async def _run_once(self) -> None:
-        """读取新消息 → LLM 编辑指令 → 全量预验证 → 逐条应用 → commit → 推进。
+        """读取新消息 → LLM 编辑指令 → 全量预验证 → 逐条应用 → 结算 → 推进游标。
 
-        整个流程分为两个阶段：
-            1. 全量预验证（_validate_edit）：校验文件白名单。
-               若任一编辑非法，则整体抛出 MemoryEditValidationError，一条都不写。
-            2. 若全部合法，则逐条应用编辑（_apply_edit）。
-               应用期间若有任何异常（如块超限/read_only），计入连败计数；
-               连败达 3 次则强制推进游标，避免死循环。
+        三个阶段各自的失败面不同，处置也不同：
 
-        游标推进时机：
-            - 成功完成整合后，游标更新为当前 messages 表总行数。
-            - 阶段 2 应用异常且连败累计达 3 次，则同样强制推进游标（跳过这批问题消息），
-              防止同一批编辑被反复重放导致无限循环。
-            - 若新消息为空（游标可能超前），则校准游标到当前总行数并返回。
+        1. **全量预验证**（_validate_edit）：任一编辑非法则**一条都不写**，并把
+           MemoryEditValidationError 上抛给调用方（原子性）。
+        2. **逐条应用**（_apply_edit）：单条失败**只跳过该条**、写日志后继续——
+           一条坏编辑不该带走同批其余编辑。整批一条都没成功才算一次失败。
+        3. **结算**（_cleanup_empty_shards）：清掉空分册；失败只记日志，不影响已落地的编辑。
+
+        任何失败都留日志，绝不静默。连续失败达 _MAX_CONSECUTIVE_FAILURES 次则强制
+        推进游标（防死锁：同一批坏编辑若反复失败，每个 REPL 轮次都会重试）。
         """
         # 获取该 agent 当前所有消息
         new_msgs = self.message_manager.get_messages_by_agent_id(
@@ -195,37 +197,60 @@ class MemoryConsolidator:
                 prompt=prompt, schema=MemoryEditBatch,
                 fallback=lambda: MemoryEditBatch(edits=[]))
 
-            # 阶段 1：全量预验证——任一非法则整体失败，一条都不写。
-            # 校验失败（MemoryEditValidationError）上抛给调用方，不计入连败
+            # 阶段 1：全量预验证——任一非法则整体失败，一条都不写
             for edit in batch.edits:
                 self._validate_edit(edit)
-
-            # 阶段 2：全量通过后逐条应用（映射到 block 编辑）
-            for edit in batch.edits:
-                self._apply_edit(edit)
-
-            # 阶段 3：结算——条目被取代/删除后空掉的分册整块删掉，让「全量喂旧
-            # 记忆」的总量有界（记忆的语义是当前有效知识，历史交给 Recall）
-            self._cleanup_empty_shards()
-
-            # 若 block_manager 支持 git，则提交变更
-            if hasattr(self.block_manager, '_commit') and callable(self.block_manager._commit):
-                self.block_manager._commit(f"consolidation: {len(new_msgs)} 条消息")
-
-            # 成功后推进游标到当前总行数，并重置失败计数
-            self._cursor = self.message_manager.size(self.agent_state.agent_id)
-            self._failures = 0
-
-        except MemoryEditValidationError:
-            # 阶段 1 校验失败：原子性失败不吞掉，直接向上抛出，由调用方处理。
+        except MemoryEditValidationError as e:
+            # 原子性失败：不吞掉、不上报为连败，但必须留痕（静默失败无从排查）
+            logger.warning("整合编辑未通过校验，整批不写: %s", e)
             raise
-        except Exception:
-            # 阶段 2 应用期错误（如块超限/read_only 的 ValueError）：
-            # 计入连败，3 次强制前进游标，避免同一批编辑被无限重放
-            self._failures += 1
-            if self._failures >= 3:
-                # 防卡死：连败 3 次，强制推进游标（跳过这批消息）
-                self._cursor = self.message_manager.size(self.agent_state.agent_id)
+        except Exception as e:
+            self._record_failure(f"LLM 抽取编辑指令失败: {e!r}")
+            return
+
+        # 阶段 2：逐条应用。单条失败只跳过该条，不让它带走同批其余编辑。
+        failures: list[str] = []
+        for edit in batch.edits:
+            try:
+                self._apply_edit(edit)
+            except Exception as e:
+                failures.append(f"{edit.target}/{edit.action}: {e}")
+                logger.warning("整合编辑应用失败（已跳过该条）: target=%s action=%s err=%s",
+                               edit.target, edit.action, e)
+
+        # 阶段 3：结算——条目被取代/删除后空掉的分册整块删掉，让「全量喂旧
+        # 记忆」的总量有界（记忆的语义是当前有效知识，历史交给 Recall）
+        try:
+            self._cleanup_empty_shards()
+        except Exception as e:
+            failures.append(f"空分册清理: {e}")
+            logger.warning("空分册清理失败: %s", e)
+
+        # 若 block_manager 支持 git，则提交变更
+        if hasattr(self.block_manager, '_commit') and callable(self.block_manager._commit):
+            self.block_manager._commit(f"consolidation: {len(new_msgs)} 条消息")
+
+        if failures:
+            self._record_failure("；".join(failures))
+            return
+
+        # 全部成功：推进游标到当前总行数，并重置失败计数
+        self._cursor = self.message_manager.size(self.agent_state.agent_id)
+        self._failures = 0
+
+    def _record_failure(self, reason: str) -> None:
+        """记一次整合失败：日志 + 连败计数；达阈值强制推进游标（防死锁）。
+
+        Args:
+            reason: str，失败原因（写进日志，便于定位是模型输出还是落盘环节的问题）。
+        """
+        self._failures += 1
+        logger.warning("整合失败（连败第 %d 次）: %s", self._failures, reason)
+        if self._failures >= _MAX_CONSECUTIVE_FAILURES:
+            # 同一批坏编辑反复失败：不推进的话每个 REPL 轮次都会重试，管道被卡住
+            logger.warning("整合连续失败 %d 次，跳过这批消息推进游标",
+                           self._failures)
+            self._cursor = self.message_manager.size(self.agent_state.agent_id)
 
     def _existing_memory(self) -> list:
         """收集当前可写块的快照，供 prompt 呈现旧记忆。
