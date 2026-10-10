@@ -323,7 +323,7 @@ CLI 装配的 4 个中间件（`paperflow/cli/assembly.py`，顺序即执行顺�
 
 `paperflow/config/` 按角色分两个模块：`sections.py`（与 config.yaml 同构的 dataclass 树，**所有可调参数默认值的唯一声明点**）+ `loader.py`（`PaperFlowConfig` 与合并/env 派生）；`__init__.py` 只做再导出，消费方一律 `from paperflow.config import ...`。
 
-`PaperFlowConfig.from_env()` 按优先级加载：环境变量（`PAPERFLOW_*`）> `config.yaml` > dataclass 默认值（DeepSeek 端点、`deepseek-v4-flash` 模型）。加载器是 **dataclass 树 + 通用递归合并** `_merge`（沿 `fields()` 下行、任意深度，未知键运行期忽略）+ **env 按路径派生**（`PAPERFLOW_` + 配置路径大写、`_` 连接：`rag.storage.uri` → `PAPERFLOW_RAG_STORAGE_URI`，`intent.history_messages` → `PAPERFLOW_INTENT_HISTORY_MESSAGES`）。`config.yaml` 顶层按模块分区（与 dataclass 树同构）：
+`PaperFlowConfig.from_env()` 按优先级加载：环境变量（`PAPERFLOW_*`）> `config.yaml` > dataclass 默认值（DeepSeek 端点、`deepseek-flash` 模型——带视觉能力，检索到的图表原图要直接进上下文）。加载器是 **dataclass 树 + 通用递归合并** `_merge`（沿 `fields()` 下行、任意深度，未知键运行期忽略）+ **env 按路径派生**（`PAPERFLOW_` + 配置路径大写、`_` 连接：`rag.storage.uri` → `PAPERFLOW_RAG_STORAGE_URI`，`intent.history_messages` → `PAPERFLOW_INTENT_HISTORY_MESSAGES`）。`config.yaml` 顶层按模块分区（与 dataclass 树同构）：
 
 ```
 llm / vision                    # 保留顶层（全局共用、最高频调整）

@@ -38,11 +38,13 @@ class LLMConfig:
     #: config.yaml llm.api_key 提供;留空由 LLMClient.__init__ 兜底报清晰错误。
     api_key: str = ""
 
-    #: 模型名称，传给 API 的 model 参数
-    model: str = "deepseek-v4-flash"
+    #: 模型名称，传给 API 的 model 参数。用带视觉能力的模型：检索回来的图表原图
+    #: 要直接进上下文给模型看（见 rag 媒体块的图片通道），纯文本模型看不了图。
+    model: str = "deepseek-flash"
 
-    #: 单次响应输出上限——deepseek-v4-flash 官方最大输出 384K（max_tokens 合法范围 1-393216）。
-    #: 必须给足:上限过小会把长笔记草稿/大参数 write_file 静默截断成残缺内容。
+    #: 单次响应输出上限（当前取值对齐 DeepSeek 兼容端点的上限 384K，合法范围
+    #: 1-393216）。必须给足：上限过小会把长笔记草稿/大参数 write_file 静默截断成
+    #: 残缺内容。换模型时若新模型输出上限更低，要同步调小（超限会被端点直接拒）。
     max_tokens: int = 393216
 
     #: 采样温度，0.0 表示确定性输出（适合工具调用场景）
@@ -58,8 +60,9 @@ class LLMConfig:
     #: 传输层自动重试次数（连接错误/5xx 时 SDK 原生重试，与上层业务重试无关）
     max_retries: int = 2
 
-    #: 模型上下文窗口——deepseek-v4-flash 官方 1M。ContextCompressor.resolve_context_size
+    #: 模型上下文窗口——按所用模型官方窗口填（当前 1M）。ContextCompressor.resolve_context_size
     #: 取半窗口 = 500K → 压缩阈值 400K、reserve 50K，正常对话永不压缩（1M 上下文的预期）。
+    #: **换模型必须同查它的窗口并改这里**：填大了永不触发压缩、迟早撞上下文上限报错。
     context_window: int = 1000000
 
 
