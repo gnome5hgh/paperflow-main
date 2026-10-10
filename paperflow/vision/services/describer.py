@@ -72,15 +72,20 @@ class FigureDescriber:
         return bool((getattr(self._config.vision, "api_key", "") or "").strip())
 
     def describe(self, figure) -> str:
-        """描述一张图，返回纯文本；失败返回空串（调用方据此保留原形态）。
+        """描述一张图，返回纯文本；两次都拿不到就返回空串（调用方保留原形态）。
 
         同步入口：索引器是同步代码，而 ``LLMClient.chat`` 是异步，中间的桥见 :func:`_run_sync`。
+
+        **空结果重试一次**：视觉模型是推理模型，思维链长度每次都会变，偶尔一次能把整个输出预算
+        跑光——响应里 ``finish_reason=length`` 且 ``content`` 是空串（同一张图两次结果可以一次空
+        一次正常，实测过）。重画一次思维链常常就出稿，所以空结果值得再来一次；只重试一次是为了
+        给「这张图真的描述不完」的情况兜底，不至于无限烧调用。
 
         Args:
             figure: 已渲染的 ``Figure``（用 ``image_bytes`` / ``mime`` / ``caption``）。
 
         Returns:
-            str: 模型输出的描述；无字节、模型不可用或调用失败时为空串。
+            str: 模型输出的描述；无字节、模型不可用或两次都没产出时为空串。
         """
         if not self.available:
             return ""
@@ -89,13 +94,17 @@ class FigureDescriber:
             return ""
         mime = getattr(figure, "mime", "") or "image/png"
         data_url = f"data:{mime};base64,{base64.b64encode(data).decode()}"
-        try:
-            return _run_sync(self._chat(data_url))
-        except Exception:                     # noqa: BLE001 —— 单张失败不该影响索引
-            return ""
+        for _attempt in range(2):
+            try:
+                text = _run_sync(self._chat(data_url))
+            except Exception:                 # noqa: BLE001 —— 单张失败不该影响索引
+                text = ""
+            if text:
+                return text
+        return ""
 
     async def _chat(self, data_url: str) -> str:
-        """发起一次多模态调用，返回描述文本。"""
+        """发起一次多模态调用，返回描述文本（可能为空——见 :meth:`describe`）。"""
         from paperflow.core.llm import Message
 
         llm = self._llm
