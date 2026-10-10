@@ -150,16 +150,18 @@ class RagRetrieveTool(Tool):
         if not chunks:
             return ToolResult(text="检索无命中（索引可能为空，可先入库若干 PDF）")
 
-        # 5. 每条命中一行、固定四列：绝对路径 | 论文标题 | 章节 | 摘录。
+        # 5. 每条命中一行、固定五列：绝对路径 | 论文标题 | 章节 | 图片对象键 | 摘录。
         # 固定列序与「一行一条」是给下游的契约——元数据靠子任务的最终回答逐字上行，
         # 上游按这个顺序读列（见 rag-agent 的检索契约），格式一乱就对不上。
         # 章节列取「章节名或注文」（媒体块的注文就在这个位置，不是块类型标签）；
+        # **图片对象键**列只有媒体块有值——拿到它就能用看图的工具把原图交给模型看
+        # （媒体块的摘录是空的，内容在图里）；
         # 摘录压平换行，避免把一条命中撑成多行。
         excerpt_chars = svc.config.rag.tools.excerpt_chars
         lines = [
-            f"{c.path} | {c.title} | {section_label(c)} | "
+            f"{c.path} | {c.title} | {section_label(c)} | {c.image_key} | "
             f"{' '.join(c.text.split())[:excerpt_chars]}"
             for c in chunks
         ]
-        return ToolResult(text="字段顺序：绝对路径 | 论文标题 | 章节 | 摘录\n"
+        return ToolResult(text="字段顺序：绝对路径 | 论文标题 | 章节 | 图片对象键 | 摘录\n"
                                + "\n".join(lines))

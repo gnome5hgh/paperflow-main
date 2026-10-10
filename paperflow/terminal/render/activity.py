@@ -20,6 +20,7 @@ ACTIVITY_LABELS: dict[str, tuple[str, str]] = {
     "grep": ("🔍 检索", "次"),
     "glob": ("🔍 检索", "次"),
     "rag_retrieve": ("📚 检索", "次"),
+    "view_image": ("🖼️ 看图", "次"),   # 取检索到的图表原图交模型看（与「解析」区分：那是从 PDF 提图）
     "index_paths": ("🗂️ 入库", "次"),
     "reindex_all": ("🔄 收敛", "次"),
     "index_status": ("🩺 体检", "次"),
