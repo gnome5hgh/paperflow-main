@@ -19,3 +19,27 @@ class ConcurrentUpdateError(Exception):
         """
         super().__init__(f"resource {resource_id} was updated concurrently")
         self.resource_id = resource_id
+
+
+class BlockLimitExceeded(ValueError):
+    """写入内容超过块的字符上限。
+
+    单独成类（而不是裸 ValueError）是为了让调用方能识别「块写满了」并作出确定性
+    处置——记忆整合据此把这一条换到下一个分册，而不是把整批编辑算作失败。继承
+    ValueError 以保持既有的异常捕获口径。
+
+    Attributes:
+        label: str，被写满的块标识
+        limit: int，该块的字符上限
+    """
+
+    def __init__(self, label: str, limit: int) -> None:
+        """构造超限异常。
+
+        Args:
+            label: str，被写满的块标识
+            limit: int，该块的字符上限
+        """
+        super().__init__(f"block {label} exceeds {limit} character limit")
+        self.label = label
+        self.limit = limit

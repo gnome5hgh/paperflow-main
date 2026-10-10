@@ -44,7 +44,7 @@ class BaseBlock(BaseModel):
     """
 
     value: str = ""
-    limit: int = 2000                      # 字符上限，超限报 Exceeds {limit} character limit
+    limit: int = 2000                      # 字符上限，超限抛 BlockLimitExceeded（见 common/errors.py）
     label: str | None = None
     description: str | None = None
     metadata_: dict[str, Any] = Field(default_factory=dict)   # API 层暴露为 metadata

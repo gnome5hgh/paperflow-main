@@ -17,6 +17,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from paperflow.core.memory.common.errors import BlockLimitExceeded
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["MemoryConsolidator", "MemoryEditBatch", "MemoryEdit",
@@ -202,9 +204,13 @@ class MemoryConsolidator:
             for edit in batch.edits:
                 self._apply_edit(edit)
 
+            # 阶段 3：结算——条目被取代/删除后空掉的分册整块删掉，让「全量喂旧
+            # 记忆」的总量有界（记忆的语义是当前有效知识，历史交给 Recall）
+            self._cleanup_empty_shards()
+
             # 若 block_manager 支持 git，则提交变更
             if hasattr(self.block_manager, '_commit') and callable(self.block_manager._commit):
-                self.block_manager._commit(f"consolidation: {len(new_msgs)} 条历史")
+                self.block_manager._commit(f"consolidation: {len(new_msgs)} 条消息")
 
             # 成功后推进游标到当前总行数，并重置失败计数
             self._cursor = self.message_manager.size(self.agent_state.agent_id)
@@ -313,51 +319,136 @@ class MemoryConsolidator:
         return target
 
     def _apply_edit(self, edit: MemoryEdit) -> None:
-        """把行级编辑落到目标块（label 由「类型 + 当天日期」拼装）。
+        """把行级编辑落到目标块（前缀家族按当天日期分册，写满自动续号）。
 
         add 追加一行；supersede 删掉 match 命中的旧行再追加新行；drop 只删；
-        rewrite 整块替换（仅核心块）。前三者走 mutate_block——整段读-算-写在一次
-        持锁内完成，并发写不会互相抹掉。目标块缺失时 add/rewrite 建块，
-        supersede/drop 报错（没有旧行可改可删）。
+        rewrite 整块替换（仅核心块）。行级操作都在 mutate_block 里完成——整段
+        读-算-写在一次持锁内，并发写不会互相抹掉。
 
         Args:
             edit: MemoryEdit，已通过校验的编辑指令。
 
         Raises:
-            ValueError: supersede/drop 的 match 找不到对应行，或目标块不存在——
-                交回调用方计入失败，绝不静默降级成 add。
+            ValueError: supersede/drop 的 match 在任何分册里都找不到对应行。
         """
-        label = self._label_for(edit.target)
+        if edit.action == "rewrite":
+            try:
+                self.block_manager.mutate_block(edit.target, lambda v: edit.content)
+            except KeyError:
+                self.block_manager.create_block(edit.target, edit.content)
+            return
+        if edit.action == "add":
+            self._add_line(edit.target, edit.content.strip())
+            return
+        self._replace_or_drop(edit)
 
-        def _mutate(v: str) -> str:
-            """按动作算出新块值（行级操作都在这里完成）。
+    def _add_line(self, target: str, line: str) -> None:
+        """把一行加进该类型当天的分册；写满则续号到下一册（确定性，不丢数据）。
 
-            Args:
-                v: str，块的当前值（持锁内读到的最新值）。
+        块不存在时直接建块写入，已存在则原子追加；撞上字符上限就换下一册再试。
+        核心块不参与分册——写满如实上抛，由整块重写收敛。
 
-            Returns:
-                str，应用本条编辑后的新块值。
+        Args:
+            target: str，目标类型。
+            line: str，已去空白的条目行。
 
-            Raises:
-                ValueError: supersede/drop 的 match 一行都没命中。
-            """
-            if edit.action == "rewrite":
-                return edit.content
+        Raises:
+            BlockLimitExceeded: 非分册目标（profile/assistant）写满。
+        """
+        base = self._label_for(target)
+        shardable = target in _PREFIX_TARGETS
+        n = 1
+        while True:
+            label = base if n == 1 else f"{base}_{n}"
+            if self.block_manager.get_block_by_label(label) is None:
+                self.block_manager.create_block(label, line)
+                return
+            try:
+                self.block_manager.mutate_block(
+                    label, lambda v: f"{v.strip()}\n{line}" if v.strip() else line)
+                return
+            except BlockLimitExceeded:
+                if not shardable:
+                    raise
+                n += 1          # 这一册写满：续号换下一册
+
+    def _replace_or_drop(self, edit: MemoryEdit) -> None:
+        """supersede/drop：在该类型的分册家族里找到 match 命中的行并处理。
+
+        同一类型的条目可能因分册溢出散在多册里，所以逐册找；一册都没命中就如实
+        报错，绝不静默降级成 add（那会堆出互相矛盾的两条）。
+
+        Args:
+            edit: MemoryEdit，action 为 supersede / drop。
+
+        Raises:
+            ValueError: 任何分册里都没有以 match 开头的行。
+        """
+        prefix = edit.match.strip()
+        for label in self._existing_shard_labels(edit.target):
+            # mutate_block 的 mutator 返回 None 表示「判定不改」（这一册没命中）
+            if self.block_manager.mutate_block(label, self._line_mutator(edit)) is not None:
+                return
+        raise ValueError(f"match not found in {edit.target}: {prefix}")
+
+    def _line_mutator(self, edit: MemoryEdit):
+        """构造 supersede/drop 的 mutator（删掉 match 命中的行，supersede 再补新行）。
+
+        Args:
+            edit: MemoryEdit，action 为 supersede / drop。
+
+        Returns:
+            Callable[[str], str | None]，返回 None 表示该块没有命中行（调用方据此换下一册）。
+        """
+        prefix = edit.match.strip()
+
+        def _mutate(v: str) -> str | None:
             lines = [ln for ln in v.splitlines() if ln.strip()]
-            if edit.action == "add":
-                lines.append(edit.content.strip())
-                return "\n".join(lines)
-            prefix = edit.match.strip()
             kept = [ln for ln in lines if not ln.startswith(prefix)]
             if len(kept) == len(lines):
-                raise ValueError(f"match not found in {label}: {prefix}")
+                return None
             if edit.action == "supersede":
                 kept.append(edit.content.strip())
             return "\n".join(kept)
 
-        try:
-            self.block_manager.mutate_block(label, _mutate)
-        except KeyError:
-            if edit.action in ("supersede", "drop"):
-                raise ValueError(f"block not found for {edit.action}: {label}")
-            self.block_manager.create_block(label, edit.content)
+        return _mutate
+
+    def _existing_shard_labels(self, target: str) -> list[str]:
+        """该类型当前**已存在**的分册 label（主册在前，续号按数字升序）。
+
+        Args:
+            target: str，目标类型。
+
+        Returns:
+            list[str]，label 列表；核心块返回自身（不存在则为空）。
+        """
+        base = self._label_for(target)
+        if target not in _PREFIX_TARGETS:
+            return [base] if self.block_manager.get_block_by_label(base) else []
+        found = [b.label for b in self.block_manager.list_blocks()
+                 if b.label and (b.label == base or b.label.startswith(base + "_"))]
+
+        def _key(label: str) -> int:
+            """分册排序键：主册 0，续号取其数字。"""
+            suffix = label[len(base):]          # "" 或 "_2"
+            return int(suffix[1:]) if suffix else 0
+
+        return sorted(found, key=_key)
+
+    def _cleanup_empty_shards(self) -> list[str]:
+        """删掉已经空掉的条目分册（取代/删除留下的空壳）。
+
+        记忆的语义是「当前有效的知识」：条目被取代或删除后，承载它的分册若已空就
+        整块删掉——否则分册只增不减，逐轮把全部旧记忆喂进 prompt 会越来越肥。
+        核心块不在此列（它们常驻，靠整块重写收敛）。
+
+        Returns:
+            list[str]，被删除的块 label（无删除时为空）。
+        """
+        removed: list[str] = []
+        for block in self.block_manager.list_blocks():
+            label = block.label or ""
+            if label.startswith(_WRITABLE_PREFIXES) and not block.value.strip():
+                self.block_manager.delete_block(block.id)
+                removed.append(label)
+        return removed

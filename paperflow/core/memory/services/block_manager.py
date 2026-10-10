@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from paperflow.core.memory.constants import DEFAULT_ASSISTANT, DEFAULT_PROFILE
-from paperflow.core.memory.common.errors import ConcurrentUpdateError
+from paperflow.core.memory.common.errors import BlockLimitExceeded, ConcurrentUpdateError
 from paperflow.core.memory.storage import block as block_orm
 from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.schemas.block import Block
@@ -23,7 +23,6 @@ __all__ = ["BlockManager", "GitEnabledBlockManager"]
 logger = logging.getLogger(__name__)
 
 _READ_ONLY = "block is read-only"
-_LIMIT = "Exceeds {limit} character limit"
 
 #: CAS 冲突后的重试上限：重试意味着重读最新值并重放 mutator（要求 mutator 是纯函数）。
 _CAS_MAX_RETRIES = 3
@@ -225,7 +224,7 @@ class BlockManager:
 
         Raises:
             KeyError: label 不存在。
-            ValueError: 块为 read_only 或新 value 超限。
+            BlockLimitExceeded: 新 value 超过块上限。
             ConcurrentUpdateError: 读取后写入前版本被其他写者推进（CAS 拒绝）。
         """
         with self.db.transaction():
@@ -236,7 +235,7 @@ class BlockManager:
             if row["read_only"]:
                 raise ValueError(_READ_ONLY)
             if len(value) > row["limit"]:
-                raise ValueError(_LIMIT.format(limit=row["limit"]))
+                raise BlockLimitExceeded(row["label"], row["limit"])
             # checkpoint：改动前快照 → block_history（撤销/重做依据）
             block_orm.checkpoint_block(self.db, row["id"], row["label"], row["value"],
                                        row["limit"], row["description"],
@@ -267,7 +266,7 @@ class BlockManager:
 
         Raises:
             KeyError: label 不存在。
-            ValueError: 块为 read_only 或新值超限（含 mutator 抛出的校验错误）。
+            BlockLimitExceeded: 新值超过块上限（含 mutator 抛出的校验错误）。
             ConcurrentUpdateError: 连续重试仍冲突（说明有绕过本入口的写者）。
         """
         for _ in range(_CAS_MAX_RETRIES):
@@ -282,7 +281,7 @@ class BlockManager:
                     if new_value is None:
                         return None
                     if len(new_value) > row["limit"]:
-                        raise ValueError(_LIMIT.format(limit=row["limit"]))
+                        raise BlockLimitExceeded(row["label"], row["limit"])
                     block_orm.checkpoint_block(
                         self.db, row["id"], row["label"], row["value"],
                         row["limit"], row["description"], {}, row["version"])
