@@ -1,16 +1,18 @@
 """MemoryConsolidator 记忆整合：把每轮对话沉淀进记忆块。
 
 REPL 每轮对话结束后调 consolidate()：读取游标之后的新消息 + 全部可写块的当前
-内容 → LLM 输出记忆编辑指令（append/replace）→ 全量预验证 → 经 BlockManager
-应用进记忆块。喂入旧值是「不产生矛盾条目」的前提——模型看不到旧内容就无从判断
-新信息推翻了哪一条。写入前必须过类型枚举白名单（system/ 精确枚举 profile/assistant，
-顶层仅 feedback_/project_/reference_ 三前缀），动作只允许 append/replace，
-因为 LLM 输出不可信；应用期连败 3 次强制推进游标，防止同一批坏编辑被无限重放。
+内容 → LLM 输出记忆编辑指令 → 全量预验证 → 经 BlockManager 应用进记忆块。喂入
+旧值是「不产生矛盾条目」的前提——模型看不到旧内容就无从判断新信息推翻了哪一条。
+
+产出是**行级**指令：新增一行 / 按行首前缀取代一行 / 删掉一行，核心块另可整块重写；
+没有值得沉淀的内容就返回空批次（NOOP，什么都不写）。目标块由代码按「类型 + 当天
+日期」拼装（模型只给类型，不写日期）——同一类型同一天进同一分册，写满了续号。
+LLM 输出不可信，指令先过全量预验证（一条不过则整批不写）。
 """
 from __future__ import annotations
 
 import logging
-import re
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -20,23 +22,25 @@ logger = logging.getLogger(__name__)
 __all__ = ["MemoryConsolidator", "MemoryEditBatch", "MemoryEdit",
            "MemoryEditValidationError"]
 
-# ============================================================================
-# 常量：可写记忆文件白名单（类型枚举，正则表达式）
-# ============================================================================
-# LLM 输出不可信，写入前必须校验目标文件是否在允许列表中。
-# 允许的模式（与 _build_prompt 定向表一一对应）：
-#   - system/profile.md、system/assistant.md（system/ 下精确枚举，不得新增）
-#   - feedback_<topic>.md / project_<topic>.md / reference_<topic>.md
-#     （类型前缀封闭，topic 由 LLM 起名但仅限字母数字下划线）
-# 使用正则确保路径安全，防止目录遍历或非法后缀。
-_EDIT_FILE_PATTERN = re.compile(
-    r"^(system/(profile|assistant)|"
-    r"feedback_[A-Za-z0-9_]+|project_[A-Za-z0-9_]+|reference_[A-Za-z0-9_]+)\.md\Z")
-
-#: 可写块的 label 形态：两个核心块精确枚举，三类前缀家族（前缀之后可以是主题名，
-#: 也可以是日期分册）。用来挑出「旧值要喂进 prompt」的块。
+#: 可写块的 label 形态：两个核心块精确枚举，三类前缀家族（前缀之后是日期分册，
+#: 也可能是早期按主题命名的块）。用来挑出「旧值要喂进 prompt」的块。
 _WRITABLE_LABELS = frozenset({"profile", "assistant"})
 _WRITABLE_PREFIXES = ("feedback_", "project_", "reference_")
+
+#: 日期分册的块类型（label = <类型>_<日期>，写满续号 <类型>_<日期>_2）。
+#: 核心块不参与分册——它们靠整块重写收敛。
+_PREFIX_TARGETS = ("feedback", "project", "reference")
+
+
+def _today() -> str:
+    """当天日期（YYYY-MM-DD）——分册键。
+
+    由代码拼装而非让模型给：模型写错日期会让内容散进错误的分册。
+
+    Returns:
+        str，形如 "2026-10-10"。
+    """
+    return datetime.now().strftime("%Y-%m-%d")
 
 
 def _is_writable_label(label: str | None) -> bool:
@@ -54,21 +58,23 @@ def _is_writable_label(label: str | None) -> bool:
 
 
 class MemoryEdit(BaseModel):
-    """单条记忆编辑指令：目标文件 + 动作 + 内容/钩子。
+    """单条记忆编辑指令：目标类型 + 动作 + 新行 / 匹配前缀。
 
-    content 与 hook 都带长度上限（防 LLM 输出爆炸）；file 须命中白名单。
+    target 是类型枚举而非文件名——真实的块 label 由代码按「类型 + 当天日期」拼装，
+    模型不碰日期。content 与 match 都带长度上限（防 LLM 输出爆炸）；语义约束
+    （rewrite 只给核心块、supersede/drop 必须给 match）在 _validate_edit 里校验。
 
     Attributes:
-        file: str，目标文件名（须命中类型枚举白名单：system/profile|assistant、feedback_*、project_*、reference_*）
-        action: Literal["append", "replace"]，编辑动作
-        content: str，写入内容（上限 8000 字符）
-        hook: str，可选的钩子说明（上限 500 字符）
+        target: Literal["profile","assistant","feedback","project","reference"]，目标类型
+        action: Literal["add","supersede","drop","rewrite"]，动作（rewrite 仅限核心块）
+        content: str，新行内容（add/supersede）或整块新内容（rewrite），上限 8000 字符
+        match: str，行首前缀；supersede/drop 据此命中旧行，上限 500 字符
     """
 
-    file: str
-    action: Literal["append", "replace"]
+    target: Literal["profile", "assistant", "feedback", "project", "reference"]
+    action: Literal["add", "supersede", "drop", "rewrite"]
     content: str = Field(default="", max_length=8000)
-    hook: str = Field(default="", max_length=500)
+    match: str = Field(default="", max_length=500)
 
 
 class MemoryEditBatch(BaseModel):
@@ -82,9 +88,9 @@ class MemoryEditBatch(BaseModel):
 
 
 class MemoryEditValidationError(ValueError):
-    """编辑指令未通过阶段 1 校验（目标不在类型枚举白名单内）。
+    """编辑指令未通过阶段 1 校验（动作与目标不匹配、缺必要字段）。
 
-    与阶段 2 的应用期错误（如块写入因超限/read_only 抛的 ValueError）区分：只有
+    与阶段 2 的应用期错误（match 命中不到旧行、块写入超限/read_only）区分：只有
     校验错误被上抛（原子性——一条不写）；应用期错误计入连败计数，连败 3 次强制
     前进游标，避免同一批编辑被无限重放。
     """
@@ -226,12 +232,11 @@ class MemoryConsolidator:
         return sorted(blocks, key=lambda b: b.label or "")
 
     def _build_prompt(self, new_msgs: list) -> str:
-        """构造整合指令生成提示：可写面声明 + 旧记忆 + 本轮对话。
+        """构造整合指令生成提示：目标与动作声明 + 旧记忆 + 本轮对话。
 
         **旧记忆是消解矛盾的前提**：把全部可写块的当前内容摊开，模型才能看出
-        新信息推翻了哪一条旧条目、哪几条是重复的。定向表把知识类型映射到目标
-        文件（用户画像→system/profile.md、助手自我→system/assistant.md、
-        反馈/项目/文献→三类前缀块），与白名单 _EDIT_FILE_PATTERN 一一对应。
+        新信息推翻了哪一条旧条目、哪几条是重复的。提示里的目标类型与动作说明
+        与 _validate_edit 的校验面一一对应。
 
         Args:
             new_msgs: 本轮新增的消息列表（已按时间升序）。
@@ -241,17 +246,21 @@ class MemoryConsolidator:
         """
         parts = [
             "你是 paperFlow 的记忆整合器（consolidation）。分析本轮对话，输出记忆编辑指令。",
-            "可写文件与定向规则（只能写下列文件，不得发明新文件）：",
-            "- system/profile.md — 学到用户身份/研究方向/偏好/背景 → "
-            "append（新增条目）或 replace（整理重写）",
-            "- system/assistant.md — 助手角色/工作方式认知变化 → replace（整块重写）",
-            "- feedback_<主题>.md（主题名仅限字母数字下划线，如 feedback_note_style）— 用户对做法的反馈与纠正 → "
-            "append（每条一行）",
-            "- project_<主题>.md — 研究项目/论文进展的关键事实 → append",
-            "- reference_<主题>.md — 文献/资料可长期复用的要点 → append",
+            "目标 target（只能写这些类型；块的日期分册由系统拼装，你不要写日期）：",
+            "- profile — 用户身份/研究方向/偏好/背景",
+            "- assistant — 助手角色/工作方式认知变化",
+            "- feedback — 用户对做法的反馈与纠正",
+            "- project — 研究项目/论文进展的关键事实",
+            "- reference — 文献/资料可长期复用的要点",
+            "动作 action：",
+            "- add — 新增一行，content 给这一行的文字",
+            "- supersede — match 给旧行开头的一段文字，把命中的旧行换成 content（新的一行）",
+            "- drop — match 给旧行开头的一段文字，删掉命中的行（结论作废）",
+            "- rewrite — 整块重写，content 给完整新内容；只允许 target=profile / assistant",
             "规则：值得长期记住才写；**没有值得沉淀的内容就返回空 edits（不写任何块，这是正常的）**；"
-            "同主题合并重复；旧结论被推翻时 replace 而非追加矛盾条目；"
-            "单批最多 20 条；每条内容一行、自带主语。",
+            "旧结论被推翻时用 supersede 换掉旧行，不要写出一条互相矛盾的新条目；"
+            "supersede/drop 的 match 必须能在「已有记忆」里逐字找到行首；"
+            "单批最多 20 条；每条内容一行、自带主语，不写日期（日期由系统加）。",
             "", "已有记忆（这些块的当前内容——判断重复与矛盾必须对照它们）：",
         ]
         existing = self._existing_memory()
@@ -269,49 +278,86 @@ class MemoryConsolidator:
         return "\n".join(parts)
 
     def _validate_edit(self, edit: MemoryEdit) -> None:
-        """阶段 1 校验：目标必须命中类型枚举白名单。
+        """阶段 1 校验：动作与目标是否匹配、必要字段是否齐全。
 
-        白名单之外的写入路径一律拒绝——LLM 输出不可信，防止它把编辑指令
-        指向任意记忆文件或发明新文件；system/ 两块与顶层三类前缀是全部
-        可写面。
+        LLM 输出不可信，写入前必须把语义约束查一遍：整块重写只允许两个核心块
+        （前缀分册是条目流，整块重写会抹掉分册里的其他条目）；supersede/drop
+        必须给 match，否则成了没有对象的写入；add/supersede/rewrite 必须给
+        content。target 与 action 的取值面由 pydantic 的 Literal 在构造期锁定。
 
         Args:
             edit: MemoryEdit，待校验的编辑指令。
 
         Raises:
-            MemoryEditValidationError: 若文件不在白名单内。
+            MemoryEditValidationError: 动作与目标不匹配、或必要字段为空。
         """
-        if not _EDIT_FILE_PATTERN.match(edit.file):
-            raise MemoryEditValidationError(f"非法编辑目标: {edit.file}")
+        if edit.action == "rewrite" and edit.target in _PREFIX_TARGETS:
+            raise MemoryEditValidationError(
+                f"整块重写只允许 profile/assistant，不能用于 {edit.target}")
+        if edit.action in ("supersede", "drop") and not edit.match.strip():
+            raise MemoryEditValidationError(f"{edit.action} 需要 match（行首前缀）")
+        if edit.action != "drop" and not edit.content.strip():
+            raise MemoryEditValidationError(f"{edit.action} 需要 content")
+
+    def _label_for(self, target: str) -> str:
+        """目标类型 → 块 label（前缀家族按当天日期分册，核心块用原 label）。
+
+        Args:
+            target: str，目标类型（profile/assistant/feedback/project/reference）。
+
+        Returns:
+            str，块 label，形如 "feedback_2026-10-10" 或 "profile"。
+        """
+        if target in _PREFIX_TARGETS:
+            return f"{target}_{_today()}"
+        return target
 
     def _apply_edit(self, edit: MemoryEdit) -> None:
-        """把编辑指令映射到 BlockManager（file → block label）。
+        """把行级编辑落到目标块（label 由「类型 + 当天日期」拼装）。
 
-        追加/替换的目标块不存在时创建（append/replace 都允许「写新块」的意图自动
-        建块）。已有块走 mutate_block：append 在 mutator 里做「旧值 + 新内容」、
-        replace 做整块替换，整段读-算-写一次持锁。
+        add 追加一行；supersede 删掉 match 命中的旧行再追加新行；drop 只删；
+        rewrite 整块替换（仅核心块）。前三者走 mutate_block——整段读-算-写在一次
+        持锁内完成，并发写不会互相抹掉。目标块缺失时 add/rewrite 建块，
+        supersede/drop 报错（没有旧行可改可删）。
 
         Args:
             edit: MemoryEdit，已通过校验的编辑指令。
+
+        Raises:
+            ValueError: supersede/drop 的 match 找不到对应行，或目标块不存在——
+                交回调用方计入失败，绝不静默降级成 add。
         """
-        # label 由 file 移除 .md 后缀并去除 "system/" 前缀得到（system/ 下的块 label 即文件名）。
-        label = edit.file.removesuffix(".md").replace("system/", "")
+        label = self._label_for(edit.target)
 
         def _mutate(v: str) -> str:
-            """append 在旧值后追加一行，replace 整块替换。
+            """按动作算出新块值（行级操作都在这里完成）。
 
             Args:
-                v: str，块的当前值（旧值）
+                v: str，块的当前值（持锁内读到的最新值）。
 
             Returns:
-                应用本条编辑后的新块值（append 追加一行，replace 整块替换）。
+                str，应用本条编辑后的新块值。
+
+            Raises:
+                ValueError: supersede/drop 的 match 一行都没命中。
             """
-            if edit.action == "append":
-                return v + "\n" + edit.content
-            return edit.content
+            if edit.action == "rewrite":
+                return edit.content
+            lines = [ln for ln in v.splitlines() if ln.strip()]
+            if edit.action == "add":
+                lines.append(edit.content.strip())
+                return "\n".join(lines)
+            prefix = edit.match.strip()
+            kept = [ln for ln in lines if not ln.startswith(prefix)]
+            if len(kept) == len(lines):
+                raise ValueError(f"match not found in {label}: {prefix}")
+            if edit.action == "supersede":
+                kept.append(edit.content.strip())
+            return "\n".join(kept)
 
         try:
             self.block_manager.mutate_block(label, _mutate)
         except KeyError:
-            # 块不存在：建新块（append/replace 对缺失块的首写内容都等于 edit.content）
+            if edit.action in ("supersede", "drop"):
+                raise ValueError(f"block not found for {edit.action}: {label}")
             self.block_manager.create_block(label, edit.content)
