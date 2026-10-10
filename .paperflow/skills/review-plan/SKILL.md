@@ -45,7 +45,7 @@ metadata:
    「未经外部验证」不得被写成已验证。
 6. **五维审查**（按选题产物语义重诠释）：
    - **requirements**：课题覆盖——研究问题围绕所选方向、覆盖用户确认的范围。
-   - **faithfulness**：映射真实性——「论点 ← 笔记」逐条核验；idea 卡 novelty 判定须有
+   - **faithfulness**：映射真实性——「论点 ← 论文 PDF」逐条核验；idea 卡 novelty 判定须有
      similar_works 检索证据支撑（novel / not_novel 须有检索差异点）。
    - **consistency**：四产物相互一致（plan ↔ ideas ↔ gaps ↔ survey 无矛盾）。
    - **completeness**：四份产物各自覆盖其模板要求的章节（标准见本 skill 的 `references/`
