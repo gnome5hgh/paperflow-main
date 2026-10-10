@@ -28,6 +28,7 @@ citations/
 - **懒加载单例**：外部只经 `get_citation_manager()` 访问，重组件（corpus 索引、pdf2bib 书目提取器）首次使用才构造。
 - **渲染不回写**：author-year/numbered/bibtex/gbt7714 四种格式渲染生成的视图可回填空字段（调和），但 bib 文件本身不动。
 - **溯源标注契约**：笔记头部 `**论文引用**: [key]`，节级标注 `[来源:§X]`；reviewer 沿 `[来源:key§节]` 回溯时用 `lookup_citation` 核验 key 真实存在，不信任标注本身。
+- **依赖许可约束**：书目首选 pdf2bib（MIT），但它依赖的 pdf2doi 会硬导入 **GPL-3.0 的 pdftitle**（只在 Google 搜索兜底里用，本项目 `websearch=False` 使其从不被调用）。仓库只声明依赖、不含 GPL 代码，义务在分发组合作品时才产生；要彻底避开就换自研标识符查找，实测代价见 ADR 0008。
 - **标题权威性**：标题来自 RAG 解析器的标题出口（元数据 + 首页版面，判据宁空勿错），绝不回退到 PDF 文件名；书目（作者/年份/期刊）由 `parsers/paper_meta_extract.py` 两级取：先经 pdf2bib（本地找 DOI/arXiv 标识符 → 联网取权威书目），取不到再由 LLM 读首页兜底；两级都失败即如实为空。
 
 ## Key Entry Points
