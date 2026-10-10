@@ -443,15 +443,12 @@ class MemoryConfig:
     """记忆系统配置。
 
     Attributes:
-        consolidation_enabled: bool，MemoryConsolidator 后台整合开关
-        consolidation_agent_frequency: int，每 N 条新消息检查一次
+        consolidation_enabled: bool，记忆整合开关（每轮对话结束后整合一次）
     """
 
-    #: MemoryConsolidator 后台整合开关
+    #: 记忆整合开关。开着即每轮对话结束后跑一次整合（本轮无新消息则不调 LLM）；
+    #: 关掉则整条整合路径不触发，记忆只靠 self-editing 维护。
     consolidation_enabled: bool = True
-
-    #: MemoryConsolidator 触发频率（每 N 条新消息检查一次）
-    consolidation_agent_frequency: int = 50
 
 
 @dataclass

@@ -11,7 +11,7 @@ cli.py 保留装配组合根（main），本模块承载每轮交互。与 termi
 
 嵌套关系：
 进程
-└── _repl 主循环                      ← 每轮：consolidation tick → 读输入 → 起 run_task → 渲染
+└── _repl 主循环                      ← 每轮：读输入 → 起 run_task → 渲染 → 整合记忆
      └── supervisor.run(“用户输入”)     ← 任务级：ReAct 循环（turn 0..max_turns）
           └── turn: LLM → 工具们
                └── spawn 工具 → child.run(“子任务”)   ← 嵌套的 run（子 agent）
@@ -48,14 +48,14 @@ async def _repl(supervisor: Agent, *,
     REPL 主循环。
 
     每轮：
-        1. 触发后台记忆整合（MemoryConsolidator）。
-        2. 读取用户输入（通过 io.read，工作线程）。
-        4. 重置渲染器（renderer.reset），注册 SIGINT 处理器以取消运行中的任务。
-        5. 异步执行 supervisor.run(query)。
-        6. 根据结果：
+        1. 读取用户输入（通过 io.read，工作线程）。
+        2. 重置渲染器（renderer.reset），注册 SIGINT 处理器以取消运行中的任务。
+        3. 异步执行 supervisor.run(query)。
+        4. 根据结果：
             - 若任务被取消（Ctrl+C）：打印 "Cancelled"，继续循环。
             - 若超轮：提示并继续。
             - 否则：结束渲染（finalize），根据 should_print 决定是否打印最终答案。
+        5. 本轮收尾：把新增对话整合进记忆（MemoryConsolidator）。
 
     Ctrl+C 三态处理：
         - 输入框为空时：io.read 抛出 KeyboardInterrupt，退出 REPL。
@@ -121,12 +121,6 @@ async def _repl(supervisor: Agent, *,
         # 无限循环，出口只有三处 break：/exit、EOF 或空框 Ctrl+C、输入连续失败 3 次。
         # 其余一切异常都在循环内消化并 continue——单轮失败不该带走整个会话。
         while True:
-            # 每轮循环顶部触发后台记忆整合——放在读 stdin 之前，让用户思考期间累积的对话被整合，整合不阻塞本轮输入。
-            if consolidator is not None:
-                try:
-                    await consolidator.run_once_if_due()
-                except Exception:  # MemoryConsolidator 失败不打断 REPL
-                    logger.warning("consolidation tick failed", exc_info=True)
             try:
                 # io.read 必须经 to_thread 在 worker 线程执行：
                 # PromptToolkitIO.read 内部session.prompt() 会自建事件循环（asyncio.run），
@@ -214,6 +208,14 @@ async def _repl(supervisor: Agent, *,
                 renderer.print_markdown(text)
             else:
                 renderer.print("")
+            # 本轮收尾：把这轮新增的对话整合进记忆。放在回答渲染完之后，语义就是
+            # 「一轮对话结束 → 沉淀」。失败/取消的轮不在这里整合——它们的消息仍在
+            # 游标之后，会被下一次整合一并读走，不会丢。
+            if consolidator is not None:
+                try:
+                    await consolidator.consolidate()
+                except Exception:  # 整合失败不打断 REPL
+                    logger.warning("consolidation failed", exc_info=True)
 
     finally:
         # 确认中心收尾：取消消费者任务，避免退出后任务泄漏告警

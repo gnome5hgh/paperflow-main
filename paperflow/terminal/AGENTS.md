@@ -45,7 +45,7 @@ terminal/
 
 ## Key Entry Points
 
-- `repl/loop.py` — 每轮主循环（含 consolidation `run_once_if_due()` 检查）
+- `repl/loop.py` — 每轮主循环（本轮收尾调 consolidation 的 `consolidate()`）
 - `confirm/center.py` — 确认唯一消费者
 - `commands/builtin.py` — 斜杠命令注册表（新增内置命令在此登记）
 

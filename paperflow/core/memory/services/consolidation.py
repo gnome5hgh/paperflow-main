@@ -1,8 +1,9 @@
-"""MemoryConsolidator 记忆整合后台：把对话增量沉淀进核心记忆块。
+"""MemoryConsolidator 记忆整合：把每轮对话沉淀进记忆块。
 
-CLI REPL 每轮循环顶部调 run_once_if_due()：读取未消费历史 → LLM 用记忆编辑
-工具语义输出编辑指令（append/replace）→ 全量预验证 → 经 BlockManager
-应用进核心块。写入前必须过类型枚举白名单（system/ 精确枚举 profile/assistant，
+REPL 每轮对话结束后调 consolidate()：读取游标之后的新消息 + 全部可写块的当前
+内容 → LLM 输出记忆编辑指令（append/replace）→ 全量预验证 → 经 BlockManager
+应用进记忆块。喂入旧值是「不产生矛盾条目」的前提——模型看不到旧内容就无从判断
+新信息推翻了哪一条。写入前必须过类型枚举白名单（system/ 精确枚举 profile/assistant，
 顶层仅 feedback_/project_/reference_ 三前缀），动作只允许 append/replace，
 因为 LLM 输出不可信；应用期连败 3 次强制推进游标，防止同一批坏编辑被无限重放。
 """
@@ -10,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -32,6 +32,25 @@ __all__ = ["MemoryConsolidator", "MemoryEditBatch", "MemoryEdit",
 _EDIT_FILE_PATTERN = re.compile(
     r"^(system/(profile|assistant)|"
     r"feedback_[A-Za-z0-9_]+|project_[A-Za-z0-9_]+|reference_[A-Za-z0-9_]+)\.md\Z")
+
+#: 可写块的 label 形态：两个核心块精确枚举，三类前缀家族（前缀之后可以是主题名，
+#: 也可以是日期分册）。用来挑出「旧值要喂进 prompt」的块。
+_WRITABLE_LABELS = frozenset({"profile", "assistant"})
+_WRITABLE_PREFIXES = ("feedback_", "project_", "reference_")
+
+
+def _is_writable_label(label: str | None) -> bool:
+    """label 是否落在可写面上（决定哪些块的当前值要喂给整合器）。
+
+    Args:
+        label: str | None，块标签。
+
+    Returns:
+        bool，是核心块或三类前缀家族之一为 True。
+    """
+    if not label:
+        return False
+    return label in _WRITABLE_LABELS or label.startswith(_WRITABLE_PREFIXES)
 
 
 class MemoryEdit(BaseModel):
@@ -72,91 +91,65 @@ class MemoryEditValidationError(ValueError):
 
 
 class MemoryConsolidator:
-    """后台记忆整合器：把对话增量沉淀进核心记忆块。
+    """记忆整合器：把每轮对话沉淀进记忆块。
 
-    整合节奏由触发参数（frequency/min_interval_s）控制；进度由游标跟踪——
-    游标值基于 messages 表行数推导（不从内存计数器恢复），因此进程重启后
-    从正确位置自愈：不重复整合已处理的消息、也不遗漏新增的消息。
+    触发是每轮一次（REPL 在本轮收尾调用）；进度由游标跟踪——游标值基于 messages
+    表行数推导（不从内存计数器恢复），因此进程重启后从正确位置自愈：不重复整合
+    已处理的消息、也不遗漏新增的消息。
 
     Attributes:
         agent_state: AgentState，提供 agent_id 供查询消息与推导游标
-        block_manager: BlockManager，编辑指令最终落到它执行
+        block_manager: BlockManager，编辑指令最终落到它执行，也是旧记忆的来源
         message_manager: MessageManager，读对话消息与推导游标
         structured: StructuredOutput，LLM 抽取编辑指令的通道
         enable: bool，总开关
-        frequency: int，新增消息数达到该值才触发整合
-        min_interval_s: float，两次整合的最小间隔
-        max_entries: int，预留的单批上限（当前未消费）
         _running: bool，本次整合是否在执行中（防并发重叠）
-        _last_run: float，上次整合的单调时钟时刻
         _failures: int，连续失败计数（达阈值强制推进游标，防死循环）
         _cursor: int，已处理到的消息数游标（由 messages 表行数推导，进程重启可自愈）
     """
 
     def __init__(self, agent_state, block_manager, message_manager,
-                 structured, enable: bool = False, frequency: int = 50,
-                 min_interval_s: float = 60.0, max_entries: int = 20):
-        """装配整合器依赖与触发参数。
+                 structured, enable: bool = False):
+        """装配整合器依赖。
 
         Args:
             agent_state: AgentState 实例（supervisor 的 agent 状态），提供 agent_id
                 供按会话查询消息、推导游标。
             block_manager: BlockManager，编辑指令最终映射到它执行（block CRUD +
-                MemFS markdown 投影与 git commit）。
+                MemFS markdown 投影与 git commit），并读出全部可写块的旧值。
             message_manager: MessageManager，读对话消息、推导游标（size = 该会话
-                消息总数）；None 时游标恒 0、整合跳过。
+                消息总数）。
             structured: StructuredOutput，LLM 抽取编辑指令的通道；LLM 输出不可信，
                 指令须经校验才应用。
-            enable: 总开关；False 时 run_once_if_due 恒直接返回。
-            frequency: 新增消息数达到该值才触发整合（「攒够再整合」避免逐条写块把
-                噪音也沉淀进核心记忆）。
-            min_interval_s: 两次整合的最小间隔，防高频触发打爆 LLM 调用。
-            max_entries: 预留的单批编辑上限；实际上限由 MemoryEditBatch 的
-                max_length=20 约束，此参数当前未消费。
+            enable: 总开关；False 时 consolidate 直接返回（不调 LLM）。
         """
         self.agent_state = agent_state
         self.block_manager = block_manager
         self.message_manager = message_manager
         self.structured = structured
         self.enable = enable
-        self.frequency = frequency
-        self.min_interval_s = min_interval_s
-        self.max_entries = max_entries
         self._running = False
-        self._last_run = time.monotonic()
         self._failures = 0
         #: 已处理到的消息数量游标（基于 messages 表行数，从 DB 推导）
         #: 语义是“下次从游标处开始整合”
         self._cursor = self.message_manager.size(agent_state.agent_id) if message_manager else 0
 
-    async def run_once_if_due(self) -> None:
-        """快速判定是否该运行整合；全部廉价检查，大多立即返回。
+    async def consolidate(self) -> None:
+        """本轮收尾调用一次：有新消息就整合，没有就直接返回。
 
-        任一条件不满足（未启用 / 已在跑 / 新增消息不足 frequency / 距上次
-        不足 min_interval_s）都直接返回——每轮 REPL 的开销极小。
-
-        注意：此方法为异步，但内部实际执行 _run_once 也是异步；此处只做入口。
+        三道廉价检查（未启用 / 已在跑 / 本轮无新增消息）任一成立即返回——
+        空轮不调用 LLM。检查通过后执行一轮完整整合。
         """
-        # 未启用或已在运行（防止并发重叠）
         if not self.enable or self._running:
             return
-
-        # 新增消息不足 frequency
         size = self.message_manager.size(self.agent_state.agent_id)
-        if size - self._cursor < self.frequency:
-            return
-
-        # 距上次整合不足 min_interval_s（防止频繁调用 LLM）
-        if time.monotonic() - self._last_run < self.min_interval_s:
-            return
-
-        # 通过所有检查，开始执行
+        if size <= self._cursor:
+            return                      # 本轮没有新增消息：不调 LLM
         self._running = True
         try:
             await self._run_once()
         finally:
             self._running = False
-            self._last_run = time.monotonic()
 
     async def _run_once(self) -> None:
         """读取新消息 → LLM 编辑指令 → 全量预验证 → 逐条应用 → commit → 推进。
@@ -222,21 +215,32 @@ class MemoryConsolidator:
                 # 防卡死：连败 3 次，强制推进游标（跳过这批消息）
                 self._cursor = self.message_manager.size(self.agent_state.agent_id)
 
-    def _build_prompt(self, new_msgs: list) -> str:
-        """构造整合指令生成提示：声明可写文件、规则与定向建议。
+    def _existing_memory(self) -> list:
+        """收集当前可写块的快照，供 prompt 呈现旧记忆。
 
-        定向表把知识类型映射到目标文件——用户画像→system/profile.md、
-        助手自我→system/assistant.md、反馈/项目/文献→三类前缀块——
-        与白名单 _EDIT_FILE_PATTERN 一一对应。
+        Returns:
+            list[Block]，可写块（两个核心块 + 三类前缀家族的日期分册），按 label 排序。
+        """
+        blocks = [b for b in self.block_manager.list_blocks()
+                  if _is_writable_label(b.label)]
+        return sorted(blocks, key=lambda b: b.label or "")
+
+    def _build_prompt(self, new_msgs: list) -> str:
+        """构造整合指令生成提示：可写面声明 + 旧记忆 + 本轮对话。
+
+        **旧记忆是消解矛盾的前提**：把全部可写块的当前内容摊开，模型才能看出
+        新信息推翻了哪一条旧条目、哪几条是重复的。定向表把知识类型映射到目标
+        文件（用户画像→system/profile.md、助手自我→system/assistant.md、
+        反馈/项目/文献→三类前缀块），与白名单 _EDIT_FILE_PATTERN 一一对应。
 
         Args:
-            new_msgs: 尚未整合的消息列表（已按时间升序）。
+            new_msgs: 本轮新增的消息列表（已按时间升序）。
 
         Returns:
             构造好的提示文本（字符串）。
         """
         parts = [
-            "你是 paperFlow 的记忆整合器（consolidation）。分析以下新对话，输出记忆编辑指令。",
+            "你是 paperFlow 的记忆整合器（consolidation）。分析本轮对话，输出记忆编辑指令。",
             "可写文件与定向规则（只能写下列文件，不得发明新文件）：",
             "- system/profile.md — 学到用户身份/研究方向/偏好/背景 → "
             "append（新增条目）或 replace（整理重写）",
@@ -245,10 +249,20 @@ class MemoryConsolidator:
             "append（每条一行）",
             "- project_<主题>.md — 研究项目/论文进展的关键事实 → append",
             "- reference_<主题>.md — 文献/资料可长期复用的要点 → append",
-            "规则：值得长期记住才写；同主题合并重复；旧结论被推翻时 replace 而非追加矛盾条目；"
+            "规则：值得长期记住才写；**没有值得沉淀的内容就返回空 edits（不写任何块，这是正常的）**；"
+            "同主题合并重复；旧结论被推翻时 replace 而非追加矛盾条目；"
             "单批最多 20 条；每条内容一行、自带主语。",
-            "", "新对话：",
+            "", "已有记忆（这些块的当前内容——判断重复与矛盾必须对照它们）：",
         ]
+        existing = self._existing_memory()
+        if not existing:
+            parts.append("（暂无）")
+        for b in existing:
+            desc = f" — {b.description}" if b.description else ""
+            parts.append(f"## {b.label}{desc}（{len(b.value)} 字）")
+            parts.append(b.value.strip() or "（空）")
+        parts.append("")
+        parts.append("本轮对话：")
         # 将每条消息的 role 和 content 以文本形式拼入
         for m in new_msgs:
             parts.append(f"[{m.role.value}] {m.content}")

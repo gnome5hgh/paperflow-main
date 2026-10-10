@@ -527,8 +527,7 @@ def main(argv: list[str] | None = None) -> int | None:
     )
     consolidator = MemoryConsolidator(
         agent_state, block_manager, message_manager,
-        structured, enable=config.memory.consolidation_enabled,
-        frequency=config.memory.consolidation_agent_frequency)
+        structured, enable=config.memory.consolidation_enabled)
 
     try:
         asyncio.run(_repl(supervisor,
