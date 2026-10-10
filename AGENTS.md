@@ -213,7 +213,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 | `MessageManager` | 对话全量落盘（Recall）。`get_in_context_messages()` 按 `AgentState.message_ids` 回放窗口；`get_messages_by_agent_id()` 按会话直查全量 |
 | `AgentManager` | Agent 生命周期：`AgentState` JSON 行（keyed by agent_id；message_ids = in-context 窗口） |
 | `MemFS` | Git 托管的 markdown 投影层：`system/assistant.md` + `system/profile.md` + 其他块；自动生成 `memory_filesystem.md` 索引；`detect_file_changes()` 检测手工编辑回写块（双向同步） |
-| 标题与书目 | 标题由 RAG 解析器出口给（元数据 + 首页版面，判据**宁空勿错**）；书目（作者/年份/期刊）由引用域经 pdf2bib 取（先本地找 DOI/arXiv 标识符，再联网取权威书目，取不到即如实为空）。**绝不回退到 PDF 文件名** |
+| 标题与书目 | 标题由 RAG 解析器出口给（元数据 + 首页版面，判据**宁空勿错**）；书目（作者/年份/期刊）由引用域两级取：先经 pdf2bib 取（本地找 DOI/arXiv 标识符 → 联网取权威书目），取不到再用模型读首页兜底；两级都拿不到即如实为空。**绝不回退到 PDF 文件名** |
 
 **关键不变式**：
 - **SQL 块是真相源，markdown 是投影**——与旧 GitStore 的语义正好相反
@@ -261,7 +261,7 @@ CLI 装配的 4 个中间件（`cli.py`，顺序即执行顺序）：
 
 ### Citations
 
-`paperflow/citations/` — 引用管理（溯源落地）。`references.bib` 是引用库**真相源**：追加 + 按条目原文块删除，两种原语都不重写其余内容（用户手工维护的分节注释与未触碰条目逐字节保留）。按角色分四层：`storage/bib.py` 是文件读写原语（原文解析 `parse_entries` 与条目文本生成 `entry_text` 一对，查找/去重/追加/按 key 删除）；`services/corpus.py` 是「语料里有哪些论文」的易变投影（只跟踪 PDF：标题走解析器轻路径、书目走 pdf2bib 提取器 → 全标题精确匹配，按 (path, mtime_ns) 增量重建；`corpus_titles.json` 是它的磁盘缓存，首次 `refresh` 读回、缺失或损坏按冷启动重建、本轮无变更不重写——不读回就等于每次启动把整库 PDF 重读一遍首页并重跑一遍书目提取）；`parsers/paper_meta_extract.py` 是书目提取（作者/年份/期刊，pdf2bib 联网取，取不到即如实为空）；`services/keys.py` 是引用键生成规则；`services/manager.py` 编排：引用解析（干净全标题/路径 → key+status）、入库（语料内 PDF / 库外 EXTERNAL）、去重、渲染（author-year/numbered/bibtex/gbt7714）、调和（渲染视图回填空字段，bib 文件不动）；`schemas/` 是跨层数据模型（BibEntry / ResolvedCitation）。懒加载单例 `get_citation_manager()` 在包 `__init__`，重组件（corpus 索引、pdf2bib 书目提取器）首次使用才构造。
+`paperflow/citations/` — 引用管理（溯源落地）。`references.bib` 是引用库**真相源**：追加 + 按条目原文块删除，两种原语都不重写其余内容（用户手工维护的分节注释与未触碰条目逐字节保留）。按角色分四层：`storage/bib.py` 是文件读写原语（原文解析 `parse_entries` 与条目文本生成 `entry_text` 一对，查找/去重/追加/按 key 删除）；`services/corpus.py` 是「语料里有哪些论文」的易变投影（只跟踪 PDF：标题走解析器轻路径、书目走 pdf2bib 提取器 → 全标题精确匹配，按 (path, mtime_ns) 增量重建；`corpus_titles.json` 是它的磁盘缓存，首次 `refresh` 读回、缺失或损坏按冷启动重建、本轮无变更不重写——不读回就等于每次启动把整库 PDF 重读一遍首页并重跑一遍书目提取）；`parsers/paper_meta_extract.py` 是书目提取（作者/年份/期刊：pdf2bib 联网取权威书目，取不到再由 LLM 读首页兜底，两级都失败即如实为空）；`services/keys.py` 是引用键生成规则；`services/manager.py` 编排：引用解析（干净全标题/路径 → key+status）、入库（语料内 PDF / 库外 EXTERNAL）、去重、渲染（author-year/numbered/bibtex/gbt7714）、调和（渲染视图回填空字段，bib 文件不动）；`schemas/` 是跨层数据模型（BibEntry / ResolvedCitation）。懒加载单例 `get_citation_manager()` 在包 `__init__`，重组件（corpus 索引、pdf2bib 书目提取器）首次使用才构造。
 
 6 个引用工具（`tools/citations/`）：**只装配 citation-agent**——全量 6 件 + `read_pdf`（仅读首页补元数据）；`sync_citations`/`remove_citation` 这两个写入口也只有它装。引用库的读写是它的领域：note-agent / research-agent 要查 key、入库、渲染参考文献，review-agent 要核验 `[来源:key§节]` 的 key 是否真实存在（不信任标注本身），都**派发 citation-agent**，自己一件不装——review-agent 为此从叶子变成只派 citation-agent 的派发方。
 
