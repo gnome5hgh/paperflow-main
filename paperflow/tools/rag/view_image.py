@@ -64,20 +64,6 @@ class ViewImageTool(Tool):
         self._llm = llm
         self._store = store
 
-    def _telemetry(self):
-        """构造模型调用的元数据回调：归属父 agent 的当前轮次进审计。
-
-        直接构造（无父引用，如测试）时返回 None——零开销不接线。
-
-        Returns:
-            回调 | None: 接收调用元数据的回调。
-        """
-        parent = getattr(self, "_parent", None)
-        if parent is None:
-            return None
-        return lambda data: parent._emit_llm_call(
-            getattr(parent, "_current_turn", 0), data)
-
     def execute(self, image_key: str, question: str | None = None) -> ToolResult:
         """取图 → 交模型看图 → 返回回答；任何失败降级为文本。
 

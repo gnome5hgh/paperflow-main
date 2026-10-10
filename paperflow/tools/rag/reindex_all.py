@@ -45,7 +45,10 @@ class ReindexAllTool(Tool):
         note = "（配方已变更，本次全量重扫）" if out.recipe_reset else ""
         return ToolResult(
             text=(f"索引收敛完成：重索引 {out.changed} 篇、清理已删除 {out.removed} 篇、"
-                  f"写入 {out.chunks} 块、关键词索引 {out.bm25_docs} 篇{note}"),
+                  f"写入 {out.chunks} 块、关键词索引 {out.bm25_docs} 篇{note}"
+                  + (f"；顺带清掉 {out.images_swept} 个无主图表原图"
+                     if out.images_swept else "")),
             summary={"changed": out.changed, "removed": out.removed,
                      "chunks": out.chunks, "bm25_docs": out.bm25_docs,
-                     "recipe_reset": out.recipe_reset})
+                     "recipe_reset": out.recipe_reset,
+                     "images_swept": out.images_swept})

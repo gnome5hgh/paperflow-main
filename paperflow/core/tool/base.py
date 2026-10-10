@@ -130,3 +130,20 @@ class Tool(ABC):
             agent: Agent，父 Agent 实例
         """
         self._parent = agent
+
+    def _telemetry(self):
+        """构造「本工具的模型调用归属父 agent 当前轮次」的元数据回调。
+
+        工具内部自己发起的模型调用（看图、图表分析、派发摘要）都走这一份接线，
+        保证「LLM 调用全审计」不变式：元数据打成 record_llm_call，trace/session/
+        agent_type 由父 agent 补全。直接构造、没注入父引用（如测试）时返回 None
+        ——零开销不接线。
+
+        Returns:
+            回调 | None: 接收调用元数据的回调；无父引用时为 None。
+        """
+        parent = getattr(self, "_parent", None)
+        if parent is None:
+            return None
+        return lambda data: parent._emit_llm_call(
+            getattr(parent, "_current_turn", 0), data)

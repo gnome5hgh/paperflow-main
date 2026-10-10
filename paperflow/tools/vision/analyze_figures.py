@@ -76,19 +76,6 @@ class AnalyzeFiguresTool(Tool):
             return None
         return LLMClient(cfg.vision)
 
-    def _telemetry(self):
-        """构造视觉 LLM 调用的元数据回调：归属父 agent 的当前轮次进审计。
-
-        对齐 spawn 的既有接线模式（LLM 调用全审计不变式）：每张图的 GLM-4V 调用
-        产出 record_llm_call 元数据，trace/session/agent_type 由父 agent 补全。
-        直接构造（无 Agent 注入 _parent，如测试）返回 None——零开销不接线。
-        """
-        parent = getattr(self, "_parent", None)
-        if parent is None:
-            return None
-        return lambda data: parent._emit_llm_call(
-            getattr(parent, "_current_turn", 0), data)
-
     def effective_target_path(self, args: dict) -> str | None:
         """导出写互斥键：本次真正会写的目标。
 

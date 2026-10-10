@@ -304,8 +304,14 @@ class RagIndexer:
             is_table = f.fig_type == FigureType.Table
             if is_table:
                 words = list(getattr(f, "image_words", ()) or ())
-                body = (table_markdown(words)
-                        or " ".join(t for t, _b in words if (t or "").strip()))
+                body = table_markdown(words)
+                if body is None:
+                    # 重建判据不过（列数抖动/单行/词框重叠）→ 退回纯文字：不声称自己有结构。
+                    # 记一条 debug 便于回答「为什么这块没出表格」。
+                    body = " ".join(t for t, _b in words if (t or "").strip())
+                    if body:
+                        logger.debug("表格结构重建未通过判据，退回纯文字（%s 第 %s 页）",
+                                     path, f.page + 1)
                 if not caption and not body:
                     continue
             else:
@@ -356,24 +362,42 @@ class RagIndexer:
                 chunk.image_key = key
 
 
-    def _drop_media_images(self, chunk_ids: list[str]) -> None:
-        """把给定块的图表原图从对象存储里删掉。
+    def _collect_media_keys(self, chunk_ids: list[str]) -> list[str]:
+        """取出这些块上记的图表原图对象键（在块行被删掉**之前**调用）。
 
-        键取块行上记的 `image_key`，不靠「按块 id 猜命名」——命名规则将来变了也不会删错。
-        因此**必须在块行被删除之前调用**。开关关掉 / 查到失败都只告警。
+        键取块行上的 `image_key`，不靠「按块 id 猜命名」——命名规则将来变了也不会删错。
+        开关关掉 / 查询失败都返回空列表（调用方据此跳过删对象）。
 
         Args:
             chunk_ids: 要清理的块 id 列表。
+
+        Returns:
+            list[str]: 这些块引用的对象键。
         """
         store = self.service.image_store
         if not chunk_ids or not getattr(store, "enabled", False):
-            return
+            return []
         try:
             rows = self.service._ensure_vector_store().fetch_by_ids(chunk_ids)
         except Exception as e:
             logger.warning("清理图表原图时查不到旧块，跳过删图：%s", e)
+            return []
+        return [c.image_key for c in rows if c.image_key]
+
+    def _remove_media_objects(self, keys: list[str]) -> None:
+        """按对象键把图表原图从对象存储里删掉（在块行删掉**之后**调用）。
+
+        顺序是刻意的：**先删库行、再删对象**。反过来的话，一旦删行失败，库里就留下一个
+        指向已删对象的坏块（查得到、图打不开）；而对象多留一会儿无害——真成了孤儿，
+        下次全量收敛会扫掉。
+
+        Args:
+            keys: 要删除的对象键列表。
+        """
+        if not keys:
             return
-        for key in [c.image_key for c in rows if c.image_key]:
+        store = self.service.image_store
+        for key in keys:
             store.remove(key)
 
     def _sweep_orphan_images(self) -> int:
@@ -479,12 +503,14 @@ class RagIndexer:
         bm25 = self.service._ensure_bm25()
 
         # 2. 清除该文档的旧索引（定点查询替代全表扫描）。存储键与块 id 都用绝对路径。
-        #    图的删除必须在块行被删掉**之前**做——对象键记在块行上，行没了就查不到键了。
+        #    图的键要先从旧块行上取下来（行删了就查不到键），但**对象要等行删完再删**——
+        #    顺序反过来的话，删行失败会留下指向已删对象的坏块。
         old_ids = store.doc_chunk_ids(key)
-        self._drop_media_images(old_ids)
+        old_image_keys = self._collect_media_keys(old_ids)
         for did in old_ids:
             bm25.remove_document(did)
         store.delete_doc(key)
+        self._remove_media_objects(old_image_keys)
 
         # 3. 切分：章节块 + 图/表媒体块，过滤空白块
         chunks = self.service.chunker.split_doc(key, parsed.sections, title=parsed.title)
@@ -602,10 +628,11 @@ class RagIndexer:
                 continue
             # 定点查询该文档的所有块 ID（替代全表扫描后按路径过滤）
             rm_ids = store.doc_chunk_ids(abs_path)
-            self._drop_media_images(rm_ids)
+            rm_image_keys = self._collect_media_keys(rm_ids)
             for did in rm_ids:
                 self.service._ensure_bm25().remove_document(did)
             store.delete_doc(abs_path)
+            self._remove_media_objects(rm_image_keys)
             removed_count += 1
 
         # 7. 增量索引变更的文档，累计本次写入的块数。

@@ -13,8 +13,10 @@ rag/
 ├─ constants/      # 跨文件共享常量：CHUNK_ID_LEN(块 id 前缀长度) + CHUNK_TYPE_(TEXT|TABLE|FIGURE)
 ├─ services/       # 门面与编排：rag_service.py(RAGService 单例门面) + indexer.py(增量索引) + retriever.py(混合检索) + query_rewriter.py
 ├─ parsers/        # pdf_extract.py(PDF → markdown + 版面坐标 + 标题) + chunker.py(分块算法本体；Chunk/Section 已移入 domain/)
+│                  #   + table.py(表格区域文字按版面几何重建成 markdown，判据保守、拼不出可信行列就退回纯文字)
 ├─ encoders/       # bm25.py(jieba BM25，向量库文本的投影) + embedder.py(云端稠密编码) + reranker.py(云端交叉精排)
 └─ storage/        # vector_store.py(Milvus：Standalone 走 gRPC，本地文件路径走 Lite)
+                   #   + image_store.py(图表原图的对象存储：接口 + MinIO 实现 + 空实现，全软依赖)
 ```
 
 ## Core Rules
@@ -26,6 +28,8 @@ rag/
 - **配方哈希守恒**：`index_state.json` 带配方哈希（切块参数/嵌入模型/逻辑版本），指纹不符自动放弃旧状态全量重扫重嵌——改切块或嵌入参数无需手工清库。
 - **文档级删旧建新**：重索引用 `doc_chunk_ids` 定点取旧块 id，不做全表扫描；存储键与块 id 都是绝对路径。
 - **集合结构变更自愈**：`VectorStore` 启动时比对所需字段，缺字段即删集合重建并提示需全量重建（老集合上写新字段会直接报错）。
+- **媒体块的文本契约**：表块正文是重建出的 markdown 表格，**图块正文恒为空**（内容在图注里，产块判据也是「有图注才产」）——契约写在 `Chunk.text` 的注释里，改它等于改检索质量。
+- **图表原图是软依赖**：存进依赖栈里 MinIO 的自有 bucket，块上只留对象键；存储不可达只告警、不拖累文本索引，且失败进冷却（避免按图重复等连接超时）。开关 `rag.store_images` 关掉即退回「只有文字」。
 - **embedding api_key 缺失时检索跳稠密路、索引明确报错。**
 - **评测产物不进本包**：实验脚本与黄金集在 `scripts/rag/`（gitignored），遵循 `goldens/`（题集）+ `results/`（存档）分目录。
 

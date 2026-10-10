@@ -27,6 +27,10 @@ _COL_GAP_MIN = 4.0
 #: 认可重建所需的一致行占比：多数行共享同一个列数，才认为结构可靠。
 _CONSISTENT_RATIO = 0.7
 
+#: 同行两词的横向重叠容差（pt）：超过它就认为词框互相覆盖，结构不可信。
+#: 留一点容差是因为排版取整会带来零头，而真实的覆盖远大于它。
+_OVERLAP_TOL = 0.5
+
 
 def _median(values: list[float]) -> float:
     """取中位数（空列表返回 0）。中位数抗离群——一个超宽表头不该抬高整表的阈值。
@@ -67,7 +71,7 @@ def _rows(words: list[tuple[str, object]], tol: float) -> list[list[tuple[str, f
             for row in rows]
 
 
-def _cells(row: list[tuple[str, float, float]], gap: float) -> list[str]:
+def _cells(row: list[tuple[str, float, float]], gap: float) -> list[str] | None:
     """把一行里的词按横向间距切成单元格，同格内的词用空格连接。
 
     Args:
@@ -75,11 +79,14 @@ def _cells(row: list[tuple[str, float, float]], gap: float) -> list[str]:
         gap: 跨列判定阈值（pt）。
 
     Returns:
-        list[str]: 该行的单元格文本列表。
+        list[str] | None: 该行的单元格文本列表；同行有词框互相覆盖时为 None
+            （说明这一行的坐标不可信，重建出来的列会是错的）。
     """
     cells: list[str] = []
     last_right: float | None = None
     for text, x1, x2 in row:
+        if last_right is not None and x1 < last_right - _OVERLAP_TOL:
+            return None                            # 与上一词重叠 → 这一行不可信
         if last_right is not None and x1 - last_right > gap:
             cells.append(text)                     # 与上一词的间距超过阈值 → 新单元格
         elif cells:
@@ -124,7 +131,12 @@ def table_markdown(words) -> str | None:
         return None
 
     gap = max(_COL_GAP_RATIO * med_h, _COL_GAP_MIN)
-    grid = [_cells(row, gap) for row in rows]
+    grid: list[list[str]] = []
+    for row in rows:
+        cells = _cells(row, gap)
+        if cells is None:
+            return None                            # 有词框互相覆盖：结构不可信，退回纯文字
+        grid.append(cells)
     counts = [len(c) for c in grid]
     n_cols = max(set(counts), key=counts.count)           # 出现次数最多的列数
     if n_cols < 2 or counts.count(n_cols) < _CONSISTENT_RATIO * len(grid):

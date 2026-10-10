@@ -187,6 +187,8 @@ class VectorStore:
         - caption (VARCHAR): 表注/图注原文（媒体块用，文本块为空）。比 heading 宽，
           因为一条表注常是一整段话。
         - chunk_type (VARCHAR): 块类型 text | table | figure。
+        - image_key (VARCHAR): 图表原图在对象存储里的**对象键**（媒体块且存图时有值，
+          其余为空）；只有键没有 URL，换存储地址或前面加分发层都不用重索引。
         - page_num_int (ARRAY INT64): 块覆盖到的页码（1 起）。用数组而非单值，
           因为一个章节可以跨页。
         - top_int (INT64): 块覆盖区域的最高点（y 最小值），供「按版面顺序回放」类需求。

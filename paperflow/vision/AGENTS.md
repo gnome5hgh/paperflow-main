@@ -21,7 +21,7 @@ vision/
 ## Core Rules
 
 - **提取与看图两段式**：先 pdffigures2 式管线从 PDF 拿到图区候选（proposal 候选 + 打分选优 + no-overlap 互斥），再由视觉模型结构化看图分析；两段以 `schemas/` 的数据模型衔接。
-- **两类消费方**：看图（`analyze_figures`，用 number/caption/image_bytes/mime）与 **造检索块**（RAG 索引侧用 caption/image_text/region_boundary/page，并传 `render_images=False` 跳过栅格化）——图与表都产出。
+- **两类消费方**：看图（`analyze_figures`，用 number/caption/image_bytes/mime）与 **造检索块**（RAG 索引侧用 caption/**image_words**（词 + 包围盒，表格重建要靠坐标分行列）/region_boundary/page，并传 `render_images=False` 跳过栅格化）——图与表都产出。
 - **全链路降级**：视觉 api_key 缺失、页面无图、管线失败一律降级返回（不抛进 ReAct 循环），调用方拿到的是带原因的不可用结果。
 - **视觉调用归属父轮次**：`analyze_figures` 工具（`tools/vision/`）`needs_parent=True`，视觉 LLM 调用计入父 agent 轮次进审计。
 - **产物落盘**：分析结果与图片嵌入落盘后可供 `note-agent`（笔记图表节）与 `paper-agent` 引用，路径由工具参数指定。

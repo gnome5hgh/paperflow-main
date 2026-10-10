@@ -736,8 +736,7 @@ class SpawnSubAgentTool(Tool):
             text = await _run_child_with_budget(child.run(task), timeout, clock)
             digest = await _extract_digest(
                 self._parent.llm, agent_type, text,
-                telemetry_callback=lambda data: self._parent._emit_llm_call(
-                    getattr(self._parent, "_current_turn", 0), data))
+                telemetry_callback=self._telemetry())
             return text, digest
 
         try:
