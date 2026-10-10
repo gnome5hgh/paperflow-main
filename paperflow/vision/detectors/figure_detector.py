@@ -91,7 +91,7 @@ class PageWithFigures:
         non_figure_text: 非图文本段落（未被图区域吞掉的正文/图内文本 + 失败图注段落）。
         classified_text: 全页文本（透传 PageWithBodyText.classified_text）。
         figures: 检测出的图（dict，键对齐 Figure.scala：name/fig_type/page/
-            caption_text/image_text/caption_boundary/region_boundary），由 extractor
+            caption_text/image_words/caption_boundary/region_boundary），由 extractor
             桥接成 schemas.Figure。
         failed_captions: 配不到图的图注（精简版 Caption）。
     """
@@ -839,9 +839,11 @@ def located_figures(
 
     figures: list[dict] = []
     for proposal, _ in good_pairs:
-        # 图内文本 = 落在图区域内的图内文本词（容差 1，照 locatedFigures 的 imageText）
-        image_text = [
-            word.text
+        # 图内文本词 = 落在图区域内的图内文本词（容差 1，照 locatedFigures 的 imageText）。
+        # 连同**包围盒**一起给出：表格重建成 markdown 要靠词的坐标分出行列，只留文字
+        # 就再也拼不回去了（下游拿不到页对象，也不该为此自建页读取）。
+        image_words = [
+            (word.text, word.boundary)
             for p in page.other_text
             for line in p.lines
             for word in line.words
@@ -854,7 +856,7 @@ def located_figures(
                 "fig_type": caption.fig_type,
                 "page": caption.page,
                 "caption_text": caption.text,
-                "image_text": image_text,
+                "image_words": image_words,
                 "caption_boundary": caption.boundary,
                 "region_boundary": proposal.region,
             }

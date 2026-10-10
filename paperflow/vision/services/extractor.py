@@ -12,7 +12,7 @@
 9. 组装每个区域 → schemas.Figure（渲染可选：调用方只要区域与文本时不渲染）
 
 消费方分两类：看图（FigureAnalyzer / analyze_figures 工具）用 number/caption/
-image_bytes/mime；造检索块（索引侧）用 caption/image_text/region_boundary/page，
+image_bytes/mime；造检索块（索引侧）用 caption/image_words/region_boundary/page，
 并以 render_images=False 跳过渲染。图与表都产出——表格单元格里的数值常是检索目标。
 """
 from __future__ import annotations
@@ -152,7 +152,7 @@ class FigureExtractor:
                     mime=mime,
                     name=f["name"],
                     fig_type=f["fig_type"],
-                    image_text=" ".join(f["image_text"]),
+                    image_words=tuple(f["image_words"]),
                     caption_boundary=f["caption_boundary"],
                     region_boundary=f["region_boundary"],
                 ))

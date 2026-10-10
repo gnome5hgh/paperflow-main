@@ -1,7 +1,7 @@
 """从 PDF 提取出的图表对象（图与表）。
 
 提取管线的最终产出。两类消费方各取所需：视觉分析器与 analyze_figures 工具用
-number/caption/image_bytes/mime 看图；索引侧造媒体块只用 caption/image_text/
+number/caption/image_bytes/mime 看图；索引侧造媒体块只用 caption/image_words/
 region_boundary/page（不要图像，故不渲染）。
 """
 
@@ -26,7 +26,8 @@ class Figure:
         mime: 图片 MIME 类型，固定为 "image/png"（目前仅支持 PNG 输出）。
         name: 图号原始字符串，透传自图注检测结果（如 "1"、"3.1"、"III" 等）。
         fig_type: 图注类型（"Figure" 或 "Table"），由管线按图注首词判定。
-        image_text: 图区域内识别出的图内文本，所有词以空格拼接（可能为空）。
+        image_words: 图区域内识别出的图内文本**词与包围盒**；表格重建要靠坐标分
+            行列，所以连包围盒一起给出（只要文字的调用方自己 join）。
         caption_boundary: 图注段落的包围盒（Box），可能为 None（仅当图注未扩展成功）。
         region_boundary: 检测出的图区域包围盒（Box），用于渲染和后续分析。
 
@@ -44,6 +45,6 @@ class Figure:
     mime: str
     name: str = ""
     fig_type: str = "Figure"
-    image_text: str = ""
+    image_words: tuple[tuple[str, Box], ...] = ()
     caption_boundary: Box | None = None
     region_boundary: Box | None = None

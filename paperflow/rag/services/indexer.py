@@ -42,6 +42,7 @@ from paperflow.rag.domain import (
     indexed_text,
 )
 from paperflow.rag.parsers.pdf_extract import extract_pdf
+from paperflow.rag.parsers.table import table_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,9 @@ logger = logging.getLogger(__name__)
 #: 正文残渣（不成句微碎片）的丢弃判据，产出块集合变小。
 #: 修订 3：PDF 解析从外部解析服务换成本地版面解析 + 统一按 ``#`` 行分节，
 #: 章节划分与标题来源都变了，产出块集合与文本随之改变。
-RECIPE_LOGIC_REVISION = 3
+#: 修订 4：媒体块的文本形态改了——表块由「区域内文字拍平」改为按几何重建的
+#: markdown 表格，图块正文置空且改为「有图注才产块」，文本与产出块集合都变。
+RECIPE_LOGIC_REVISION = 4
 
 
 def _recipe_hash(cfg) -> str:
@@ -259,12 +262,17 @@ class RagIndexer:
     def _media_chunks(self, path: str, start_index: int) -> list[Chunk]:
         """把一篇 PDF 的图/表区域转成检索块，序号接在章节块之后。
 
-        每块存两样东西：**注文进 `caption`、区域内文字进 `text`**。检索结果的
-        「章节」列取 `heading or caption`，所以媒体块那一列显示的就是表注/图注原文；
-        摘录给出的则是区域内的文字。两者都为空的区域不产块——没有可检索内容的块
-        只会占位。注文偏长时进前缀会加长编码输入，但正文与窗口不受影响。
+        两种媒体块的 `text` 取值**不同**（契约写在 `Chunk.text` 的注释里）：
 
-        不写图片、不入库图像：块只承载文字，图本身另有 analyze_figures 工具按需看。
+        - **表块**：`text` 是区域文字按版面几何重建出的 **markdown 表格**（见
+          `parsers/table.py`）。重建判据刻意保守，拼不出可信行列时退回纯文字。
+        - **图块**：`text` **恒为空串**——图内文字零散（多数字体压根抽不出字），做检索
+          信号价值低。图的可检索内容在图注里：检索结果的「章节」列取
+          `heading or caption`，而媒体块没有 heading，取的就是注文。
+
+        因此产块判据也跟着分开：表块要求「有表注或有区域文字」，**图块要求「有图注」**
+        ——没有图注的图不产块（它的 `text` 恒空，若还产块，向量只能由论文标题算出来，
+        任何问到这篇论文的查询都会把它召回，是纯噪声）。
 
         Args:
             path: 文档绝对路径（进块 id 与元数据）。
@@ -287,11 +295,18 @@ class RagIndexer:
         idx = start_index
         for f in figures:
             caption = " ".join((f.caption or "").split())
-            body = " ".join((f.image_text or "").split())
-            if not caption and not body:
-                continue
-            ctype = (CHUNK_TYPE_TABLE if f.fig_type == FigureType.Table
-                     else CHUNK_TYPE_FIGURE)
+            is_table = f.fig_type == FigureType.Table
+            if is_table:
+                words = list(getattr(f, "image_words", ()) or ())
+                body = (table_markdown(words)
+                        or " ".join(t for t, _b in words if (t or "").strip()))
+                if not caption and not body:
+                    continue
+            else:
+                body = ""                      # 图块 text 恒空：可检索内容只有图注
+                if not caption:
+                    continue
+            ctype = CHUNK_TYPE_TABLE if is_table else CHUNK_TYPE_FIGURE
             bounds = f.region_boundary
             position = ((f.page + 1, int(bounds.x1), int(bounds.x2),
                          int(bounds.y1), int(bounds.y2)),) if bounds else ()
