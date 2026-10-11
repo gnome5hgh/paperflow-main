@@ -75,8 +75,9 @@ def _recipe_hash(cfg) -> str:
     - ``rag.chunker.max_tokens`` / ``overlap_tokens``：切块窗口参数；
     - ``rag.embedding.embed_model``：换模型（即便同维）旧向量也必须失效，否则新旧
       向量混在同一 Milvus 集合、检索质量静默下降；
-    - ``vision.model``：媒体块正文里的描述由它生成，换视觉模型等于换了块的文本，
-      旧描述必须一起失效。
+    - ``vision.model`` / ``vision.max_tokens``：媒体块正文里的描述由它生成。换模型等于换了
+      块的文本；预算则决定截断边界——预算一变，之前被截断的描述会变成另一段文本。两者都不进
+      指纹的话，改了设置旧块不会重建，集合里会混着两套描述口径。
 
     ``sort_keys=True`` 保证同输入稳定；``ensure_ascii=False`` 让中文模型名可读
     （不影响哈希值）。
@@ -93,6 +94,7 @@ def _recipe_hash(cfg) -> str:
         "chunk_overlap_tokens": cfg.rag.chunker.overlap_tokens,
         "embed_model": cfg.rag.embedding.embed_model,
         "vision_model": getattr(cfg.vision, "model", ""),
+        "vision_max_tokens": getattr(cfg.vision, "max_tokens", 0),
     }, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()
 
