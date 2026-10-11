@@ -100,8 +100,12 @@ class VisionLLMConfig:
     # model: str = "glm-4v-flash"
     model: str = "deepseek-v4-flash-vision-exp"
 
-    #: 单次视觉输出上限（逐图分析，几行结构化文本，2048 足够）
-    max_tokens: int = 2048
+    #: 单次视觉输出上限。视觉模型是**推理模型**（响应带 reasoning_content），思维链长度每次
+    #: 都会变，偶尔一次能把整个预算跑光——响应 `finish_reason=length`、正文为空或截在半句
+    #: （索引期给媒体块生成描述时实测：同一张图两次请求可以一次思维链 6866 字把自己饿死、
+    #: 一次 1153 字正常出稿）。2048 对"逐图几行分析"的旧假设成立，对复杂图表的转写不够，
+    #: 给到 8192 让单次尝试更容易在预算内说完（重试就少烧几次满额调用）。
+    max_tokens: int = 8192
 
     #: LLM HTTP 连接超时（秒）——字段与 LLMConfig 对齐（LLMClient 按字段读 config）
     timeout_connect: float = 10.0

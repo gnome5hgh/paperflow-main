@@ -76,18 +76,18 @@ class FigureDescriber:
 
         同步入口：索引器是同步代码，而 ``LLMClient.chat`` 是异步，中间的桥见 :func:`_run_sync`。
 
-        **空或截断就重试一次**：视觉模型是推理模型，思维链长度每次都会变，偶尔一次能把整个输出
-        预算跑光——响应 ``finish_reason=length`` 且 ``content`` 是空串（同一张图两次结果可以一次空
-        一次正常，实测过）；中等的情况是截在半句（``truncated`` 为真）。重画一次思维链常常就出稿。
-        为什么最多两次：既要给「这张图真的描述不完」兜底、不至于无限烧调用，又要避免把预算问题
-        拖成索引期的时间开销。截断但有内容的描述**照样留着**——它对检索仍然有用（图里的词是
-        真的），只是不完整，比空着强。
+        **空或截断就重试，最多三次**：视觉模型是推理模型，思维链长度每次都会变，偶尔一次能把
+        整个输出预算跑光——响应 ``finish_reason=length`` 且 ``content`` 是空串（同一张图两次结果
+        可以一次空一次正常，实测过）；中等的情况是截在半句（``truncated`` 为真）。重画一次思维链
+        常常就出稿。为什么不止重试一次：实测同一批区域上，重试到三次能把覆盖率从约八成提到
+        九成五（剩下的那一张连 8192 预算都烧得完，属于"单次描述不完"，重试治不了）。为什么封顶
+        三次：失败的那几次每次都烧满预算，次数再多时间成本就压过收益。
 
         Args:
             figure: 已渲染的 ``Figure``（用 ``image_bytes`` / ``mime`` / ``caption``）。
 
         Returns:
-            str: 完整描述优先；只有截断版本时返回截断版；两次都空则返回空串。
+            str: 完整描述优先；只有截断版本时返回截断版；三次都空则返回空串。
         """
         if not self.available:
             return ""
@@ -97,7 +97,7 @@ class FigureDescriber:
         mime = getattr(figure, "mime", "") or "image/png"
         data_url = f"data:{mime};base64,{base64.b64encode(data).decode()}"
         partial = ""
-        for _attempt in range(2):
+        for _attempt in range(3):
             try:
                 text, truncated = _run_sync(self._chat(data_url))
             except Exception:                 # noqa: BLE001 —— 单张失败不该影响索引
