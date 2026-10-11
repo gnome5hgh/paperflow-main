@@ -832,7 +832,7 @@ class Agent:
 
         ReAct 循环步骤::
 
-            1. 生成本次 run 的 trace_id（trace_<12位hex）并清洗 task 的未配对 surrogate
+            1. 生成本次 run 的 trace_id（32 位 hex，W3C 128-bit）并清洗 task 的未配对 surrogate
             2. 构建 head：① AGENT（AGENT.md 系统提示）→ ② SKILLS 清单块（若装配
                SkillRegistry 且有可见 skill）→ ③ 可派发子 agent 清单块（本 agent
                有权派发的目标）→ ④ Memory.compile()（system/ 记忆块，若有）→ ⑤ 意图
@@ -853,7 +853,7 @@ class Agent:
         # spawn 的子 agent 继承父 trace_id——去重池（get_run_state 按其键控）因此
         # 在「一次用户任务」内跨 agent 共享：supervisor 超时重试派发的新 paper-agent
         # 不会重复下载父任务已下载过的论文。
-        self._trace_id = self._inherited_trace_id or f"trace_{uuid.uuid4().hex[:12]}"
+        self._trace_id = self._inherited_trace_id or uuid.uuid4().hex
 
         # 信任边界：清洗用户输入里的未配对 surrogate（外部粘贴/合成文本可能携带，
         # 见 core/security/text.py）——否则下游意图管线/实体提取在脏字符上工作，且

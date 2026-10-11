@@ -15,8 +15,9 @@
 - ``llm_call``：LLM 调用元数据（模型 / token 数 / 耗时），不记 content。
 
 写入前的处理：
-- 脱敏（``_sanitize``）：按敏感键名模式替换参数值（密钥类 → ``"***"``，
-  内容类 → ``"HIDDEN"``），路径类键保留原值，便于追溯文件操作；
+- 脱敏（``_sanitize``）：只遮蔽凭证类键值（api_key/token/password/secret →
+  ``"***"``），路径类键保留原值，**内容不再隐藏**——入参与返回都是全量原文，
+  供事后取证回放（审计目录在防篡改黑名单内、且从不回灌模型，不构成注入面）；
 - 决策推导（``_derive_decision``）：根据调用结果推导出 auto_allowed /
   user_confirmed / policy_denied / security_blocked / user_denied；
 - 状态推导（``_result_status``）：根据异常类型推导出 success /
@@ -38,6 +39,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta
+from typing import Any
 from pathlib import Path
 
 from paperflow.core.security.middleware.base import (
@@ -46,28 +48,28 @@ from paperflow.core.security.middleware.base import (
 from paperflow.core.security.domain import AuditEntry, ToolContext
 from paperflow.core.common.text import sanitize_surrogates
 
-#: 敏感键名 → 脱敏替换值 的模式表，按顺序匹配，命中即替换
+#: 凭证类键名 → 替换值。这是审计里唯一的脱敏——凭证落日志是真泄露且对取证
+#: 无价值；其余键值（含写入/读出的正文）全量原文保留。
 SENSITIVE_KEY_PATTERNS = [
     (r"api_key|token|password|secret", "***"),
-    (r"content|text|abstract|full_text|body", "HIDDEN"),
 ]
 #: 路径类键名集合：命中则保留原值（安全：仅暴露文件名/路径，不泄露文件内容）
 PATH_KEYS = frozenset({"path", "pdf_path", "file_path", "note_path", "source"})
 
-#: 审计 span 栈：当前工具调用上下文。值 = {"span_id": str, "depth": int} 或 None。
+#: 审计 span 栈：当前工具调用上下文。值 = {"span_id": str} 或 None。
 #: 用 contextvar 传播父链——before 压栈、after 弹栈；子 agent（spawn 工具在
 #: to_thread + asyncio.run 内执行）自动继承父链，各并发任务持独立副本互不串扰。
 _span_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar("audit_span", default=None)
 
 
 def _sanitize(args: dict) -> dict:
-    """按敏感键名模式表脱敏调用参数：密钥/内容类替换，路径类保留原值。
+    """按凭证类键名模式表脱敏调用参数：凭证替换为占位，其余（含正文）原样保留。
 
     Args:
         args: dict，LLM 给出的原始调用参数（非 dict 时按空处理）
 
     Returns:
-        脱敏后的参数字典（敏感键替换为占位，路径类键保留原值）。
+        脱敏后的参数字典（凭证类键替换为 "***"，其余原值保留）。
     """
     # 防御：大模型可能返回非 dict 的 JSON（如数组/字符串），脱敏不应崩溃
     if not isinstance(args, dict):
@@ -75,7 +77,7 @@ def _sanitize(args: dict) -> dict:
 
     sanitized = {}
     for key, value in args.items():
-        # 顺序匹配敏感模式：命中则用对应替换值，break 跳出内层循环
+        # 顺序匹配凭证模式：命中则替换，break 跳出内层循环；未命中的键一律原样
         for pattern, replacement in SENSITIVE_KEY_PATTERNS:
             if re.search(pattern, key, re.IGNORECASE):
                 sanitized[key] = replacement
@@ -200,21 +202,23 @@ def _build_policy_rules(ctx: ToolContext) -> dict | None:
     }
 
 
-def _result_summary(result) -> dict | str | None:
-    """结果副作用摘要：优先 summary dict（脱敏），否则取 text 截断 200 字符。
+def _result_fields(result) -> tuple[Any, Any]:
+    """取结果的审计视图：``output`` 是全量原文（取证回放用），``summary`` 是结构化通道。
 
     Args:
         result: ToolResult | None，工具执行结果
 
     Returns:
-        副作用摘要：优先脱敏后的 summary dict，否则 text 去换行截断 200 字符；无结果 None。
+        (output, summary) 二元组：output 为 result.text 全文（不截断、不压平）；
+        summary 为脱敏后的 summary dict（spawn digest / RAG documents 等结构化
+        数据的载体）。result 为 None 时两者皆 None。
     """
     if result is None:
-        return None
-    if getattr(result, "summary", None):
-        return _sanitize(dict(result.summary))
-    text = getattr(result, "text", "") or ""
-    return text.replace("\n", " ")[:200] or None
+        return None, None
+    text = getattr(result, "text", "") or "" or None
+    summary = getattr(result, "summary", None)
+    summary = _sanitize(dict(summary)) if summary else None
+    return text, summary
 
 
 class AuditMiddleware(SecurityMiddleware):
@@ -263,7 +267,7 @@ class AuditMiddleware(SecurityMiddleware):
                     # 写盘前清洗代理码点：入参/结果可能带 surrogate（surrogateescape
                     # 残留），严格 UTF-8 写文件会炸——清洗后再写，审计不丢行。
                     f.write(sanitize_surrogates(
-                        json.dumps(entry.__dict__, ensure_ascii=False)) + "\n")
+                        json.dumps(entry.to_json_dict(), ensure_ascii=False)) + "\n")
         except Exception as e:
             # 写盘失败（磁盘满/权限）不得中断工具结果返回：打印告警后降级跳过，
             # 与 _run_after_hooks 的哲学一致——审计是横切关注点，失败不该毁掉主流程
@@ -278,14 +282,13 @@ class AuditMiddleware(SecurityMiddleware):
             ctx: ToolContext，本次工具调用上下文（写入 span 树字段）
         """
         # 1. 获取当前 contextvar 中存储的父 span（若有）
-        # span 类似于 {"span_id": "span_xxx", "depth": 1}
+        # span 类似于 {"span_id": "16位hex"}
         span = _span_ctx.get()
 
         # 2. 生成新的 span_id，更新当前工具调用的 ctx 中的树字段
-        span_id = f"span_{uuid.uuid4().hex[:12]}"
+        span_id = uuid.uuid4().hex[:16]
         ctx.span_id = span_id
-        ctx.parent_id = span["span_id"] if span else None
-        ctx.depth = (span["depth"] + 1) if span else 0
+        ctx.parent_span_id = span["span_id"] if span else None
 
         # 3. 立即落盘 tool_started 事件（在任何子事件发生之前）
         #    这是保证父链完整的关键：即使后续子工具写盘，父 start 已存在，不会出现孤儿
@@ -297,15 +300,14 @@ class AuditMiddleware(SecurityMiddleware):
             agent_type=ctx.agent_type,
             tool_name=ctx.tool_name,
             risk_level=ctx.tool.risk_level if ctx.tool else "unknown",
-            params=_sanitize(ctx.args),
-            parent_id=ctx.parent_id,
-            depth=ctx.depth,
+            input=_sanitize(ctx.args),
+            parent_span_id=ctx.parent_span_id,
             turn=ctx.turn,
             started_at=ctx.timestamp or "",
         ))
 
         # 4. 将当前 span 压入 contextvar 栈，供嵌套调用继承
-        ctx._audit_token = _span_ctx.set({"span_id": span_id, "depth": ctx.depth})
+        ctx._audit_token = _span_ctx.set({"span_id": span_id})
 
     async def after(self, ctx: ToolContext) -> None:
         """工具执行后：收口当前 span 并落盘 tool_ended 收尾事件。
@@ -320,13 +322,12 @@ class AuditMiddleware(SecurityMiddleware):
         # ---- 防御性处理：若 before 未执行（如参数解析失败提前返回），则补建 span ----
         if ctx.span_id is None:
             # 补生成 span_id，并尝试从当前 contextvar 获取父链
-            ctx.span_id = f"span_{uuid.uuid4().hex[:12]}"
+            ctx.span_id = uuid.uuid4().hex[:16]
             # 防御路径仍要把自己挂到当前调用链下：嵌套工具（子 agent 幻觉未知工具/坏
             # JSON）命中此分支时栈顶是外层 span，不读则父链丢失、被误写成根节点。
             span = _span_ctx.get()
             if span:
-                ctx.parent_id = span["span_id"]
-                ctx.depth = span["depth"] + 1
+                ctx.parent_span_id = span["span_id"]
             # 补写 tool_started，保证树结构完整
             self._write_event(AuditEntry(
                 event_type="tool_started",
@@ -336,9 +337,8 @@ class AuditMiddleware(SecurityMiddleware):
                 agent_type=ctx.agent_type,
                 tool_name=ctx.tool_name,
                 risk_level=ctx.tool.risk_level if ctx.tool else "unknown",
-                params=_sanitize(ctx.args),
-                parent_id=ctx.parent_id,
-                depth=ctx.depth,
+                input=_sanitize(ctx.args),
+                parent_span_id=ctx.parent_span_id,
                 turn=ctx.turn,
                 started_at=ctx.timestamp or "",
             ))
@@ -356,9 +356,8 @@ class AuditMiddleware(SecurityMiddleware):
             agent_type=ctx.agent_type,
             tool_name=ctx.tool_name,
             risk_level=ctx.tool.risk_level if ctx.tool else "unknown",
-            params=_sanitize(ctx.args),
-            parent_id=ctx.parent_id,
-            depth=ctx.depth,
+            input=_sanitize(ctx.args),
+            parent_span_id=ctx.parent_span_id,
             turn=ctx.turn,
             policy_decision=_derive_decision(ctx),
             result_status=_result_status(ctx),
@@ -367,7 +366,8 @@ class AuditMiddleware(SecurityMiddleware):
             duration_ms=duration,
             security_scan=_extract_violations(ctx),
             error=_format_error(ctx.error) if ctx.error else None,
-            result_summary=_result_summary(ctx.result),
+            output=_result_fields(ctx.result)[0],
+            summary=_result_fields(ctx.result)[1],
             policy_rules=_build_policy_rules(ctx),
             approval_outcome=ctx.approval_outcome,
             causation_id=ctx.approval_decided_span_id,
@@ -396,15 +396,14 @@ class AuditMiddleware(SecurityMiddleware):
 
         entry = AuditEntry(
             event_type=f"approval_{phase}",
-            span_id=f"span_{uuid.uuid4().hex[:12]}",
+            span_id=uuid.uuid4().hex[:16],
             trace_id=ctx.trace_id,
             session_id=ctx.session_id,
             agent_type=ctx.agent_type,
             tool_name=ctx.tool_name,
             risk_level=ctx.tool.risk_level if ctx.tool else "unknown",
-            params=_sanitize(ctx.args),
-            parent_id=span["span_id"] if span else ctx.parent_id,
-            depth=(span["depth"] + 1) if span else ctx.depth,
+            input=_sanitize(ctx.args),
+            parent_span_id=span["span_id"] if span else ctx.parent_span_id,
             turn=ctx.turn,
             started_at=now,
             ended_at=now,
@@ -424,9 +423,10 @@ class AuditMiddleware(SecurityMiddleware):
         self._write_event(entry)
 
     def record_llm_call(self, *, trace_id, session_id, agent_type, turn, model,
-                        prompt_tokens, completion_tokens, total_tokens,
-                        started_at, duration_ms, finish_reason) -> None:
-        """记录一次 LLM 调用元数据（模型 / token 数 / 耗时），不记 content。
+                        input_tokens, output_tokens,
+                        started_at, duration_ms, finish_reason,
+                        response_model=None, provider=None) -> None:
+        """记录一次 LLM 调用元数据（模型 / token 数 / 耗时），不记 prompt 正文。
 
         同步方法——LLM 流式回调可能跑在线程池线程，不能 await。
 
@@ -435,10 +435,11 @@ class AuditMiddleware(SecurityMiddleware):
             session_id: str，会话标识
             agent_type: str，发起调用的 Agent 类型
             turn: int，ReAct 轮次
-            model: str，模型名
-            prompt_tokens: int，提示词 token 数
-            completion_tokens: int，生成 token 数
-            total_tokens: int，总 token 数
+            model: str，模型名（配置串；端点自报快照另经 response_model）
+            input_tokens: int，提示词 token 数
+            output_tokens: int，生成 token 数
+            response_model: str | None，端点自报的模型快照（不报则 None）
+            provider: str | None，端点 host（不报则 None）
             started_at: str，调用开始时间（ISO）
             duration_ms: int，耗时（毫秒）
             finish_reason: str，结束原因（stop/length 等）
@@ -457,17 +458,17 @@ class AuditMiddleware(SecurityMiddleware):
 
         entry = AuditEntry(
             event_type="llm_call",
-            span_id=f"span_{uuid.uuid4().hex[:12]}",
+            span_id=uuid.uuid4().hex[:16],
             trace_id=trace_id, session_id=session_id, agent_type=agent_type,
-            tool_name="", risk_level="", params={},
-            parent_id=span["span_id"] if span else None,
-            depth=(span["depth"] + 1) if span else 0,
+            tool_name="", risk_level="", input={},
+            parent_span_id=span["span_id"] if span else None,
             turn=turn,
             started_at=started_at,
             ended_at=ended_at,
             duration_ms=duration_ms,
-            model=model, prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens, total_tokens=total_tokens,
+            request_model=model, input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            response_model=response_model, provider=provider,
             finish_reason=finish_reason,
         )
         self._write_event(entry)

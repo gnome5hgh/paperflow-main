@@ -10,7 +10,7 @@ class ToolContext:
 
     字段按来源分四组：调用方与工具本体（trace/session/agent/tool/args）、生命周期
     （timestamp/started_at）、结果与决策（result/error/user_confirmed/policy_*/
-    approval_*）、审计树（turn/span_id/parent_id/depth）。各组由不同中间件在各自
+    approval_*）、审计树（turn/span_id/parent_span_id）。各组由不同中间件在各自
     钩子里填充——见下方字段注释。``tool=None`` 表示未知工具（大模型幻觉或注入），
     此时各 before 钩子自行跳过，仍会走 after 钩子审计。
 
@@ -29,8 +29,7 @@ class ToolContext:
         diffstat_old: str | None，写类工具执行前采样的旧文本（仅渲染遥测，中间件不读）
         turn: int，ReAct 循环轮次（从 0 起）
         span_id: str | None，本次调用的审计 span ID（由 AuditMiddleware 生成）
-        parent_id: str | None，父 span ID（嵌套调用时取栈顶）
-        depth: int，调用深度（根为 0，嵌套每层 +1）
+        parent_span_id: str | None，父 span ID（嵌套调用时取栈顶）
         policy_context: dict | None，策略引擎评估时的配置快照
         policy_fired: str | None，被触发的策略规则名（如 blocked_by_default）
         approval_outcome: str | None，审批最终结果（user_confirmed/user_denied/auto_denied）
@@ -62,8 +61,7 @@ class ToolContext:
     # --- 审计树与决策信息（由各中间件分别填充） ---
     turn: int = 0                      # ReAct 循环的轮次（从 0 开始）
     span_id: str | None = None         # 当前工具调用的审计 span ID（由 AuditMiddleware 生成）
-    parent_id: str | None = None       # 父 span ID（嵌套调用时，由 AuditMiddleware 从栈顶读取）
-    depth: int = 0                     # 调用深度（根为 0，嵌套每层 +1）
+    parent_span_id: str | None = None  # 父 span ID（嵌套调用时，由 AuditMiddleware 从栈顶读取）
 
     policy_context: dict | None = None # 策略引擎评估时的配置快照（由 PolicyEngineMiddleware 记录）
     policy_fired: str | None = None    # 被触发的策略规则名（如 "blocked_by_default"）

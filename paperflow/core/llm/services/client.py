@@ -219,9 +219,8 @@ class LLMClient:
             usage = getattr(response, "usage", None) or {}
             telemetry_callback({
                 "model": self.model,
-                "prompt_tokens": getattr(usage, "prompt_tokens", None),
-                "completion_tokens": getattr(usage, "completion_tokens", None),
-                "total_tokens": getattr(usage, "total_tokens", None),
+                "input_tokens": getattr(usage, "prompt_tokens", None),
+                "output_tokens": getattr(usage, "completion_tokens", None),
                 "duration_ms": int((time.monotonic() - _started) * 1000),
                 "started_at": _started_wall,
                 "finish_reason": response.choices[0].finish_reason,
@@ -280,9 +279,8 @@ class LLMClient:
                 # 留空，不落 content——与 chat() 一致地只回传元数据
                 telemetry_callback({
                     "model": self.model,
-                    "prompt_tokens": getattr(usage, "prompt_tokens", None),
-                    "completion_tokens": getattr(usage, "completion_tokens", None),
-                    "total_tokens": getattr(usage, "total_tokens", None),
+                    "input_tokens": getattr(usage, "prompt_tokens", None),
+                    "output_tokens": getattr(usage, "completion_tokens", None),
                     "duration_ms": int((time.monotonic() - _started) * 1000),
                     "started_at": _started_wall,
                     "finish_reason": finish_reason,
