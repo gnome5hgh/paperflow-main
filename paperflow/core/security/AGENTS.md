@@ -10,10 +10,11 @@
 ```text
 security/
 ├─ domain/dto/     # tool_context.py（ToolContext 一次工具调用的上下文快照）
-│                  #   + audit_entry.py（AuditEntry 审计事件快照，五类事件共用）
+│                  #   + audit_entry.py（AuditEntry 审计事件快照，六类事件共用：tool_started/
+│                  #   tool_ended/approval_requested/approval_decided/agent_started/llm_call）
 ├─ middleware/     # base.py(协议：SecurityMiddleware ABC + 异常体系 SecurityError/PolicyDenied/
 │                  #   ConfirmRequired/SecurityBlocked) + audit.py(审计落盘) + workspace.py(路径边界)
-│                  #   + scanner.py(输出扫描) + policy_engine.py(风险阈值与确认)
+│                  #   + scanner.py(输出扫描) + policy_engine.py(显式禁止与档位升级确认)
 └─ services/       # network.py：SSRF 防护（validate_url_target / resolve_url_target），被 tools/ 直接调用
 ```
 
