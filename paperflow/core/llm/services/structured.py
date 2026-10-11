@@ -76,7 +76,8 @@ class StructuredOutput:
 
     async def extract(self, prompt: str, schema: type[BaseModel],
                       fallback: Callable[[], BaseModel] | None = None,
-                      images: list[str] | None = None) -> BaseModel:
+                      images: list[str] | None = None,
+                      telemetry_callback=None) -> BaseModel:
         """让 LLM 按给定 pydantic schema 稳定输出 JSON，并返回校验通过的实例。
 
         三层防御（从源头提正确率，到失败兜底）：
@@ -93,6 +94,8 @@ class StructuredOutput:
             schema: pydantic 模型类，既是校验目标，也经 _schema_to_prompt 展开成字段级提示喂给 LLM
             fallback: 重试耗尽时的兜底构造函数（无参返回 BaseModel 实例）；None 表示直接抛 StructuredOutputError
             images: 视觉分析的图片 data URL 列表；非 None 时 user 消息改为「文本 + 图」的 content parts，文本仍是 prompt
+            telemetry_callback: 本次调用的元数据回调；给了就覆盖实例级 callback
+                （实例复用而归属方不同的场景，如被多个工具共享的改写器）
 
 
 
@@ -132,8 +135,9 @@ class StructuredOutput:
                     temperature=self.config.temperature,
                     extra_body={"enable_thinking": False} if self.config.disable_thinking else None,
                 )
-                if self.telemetry_callback is not None:
-                    chat_kwargs["telemetry_callback"] = self.telemetry_callback
+                callback = telemetry_callback or self.telemetry_callback
+                if callback is not None:
+                    chat_kwargs["telemetry_callback"] = callback
                 resp = await self.llm.chat(messages, **chat_kwargs)
                 data = json.loads(_extract_json_body(resp.content))
                 result = schema(**data)

@@ -44,7 +44,26 @@ class Retriever:
         self._bm25_synced = False
 
     def retrieve(self, queries, top_k: int | None = None) -> list[Chunk]:
+        """对查询集执行检索，返回有序块（不带分数）。
+
+        与 :meth:`retrieve_scored` 共享同一段检索实现，只是丢弃分数——两个
+        出口不会走出不同结果。语义（queries 约定/并发约定/边界条件）见那里。
+
+        Args:
+            queries: 查询集（str 视为单条）
+            top_k: 返回块数；None 时取配置 ``rag.retriever.top_k``
+
+        Returns:
+            list[Chunk]，最终顺序（精排序，精排失败降级 RRF 初检序）。
+        """
+        return [c for c, _score in self.retrieve_scored(queries, top_k)]
+
+    def retrieve_scored(self, queries, top_k: int | None = None) -> list[tuple[Chunk, float]]:
         """对查询集执行检索：每条 query 独立跑双路，全部排名进同一 RRF 池融合。
+
+        返回 (块, RRF 融合分) 的有序对——分数是各路倒数排名分之和（精排只决定
+        顺序、不替换分数，cross-encoder 分是另一个量纲）。审计用它在事后回答
+        「为什么召回的是这几块」。
 
         Args:
             queries: 查询集（str 视为单条）——queries[0] 为主查询（reranker
@@ -151,4 +170,6 @@ class Retriever:
         except Exception as e:
             logger.warning("RAG 精排失败，按初检排序输出：%s", e)
             order = list(range(min(top_k, len(chunks))))
-        return [chunks[i] for i in order if i < len(chunks)]
+        final = [chunks[i] for i in order if i < len(chunks)]
+        return [(c, scores[c.id]) for c in final]
+

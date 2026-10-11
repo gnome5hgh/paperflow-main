@@ -112,15 +112,18 @@ class RagRetrieveTool(Tool):
 
         # 1.5 锁外改写：LLM 调用慢且不碰共享检索状态，
         # 不能占着 svc.lock 阻塞索引/其他检索；任何失败降级为 [原query]。
+        # telemetry 归属父 agent 当前轮——改写那次 LLM 调用由此进审计。
         queries = [query]
         rewriter = getattr(svc, "get_rewriter", None)
         if rewriter is not None:
             try:
                 history = _recent_history(
                     svc.config.rag.query_rewrite.history_messages)
-                queries = rewriter().rewrite(query, history).queries
+                queries = rewriter().rewrite(
+                    query, history, telemetry_callback=self._telemetry()).queries
             except Exception as e:
                 logger.warning("query 改写失败，降级为原始 query 检索：%s", e)
+        rewritten = list(queries)
 
         # 2. 熔断判断放在进锁之前：Milvus 不可达时每次检索都要先等一轮连接超时，而调用方
         # 的预算是按秒计的；跳闸期间直接给结论才省得掉这段白等。冷却到期会自动放行一次
@@ -138,7 +141,7 @@ class RagRetrieveTool(Tool):
         # 「检索结果可能不完整/不可用」而非怀疑工具本身。
         try:
             with svc.lock:
-                chunks = svc.get_retriever().retrieve(queries, top_k)
+                scored = svc.get_retriever().retrieve_scored(queries, top_k)
         except Exception as e:
             if breaker is not None:
                 breaker.record_failure()
@@ -146,11 +149,32 @@ class RagRetrieveTool(Tool):
         if breaker is not None:
             breaker.record_success()
 
-        # 4. 若无结果，返回结构化提示信息。
-        if not chunks:
-            return ToolResult(text="检索无命中（索引可能为空，可先入库若干 PDF）")
+        # 4. 若无结果，返回结构化提示信息（summary 也带上查询集，便于排查）。
+        if not scored:
+            return ToolResult(
+                text="检索无命中（索引可能为空，可先入库若干 PDF）",
+                summary={"query": query, "rewritten_queries": rewritten,
+                         "documents": []})
 
-        # 5. 每条命中一行、固定五列：绝对路径 | 论文标题 | 章节 | 图片对象键 | 摘录。
+        chunks = [c for c, _score in scored]
+
+        # 检索记录（结构化摘要）：原始 query + 改写后查询集 + 每个命中块的
+        # id/RRF 分/全文/元数据。审计经 summary 通道整体落盘，事后可回放
+        # 「这条回答引用的知识来自哪几个块、为什么是它们」。
+        rag_summary = {
+            "query": query,
+            "rewritten_queries": rewritten,
+            "documents": [
+                {"id": c.id, "content": c.text, "score": round(score, 6),
+                 "metadata": {"path": c.path, "title": c.title,
+                              "heading": c.heading, "caption": c.caption,
+                              "chunk_type": c.chunk_type,
+                              "image_key": c.image_key}}
+                for c, score in scored
+            ],
+        }
+
+        # 6. 每条命中一行、固定五列：绝对路径 | 论文标题 | 章节 | 图片对象键 | 摘录。
         # 固定列序与「一行一条」是给下游的契约——元数据靠子任务的最终回答逐字上行，
         # 上游按这个顺序读列（见 rag-agent 的检索契约），格式一乱就对不上。
         # 章节列取「章节名或注文」（媒体块的注文就在这个位置，不是块类型标签）；
@@ -164,4 +188,4 @@ class RagRetrieveTool(Tool):
             for c in chunks
         ]
         return ToolResult(text="字段顺序：绝对路径 | 论文标题 | 章节 | 图片对象键 | 摘录\n"
-                               + "\n".join(lines))
+                               + "\n".join(lines), summary=rag_summary)

@@ -217,12 +217,15 @@ class QueryRewriter:
         self._so = StructuredOutput(
             llm, StructuredOutputConfig(max_retries=REWRITE_MAX_RETRIES))
 
-    def rewrite(self, query: str, history: Sequence | None = None) -> RewriteResult:
+    def rewrite(self, query: str, history: Sequence | None = None,
+                telemetry_callback=None) -> RewriteResult:
         """改写 query，返回最终查询集。任何异常降级为 [原query]（degraded=True）。
 
         Args:
             query: 用户当前问题。
             history: 对话历史消息序列，用于消解指代（可为 None）。
+            telemetry_callback: 本次改写 LLM 调用的元数据回调（审计用；改写器
+                实例被进程内缓存共享，归属回调只能按次传入，不能挂在实例上）。
 
         Returns:
             改写结果；LLM 失败时为 [原query] 的降级结果。
@@ -231,7 +234,7 @@ class QueryRewriter:
             out = _run_sync(self._so.extract(
                 _build_prompt(query, _clean_history(history, self._history_limit),
                               self._requirements),
-                self._schema))
+                self._schema, telemetry_callback=telemetry_callback))
             queries = _finalize(query, out, max_query_chars=self._max_query_chars,
                                 max_queries=self._max_queries)
             if not queries or queries == [""]:

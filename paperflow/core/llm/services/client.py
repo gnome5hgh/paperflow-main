@@ -223,6 +223,9 @@ class LLMClient:
             usage = getattr(response, "usage", None) or {}
             telemetry_callback({
                 "model": self.model,
+                # 端点自报的模型快照（OpenAI 兼容响应常带版本后缀，比配置串精确）
+                "response_model": getattr(response, "model", None),
+                "provider": self.provider,
                 "input_tokens": getattr(usage, "prompt_tokens", None),
                 "output_tokens": getattr(usage, "completion_tokens", None),
                 "duration_ms": int((time.monotonic() - _started) * 1000),
@@ -283,6 +286,8 @@ class LLMClient:
                 # 留空，不落 content——与 chat() 一致地只回传元数据
                 telemetry_callback({
                     "model": self.model,
+                    "response_model": None,   # 流式 chunk 的 model 不逐个收集，快照留空
+                    "provider": self.provider,
                     "input_tokens": getattr(usage, "prompt_tokens", None),
                     "output_tokens": getattr(usage, "completion_tokens", None),
                     "duration_ms": int((time.monotonic() - _started) * 1000),
