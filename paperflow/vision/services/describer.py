@@ -72,20 +72,22 @@ class FigureDescriber:
         return bool((getattr(self._config.vision, "api_key", "") or "").strip())
 
     def describe(self, figure) -> str:
-        """描述一张图，返回纯文本；两次都拿不到就返回空串（调用方保留原形态）。
+        """描述一张图，返回纯文本；拿不到完整描述就退回能拿到的最好结果。
 
         同步入口：索引器是同步代码，而 ``LLMClient.chat`` 是异步，中间的桥见 :func:`_run_sync`。
 
-        **空结果重试一次**：视觉模型是推理模型，思维链长度每次都会变，偶尔一次能把整个输出预算
-        跑光——响应里 ``finish_reason=length`` 且 ``content`` 是空串（同一张图两次结果可以一次空
-        一次正常，实测过）。重画一次思维链常常就出稿，所以空结果值得再来一次；只重试一次是为了
-        给「这张图真的描述不完」的情况兜底，不至于无限烧调用。
+        **空或截断就重试一次**：视觉模型是推理模型，思维链长度每次都会变，偶尔一次能把整个输出
+        预算跑光——响应 ``finish_reason=length`` 且 ``content`` 是空串（同一张图两次结果可以一次空
+        一次正常，实测过）；中等的情况是截在半句（``truncated`` 为真）。重画一次思维链常常就出稿。
+        为什么最多两次：既要给「这张图真的描述不完」兜底、不至于无限烧调用，又要避免把预算问题
+        拖成索引期的时间开销。截断但有内容的描述**照样留着**——它对检索仍然有用（图里的词是
+        真的），只是不完整，比空着强。
 
         Args:
             figure: 已渲染的 ``Figure``（用 ``image_bytes`` / ``mime`` / ``caption``）。
 
         Returns:
-            str: 模型输出的描述；无字节、模型不可用或两次都没产出时为空串。
+            str: 完整描述优先；只有截断版本时返回截断版；两次都空则返回空串。
         """
         if not self.available:
             return ""
@@ -94,17 +96,20 @@ class FigureDescriber:
             return ""
         mime = getattr(figure, "mime", "") or "image/png"
         data_url = f"data:{mime};base64,{base64.b64encode(data).decode()}"
+        partial = ""
         for _attempt in range(2):
             try:
-                text = _run_sync(self._chat(data_url))
+                text, truncated = _run_sync(self._chat(data_url))
             except Exception:                 # noqa: BLE001 —— 单张失败不该影响索引
-                text = ""
-            if text:
-                return text
-        return ""
+                text, truncated = "", True
+            if text and not truncated:
+                return text                   # 完整描述，直接用
+            if text and not partial:
+                partial = text                # 截断但有内容：留作兜底
+        return partial
 
-    async def _chat(self, data_url: str) -> str:
-        """发起一次多模态调用，返回描述文本（可能为空——见 :meth:`describe`）。"""
+    async def _chat(self, data_url: str) -> tuple[str, bool]:
+        """发起一次多模态调用，返回 ``(描述文本, 是否被输出预算截断)``。"""
         from paperflow.core.llm import Message
 
         llm = self._llm
@@ -118,7 +123,7 @@ class FigureDescriber:
             {"type": "image_url", "image_url": {"url": data_url}},
         ])
         reply = await llm.chat([message], temperature=0.0)
-        return str(reply.content or "").strip()
+        return str(reply.content or "").strip(), bool(getattr(reply, "truncated", False))
 
 
 def _run_sync(coro):
