@@ -52,45 +52,42 @@ from paperflow.core.common.text import sanitize_surrogates
 
 #: 凭证类键名 → 替换值。这是审计里唯一的脱敏——凭证落日志是真泄露且对取证
 #: 无价值；其余键值（含写入/读出的正文）全量原文保留。
-SENSITIVE_KEY_PATTERNS = [
+CREDENTIAL_KEY_PATTERNS = [
     (r"api_key|token|password|secret", "***"),
 ]
-#: 路径类键名集合：命中则保留原值（安全：仅暴露文件名/路径，不泄露文件内容）
-PATH_KEYS = frozenset({"path", "pdf_path", "file_path", "note_path", "source"})
-
 #: 审计 span 栈：当前工具调用上下文。值 = {"span_id": str} 或 None。
 #: 用 contextvar 传播父链——before 压栈、after 弹栈；子 agent（spawn 工具在
 #: to_thread + asyncio.run 内执行）自动继承父链，各并发任务持独立副本互不串扰。
 _span_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar("audit_span", default=None)
 
 
-def _sanitize(args: dict) -> dict:
-    """按凭证类键名模式表脱敏调用参数：凭证替换为占位，其余（含正文）原样保留。
+def _sanitize(value):
+    """递归脱敏：凭证类**键名**命中的值替换为占位，其余（含正文）原样保留。
+
+    递归是必须的：工具入参与结构化 summary 都可能嵌套（如 MCP 工具的
+    ``{"config": {"api_key": ...}}``、RAG 检索记录的 ``documents[].metadata``），
+    只扫顶层会把嵌套凭证漏进日志。list 逐项走同一规则；字符串/标量原样返回。
 
     Args:
-        args: dict，LLM 给出的原始调用参数（非 dict 时按空处理）
+        value: 任意 JSON 形态的值（dict / list / str / 标量）
 
     Returns:
-        脱敏后的参数字典（凭证类键替换为 "***"，其余原值保留）。
+        脱敏后的同构值（凭证类键的值替换为 "***"，其余原样）。
     """
-    # 防御：大模型可能返回非 dict 的 JSON（如数组/字符串），脱敏不应崩溃
-    if not isinstance(args, dict):
-        return {}
-
-    sanitized = {}
-    for key, value in args.items():
-        # 顺序匹配凭证模式：命中则替换，break 跳出内层循环；未命中的键一律原样
-        for pattern, replacement in SENSITIVE_KEY_PATTERNS:
-            if re.search(pattern, key, re.IGNORECASE):
-                sanitized[key] = replacement
-                break
-        else:
-            # 未命中任何敏感模式：若键属于路径类且值为字符串则原样保留（便于追溯文件操作）
-            if key in PATH_KEYS and isinstance(value, str):
-                sanitized[key] = value
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, val in value.items():
+            # 顺序匹配凭证模式：命中则替换，break 跳出内层循环
+            for pattern, replacement in CREDENTIAL_KEY_PATTERNS:
+                if re.search(pattern, key, re.IGNORECASE):
+                    sanitized[key] = replacement
+                    break
             else:
-                sanitized[key] = value
-    return sanitized
+                sanitized[key] = _sanitize(val)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize(item) for item in value]
+    return value
 
 
 def _derive_decision(ctx: ToolContext) -> str:
@@ -350,6 +347,7 @@ class AuditMiddleware(SecurityMiddleware):
 
         # ---- 计算耗时并落盘 tool_ended ----
         duration = int((time.monotonic() - (ctx.started_at or 0.0)) * 1000)
+        result_output, result_summary = _result_fields(ctx.result)
         self._write_event(AuditEntry(
             event_type="tool_ended",
             span_id=ctx.span_id,
@@ -368,8 +366,8 @@ class AuditMiddleware(SecurityMiddleware):
             duration_ms=duration,
             security_scan=_extract_violations(ctx),
             error=_format_error(ctx.error) if ctx.error else None,
-            output=_result_fields(ctx.result)[0],
-            summary=_result_fields(ctx.result)[1],
+            output=result_output,
+            summary=result_summary,
             policy_rules=_build_policy_rules(ctx),
             approval_outcome=ctx.approval_outcome,
             causation_id=ctx.approval_decided_span_id,
@@ -444,6 +442,7 @@ class AuditMiddleware(SecurityMiddleware):
         # 起跑时若在某个工具调用内（spawn 的子 agent 正是如此），挂到该 span 下；
         # supervisor 顶层起跑时栈为空 → 根节点。
         span = _span_ctx.get()
+        now = datetime.now().isoformat()
         entry = AuditEntry(
             event_type="agent_started",
             span_id=uuid.uuid4().hex[:16],
@@ -451,8 +450,8 @@ class AuditMiddleware(SecurityMiddleware):
             tool_name="", risk_level="", input={},
             parent_span_id=span["span_id"] if span else None,
             turn=0,
-            started_at=datetime.now().isoformat(),
-            ended_at=datetime.now().isoformat(),
+            started_at=now,
+            ended_at=now,
             task=task, agent_version=agent_version,
             request_model=model, provider=provider,
         )

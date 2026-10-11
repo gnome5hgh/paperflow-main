@@ -48,7 +48,7 @@ class PolicyEngineMiddleware(SecurityMiddleware):
         """
         if confirm_above not in RISK_ORDER:
             raise ValueError(
-                f"非法风险阈值: {confirm_above}，合法值: {sorted(RISK_ORDER.keys())}"
+                f"非法免问上限档: {confirm_above}，合法值: {sorted(RISK_ORDER.keys())}"
             )
         self.confirm_above = confirm_above
 

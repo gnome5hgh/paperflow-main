@@ -123,7 +123,6 @@ class RagRetrieveTool(Tool):
                     query, history, telemetry_callback=self._telemetry()).queries
             except Exception as e:
                 logger.warning("query 改写失败，降级为原始 query 检索：%s", e)
-        rewritten = list(queries)
 
         # 2. 熔断判断放在进锁之前：Milvus 不可达时每次检索都要先等一轮连接超时，而调用方
         # 的预算是按秒计的；跳闸期间直接给结论才省得掉这段白等。冷却到期会自动放行一次
@@ -153,7 +152,7 @@ class RagRetrieveTool(Tool):
         if not scored:
             return ToolResult(
                 text="检索无命中（索引可能为空，可先入库若干 PDF）",
-                summary={"query": query, "rewritten_queries": rewritten,
+                summary={"query": query, "rewritten_queries": queries,
                          "documents": []})
 
         chunks = [c for c, _score in scored]
@@ -163,7 +162,7 @@ class RagRetrieveTool(Tool):
         # 「这条回答引用的知识来自哪几个块、为什么是它们」。
         rag_summary = {
             "query": query,
-            "rewritten_queries": rewritten,
+            "rewritten_queries": queries,
             "documents": [
                 {"id": c.id, "content": c.text, "score": round(score, 6),
                  "metadata": {"path": c.path, "title": c.title,
@@ -174,7 +173,7 @@ class RagRetrieveTool(Tool):
             ],
         }
 
-        # 6. 每条命中一行、固定五列：绝对路径 | 论文标题 | 章节 | 图片对象键 | 摘录。
+        # 5. 每条命中一行、固定五列：绝对路径 | 论文标题 | 章节 | 图片对象键 | 摘录。
         # 固定列序与「一行一条」是给下游的契约——元数据靠子任务的最终回答逐字上行，
         # 上游按这个顺序读列（见 rag-agent 的检索契约），格式一乱就对不上。
         # 章节列取「章节名或注文」（媒体块的注文就在这个位置，不是块类型标签）；

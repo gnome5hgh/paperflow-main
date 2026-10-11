@@ -124,7 +124,7 @@ class LLMClient:
             json_mode: True 时传 response_format="json_object" 强制 JSON 输出
             temperature: 单次调用温度覆盖，None 表示用 config 默认值
             extra_body: 附加请求体参数（如 DeepSeek 的 enable_thinking），端点为不支持时自动降级重试一次
-            telemetry_callback: 调用结束后同步回调元数据 dict （model/prompt_tokens/completion_tokens/total_tokens/duration_ms/ started_at/finish_reason），供审计 replay 使用；不含消息正文。None 时零开销跳过
+            telemetry_callback: 调用结束后同步回调元数据 dict （model/response_model/provider/input_tokens/output_tokens/duration_ms/started_at/finish_reason），供审计 replay 使用；不含消息正文。None 时零开销跳过
 
         Returns:
             封装后的 assistant Message
@@ -280,13 +280,13 @@ class LLMClient:
                     stream = self.client.chat.completions.create(**kwargs)
                 else:
                     raise
-            content, tool_calls, role, finish_reason, usage = _accumulate_stream_chunks(stream, on_delta)
+            content, tool_calls, role, finish_reason, usage, model = _accumulate_stream_chunks(stream, on_delta)
             if telemetry_callback is not None:
                 # 流式 usage 仅部分端点提供（多在收尾 chunk 上）；缺失时元数据
                 # 留空，不落 content——与 chat() 一致地只回传元数据
                 telemetry_callback({
                     "model": self.model,
-                    "response_model": None,   # 流式 chunk 的 model 不逐个收集，快照留空
+                    "response_model": model,
                     "provider": self.provider,
                     "input_tokens": getattr(usage, "prompt_tokens", None),
                     "output_tokens": getattr(usage, "completion_tokens", None),
@@ -301,31 +301,35 @@ class LLMClient:
 
 
 def _accumulate_stream_chunks(chunks, on_delta):
-    """把 OpenAI 流式 chunks 累加为 (content, tool_calls, role, finish_reason, usage)。
+    """把 OpenAI 流式 chunks 累加为 (content, tool_calls, role, finish_reason, usage, model)。
 
     on_delta 每收到一段 content 片段即同步回调（跑在流线程内，须线程安全）。
     tool_calls 按 delta.tool_calls[].index 分片累加，arguments 分片拼接。
     finish_reason 取最后一个带值的 chunk 的（多为尾部收尾 chunk）。
     usage 取最后一个带 usage 的 chunk（部分端点仅在收尾 chunk 附带用量），
     无则 None——调用方据此将 tokens 元数据留空。
+    model 取最后一个自报 model 的 chunk（端点的模型快照，与请求串可能不同）。
 
     Args:
         chunks: 可迭代的 OpenAI 流式 chunk 序列
         on_delta: 回调 | None，每收到一段 content 片段即同步调用（跑在流线程内，须线程安全）
 
     Returns:
-        (content, tool_calls, role, finish_reason, usage) 五元组；usage 无则 None。
+        (content, tool_calls, role, finish_reason, usage, model) 六元组；usage/model 无则 None。
     """
     content_parts: list[str] = []
     tool_acc: dict[int, dict] = {}
     role = "assistant"
     finish_reason = None
     usage = None
+    model = None
     for chunk in chunks:
-        # 流式 usage 仅部分端点提供且常出现在收尾 chunk（该 chunk 可能 choices 为空），
-        # 故在跳过空 choices 前收集，最后带值者胜出；getattr 兜底简化 fake chunk
+        # 流式 usage / model 快照仅部分端点提供且常出现在收尾 chunk（该 chunk 可能
+        # choices 为空），故在跳过空 choices 前收集，最后带值者胜出；getattr 兜底简化 fake chunk
         if getattr(chunk, "usage", None):
             usage = chunk.usage
+        if getattr(chunk, "model", None):
+            model = chunk.model
         # 某些端点（如 OpenAI）尾部会发一个空 choices 的 chunk，跳过避免取下标崩溃
         if not chunk.choices:
             continue
@@ -366,7 +370,7 @@ def _accumulate_stream_chunks(chunks, on_delta):
                           "arguments": "".join(tool_acc[i]["args"])}}
             for i in sorted(tool_acc)
         ]
-    return "".join(content_parts), tool_calls, role, finish_reason, usage
+    return "".join(content_parts), tool_calls, role, finish_reason, usage, model
 
 
 _UNSUPPORTED_PARAM_PATTERNS = [

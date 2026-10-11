@@ -118,7 +118,8 @@ def _compute_agent_version(config) -> str:
             t.name, t.description or "",
             json.dumps(t.parameters or {}, sort_keys=True, ensure_ascii=False),
             str(t.risk_level), ",".join(t.side_effects or []),
-            str(t.blocked_by_default),
+            str(t.blocked_by_default), str(t.output_scan),
+            ",".join(t.root_hints or []),
         ])
         h.update(signature.encode("utf-8"))
     return h.hexdigest()[:16]
