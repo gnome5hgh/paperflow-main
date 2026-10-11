@@ -21,7 +21,6 @@ class IndexStatusTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（无参数）
         risk_level: str，"low"（只读）
-        requires_confirm: bool，False
         side_effects: list[str]，["read_file"]（读状态文件与语料目录元数据）
     """
 
@@ -33,7 +32,6 @@ class IndexStatusTool(Tool):
         "再据结论决定是否调 reindex_all 收敛。")
     parameters = {"type": "object", "properties": {}, "required": []}
     risk_level = "low"
-    requires_confirm = False
     side_effects = ["read_file"]
 
     def execute(self) -> ToolResult:

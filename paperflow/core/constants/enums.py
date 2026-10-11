@@ -6,7 +6,7 @@ __all__ = ["RiskLevel", "SideEffect"]
 
 
 class RiskLevel(StrEnum):
-    """工具风险等级。策略引擎按会话阈值 max_risk 拦截超过它的调用。"""
+    """工具风险档位。策略引擎按会话免问上限 confirm_above 升级超过它的调用。"""
 
     LOW = "low"
     MEDIUM = "medium"

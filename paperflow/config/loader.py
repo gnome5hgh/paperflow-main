@@ -133,7 +133,7 @@ class PaperFlowConfig:
     #: 视觉模型连接配置（多模态图表分析，独立于文本 LLM）
     vision: VisionLLMConfig = field(default_factory=VisionLLMConfig)
 
-    #: 运行时基础设施（workspace / agents_dir / max_risk）
+    #: 运行时基础设施（workspace / agents_dir / confirm_above）
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
 
     #: 语料库与产物路径

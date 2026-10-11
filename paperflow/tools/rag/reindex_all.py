@@ -17,7 +17,6 @@ class ReindexAllTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（无参数）
         risk_level: str，"medium"（写索引库）
-        requires_confirm: bool，False（幂等、不删除用户内容，用户已表达重建意图）
         side_effects: list[str]，["network"]（编码走云端嵌入）
     """
 
@@ -28,7 +27,6 @@ class ReindexAllTool(Tool):
         "用于删除文件之后、手动往语料目录里拷了论文之后、或怀疑索引与语料不一致时。")
     parameters = {"type": "object", "properties": {}, "required": []}
     risk_level = "medium"
-    requires_confirm = False
     side_effects = ["network"]
 
     def execute(self) -> ToolResult:

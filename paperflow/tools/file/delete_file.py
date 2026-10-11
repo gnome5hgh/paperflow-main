@@ -16,7 +16,6 @@ class DeleteFileTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（path）
         risk_level: str，"medium"（删除不可逆但影响面限于单个文件）
-        requires_confirm: bool，True（经策略引擎第 3 级询问用户）
         side_effects: list[str]，["delete_file"]（据此纳入同路径写互斥）
     """
 
@@ -36,8 +35,7 @@ class DeleteFileTool(Tool):
         },
         "required": ["path"],
     }
-    risk_level = "medium"
-    requires_confirm = True
+    risk_level = "critical"                    # 不可逆操作；即使免问档调到 high 仍会确认
     side_effects = ["delete_file"]
     root_hints = ["note", "pdf", "research"]
 

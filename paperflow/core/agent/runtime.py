@@ -71,7 +71,7 @@ from paperflow.core.intent.services.service import IntentService
 
 #: 同路径写/编辑串行锁注册表（键 = 目标文件路径）。同一 message
 #: 并行发两个 edit_file 改同一文件时，双方都在对方决策前弹确认（「a」授权只覆盖
-#: 先到者），且并发读改写同一文件有丢写竞态——requires_confirm 的写类工具按路径
+#: 先到者），且并发读改写同一文件有丢写竞态——写类工具按路径
 #: 加锁串行化，后到者等前者完整走完确认+执行，授权键已入集合则不再弹框。
 _path_locks: dict[str, asyncio.Lock] = {}
 
@@ -91,7 +91,8 @@ def _path_lock(path: str) -> asyncio.Lock:
 
 
 #: 写互斥的准入判据涉及的副作用集合：声明了文件写 / 删除的工具才按写目标登记占用。
-#: 用 side_effects 而不是 requires_confirm——后者回答「要不要问用户」，两者不是一回事
+#: 用 side_effects 判定写者身份——它回答「会不会写文件」，与风险档位回答的
+#: 「要不要问用户」不是一回事
 #: （引用类工具声明了写却没有确认要求）。
 _WRITE_EFFECTS = frozenset({SideEffect.WRITE_FILE, SideEffect.DELETE_FILE})
 
@@ -1235,7 +1236,7 @@ class Agent:
         # 1）同一 agent 内部的多次同路径写——丢写竞态 + 重复确认。两个协程对同一文件并发读-改-写，
         #    后写者会覆盖先写者；两个工具又各自弹确认框，用户输入的「a」（本会话放行）只覆盖先弹框的
         #    那个，后到者会再弹一次（而且两个协程并发读 CLI 标准输入本身就是竞态）。解法是模块级按路径
-        #    注册表 `_path_lock`：只有声明了 `requires_confirm` 的工具才走这个加锁分支，按
+        #    注册表 `_path_lock`：只有写类工具（side_effects 含文件写）才走这个加锁分支，按
         #    `effective_target_path` 取该路径的 `asyncio.Lock`，且锁要包住 `_exec_tool_guarded` **整体**
         #    （确认决策 + 执行，即 5-8 步，含 before 钩子里的 ConfirmRequired → confirm_callback → 工具
         #    执行），不能只包执行那一步——这是设计关键，所以 `async with` 放在 `_exec_tool` 这一层包住
@@ -1270,7 +1271,7 @@ class Agent:
                     "不要改文件名另写一份；请稍后原样重试，或把该冲突上报给上级。"),
                     is_error=True)
         try:
-            if getattr(tool, "requires_confirm", False) and isinstance(target, str):
+            if isinstance(target, str) and _is_writer(tool):
                 async with _path_lock(target):
                     return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
             return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)

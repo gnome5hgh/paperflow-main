@@ -21,7 +21,6 @@ class EditFileTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（path/old_text/new_text）
         risk_level: str，"medium"（与 write_file 对齐）
-        requires_confirm: bool，True（写操作需用户确认）
         root_hints: list[str]，NOTE_HINTS（笔记类根名）
         side_effects: list[str]，["write_file"]
         wants_run_state: bool，True（写盘后登记产物账本）
@@ -37,8 +36,7 @@ class EditFileTool(Tool):
         },
         "required": ["path", "old_text", "new_text"],
     }
-    risk_level = "medium"                      # 与 write_file 对齐:定向替换 + medium 风险确认
-    requires_confirm = True
+    risk_level = "high"                        # 与 write_file 对齐:定向替换，高于默认免问档 → 执行前确认
     root_hints = NOTE_HINTS
     side_effects = ["write_file"]
     #: 注入本次 run 的状态容器，用于把落盘路径登记进产物账本

@@ -9,8 +9,7 @@ class RemoveCitationTool(Tool):
         name: str，工具名 "remove_citation"
         description: str，工具描述
         parameters: dict，JSON Schema（key_or_title）
-        risk_level: str，"medium"（写类形态，删除不可逆但影响面有限）
-        requires_confirm: bool，True（经策略引擎第 3 级询问用户）
+        risk_level: str，"high"（删除不可逆但影响面限于库内单条，高于默认免问档 → 执行前确认）
         side_effects: list[str]，["delete_file"]
         manager: CitationManager，注入的引用库门面
     """
@@ -24,12 +23,10 @@ class RemoveCitationTool(Tool):
         },
         "required": ["key_or_title"],
     }
-    # 删除不可逆，但影响面限于库内单条原文块、可重加；对齐 write_file/edit_file
-    # 的写类形态——medium 过默认阈值（config.runtime.max_risk="medium"），
-    # 再经 requires_confirm 在策略引擎第 3 级询问用户，而不是在第 2 级被
-    # 风险阈值直接拒（high > medium）。
-    risk_level = "medium"
-    requires_confirm = True
+    # 删除不可逆，但影响面限于库内单条原文块、可重加——对齐 write_file/edit_file
+    # 的写类档位：高于默认免问档（config.runtime.confirm_above="medium"），
+    # 执行前经策略引擎升级为人工确认。
+    risk_level = "high"
     side_effects = ["delete_file"]
 
     def __init__(self, manager):

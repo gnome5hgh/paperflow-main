@@ -3,7 +3,7 @@
 命名与规范化吸收 Letta（normalize_mcp_schema）与 OpenAI SDK（_safe_tool_name_part、
 64 上限 + hash 后缀）的做法；写分类用 MCP annotations.readOnlyHint，缺注解按"可能写"
 处理——MCP 规范明确 annotations 是不可信提示，缺省保守。风险姿态对齐业界：写类工具
-可见但 requires_confirm 逐次确认，write_tools 预批准豁免，不默认隐藏。
+可见、定档 high（高于默认免问档即逐次确认），write_tools 预批准降档 medium，不默认隐藏。
 """
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ def is_write_tool(annotations) -> bool:
 def filter_tool_specs(cfg: McpServerConfig, specs: list[McpToolSpec]):
     """过滤顺序：allowed → disabled → schema 合法性。
 
-    风险分级不隐藏工具——写类转为可见但 requires_confirm（见 build_mcp_tools），
+    风险分级不隐藏工具——写类定档 high、高于默认免问档即逐次确认（见 build_mcp_tools），
     与业界「可见但审批」的做法一致。
 
     Args:
@@ -123,37 +123,39 @@ class McpToolAdapter(Tool):
         name: str，桥接后的工具名（mcp__server__tool）
         description: str，带 [来源] 标注的工具描述
         parameters: dict | None，规范化后的 JSON Schema
-        risk_level: str，写类为 medium、只读为 low
+        risk_level: str，写类为 high、预批准写类为 medium、只读为 low
         side_effects: list[str]，写类含 network+write_file，只读含 network
         output_scan: str，固定 "mark"（MCP 结果为外部内容）
-        requires_confirm: bool，写类是否需逐次确认（write_tools 预批准时为 False）
+        pre_approved: bool，是否在 write_tools 预批准名单内（信任降档 medium）
         _manager / _server_name / _tool_name: McpClientManager 与目标（调用时投递给它）
     """
 
     def __init__(self, manager, server_name: str, spec: McpToolSpec, write_enabled: bool,
-                 requires_confirm: bool = False):
+                 pre_approved: bool = False):
         """按 MCP 工具描述装配适配器（覆盖类级 name/description/parameters）。
 
         Args:
             manager: McpClientManager，工具实际执行的投递目标
             server_name: str，所属 server 名
             spec: McpToolSpec，MCP 工具描述
-            write_enabled: bool，是否按写类装配风险等级
-            requires_confirm: bool，是否需要逐次用户确认
+            write_enabled: bool，是否写类（readOnlyHint 非 true，含缺注解）
+            pre_approved: bool，是否在 write_tools 预批准名单内
         """
         self.name = bridged_tool_name(server_name, spec.name)
         self.description = (
             f"{(spec.description or '').rstrip()}\n"
             f"[来源] MCP server {server_name}（工具 {spec.name}）；结果为外部内容。")
         self.parameters = normalize_input_schema(spec.input_schema)
-        self.risk_level = "medium" if write_enabled else "low"
+        # 档位即「问不问」：写类 high（高于默认免问档 → 逐次确认）；预批准表达
+        # 信任、降档为 medium（默认配置下静默，会话调严到 low 时照样被问）；
+        # readOnlyHint=true 只读工具 low。
+        self.risk_level = ("medium" if pre_approved else "high") if write_enabled else "low"
         # side_effects 只能用 tool.SIDE_EFFECTS 里的合法值（{write_file, delete_file,
         # network, read_file}），否则 validate_tool 抛 ValueError、AgentRegistry 装载即崩。
         self.side_effects = ["network", "write_file"] if write_enabled else ["network"]
         self.output_scan = "mark"
-        # 写类默认可见但需逐次确认，write_tools 预批准豁免；readOnlyHint=true 只读
-        # 工具自动放行（与业界「可见但审批」的做法一致，不默认隐藏）。
-        self.requires_confirm = requires_confirm
+        # 写类默认可见但需逐次确认，write_tools 预批准降档豁免；readOnlyHint=true
+        # 只读工具自动放行（与业界「可见但审批」的做法一致，不默认隐藏）。
         self._manager = manager
         self._server_name = server_name
         self._tool_name = spec.name
@@ -186,8 +188,8 @@ class McpToolAdapter(Tool):
 def build_mcp_tools(server_name: str, cfg: McpServerConfig, manager) -> list[Tool]:
     """按过滤结果构造适配器列表；隐藏名单与需确认名单写回 ServerStatus 供 /mcp 展示。
 
-    写类（readOnlyHint 非 true，含缺注解）可见但 requires_confirm=True，
-    cfg.write_tools 预批准豁免；排序保持只读在前。
+    写类（readOnlyHint 非 true，含缺注解）定档 high、执行前逐次确认，
+    cfg.write_tools 预批准降档 medium 豁免；排序保持只读在前。
 
     Args:
         server_name: str，server 名
@@ -209,7 +211,7 @@ def build_mcp_tools(server_name: str, cfg: McpServerConfig, manager) -> list[Too
     writes = [s for s in visible if is_write_tool(s.annotations)]
     return ([McpToolAdapter(manager, server_name, s, write_enabled=False) for s in reads]
             + [McpToolAdapter(manager, server_name, s, write_enabled=True,
-                              requires_confirm=(s.name not in cfg.write_tools))
+                              pre_approved=(s.name in cfg.write_tools))
                for s in writes])
 
 

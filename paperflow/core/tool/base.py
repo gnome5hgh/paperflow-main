@@ -29,9 +29,9 @@ class Tool(ABC):
         name: str，工具名（function calling 的 tool_choice 用）
         description: str，工具描述（告诉 LLM 何时/如何用）
         parameters: dict，JSON Schema 参数定义（直接喂给 function calling）
-        risk_level: str，风险等级 low/medium/high/critical
-        side_effects: list[str]，副作用声明（策略引擎据此聚合风险）
-        requires_confirm: bool，需用户确认（高风险操作）
+        risk_level: str，风险档位 low/medium/high/critical（「问不问」的唯一来源，
+                     高于会话免问上限 confirm_above 即升级人工确认）
+        side_effects: list[str]，副作用声明（写互斥的准入判据）
         blocked_by_default: bool，默认拦截（fail-safe）
         root_hints: list[str]，语义根名提示（仅生成 [目录] 提示，不参与强制）
         output_scan: str | None，输出扫描模式（"mark" | None）
@@ -50,14 +50,12 @@ class Tool(ABC):
     #: JSON Schema 格式的参数定义,直接传递给 OpenAI function calling API
     parameters: dict
 
-    #: 风险等级,策略引擎据此决定放行/拒绝/要求确认
+    #: 风险档位,策略引擎据此决定静默放行或升级人工确认（档位高于
+    #: confirm_above 即确认；唯一判据,无独立的「需要确认」布尔）
     risk_level: str = "low"                  # ∈ RISK_LEVELS
 
     #: 副作用声明,值 ∈ SIDE_EFFECTS;策略引擎据此聚合风险
     side_effects: list[str] = []
-
-    #: 需要用户确认(高风险操作),策略引擎据此进入确认分支
-    requires_confirm: bool = False
 
     #: 默认拦截(如危险工具未配置时 fail-safe),策略引擎据此拒绝
     blocked_by_default: bool = False

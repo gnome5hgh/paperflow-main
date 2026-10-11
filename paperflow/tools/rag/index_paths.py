@@ -20,7 +20,6 @@ class IndexPathsTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（paths 数组）
         risk_level: str，"medium"（写索引库，不满足即超默认阈值被拒）
-        requires_confirm: bool，False（幂等且不毁数据，不值得打断用户）
         side_effects: list[str]，["network"]（编码走云端嵌入）
     """
 
@@ -41,7 +40,6 @@ class IndexPathsTool(Tool):
         "required": ["paths"],
     }
     risk_level = "medium"
-    requires_confirm = False
     side_effects = ["network"]
 
     def execute(self, paths: list[str]) -> ToolResult:

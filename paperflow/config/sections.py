@@ -127,12 +127,12 @@ class VisionLLMConfig:
 
 @dataclass
 class RuntimeConfig:
-    """运行时基础设施：工作区、agent 插件目录、会话风险阈值。
+    """运行时基础设施：工作区、agent 插件目录、会话免问上限档。
 
     Attributes:
         workspace: str，运行时数据根目录（milvus/memory/audit 等）
         agents_dir: str，Agent 插件扫描目录
-        max_risk: str，会话风险阈值（超过即被 PolicyEngine 拦截）
+        confirm_above: str，会话免问上限档（风险档高于它的工具执行前需用户确认）
     """
 
     #: 运行时数据根目录，存放 milvus、memory、audit 等（与用户级数据目录 .paperflow/ 同一处）
@@ -141,9 +141,9 @@ class RuntimeConfig:
     #: Agent 插件扫描目录，默认扫描项目根下的 agents/
     agents_dir: str = "agents"
 
-    #: 会话风险阈值（工具 risk_level 超过此值即被 PolicyEngine 拦截，
-    #: 取值 ∈ RISK_ORDER 的键，如 "medium" / "high"）
-    max_risk: str = "medium"
+    #: 会话免问上限档：工具风险档**高于**此档的，执行前升级为人工确认
+    #:（不拒绝）；不高于的静默放行。取值 ∈ RISK_ORDER 的键。
+    confirm_above: str = "medium"
 
 
 @dataclass

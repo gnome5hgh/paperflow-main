@@ -193,7 +193,7 @@ def _build_policy_rules(ctx: ToolContext) -> dict | None:
     if ctx.policy_context is None and fired is None:
         return None
     return {
-        "checked": ["blocked_by_default", "risk_threshold", "requires_confirm"],
+        "checked": ["blocked_by_default", "risk_threshold"],
         "fired": fired,
         "reason": str(ctx.error) if ctx.error else None,
         "policy_context": ctx.policy_context,

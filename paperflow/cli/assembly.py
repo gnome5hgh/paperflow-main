@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int | None:
         AuditMiddleware(audit_dir=str(Path(config.runtime.workspace) / "security" / "audit")),
         WorkspacePolicyMiddleware(workspace=config.runtime.workspace),
         SecurityScanMiddleware(),
-        PolicyEngineMiddleware(max_risk=config.runtime.max_risk),
+        PolicyEngineMiddleware(confirm_above=config.runtime.confirm_above),
     ]
 
     # 意图识别装配（可选预处理层）：关时整段跳过——不装载知识库、不构造适配器，

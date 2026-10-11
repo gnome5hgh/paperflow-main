@@ -20,8 +20,7 @@ class WriteFileTool(Tool):
         name: str，工具名 "write_file"
         description: str，工具描述（含双入口说明）
         parameters: dict，JSON Schema（content/path/filename/dir）
-        risk_level: str，"medium"（写操作）
-        requires_confirm: bool，True
+        risk_level: str，"high"（写/覆盖操作，高于默认免问档 → 执行前确认）
         root_hints: list[str]，NOTE_HINTS
         side_effects: list[str]，["write_file"]
         wants_run_state: bool，True（写盘后登记产物账本）
@@ -48,8 +47,7 @@ class WriteFileTool(Tool):
         },
         "required": ["content"],
     }
-    risk_level = "medium"                      # 写操作；全文覆盖可确认重来 → medium
-    requires_confirm = True
+    risk_level = "high"                        # 写/覆盖操作；高于默认免问档 → 执行前确认
     root_hints = NOTE_HINTS
     side_effects = ["write_file"]
     #: 注入本次 run 的状态容器，用于把落盘路径登记进产物账本
