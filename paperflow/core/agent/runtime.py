@@ -42,6 +42,7 @@ ReAct 循环流程::
 
 import asyncio
 import difflib
+import hashlib
 import json
 import sys
 import time
@@ -95,6 +96,32 @@ def _path_lock(path: str) -> asyncio.Lock:
 #: 「要不要问用户」不是一回事
 #: （引用类工具声明了写却没有确认要求）。
 _WRITE_EFFECTS = frozenset({SideEffect.WRITE_FILE, SideEffect.DELETE_FILE})
+
+
+def _compute_agent_version(config) -> str:
+    """agent 配置的内容哈希（sha256 前 16 位）：system_prompt + 每个工具的全签名。
+
+    「这个 agent 会怎么表现」由 AGENT.md 正文和它拿到的工具（名称、描述、参数
+    schema、安全元数据）共同决定——用内容哈希而非 git commit：脏工作树里也精确，
+    且按 agent 各自变化。审计 agent_started 事件用它回答「行为异常是不是配置刚改过」。
+
+    Args:
+        config: AgentConfig，注册表加载的完整 agent 配置
+
+    Returns:
+        str，16 位十六进制的内容哈希。
+    """
+    h = hashlib.sha256()
+    h.update((config.system_prompt or "").encode("utf-8"))
+    for t in sorted(config.tools, key=lambda t: t.name):
+        signature = "\n".join([
+            t.name, t.description or "",
+            json.dumps(t.parameters or {}, sort_keys=True, ensure_ascii=False),
+            str(t.risk_level), ",".join(t.side_effects or []),
+            str(t.blocked_by_default),
+        ])
+        h.update(signature.encode("utf-8"))
+    return h.hexdigest()[:16]
 
 
 def _is_writer(tool) -> bool:
@@ -363,6 +390,8 @@ class Agent:
         """
         # Pull 模式:从唯一注册表按类型加载完整配置
         config = agent_registry.get_config(agent_type)
+        #: agent 配置内容哈希（审计 agent_started 用）：AGENT.md 正文 + 工具全签名
+        self._agent_version = _compute_agent_version(config)
 
         #: Agent 注册表(构造子 agent 时需要)
         self.agent_registry = agent_registry
@@ -860,6 +889,10 @@ class Agent:
         # conversation.prev_user_input 会把脏字符带入下一轮。正常输入零开销（无匹配回原串）。
         task = sanitize_surrogates(task)
 
+        # agent 起跑审计：每个 agent 实例每次 run 一条——原始任务文本（supervisor=
+        # 用户原话，子 agent=子任务文本）+ 配置版本 + 模型。用户 query 的取证锚点。
+        self._emit_agent_start(task)
+
         #: in-context 窗口每轮重建:跨轮回放统一经 MessageManager(SQL) 加载,避免: self._messages 跨 run 残留导致下一轮重复加载(每步都从权威源重新 load)。
         # 必须先于 head 构建——意图层要读最近几轮对话文本（它得读懂指代类输入）。
         self._messages = []
@@ -1103,6 +1136,30 @@ class Agent:
                       agent_type=self.agent_type, turn=turn)
         for mw in self.security_middleware:
             record = getattr(mw, "record_llm_call", None)
+            if record is not None:
+                record(**fields)
+
+    def _emit_agent_start(self, task: str) -> None:
+        """fan-out agent 起跑事件到各中间件（record_agent_start），sync。
+
+        spawn 的子 agent 起跑时也在 spawn 工具的审计 span 内（contextvar 继承），
+        故子 agent 的 agent_started 天然嵌在父 spawn 下。mock/测试 llm 没有
+        字符串 model/provider，防御性降级为 None。
+
+        Args:
+            task: str，本次 run 的任务文本（supervisor=用户原话，子 agent=子任务）
+        """
+        model = getattr(self.llm, "model", None)
+        provider = getattr(self.llm, "provider", None)
+        fields = dict(
+            trace_id=self._trace_id, session_id=self.session_id,
+            agent_type=self.agent_type, task=task,
+            agent_version=self._agent_version,
+            model=model if isinstance(model, str) else None,
+            provider=provider if isinstance(provider, str) else None,
+        )
+        for mw in self.security_middleware:
+            record = getattr(mw, "record_agent_start", None)
             if record is not None:
                 record(**fields)
 

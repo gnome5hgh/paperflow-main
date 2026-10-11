@@ -25,6 +25,7 @@ LLM 客户端 —— OpenAI-compatible API 的异步封装。
 import asyncio
 import re
 import time
+from urllib.parse import urlsplit
 from datetime import datetime
 
 import httpx
@@ -89,6 +90,9 @@ class LLMClient:
 
         #: 模型名称，每次 chat 调用传给 API
         self.model = config.model
+
+        #: 端点网络位置（base_url 的 host:port）——审计标注模型来自哪个端点用
+        self.provider = urlsplit(config.base_url).netloc
 
         #: 单次请求最大输出 token
         self.max_tokens = config.max_tokens

@@ -12,7 +12,9 @@
   ``tool_ended`` 即中断，可据此识别未完成的调用；
 - ``approval_requested`` / ``approval_decided``：审批请求与决策是两条独立事件，
   decided 通过 ``causation_id`` 回溯到 requested（请求 ≠ 决策）；
-- ``llm_call``：LLM 调用元数据（模型 / token 数 / 耗时），不记 content。
+- ``agent_started``：agent 实例起跑——原始任务文本（supervisor=用户原话）/
+  配置内容哈希 / 模型与端点，一次 run 一条；
+- ``llm_call``：LLM 调用元数据（模型 / token 数 / 耗时），不记 prompt 正文。
 
 写入前的处理：
 - 脱敏（``_sanitize``）：只遮蔽凭证类键值（api_key/token/password/secret →
@@ -420,6 +422,40 @@ class AuditMiddleware(SecurityMiddleware):
             ctx.approval_decided_span_id = entry.span_id
             ctx.approval_outcome = approval_outcome
 
+        self._write_event(entry)
+
+    def record_agent_start(self, *, trace_id, session_id, agent_type, task,
+                           agent_version=None, model=None, provider=None) -> None:
+        """记录一次 agent 起跑（原始任务文本 + 配置版本 + 模型），同步方法。
+
+        supervisor 的 task 是用户原话、子 agent 的 task 是子任务文本——这是
+        「这条任务链在回答哪个问题」的取证锚点；agent_version 用来回答
+        「行为异常是不是配置刚改过」。
+
+        Args:
+            trace_id: str，本次 run 的追踪 ID（子 agent 继承父的）
+            session_id: str，会话标识
+            agent_type: str，起跑的 Agent 类型
+            task: str，本次 run 的任务文本（全量原文，不脱敏——它就是取证对象）
+            agent_version: str | None，agent 配置内容哈希前 16 位
+            model: str | None，模型名（配置串）
+            provider: str | None，端点 host
+        """
+        # 起跑时若在某个工具调用内（spawn 的子 agent 正是如此），挂到该 span 下；
+        # supervisor 顶层起跑时栈为空 → 根节点。
+        span = _span_ctx.get()
+        entry = AuditEntry(
+            event_type="agent_started",
+            span_id=uuid.uuid4().hex[:16],
+            trace_id=trace_id, session_id=session_id, agent_type=agent_type,
+            tool_name="", risk_level="", input={},
+            parent_span_id=span["span_id"] if span else None,
+            turn=0,
+            started_at=datetime.now().isoformat(),
+            ended_at=datetime.now().isoformat(),
+            task=task, agent_version=agent_version,
+            request_model=model, provider=provider,
+        )
         self._write_event(entry)
 
     def record_llm_call(self, *, trace_id, session_id, agent_type, turn, model,
