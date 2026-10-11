@@ -189,12 +189,12 @@ Every agent lives in `agents/<name>/` with two files:
 
 CLI 装配的 4 个中间件（`paperflow/cli/assembly.py`，顺序即执行顺序）：
 
-1. **AuditMiddleware** — 每次工具调用 + LLM 调用落 SQLite 审计（含 approval requested/decided 两条独立事件、`record_llm_call` 元数据）。after 钩子失败不中断结果返回
+1. **AuditMiddleware** — 每次工具调用 + LLM 调用追加写入 JSONL 审计（`.paperflow/security/audit/audit_YYYYMMDD.jsonl` 按天轮转，事件类型：tool_started/tool_ended 成对、approval requested/decided 两条独立、agent_started 起跑、llm_call 元数据）。after 钩子失败不中断结果返回
 2. **WorkspacePolicyMiddleware** — 路径边界：校验 `format="path"` 参数为绝对路径（相对路径直接拒绝），敏感路径黑名单硬拦截（workspace/audit、workspace/milvus、`.git`/`.claude`/`.zcode`、`config.yaml`/`.env`、凭证与 shell 配置文件、`/etc` 等系统目录前缀）。白名单机制已退役：path 工具统一「任意绝对路径+黑名单」，默认写根由 make_tools 按 agent 装配注入（**兜底语义**：任务文本点名了保存位置就用它，默认根只在没指定时生效）。
 3. **SecurityScanMiddleware** — 工具输出扫描（`output_scan="mark"` 的工具标注关键内容）
-4. **PolicyEngineMiddleware** — 三级检查：`blocked_by_default` 直接拒；`risk_level` 超过会话阈值 `max_risk`（默认 "medium"）拒；`requires_confirm` 抛 `ConfirmRequired` → 用户确认后同一（工具名, 目标路径）不再重复询问
+4. **PolicyEngineMiddleware** — 两级检查：`blocked_by_default` 直接拒；风险档位**高于**会话免问上限 `confirm_above`（默认 "medium"）的工具抛 `ConfirmRequired` 升级人工确认（超档不拒绝）→ 用户确认后同一（工具名, 目标路径）不再重复询问
 
-`Tool` 安全元数据（`paperflow/core/tool/`，`base.py` 声明、`validation.py` 校验）：`risk_level`（low/medium/high/critical）、`side_effects`、`blocked_by_default`、`requires_confirm`、`output_scan`（"mark"/None）、`root_hints`（语义根名提示 → `make_tools` 生成 `[目录]` 提示，不参与强制；强制=绝对路径+黑名单）。注册表加载时校验这些字段的合法值。`risk_level`/`side_effects` 的取值集合与排序映射声明在 `core/constants/`（枚举即单一真相源），`core/tool/` 与策略引擎都从那里取。
+`Tool` 安全元数据（`paperflow/core/tool/`，`base.py` 声明、`validation.py` 校验）：`risk_level`（low/medium/high/critical；档位是「问不问」的唯一来源——高于 `confirm_above` 即确认）、`side_effects`、`blocked_by_default`、`output_scan`（"mark"/None）、`root_hints`（语义根名提示 → `make_tools` 生成 `[目录]` 提示，不参与强制；强制=绝对路径+黑名单）。注册表加载时校验这些字段的合法值。`risk_level`/`side_effects` 的取值集合与排序映射声明在 `core/constants/`（枚举即单一真相源），`core/tool/` 与策略引擎都从那里取。
 
 ### Memory system
 
@@ -304,7 +304,7 @@ CLI 装配的 4 个中间件（`paperflow/cli/assembly.py`，顺序即执行顺�
 
 返回 `ToolResult(text=SubAgentResult.model_dump_json(), summary=model_dump())`。`SubAgentResult.status` ∈ {success, failed, timeout, denied}，`needs_attention=True` 表示「被拒或报缺口且需用户介入」。supervisor 与四个能派发的领域角色（paper-agent/note-agent/research-agent/review-agent）装配此工具——权限最小化：叶子 agent（citation-agent/rag-agent/memory-agent）不递归。
 
-**「问用户」不是工具**：需要用户给信息时把问题写进**最终回答**、本轮结束；交互场景下 REPL 的读入循环（含管道喂入）把用户下一行输入当作下一轮的输入。**子 agent 不能在子任务中途问用户**（运行中暂停只能靠工具），它把缺口写进结果——`needs_attention` 项 + summary 里的问题——由 supervisor 决定是否转达。**与安全确认无关**：写盘/编辑/删除/MCP 写类工具的逐次确认是策略引擎的 `requires_confirm`（见 Security），不受此影响。
+**「问用户」不是工具**：需要用户给信息时把问题写进**最终回答**、本轮结束；交互场景下 REPL 的读入循环（含管道喂入）把用户下一行输入当作下一轮的输入。**子 agent 不能在子任务中途问用户**（运行中暂停只能靠工具），它把缺口写进结果——`needs_attention` 项 + summary 里的问题——由 supervisor 决定是否转达。**与安全确认无关**：写盘/编辑/删除/MCP 写类工具的逐次确认是风险档位高于会话免问上限（`confirm_above`）触发的策略升级（见 Security），不受此影响。
 
 ### Terminal
 
@@ -327,7 +327,7 @@ CLI 装配的 4 个中间件（`paperflow/cli/assembly.py`，顺序即执行顺�
 
 ```
 llm / vision                    # 保留顶层（全局共用、最高频调整）
-runtime:  workspace / agents_dir / max_risk
+runtime:  workspace / agents_dir / confirm_above
 corpus:   note_dir / pdf_dir / research_dir / citations_bib_path
 intent:   enabled / history_messages
 rag:      embedding{...,batch_size,timeout,max_retries} / retriever{top_k,bm25_topk,vector_topk,rerank_candidates,rrf_k}
@@ -345,7 +345,7 @@ mcp_servers                     # 保留顶层（本身即映射）
 | `vision` (`VisionLLMConfig`) | 视觉模型（多模态图表分析）：base_url / api_key / model / max_tokens / 超时；默认 DeepSeek 视觉（与文本 LLM 同一端点/key）；api_key 留空不崩启动，图表分析调用时降级不可用 |
 | `runtime.workspace` | 运行时数据根（`.paperflow/`，默认）：milvus/memory/intent/rag/security/session 等（模板已不在此，随流程 skill 分发） |
 | `runtime.agents_dir` | 插件扫描目录，默认 `agents` |
-| `runtime.max_risk` | 策略引擎风险阈值，默认 "medium" |
+| `runtime.confirm_above` | 会话免问上限档：风险档**高于**它的工具执行前升级人工确认（`ConfirmRequired`，超档不拒绝），不高于的静默放行；默认 "medium"。硬拒只来自显式规则（blocked_by_default + 敏感路径黑名单） |
 | `compaction` | `CompactionSettings`（惰性工厂避免 config→compaction→llm→config 循环导入） |
 | `memory.consolidation_enabled` | 记忆整合开关（每轮对话结束后整合一次；关掉则整合路径不触发，记忆只靠 self-editing 维护） |
 | `corpus.note_dir` / `corpus.pdf_dir` / `corpus.research_dir` | 语料库数据源根（note/pdf/research，个人绝对路径，**无默认值**，须经 config.yaml/env） |
@@ -366,13 +366,13 @@ mcp_servers                     # 保留顶层（本身即映射）
 | `agents.timeouts` | 子 agent 超时覆盖表（note-agent 900 / paper-agent 420 / review-agent 300 / research-agent 1800 / rag-agent 900 / citation-agent 300 / memory-agent 180;按审计数据校准,见 spec 2026-09-05-agent-timeout-recalibration）；未命中的 agent 回退类默认 120s；自由 dict，**仅 YAML**（不派生 env） |
 | `mcp_servers` | MCP server 接入配置（顶层 dict，仅 YAML 无环境变量形态）：每 server 声明 transport(stdio/http)/command/args/url/agents/超时/工具名单；连接失败跳过不挡启动，写类工具默认禁用。可注释示例段见 `docs/learning/11-MCP客户端.md`（gitignored 本地文档） |
 
-环境变量（按路径派生，示例非全集）：`PAPERFLOW_LLM_API_KEY` / `PAPERFLOW_LLM_BASE_URL` / `PAPERFLOW_LLM_MODEL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_RUNTIME_WORKSPACE` / `PAPERFLOW_RUNTIME_AGENTS_DIR` / `PAPERFLOW_RUNTIME_MAX_RISK` / `PAPERFLOW_CORPUS_NOTE_DIR` / `PAPERFLOW_CORPUS_PDF_DIR` / `PAPERFLOW_CORPUS_RESEARCH_DIR` / `PAPERFLOW_CORPUS_CITATIONS_BIB_PATH` / `PAPERFLOW_INTENT_ENABLED` / `PAPERFLOW_INTENT_HISTORY_MESSAGES` / `PAPERFLOW_INTENT_JEV_API_KEY` / `PAPERFLOW_INTENT_JEV_BASE_URL` / `PAPERFLOW_INTENT_JEV_MODEL` / `PAPERFLOW_RAG_EMBEDDING_API_KEY` / `PAPERFLOW_RAG_EMBEDDING_BASE_URL` / `PAPERFLOW_RAG_EMBEDDING_EMBED_MODEL` / `PAPERFLOW_RAG_EMBEDDING_RERANK_MODEL` / `PAPERFLOW_RAG_RETRIEVER_TOP_K` / `PAPERFLOW_RAG_RETRIEVER_RERANK_CANDIDATES` / `PAPERFLOW_RAG_QUERY_REWRITE_MODEL` / `PAPERFLOW_RAG_CHUNKER_MAX_TOKENS` / `PAPERFLOW_RAG_CHUNKER_OVERLAP_TOKENS` / `PAPERFLOW_RAG_STORAGE_URI` / `PAPERFLOW_RAG_STORAGE_COLLECTION` / `PAPERFLOW_RAG_STORAGE_TIMEOUT` / `PAPERFLOW_RAG_STORAGE_WRITE_TIMEOUT` / `PAPERFLOW_RAG_TOOLS_EXCERPT_CHARS` / `PAPERFLOW_MEMORY_CONSOLIDATION_ENABLED` / `PAPERFLOW_SESSION_RESUME_REPLAY` / `PAPERFLOW_SESSION_RESUME_REPLAY_LIMIT`。`agents.timeouts` 与 `mcp_servers` 是自由 dict，仅 YAML 可配。env 恒为字符串，按目标字段当前类型做 bool/int 转换。运营类 env（`PAPERFLOW_SKIP_BOOTSTRAP` / `PAPERFLOW_FILE_MODE`）与 `PaperFlowConfig` 无关，不在本表。
+环境变量（按路径派生，示例非全集）：`PAPERFLOW_LLM_API_KEY` / `PAPERFLOW_LLM_BASE_URL` / `PAPERFLOW_LLM_MODEL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_RUNTIME_WORKSPACE` / `PAPERFLOW_RUNTIME_AGENTS_DIR` / `PAPERFLOW_RUNTIME_CONFIRM_ABOVE` / `PAPERFLOW_CORPUS_NOTE_DIR` / `PAPERFLOW_CORPUS_PDF_DIR` / `PAPERFLOW_CORPUS_RESEARCH_DIR` / `PAPERFLOW_CORPUS_CITATIONS_BIB_PATH` / `PAPERFLOW_INTENT_ENABLED` / `PAPERFLOW_INTENT_HISTORY_MESSAGES` / `PAPERFLOW_INTENT_JEV_API_KEY` / `PAPERFLOW_INTENT_JEV_BASE_URL` / `PAPERFLOW_INTENT_JEV_MODEL` / `PAPERFLOW_RAG_EMBEDDING_API_KEY` / `PAPERFLOW_RAG_EMBEDDING_BASE_URL` / `PAPERFLOW_RAG_EMBEDDING_EMBED_MODEL` / `PAPERFLOW_RAG_EMBEDDING_RERANK_MODEL` / `PAPERFLOW_RAG_RETRIEVER_TOP_K` / `PAPERFLOW_RAG_RETRIEVER_RERANK_CANDIDATES` / `PAPERFLOW_RAG_QUERY_REWRITE_MODEL` / `PAPERFLOW_RAG_CHUNKER_MAX_TOKENS` / `PAPERFLOW_RAG_CHUNKER_OVERLAP_TOKENS` / `PAPERFLOW_RAG_STORAGE_URI` / `PAPERFLOW_RAG_STORAGE_COLLECTION` / `PAPERFLOW_RAG_STORAGE_TIMEOUT` / `PAPERFLOW_RAG_STORAGE_WRITE_TIMEOUT` / `PAPERFLOW_RAG_TOOLS_EXCERPT_CHARS` / `PAPERFLOW_MEMORY_CONSOLIDATION_ENABLED` / `PAPERFLOW_SESSION_RESUME_REPLAY` / `PAPERFLOW_SESSION_RESUME_REPLAY_LIMIT`。`agents.timeouts` 与 `mcp_servers` 是自由 dict，仅 YAML 可配。env 恒为字符串，按目标字段当前类型做 bool/int 转换。运营类 env（`PAPERFLOW_SKIP_BOOTSTRAP` / `PAPERFLOW_FILE_MODE`）与 `PaperFlowConfig` 无关，不在本表。
 
 ### Key design decisions
 
 - **No deterministic pipeline.** Everything — routing, tool selection, task decomposition — is driven by the LLM's ReAct loop. Tools are just JSON Schema definitions fed to the model
 - **`ToolResult.summary: dict`** (default empty) — 结构化摘要通道：决策结果（policy_denied/user_denied）、spawn digest、记忆工具结构化数据都经它承载
-- **`risk_level` 已强制**：PolicyEngineMiddleware 按 `max_risk` 阈值拦截 + `requires_confirm` 确认（键 = (工具名, 目标路径)）；Tool 安全元数据由注册表加载时校验
+- **`risk_level` 已强制**：PolicyEngineMiddleware 单一判据——风险档高于会话免问上限 `confirm_above` 即升级人工确认（键 = (工具名, 目标路径)，超档不拒绝）；Tool 安全元数据由注册表加载时校验
 - **`allowed_spawns` 已强制**：spawn 工具运行时校验白名单（supervisor 硬编码放行），同时是 head 里 `<available_agents>` 清单的派生来源
 - **安全是中间件洋葱**：before（可拒绝/要求确认）→ 执行 → 逆序 after；每轮 run 结束 on_finish 可改写最终回答。所有拦截降级为 ToolResult 文本，只有 `MaxTurnsExceeded` 向上抛
 - **SQL 是记忆真相源，markdown 是投影**；压缩/窗口驱逐永不删 SQL 行（Recall 完整）；记忆工具**全装给 `memory-agent`、其余 agent 一件不装**——要记账或查记忆就派发它，supervisor 也不直接执行清单操作
