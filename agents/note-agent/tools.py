@@ -29,7 +29,8 @@ from paperflow.tools.vision.analyze_figures import AnalyzeFiguresTool
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
     ReadPdfTool, ExtractTitleTool,
     ReadFileTool, WriteFileTool, EditFileTool, DeleteFileTool,
-    SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts),
+    SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts,
+                   max_turns=PaperFlowConfig.from_env().agents.max_turns),
     GlobTool, GrepTool,
     AnalyzeFiguresTool(),
 ], default_write_root="note")

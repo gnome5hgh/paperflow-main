@@ -488,7 +488,9 @@ class SpawnSubAgentTool(Tool):
         risk_level: str，"low"
         async_execute: bool，True（父事件循环上直接 await，取消沿链级联）
         timeout: int，子 agent 超时的类默认（config.agents.timeouts 命中时被覆盖）
+        max_turns: int，子 agent ReAct 轮数的类默认（config.agents.max_turns 命中时被覆盖）
         _agent_timeouts: dict[str, int]，按 agent 类型的超时覆盖表（config 注入）
+        _agent_max_turns: dict[str, int]，按 agent 类型的轮数覆盖表（config 注入）
         _parent: Agent，父实例（白名单、去重、审计归属都取自它）
     """
 
@@ -515,16 +517,23 @@ class SpawnSubAgentTool(Tool):
     #: 子 agent 超时秒数的类默认(config 的 agent_timeouts 命中时被覆盖)。
     #: 保留为类属性:既是无配置时的兜底,也是测试覆盖点(测例可设极小值验证超时路径)。
     timeout = 120
+    #: 子 agent ReAct 轮数的类默认（config 的 max_turns 命中时被覆盖）。
+    #: 与 Agent 的构造默认保持一致：表外角色拿到的就是 20 轮。
+    default_max_turns = 20
 
-    def __init__(self, agent_timeouts: dict[str, int] | None = None):
-        """注入按 agent 类型的超时覆盖表（无表时回退到类属性 timeout）。
+    def __init__(self, agent_timeouts: dict[str, int] | None = None,
+                 max_turns: dict[str, int] | None = None):
+        """注入按 agent 类型的超时与轮数覆盖表（无表时回退到类属性默认）。
 
         Args:
             agent_timeouts: dict[str, int] | None，agent 类型 → 超时秒数
+            max_turns: dict[str, int] | None，agent 类型 → ReAct 轮数上限
         """
         # 按 agent 类型的超时覆盖表从 config 注入;无表(如测试直接构造)时
         # 回退到类属性 timeout,既有测例不被破坏。
         self._agent_timeouts = agent_timeouts or {}
+        # 轮数同理：表外角色用 default_max_turns（20，与 Agent 构造默认一致）。
+        self._agent_max_turns = max_turns or {}
 
     def _resolve_timeout(self, agent_type: str) -> int:
         """解析该 agent 生效超时:配置命中优先,否则类默认。
@@ -536,6 +545,17 @@ class SpawnSubAgentTool(Tool):
             该类型生效的超时秒数（配置命中优先，否则类默认）。
         """
         return self._agent_timeouts.get(agent_type, self.timeout)
+
+    def _resolve_max_turns(self, agent_type: str) -> int:
+        """解析该 agent 生效的 ReAct 轮数上限：配置命中优先，否则类默认 20。
+
+        Args:
+            agent_type: str，目标子 agent 类型
+
+        Returns:
+            该类型生效的轮数上限。
+        """
+        return self._agent_max_turns.get(agent_type, self.default_max_turns)
 
     def execute(self, agent_type: str, task: str) -> ToolResult:
         """同步兼容路径：在调用方线程新建事件循环跑 aexecute。
@@ -670,6 +690,10 @@ class SpawnSubAgentTool(Tool):
                 agent_type=agent_type, security_middleware=parent.security_middleware,
                 session_id=parent.session_id, confirm_callback=parent.confirm_callback,
                 stream_callback=_make_child_stream_callback(parent),
+                # 轮数预算按角色取配置（表外角色回到 Agent 默认 20）：单次派发内要串联
+                # 多阶段的角色（如 research-agent 的选题链路）在默认额度内做不完，
+                # 会以 MaxTurnsExceeded 收场且无产物。
+                max_turns=self._resolve_max_turns(agent_type),
                 # 继承父 trace_id：去重池（get_run_state 按 trace_id 键控）在
                 # 一次用户任务内跨 agent 共享——子 agent 因此不重复下载/抓取父任务
                 # 已处理过的资源（父超时重试时会派出新的 paper-agent，不共享池就会重抓）。

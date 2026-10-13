@@ -20,7 +20,7 @@ class LookupCitationTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "title": {"type": "string", "description": "论文干净全标题（来自 extract_title / read_pdf / 用户）"},
+            "title": {"type": "string", "description": "论文干净全标题（来自 extract_title / read_pdf / 用户）；别名 key_or_title 同样接受"},
             "path": {"type": "string", "format": "path", "description": "语料内文件绝对路径（可选，兜底入口）"},
         },
         "required": [],
@@ -36,16 +36,21 @@ class LookupCitationTool(Tool):
         """
         self.manager = manager
 
-    def execute(self, title: str | None = None, path: str | None = None) -> ToolResult:
+    def execute(self, title: str | None = None, path: str | None = None,
+                key_or_title: str | None = None) -> ToolResult:
         """解析干净全标题或文件路径，按 status/in_bib 分级提示标注方式。
 
         Args:
             title: str | None，论文干净全标题
             path: str | None，语料内文件绝对路径（兜底入口）
+            key_or_title: str | None，title 的别名（模型常按「查 key 或标题」的意图命名参数；
+                接受别名省掉一次「参数名不对」的往返）
 
         Returns:
             ToolResult，文本含 status/key/in_bib/title/year/pdf 与标注指引；summary 带结构化三项。
         """
+        if title is None and key_or_title:
+            title = key_or_title
         r = self.manager.resolve(path or title or "")
         text = (f"status: {r.status}\n"
                 f"key: {r.key or '（无）'}\n"

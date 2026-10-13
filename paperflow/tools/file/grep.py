@@ -31,24 +31,35 @@ class GrepTool(Tool):
         "properties": {
             "pattern": {"type": "string", "description": "正则表达式（如 'Disentangled Progressive'）"},
             "path": {"type": "string", "format": "path",
-                     "description": "文件或目录绝对路径（目录递归；缺省=语料库笔记根）"},
+                     "description": "文件或目录绝对路径（目录递归；缺省=语料库笔记根）。"
+                                    "别名 root 同样接受"},
+            # 别名的声明不是可选项：路径策略中间件按 format="path" 收集要校验的参数名，
+            # 别名不进 schema 就等于开了一条绕过敏感路径黑名单的通道。
+            "root": {"type": "string", "format": "path",
+                     "description": "path 的别名（等同）。两者都传时以 path 为准。"},
         },
         "required": ["pattern"],
     }
     risk_level = "low"
     root_hints = ["note", "pdf", "memory"]
 
-    def execute(self, pattern: str, path: str | None = None) -> ToolResult:
+    def execute(self, pattern: str, path: str | None = None,
+                root: str | None = None) -> ToolResult:
         """在文件或目录内按正则搜索文本,返回 file:line 匹配行(最多 30 条)。
 
         Args:
             pattern: 正则表达式
             path: 文件路径或目录(目录递归,只搜文本文件,跳过二进制/PDF);缺省=语料库笔记根
+            root: str | None，path 的别名（工具提示词里把数据目录称作「根」，
+                模型常按该措辞传参；接受别名省掉一次「参数名不对」的往返）
 
         Returns:
             匹配行每行一条(file:line: 原文);无匹配返回"无匹配"
 
         """
+        # root 是模型视角的常用措辞（[目录] 提示用「根」），与 path 等义
+        if path is None and root:
+            path = root
         try:
             regex = re.compile(pattern)
         except re.error as e:

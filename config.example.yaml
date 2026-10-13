@@ -58,6 +58,10 @@ rag:
 #     note-agent: 900
 #     research-agent: 1800
 #     citation-agent: 300
+#   # 子代理 ReAct 轮数上限（仅 YAML）；未命中角色的用类默认 20。
+#   # 单次派发内要串联多阶段的角色（如选题链路）需要更高额度，否则撞上限且无产物。
+#   max_turns:
+#     research-agent: 45
 
 # MCP server 接入（工具前缀 mcp__paper-search__*；详见 docs/learning/11-MCP客户端.md）
 mcp_servers:

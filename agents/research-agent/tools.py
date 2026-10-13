@@ -20,5 +20,6 @@ TOOLS = make_tools(PaperFlowConfig.from_env(), [
     ReadPdfTool, ExtractTitleTool,
     ReadFileTool, WriteFileTool, EditFileTool, DeleteFileTool,
     GlobTool, GrepTool,
-    SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts),
+    SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts,
+                   max_turns=PaperFlowConfig.from_env().agents.max_turns),
 ], default_write_root="research")

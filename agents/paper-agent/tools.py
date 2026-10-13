@@ -20,4 +20,5 @@ TOOLS = make_tools(PaperFlowConfig.from_env(), [
     FetchPdfTool, DeleteFileTool, GlobTool, GrepTool,
     ReadPdfTool, ExtractTitleTool,
     AnalyzeFiguresTool(),
-]) + [SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts)]
+]) + [SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts,
+                   max_turns=PaperFlowConfig.from_env().agents.max_turns)]

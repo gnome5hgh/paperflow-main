@@ -19,7 +19,7 @@ def _make_supervisor_tools() -> list:
     """装配 1 个调度工具（派发）。config 在 import 时构造（每进程静态、无副作用）。"""
     cfg = PaperFlowConfig.from_env()
     return [
-        SpawnSubAgentTool(agent_timeouts=cfg.agents.timeouts),
+        SpawnSubAgentTool(agent_timeouts=cfg.agents.timeouts, max_turns=cfg.agents.max_turns),
     ]
 
 

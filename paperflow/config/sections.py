@@ -496,8 +496,15 @@ class AgentsConfig:
     本表，别让它在表外静默用类默认。某 agent 反复撞帽说明任务时长需要重新评估，
     而不是继续调大。
 
+    max_turns 是同类自由 dict（agent 类型 → ReAct 轮数上限），仅 YAML 可配；表里没有的
+    类型落回 Agent 的类默认 20 轮。轮数是「一次派发内允许多少次推理-行动」的预算：单次
+    派发要串联多阶段的角色（research-agent 的选题链路含盘点、成稿、idea 卡、外部检索、
+    计划成稿）在 20 轮内做不完，会以 MaxTurnsExceeded 收场且无产物；给这类角色单独提额度，
+    其余保持默认。撞帽本身是信号——要么任务该拆，要么额度该调。
+
     Attributes:
         timeouts: dict[str, int]，agent 类型 → 超时秒数（仅 YAML 可配；按各 agent 完整任务典型时长留余量）
+        max_turns: dict[str, int]，agent 类型 → ReAct 轮数上限（仅 YAML 可配；未命中用类默认 20）
     """
 
     timeouts: dict[str, int] = field(
@@ -506,6 +513,10 @@ class AgentsConfig:
             "research-agent": 1800, "rag-agent": 900,
             "citation-agent": 300, "memory-agent": 180,
         })
+
+    #: 只有单次派发内需要串联多阶段的角色才提额度；表外角色一律用 Agent 的默认 20 轮。
+    max_turns: dict[str, int] = field(
+        default_factory=lambda: {"research-agent": 45})
 
 
 _SERVER_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
