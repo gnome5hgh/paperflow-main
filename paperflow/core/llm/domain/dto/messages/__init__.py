@@ -10,11 +10,11 @@
 放在上一层 `dto/`。
 """
 from paperflow.core.common.constants import MessageRole
-from paperflow.core.llm.domain.dto.messages.assistant import AssistantMessage
-from paperflow.core.llm.domain.dto.messages.base import Message
-from paperflow.core.llm.domain.dto.messages.system import SystemMessage
-from paperflow.core.llm.domain.dto.messages.tool import ToolMessage
-from paperflow.core.llm.domain.dto.messages.user import UserMessage
+from paperflow.core.llm.domain.dto.messages.assistant_message import AssistantMessage
+from paperflow.core.llm.domain.dto.messages.message import Message
+from paperflow.core.llm.domain.dto.messages.system_message import SystemMessage
+from paperflow.core.llm.domain.dto.messages.tool_message import ToolMessage
+from paperflow.core.llm.domain.dto.messages.user_message import UserMessage
 
 __all__ = [
     "Message",

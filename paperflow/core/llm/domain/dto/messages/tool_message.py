@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from paperflow.core.common.constants import MessageRole
-from paperflow.core.llm.domain.dto.messages.base import Message
+from paperflow.core.llm.domain.dto.messages.message import Message
 
 __all__ = ["ToolMessage"]
 
