@@ -13,8 +13,9 @@ core/
 ├─ constants/      # 跨模块词汇：constants/enums/(RiskLevel/SideEffect/Provenance 各一文件) + constants.py(RISK_LEVELS/SIDE_EFFECTS/RISK_ORDER，由枚举派生)
 ├─ agent/          # ReAct 循环：runtime.py(Agent.run 主循环) + registry.py(AgentRegistry 插件发现) + base_prompt.py(全 agent 共有行为基座) + state.py(会话/运行期状态容器)
 │                  #   + domain/dto/StreamEvent 流式事件 + config/AgentConfig 插件配置 + constants/enums/StreamEventKind
-├─ llm/            # 接入层：domain/dto/messages/(wire 消息家族：基类 + system/user/assistant/tool 四子类 + ResponseMeta/Usage)
-│                  #   + config/StructuredOutputConfig + services/(client.py 异步客户端 + structured.py 结构化输出)
+├─ llm/            # 接入层：domain/dto/（messages/ wire 消息家族：基类 + system/user/assistant/tool 四子类
+│                  #     + response_meta/Usage 响应信封）+ config/StructuredOutputConfig
+│                  #   + services/(client.py 异步客户端 + structured.py 结构化输出)
 ├─ security/       # 安全中间件洋葱（有 AGENTS.md）：middleware/(base.py 协议 + audit/workspace 策略/输出扫描/策略引擎)
 │                  #   + services/(network.py SSRF 校验 + command.py 命令解析 + classifier.py 语义判定)
 │                  #   + constants/enums/(ToolDecision 决策 + ApprovalOutcome 审批 + ToolResultStatus 结果状态)

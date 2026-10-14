@@ -5,14 +5,15 @@
 就是一条 ``AssistantMessage``，它随即进 in-context 窗口、下一轮原样作为请求消息
 发回。角色特有字段只出现在对应子类上：`tool_calls` 属于 assistant、
 `tool_call_id` 属于 tool。
+
+响应信封（``ResponseMeta`` / ``Usage``）挂在 assistant 上但本身不是消息类型，
+放在上一层 `dto/`。
 """
 from paperflow.core.common.constants import MessageRole
 from paperflow.core.llm.domain.dto.messages.assistant import AssistantMessage
 from paperflow.core.llm.domain.dto.messages.base import Message
-from paperflow.core.llm.domain.dto.messages.response_meta import ResponseMeta
 from paperflow.core.llm.domain.dto.messages.system import SystemMessage
 from paperflow.core.llm.domain.dto.messages.tool import ToolMessage
-from paperflow.core.llm.domain.dto.messages.usage import Usage
 from paperflow.core.llm.domain.dto.messages.user import UserMessage
 
 __all__ = [
@@ -21,8 +22,6 @@ __all__ = [
     "UserMessage",
     "AssistantMessage",
     "ToolMessage",
-    "ResponseMeta",
-    "Usage",
     "message_from_role",
 ]
 

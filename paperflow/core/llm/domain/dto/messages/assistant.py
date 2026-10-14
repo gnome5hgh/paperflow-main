@@ -4,7 +4,7 @@ from typing import ClassVar
 
 from paperflow.core.common.constants import MessageRole
 from paperflow.core.llm.domain.dto.messages.base import Message
-from paperflow.core.llm.domain.dto.messages.response_meta import ResponseMeta
+from paperflow.core.llm.domain.dto.response_meta import ResponseMeta
 
 __all__ = ["AssistantMessage"]
 

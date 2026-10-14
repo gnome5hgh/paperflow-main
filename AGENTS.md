@@ -178,7 +178,7 @@ Every agent lives in `agents/<name>/` with two files:
 
 `paperflow/core/llm/domain/dto/messages/` 是 **wire 消息家族**：基类 `Message` 只持 `content`，四个角色子类（`SystemMessage` / `UserMessage` / `AssistantMessage` / `ToolMessage`）各以 `ClassVar` 固定自己的 `role`——构造时不用（也传不进去）写 role，角色写错从类型层面消失；角色特有字段只出现在对应子类上（`tool_calls` 在 assistant、`tool_call_id` 在 tool）。`_message_to_openai` 是唯一的 wire 出口，按类型取字段（`role` 取 `.value`；无 tool_calls 时不输出该键——OpenAI 拒绝空值）。`message_from_role()` 是反向的**唯一漏斗**（持久化层的 role 是字符串，回放时在这里还原成具体类型）。
 
-**进出两个方向共用这一族类型**：`chat()` / `chat_stream()` 返回的就是一条 `AssistantMessage`，随即被 append 进 in-context 窗口、下一轮原样作为请求消息发回去——wire 上本来就是同一个形状，故不另设「回复」类型。`AssistantMessage.meta`（`ResponseMeta`，含 `Usage`）承载**响应信封**：`finish_reason` / token 用量 / 模型快照 / 思维链 / 拒答 / 补全 id。`truncated` 是从 `meta.finish_reason == "length"` **派生的 property**（不再单存字段，杜绝两处漂移），Agent 据此走截断续写。信封**不上 wire**，也**不落盘**——它随消息对象活在进程内的窗口里，重启即丢；需要长期留存的元数据由审计通道承担（审计的 telemetry 元数据也正是从同一个信封派生）。`tool_to_openai_schema(t) -> dict` converts a Tool to the OpenAI function-calling JSON Schema.
+**进出两个方向共用这一族类型**：`chat()` / `chat_stream()` 返回的就是一条 `AssistantMessage`，随即被 append 进 in-context 窗口、下一轮原样作为请求消息发回去——wire 上本来就是同一个形状，故不另设「回复」类型。`AssistantMessage.meta`（`ResponseMeta`，含 `Usage`——这两个不是消息类型，作为层间载体住在同级的 `dto/response_meta.py` 与 `dto/usage.py`）承载**响应信封**：`finish_reason` / token 用量 / 模型快照 / 思维链 / 拒答 / 补全 id。`truncated` 是从 `meta.finish_reason == "length"` **派生的 property**（不再单存字段，杜绝两处漂移），Agent 据此走截断续写。信封**不上 wire**，也**不落盘**——它随消息对象活在进程内的窗口里，重启即丢；需要长期留存的元数据由审计通道承担（审计的 telemetry 元数据也正是从同一个信封派生）。`tool_to_openai_schema(t) -> dict` converts a Tool to the OpenAI function-calling JSON Schema.
 
 关键行为：
 - **参数降级重试**：端点不支持 `response_format` / `extra_body` / `stream_options` 时（不同兼容端点措辞各异），去掉该参数重试一次（`_looks_like_unsupported_param`）

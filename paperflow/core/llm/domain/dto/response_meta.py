@@ -1,7 +1,11 @@
-"""模型响应的信封：响应对象里除正文与工具调用之外的一切。"""
+"""模型响应的信封：响应对象里除正文与工具调用之外的一切。
+
+它挂在 `AssistantMessage.meta` 上，但本身不是一种消息——`messages/` 只放消息类型，
+信封与 `Usage` 作为层间载体（客户端产出、Agent 与审计消费）留在这里。
+"""
 from dataclasses import dataclass
 
-from paperflow.core.llm.domain.dto.messages.usage import Usage
+from paperflow.core.llm.domain.dto.usage import Usage
 
 __all__ = ["ResponseMeta"]
 

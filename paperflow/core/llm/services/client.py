@@ -34,13 +34,9 @@ from paperflow.core.security.services import endpoint_guard
 from openai import OpenAI
 
 from paperflow.config import LLMConfig
-from paperflow.core.llm.domain.dto.messages import (
-    AssistantMessage,
-    Message,
-    ResponseMeta,
-    ToolMessage,
-    Usage,
-)
+from paperflow.core.llm.domain.dto.messages import AssistantMessage, Message, ToolMessage
+from paperflow.core.llm.domain.dto.response_meta import ResponseMeta
+from paperflow.core.llm.domain.dto.usage import Usage
 
 
 class LLMClient:
