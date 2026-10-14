@@ -19,9 +19,11 @@
 from paperflow.core.llm.domain import (
     AssistantMessage,
     Message,
+    ResponseMeta,
     StructuredOutputConfig,
     SystemMessage,
     ToolMessage,
+    Usage,
     UserMessage,
     message_from_role,
 )
@@ -39,6 +41,8 @@ __all__ = [
     "UserMessage",
     "AssistantMessage",
     "ToolMessage",
+    "ResponseMeta",
+    "Usage",
     "message_from_role",
     "StructuredOutput",
     "StructuredOutputConfig",

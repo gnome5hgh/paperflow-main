@@ -9,8 +9,10 @@
 from paperflow.core.common.constants import MessageRole
 from paperflow.core.llm.domain.dto.messages.assistant import AssistantMessage
 from paperflow.core.llm.domain.dto.messages.base import Message
+from paperflow.core.llm.domain.dto.messages.response_meta import ResponseMeta
 from paperflow.core.llm.domain.dto.messages.system import SystemMessage
 from paperflow.core.llm.domain.dto.messages.tool import ToolMessage
+from paperflow.core.llm.domain.dto.messages.usage import Usage
 from paperflow.core.llm.domain.dto.messages.user import UserMessage
 
 __all__ = [
@@ -19,6 +21,8 @@ __all__ = [
     "UserMessage",
     "AssistantMessage",
     "ToolMessage",
+    "ResponseMeta",
+    "Usage",
     "message_from_role",
 ]
 

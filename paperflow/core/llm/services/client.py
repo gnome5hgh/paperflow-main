@@ -37,7 +37,9 @@ from paperflow.config import LLMConfig
 from paperflow.core.llm.domain.dto.messages import (
     AssistantMessage,
     Message,
+    ResponseMeta,
     ToolMessage,
+    Usage,
 )
 
 
@@ -141,7 +143,7 @@ class LLMClient:
             telemetry_callback: 调用结束后同步回调元数据 dict （model/response_model/provider/input_tokens/output_tokens/duration_ms/started_at/finish_reason），供审计 replay 使用；不含消息正文。None 时零开销跳过
 
         Returns:
-            封装后的 assistant 消息（``AssistantMessage``，含 tool_calls 与截断标记）
+            封装后的 assistant 消息（``AssistantMessage``，含 tool_calls 与响应信封 ``meta``）
 
         Raises:
             SDK 异常直接向上抛，由 Agent 自行决定是否 recover
@@ -222,29 +224,27 @@ class LLMClient:
             ]
 
         # content 可能是 None（OpenAI 2.x 行为：纯 tool-call 响应不含 content）
-        # truncated：finish_reason=="length" 表示输出被 max_tokens 截断，调用方须续写
+        # meta 是响应信封：finish_reason 派生 truncated，usage/模型快照供审计与排查
+        meta = ResponseMeta(
+            id=getattr(response, "id", None),
+            model=getattr(response, "model", None),
+            created=getattr(response, "created", None),
+            finish_reason=response.choices[0].finish_reason,
+            usage=_extract_usage(getattr(response, "usage", None)),
+            refusal=getattr(choice, "refusal", None),
+            reasoning_content=getattr(choice, "reasoning_content", None),
+            system_fingerprint=getattr(response, "system_fingerprint", None),
+        )
         msg = AssistantMessage(
             content=choice.content or "",
             tool_calls=tool_calls,
-            truncated=(response.choices[0].finish_reason == "length"),
+            meta=meta,
         )
 
         # telemetry：只回传元数据（usage/duration_ms/started_at/finish_reason），
-        # 绝不包含消息正文。usage 某些端点可能缺失（getattr 兜底 None）；
-        # 回调不存在时是零开销 no-op
+        # 绝不包含消息正文。回调不存在时是零开销 no-op
         if telemetry_callback is not None:
-            usage = getattr(response, "usage", None) or {}
-            telemetry_callback({
-                "model": self.model,
-                # 端点自报的模型快照（OpenAI 兼容响应常带版本后缀，比配置串精确）
-                "response_model": getattr(response, "model", None),
-                "provider": self.provider,
-                "input_tokens": getattr(usage, "prompt_tokens", None),
-                "output_tokens": getattr(usage, "completion_tokens", None),
-                "duration_ms": int((time.monotonic() - _started) * 1000),
-                "started_at": _started_wall,
-                "finish_reason": response.choices[0].finish_reason,
-            })
+            telemetry_callback(self._telemetry_fields(meta, _started, _started_wall))
         return msg
 
     async def chat_stream(self, messages, tools=None, tool_choice="auto",
@@ -278,7 +278,7 @@ class LLMClient:
             """在同一个线程内创建流并迭代收齐结果（Stream 是同步迭代器，交回事件循环会阻塞 loop）。
 
             Returns:
-                累加完成后的 assistant 消息（``AssistantMessage``，含 truncated 标记）。
+                累加完成后的 assistant 消息（``AssistantMessage``，含响应信封）。
             """
             # create 与 iterate 必须同线程：Stream 是同步迭代器，逐 chunk 阻塞在
             # httpx 读取上；不能把 Stream 交回事件循环再迭代（否则阻塞 loop，
@@ -293,58 +293,87 @@ class LLMClient:
                     stream = self.client.chat.completions.create(**kwargs)
                 else:
                     raise
-            content, tool_calls, finish_reason, usage, model = _accumulate_stream_chunks(stream, on_delta)
+            content, tool_calls, meta = _accumulate_stream_chunks(stream, on_delta)
             if telemetry_callback is not None:
                 # 流式 usage 仅部分端点提供（多在收尾 chunk 上）；缺失时元数据
                 # 留空，不落 content——与 chat() 一致地只回传元数据
-                telemetry_callback({
-                    "model": self.model,
-                    "response_model": model,
-                    "provider": self.provider,
-                    "input_tokens": getattr(usage, "prompt_tokens", None),
-                    "output_tokens": getattr(usage, "completion_tokens", None),
-                    "duration_ms": int((time.monotonic() - _started) * 1000),
-                    "started_at": _started_wall,
-                    "finish_reason": finish_reason,
-                })
-            return AssistantMessage(content=content, tool_calls=tool_calls,
-                                    truncated=(finish_reason == "length"))
+                telemetry_callback(self._telemetry_fields(meta, _started, _started_wall))
+            return AssistantMessage(content=content, tool_calls=tool_calls, meta=meta)
 
         return await asyncio.to_thread(_do_stream)
 
+    def _telemetry_fields(self, meta: ResponseMeta, started: float,
+                          started_wall: str) -> dict:
+        """把响应信封 + 调用点信息拼成审计用的元数据 dict。
+
+        信封（模型快照 / finish_reason / token 用量）由响应派生，是唯一抽取点；
+        provider / duration_ms / started_at 不是响应内容而是调用点信息，在这里补上。
+        **不含消息正文**。usage 缺失（端点未报）时 token 两项留 None。
+
+        Args:
+            meta: 本次调用的响应信封
+            started: time.monotonic() 起点，用于算 duration_ms
+            started_wall: 调用起点的墙钟时间（ISO 字符串），供审计 replay 推算结束时刻
+
+        Returns:
+            供 telemetry_callback 消费的元数据 dict。
+        """
+        usage = meta.usage
+        return {
+            "model": self.model,
+            "response_model": meta.model,
+            "provider": self.provider,
+            "input_tokens": usage.prompt_tokens if usage else None,
+            "output_tokens": usage.completion_tokens if usage else None,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "started_at": started_wall,
+            "finish_reason": meta.finish_reason,
+        }
+
 
 def _accumulate_stream_chunks(chunks, on_delta):
-    """把 OpenAI 流式 chunks 累加为 (content, tool_calls, finish_reason, usage, model)。
+    """把 OpenAI 流式 chunks 累加为 (content, tool_calls, meta)。
 
     on_delta 每收到一段 content 片段即同步回调（跑在流线程内，须线程安全）。
-    tool_calls 按 delta.tool_calls[].index 分片累加，arguments 分片拼接。
-    finish_reason 取最后一个带值的 chunk 的（多为尾部收尾 chunk）。
-    usage 取最后一个带 usage 的 chunk（部分端点仅在收尾 chunk 附带用量），
-    无则 None——调用方据此将 tokens 元数据留空。
-    model 取最后一个自报 model 的 chunk（端点的模型快照，与请求串可能不同）。
 
-    不累加角色：一次补全恒为 assistant 输出，调用方直接构造
-    ``AssistantMessage``，无需从 chunk 里读它。
+    正文与 tool_calls 从 delta 分片累加；信封（``ResponseMeta``）在同一个循环里收齐：
+    finish_reason / usage / model / id / created / system_fingerprint 都取**最后一个带值
+    的 chunk**（这些字段常只出现在尾部收尾 chunk），refusal 与 reasoning_content 是
+    delta 上的流式分片，按拼接处理。
+
+    不累加角色：一次补全恒为 assistant 输出，调用方直接构造 ``AssistantMessage``，
+    无需从 chunk 里读它。
 
     Args:
         chunks: 可迭代的 OpenAI 流式 chunk 序列
         on_delta: 回调 | None，每收到一段 content 片段即同步调用（跑在流线程内，须线程安全）
 
     Returns:
-        (content, tool_calls, finish_reason, usage, model) 五元组；usage/model 无则 None。
+        ``(content, tool_calls, meta)``；content 为空串表示没有文本增量，tool_calls 无则 None。
     """
     content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    refusal_parts: list[str] = []
     tool_acc: dict[int, dict] = {}
     finish_reason = None
-    usage = None
+    usage_raw = None
     model = None
+    resp_id = None
+    created = None
+    fingerprint = None
     for chunk in chunks:
         # 流式 usage / model 快照仅部分端点提供且常出现在收尾 chunk（该 chunk 可能
         # choices 为空），故在跳过空 choices 前收集，最后带值者胜出；getattr 兜底简化 fake chunk
         if getattr(chunk, "usage", None):
-            usage = chunk.usage
+            usage_raw = chunk.usage
         if getattr(chunk, "model", None):
             model = chunk.model
+        if getattr(chunk, "id", None):
+            resp_id = chunk.id
+        if getattr(chunk, "created", None) is not None:
+            created = chunk.created
+        if getattr(chunk, "system_fingerprint", None):
+            fingerprint = chunk.system_fingerprint
         # 某些端点（如 OpenAI）尾部会发一个空 choices 的 chunk，跳过避免取下标崩溃
         if not chunk.choices:
             continue
@@ -360,6 +389,13 @@ def _accumulate_stream_chunks(chunks, on_delta):
             content_parts.append(delta.content)
             if on_delta:
                 on_delta(delta.content)
+        # 思维链与拒答是 delta 上的流式分片（非标准字段，getattr 兜底）
+        reasoning = getattr(delta, "reasoning_content", None)
+        if reasoning:
+            reasoning_parts.append(reasoning)
+        refusal = getattr(delta, "refusal", None)
+        if refusal:
+            refusal_parts.append(refusal)
         if delta.tool_calls:
             # tool_calls 增量按 index 分片：id/name 只在首个分片出现，
             # arguments 是跨分片拼接的 JSON 字符串片段
@@ -383,7 +419,42 @@ def _accumulate_stream_chunks(chunks, on_delta):
                           "arguments": "".join(tool_acc[i]["args"])}}
             for i in sorted(tool_acc)
         ]
-    return "".join(content_parts), tool_calls, finish_reason, usage, model
+    meta = ResponseMeta(
+        id=resp_id,
+        model=model,
+        created=created,
+        finish_reason=finish_reason,
+        usage=_extract_usage(usage_raw),
+        refusal="".join(refusal_parts) or None,
+        reasoning_content="".join(reasoning_parts) or None,
+        system_fingerprint=fingerprint,
+    )
+    return "".join(content_parts), tool_calls, meta
+
+
+def _extract_usage(raw) -> Usage | None:
+    """把端点返回的 usage 对象转成 ``Usage``。
+
+    端点给什么就记什么，缺的项留 None（「没报」与「报了 0」是两件事）；嵌套的
+    cached / reasoning 明细同样按 getattr 兜底——简化版 fake usage 可能没有这两层。
+
+    Args:
+        raw: 端点响应（或收尾 chunk）上的 usage 对象；None 表示端点未报。
+
+    Returns:
+        Usage 实例；raw 为 None 时返回 None。
+    """
+    if raw is None:
+        return None
+    prompt_details = getattr(raw, "prompt_tokens_details", None)
+    completion_details = getattr(raw, "completion_tokens_details", None)
+    return Usage(
+        prompt_tokens=getattr(raw, "prompt_tokens", None),
+        completion_tokens=getattr(raw, "completion_tokens", None),
+        total_tokens=getattr(raw, "total_tokens", None),
+        cached_tokens=getattr(prompt_details, "cached_tokens", None),
+        reasoning_tokens=getattr(completion_details, "reasoning_tokens", None),
+    )
 
 
 _UNSUPPORTED_PARAM_PATTERNS = [

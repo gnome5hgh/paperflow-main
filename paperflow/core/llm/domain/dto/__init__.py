@@ -7,8 +7,10 @@ assistant 消息，下一轮原样回放为请求消息）。schema → prompt �
 from paperflow.core.llm.domain.dto.messages import (
     AssistantMessage,
     Message,
+    ResponseMeta,
     SystemMessage,
     ToolMessage,
+    Usage,
     UserMessage,
     message_from_role,
 )
@@ -20,6 +22,8 @@ __all__ = [
     "UserMessage",
     "AssistantMessage",
     "ToolMessage",
+    "ResponseMeta",
+    "Usage",
     "message_from_role",
     "StructuredOutputConfig",
 ]
