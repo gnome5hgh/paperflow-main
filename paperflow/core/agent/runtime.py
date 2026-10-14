@@ -53,9 +53,11 @@ from typing import Callable
 
 from paperflow.core.llm import (
     LLMClient, AssistantMessage, Message, SystemMessage, ToolMessage, UserMessage,
-    message_from_role, tool_to_openai_schema,
+    tool_to_openai_schema,
 )
-from paperflow.core.llm.services.client import _message_to_openai
+from paperflow.core.agent.services.context_window import (
+    CANCELLED_TOOL_MSG, ContextWindow,
+)
 from paperflow.core.agent.constants import AgentEventKind
 from paperflow.core.agent.domain.dto.agent_event import AgentEvent
 from paperflow.core.agent.registry import AgentRegistry
@@ -120,36 +122,6 @@ def _compute_agent_version(config) -> str:
         ])
         h.update(signature.encode("utf-8"))
     return h.hexdigest()[:16]
-
-
-#: 取消路径合成的 tool 消息（历史自愈）。用自解释措辞：裸的
-#: "cancelled" 会让模型把中断编造成「子任务失败/被外部打断」等错误叙述——
-#: 这里明确因果（用户主动 Ctrl+C）并禁止错误归因。
-_CANCELLED_TOOL_MSG = (
-    '{"decision":"cancelled",'
-    '"reason":"用户主动中断(Ctrl+C)，本轮工具调用作废。'
-    '这不是子任务失败或超时，请勿将中断归因于其他原因。"}'
-)
-
-
-def _schema_to_wire(m) -> Message:
-    """StoredMessage（Recall 持久化视图）→ wire 消息（回放进 in-context 窗口）。
-
-    持久化消息经 MessageManager.get_in_context_messages 加载后，须按角色还原成对应
-    的 wire 消息类型；空 content 归一为空串。
-
-    Args:
-        m: StoredMessage，Recall 持久化视图
-
-    Returns:
-        对应角色的 wire 消息（空 content 归一为空串）。
-    """
-    return message_from_role(
-        m.role,
-        content=m.content or "",
-        tool_calls=m.tool_calls or None,
-        tool_call_id=m.tool_call_id,
-    )
 
 
 class MaxTurnsExceeded(Exception):
@@ -237,7 +209,7 @@ class Agent:
         stream_callback: 回调 | None，流式事件回调（None = 非流式路径）
         skill_registry: SkillRegistry | None，skill 体系（L1 清单注入与工具并入）
         tools: dict[str, Tool]，本 Agent 可调用的工具表
-        _messages / _message_ids: list，in-context 消息缓冲区与对应的持久化消息 id（并行维护）
+        window: ContextWindow，in-context 窗口（消息缓冲 + 持久化 id 追踪，一致性由它保证）
         _trace_id / _inherited_trace_id: str | None，本次 run 的追踪 ID / 构造时继承的父追踪 ID
         _instance_id: str，实例唯一标识（按「父实例」键控的预算计数用，与 trace_id 区分）
         _current_turn: int，当前 ReAct 轮次（spawn 摘要提取借此归属父轮次）
@@ -362,15 +334,12 @@ class Agent:
         #: 本轮发送前的本地估算，供返回后用真实用量校准（0 表示本轮还没算过）。
         self._last_sent_estimate = 0
 
-        #: in-context 消息缓冲区（内部 _messages 是真实缓冲区，外部 messages 是
-        #: 只读 wire 视图）。run() 每轮从 MessageManager 重新加载，跨轮消息经 SQL
-        #: 持久化回放，不在内存里跨 run 累积。
-        self._messages: list[Message] = []
-
-        #: in-context 窗口的消息 id 追踪（对应 AgentState.message_ids）。与
-        #: self._messages 并行维护：加载/落盘/压缩都同步。agent_manager 为 None
-        #: （无记忆装配）时不参与持久化，窗口回退为「全量回放」。
-        self._message_ids: list[str] = []
+        #: in-context 窗口：本会话要发给模型的那批消息 + 它们在 messages 表里的 id。
+        #: run() 每轮经它从 MessageManager 重新加载（跨轮消息经 SQL 回放，不在内存里
+        #: 跨 run 累积）；消息与 id 的一致性由它内部保证，见 ContextWindow。
+        self.window = ContextWindow(message_manager=message_manager,
+                                    agent_manager=agent_manager,
+                                    session_id=self.session_id)
 
         #: 当前 run 的追踪 ID，每次 run 开始时重新生成，注入 ToolContext
         self._trace_id: str | None = None
@@ -427,7 +396,7 @@ class Agent:
             cb(ev)
 
     #: messages 只读 property（OpenAI wire 格式视图）。
-    #: 只读：外部（CLI/测试）可观察但不可改，写入统一走 _append_to_messages。
+    #: 只读：外部（CLI/测试）可观察但不可改，写入统一走 self.window。
     @property
     def messages(self) -> list[dict]:
         """in-context 消息的只读 wire 视图（外部可观察不可改）。
@@ -435,21 +404,7 @@ class Agent:
         Returns:
             OpenAI wire 格式的消息 dict 列表。
         """
-        return [_message_to_openai(m) for m in self._messages]
-
-    def _append_to_messages(self, added_messages: "list[Message] | Message") -> None:
-        """唯一的消息追加入口：把消息追加进 in-context 缓冲区。
-
-        接受单条 Message 或 Message 列表(run() 各分支混用两种风格,测试多用列表),
-        统一归一为列表后追加。
-
-        Args:
-            added_messages: Message | list[Message]，待追加的消息（单条或列表）
-        """
-        # 判断 added_messages 这个变量是否是 Message 类（或其子类）的实例。
-        if isinstance(added_messages, Message):
-            added_messages = [added_messages]
-        self._messages.extend(added_messages)
+        return self.window.wire()
 
     def _index_text(self) -> str | None:
         """读取 memory_filesystem.md（MemFS 自动生成的文件树索引）内容。
@@ -514,17 +469,17 @@ class Agent:
             正序、已截到窗口上限。
         """
         limit = getattr(self.intent_service, "history_messages", 0)
-        if not limit or not self._messages:
+        if not limit or not self.window.messages:
             return []
         history = [(m.role, m.content.strip())
-                   for m in self._messages
+                   for m in self.window.messages
                    if m.role in ("user", "assistant") and (m.content or "").strip()]
         return history[-limit:]
 
     async def _build_head(self, task: str) -> list[Message]:
         """构建本轮 ReAct 循环的头部消息列表（system 层 + 用户任务）。
 
-        **调用前 in-context 历史必须已加载**（`run()` 里先 `_load_in_context` 再建 head）——
+        **调用前 in-context 历史必须已加载**（`run()` 里先 `window.load()` 再建 head）——
         意图层要读最近几轮对话文本才能读懂「再下载一篇」这类指代。
 
         此方法在每次 run 开始时被调用一次（不在 ReAct 轮次内重复），用于组装 LLM 输入的前置部分（system 消息）。
@@ -608,130 +563,6 @@ class Agent:
         if new_msg is not None:
             head.insert(1, new_msg)
 
-    def _load_in_context(self) -> None:
-        """从 MessageManager 加载该会话的 in-context 消息 → self._messages（跨轮回放）。
-
-        message_manager 为 None 时零开销跳过（无记忆装配的子 agent 行为不变）。
-        同步记录加载消息的 SQL id 到 self._message_ids，保持与窗口并行——压缩时靠
-        它把保留尾部映射回已落盘消息。
-        """
-        if self.message_manager is None:
-            return
-
-        # 从 MessageManager 加载当前会话的 in-context 消息（跨轮回放）。
-        # 内部逻辑：先读 AgentState.message_ids 确定窗口范围，
-        #   - 有 message_ids → 按 id 精确查询，返回压缩后的窗口（摘要+保留尾部）
-        #   - 无 message_ids → 降级全量查询该 agent 所有消息（首轮/未压缩兼容）
-        # 返回 schemas.Message 列表，后续经 _schema_to_wire 转为 wire 格式追加进 self._messages。
-        # session_id 就是 MessageManager 中的 agent_id
-        # 各个 id 的层级关系：session（session_id，跨 run 不变）  >  run（trace_id，每次 run 新生成）  >  turn（ReAct 循环轮次）
-        loaded = self.message_manager.get_in_context_messages(self.session_id)
-        for m in loaded:
-            self._messages.append(_schema_to_wire(m))
-        self._message_ids = [m.id for m in loaded]
-        self._patch_orphan_history()
-
-    def _patch_orphan_history(self) -> None:
-        """回放窗口校验：为孤儿 tool_calls 就地补合成 tool 消息（历史自愈兜底）。
-
-        历史数据里可能存在 assistant(tool_calls) 无配对 tool 消息的坏记录
-        （历史版本在取消路径直接崩溃、没来得及合成消息），原样回放给 OpenAI
-        会报 400「tool_calls 后必须紧跟 tool 消息」。这里扫描整个窗口，对每个
-        未被响应的 tool_call 在其 assistant 消息后补一条 ``{"decision":
-        "cancelled"}`` 的 tool 消息，并落盘保持窗口 id 对齐——压缩依赖
-        _messages 与 _message_ids 严格平行，插入时必须同步维护两边。
-        """
-        if self.message_manager is None or not self._messages:
-            return
-        answered = {
-            m.tool_call_id for m in self._messages
-            if m.role == "tool" and m.tool_call_id
-        }
-        new_msgs: list[Message] = []
-        new_ids: list[str] = []
-        changed = False
-        for m, mid in zip(self._messages, self._message_ids):
-            new_msgs.append(m)
-            new_ids.append(mid)
-            # 只有 assistant 消息可能携带 tool_calls——其余角色没有这个字段
-            tcs = (m.tool_calls or []) if isinstance(m, AssistantMessage) else []
-            missing = [
-                tc for tc in tcs
-                if isinstance(tc, dict) and tc.get("id") and tc["id"] not in answered
-            ]
-            if missing:
-                changed = True
-                for tc in missing:
-                    synth = ToolMessage(
-                        content=_CANCELLED_TOOL_MSG,
-                        tool_call_id=tc["id"],
-                    )
-                    new_ids.append(self.message_manager.add_message(self.session_id, synth).id)
-                    new_msgs.append(synth)
-        if changed:
-            self._messages = new_msgs
-            self._message_ids = new_ids
-            if self.agent_manager is not None:
-                self.agent_manager.update_agent(self.session_id, message_ids=new_ids)
-
-    def _persist_conversation(self, msgs: list[Message]) -> None:
-        """把对话消息全量落盘（Recall）并更新 in-context 窗口追踪。
-
-        message_manager 为 None 时零开销跳过。agent_manager 存在时把落盘消息 id
-        追加进 AgentState.message_ids（窗口即「当前 in-context 消息」的持久化视图）。
-
-        Args:
-            msgs: list[Message]，待落盘的对话消息
-        """
-        if self.message_manager is None:
-            return
-        added: list[str] = []
-
-        # 先把对话消息落盘到 messages 表中，获得这些消息在 messages 表中的主键值
-        for m in msgs:
-            added.append(self.message_manager.add_message(self.session_id, m).id)
-
-        # 将这些主键值更新到 agent_state 表中
-        # 下轮 run 时 _load_in_context 会根据 session_id 加载更新后的 message_ids，进而去 messages 表获得更新后的消息
-        if self.agent_manager is not None:
-            for mid in added:
-                if mid not in self._message_ids:
-                    self._message_ids.append(mid)
-            self.agent_manager.update_agent(self.session_id, message_ids=self._message_ids)
-
-    def _persist_compacted_window(self, new_window: list[Message]) -> None:
-        """压缩后把窗口状态持久化：摘要落盘 SQL + message_ids 更新为「摘要 + 保留尾部」。
-
-        仅在 agent_manager 存在（窗口状态真正追踪）时生效——无 agent_manager 的
-        Agent 是无记忆装配，压缩只改 in-memory 窗口，SQL 保持原样（兼容既有测试语义）。
-        尾部消息来自压缩前的窗口（已落盘，id 在 _message_ids 里）；摘要消息是新生成
-        的，先 add_message 取 id。被驱逐旧消息只移出窗口，不删 SQL（Recall 完整）。
-
-        Args:
-            new_window: list[Message]，压缩后的新 in-context 窗口
-        """
-        if self.agent_manager is None:
-            return
-
-        # 将当前 in‑context 窗口中的每条 Message 对象（内存地址）关联到它在 SQL 数据库中的持久化 ID。old_id_by_msg 的 key 为 id(m)（内存地址），值为 message_id
-        # 因为压缩后的新窗口 new_window 包含：1、旧的“保留尾部”消息（这些对象本身可能来自原 _messages）2、新生成的摘要消息（Message 对象，尚未落盘）
-        # 为了更新 self._message_ids（即持久化的窗口 ID 列表），需要知道哪些消息已经落盘到 AgentState 的 message_ids，哪些是新生成的摘要（需要调用 add_message 插入）。
-        old_id_by_msg = {id(m): mid for m, mid in zip(self._messages, self._message_ids)}
-
-        new_ids: list[str] = []
-        for m in new_window:
-            # 尝试从旧映射中查找此消息是否已落盘
-            mid = old_id_by_msg.get(id(m))
-
-            # 若是新生成的摘要消息，则需插入 SQL 并获得新 ID
-            if mid is None:
-                mid = self.message_manager.add_message(self.session_id, m).id
-            new_ids.append(mid)
-
-        # 更新内存中的窗口的 _message_ids 列表，并持久化到 AgentState 中
-        self._message_ids = new_ids
-        self.agent_manager.update_agent(self.session_id, message_ids=new_ids)
-
     def _needs_compaction(self, messages: list[Message]) -> bool:
         """in-context 消息是否超压缩阈值（只检查，执行在 run() 里）。
 
@@ -796,7 +627,7 @@ class Agent:
                规则块与 INTENT 块（装配意图服务时）→ user_task。
                意图层的澄清在本步内同步问用户并代码级落地意图
             3. 从 MessageManager 加载该会话的 in-context 消息（跨轮回放），当前
-               user task 落盘；消息归属 self._messages（in-context 窗口）
+               user task 落盘；消息归属 self.window（in-context 窗口）
             4. 调用 LLM 前检查压缩（compaction.should_compress → run_compaction
                驱逐旧对话 + 插摘要，只改 in-context 窗口、不删 SQL），随后调用 LLM
             5. 如果无 tool_calls → 顺序执行各中间件的 on_finish 钩子，最终回答
@@ -821,16 +652,17 @@ class Agent:
         # 用户原话，子 agent=子任务文本）+ 配置版本 + 模型。用户 query 的取证锚点。
         self._emit_agent_start(task)
 
-        #: in-context 窗口每轮重建:跨轮回放统一经 MessageManager(SQL) 加载,避免: self._messages 跨 run 残留导致下一轮重复加载(每步都从权威源重新 load)。
-        # 必须先于 head 构建——意图层要读最近几轮对话文本（它得读懂指代类输入）。
-        self._messages = []
-        self._load_in_context()
+        #: in-context 窗口每轮重建：跨轮回放统一经 MessageManager(SQL) 加载，避免缓冲
+        # 跨 run 残留导致重复加载（每次都从权威源重新 load）。必须先于 head 构建——
+        # 意图层要读最近几轮对话文本（它得读懂指代类输入）。
+        self.window.load()
 
         # head:① AGENT ② SKILLS ③ 可派发子 agent 清单 ④ Memory ⑤ 意图规则块+INTENT 块,每轮重建
         # 不进累积;末尾 user task。意图层澄清在 _build_head 内(经 begin)同步问用户并落地。
         head = await self._build_head(task)
-        #: 当前 user task 落盘(Recall),下轮经 _load_in_context 回放
-        self._persist_conversation([head[-1]])
+        #: 当前 user task 落盘(Recall),下轮经窗口回放；它排在 head 末尾参与每次
+        # 请求,不进消息缓冲,故只落盘记账。
+        self.window.persist(head[-1])
 
         #: 截断续写累积器：半截回答在此暂存，完整回答返回前合并。
         #: 只在截断→续写场景使用；非截断路径保持空列表，零额外行为。
@@ -845,7 +677,7 @@ class Agent:
 
             #: LLM 输入 = head 前段(AGENT/SKILLS/memory/INTENT) + in-context 回放历史 +
             #: 末尾当前 user task(恒末位——否则 LLM 会把回放历史里的旧任务误当当前任务)。
-            messages = list(head[:-1]) + self._messages + [head[-1]]
+            messages = list(head[:-1]) + self.window.messages + [head[-1]]
 
             # 压缩检查:只改 in-context 窗口(驱逐旧对话 + 插摘要),SQL 原始消息由 MessageManager 保留(Recall 可追溯)。
             # structured 未注入(摘要生成器缺失) 时压缩不触发——避免 None.extract 崩溃,CLI 接线后恢复。
@@ -854,19 +686,16 @@ class Agent:
                 accumulated.clear()
                 from paperflow.core.memory.services.compaction import run_compaction
                 new_window = await run_compaction(
-                    self._messages, self.compaction, self.llm, self.structured)
-                # 摘要落盘 + message_ids 更新为「摘要 + 保留尾部」——压缩产物跨轮
-                # 持久,下轮 _load_in_context 按 message_ids 回放摘要、不回放被驱逐
-                # 旧消息(SQL 原始消息仍全量保留,Recall 完整)。
-                self._persist_compacted_window(new_window)
-
-                # 更新内存中的窗口的 _messages 列表
-                self._messages = new_window
+                    self.window.messages, self.compaction, self.llm, self.structured)
+                # 整体替换窗口：摘要先落盘、id 列表更新为「摘要 + 保留尾部」——压缩
+                # 产物跨轮持久，下轮回放摘要、不回放被驱逐旧消息（SQL 原始消息仍全量
+                # 保留，Recall 完整）。「认领旧 id」与「替换」的先后关系封在 replace 内。
+                self.window.replace(new_window)
 
                 # head[:-1]：① AGENT（AGENT.md 系统提示）② SKILLS 清单块（若有可见 skill）③ Memory Blocks（核心记忆块，如 assistant/profile）④ INTENT Block（意图识别结果，若启用）
-                # self._messages：从 MessageManager（SQL 持久化层）加载的该会话历史消息，加上本轮已产生的 assistant/tool 交互消息
+                # window.messages：从 MessageManager（SQL 持久化层）加载的该会话历史消息，加上本轮已产生的 assistant/tool 交互消息
                 # head[-1]：当前的 user task 消息
-                messages = list(head[:-1]) + self._messages + [head[-1]]
+                messages = list(head[:-1]) + self.window.messages + [head[-1]]
 
             # 流式门控：挂了 stream_callback 才走 chat_stream（否则保持 chat()）。
             # mock LLM 只有 chat 方法，无条件换 chat_stream 会让 MagicMock 不可
@@ -902,10 +731,10 @@ class Agent:
                     # 4. 持久化这些消息（落盘），然后 continue 进入下一轮循环，让 LLM 续写。
                     # max_turns 安全阀确保续写次数有限，不会形成死循环。
                     accumulated.append(response.content or "")
-                    self._append_to_messages(response)
-                    self._append_to_messages(UserMessage(
+                    self.window.append(response)
+                    self.window.append(UserMessage(
                         content="上一条回答因输出长度上限被截断，请直接从断点继续输出，不要重复已输出的内容。"))
-                    self._persist_conversation([response])
+                    self.window.persist(response)
                     continue
 
                 # 正常完成（未被截断）
@@ -925,13 +754,11 @@ class Agent:
                 # 替身对象,故用 getattr 取。
                 final = AssistantMessage(content=content,
                                          meta=getattr(response, "meta", None))
-                self._append_to_messages(final)
-                self._persist_conversation([final])
+                self.window.append_and_persist(final)
                 return content
 
             # LLM 请求调用工具：将 assistant 消息（含 tool_calls）加入 in-context 并持久化到数据库，以便后续轮次（或跨 run）能回放该条消息。
-            self._append_to_messages(response)
-            self._persist_conversation([response])
+            self.window.append_and_persist(response)
 
             # 并发执行 LLM 请求的所有工具调用:同一 message 的多个工具调用用 gather 并行
             # 1. 使用 asyncio.gather 并行执行同一 message 中的多个工具调用，提升效率。
@@ -994,12 +821,11 @@ class Agent:
                 # 调用其结果一并丢弃，按「本轮作废」语义统一记为 cancelled（文件
                 # 等盘上副作用不回滚）。
                 synth = [
-                    ToolMessage(content=_CANCELLED_TOOL_MSG,
+                    ToolMessage(content=CANCELLED_TOOL_MSG,
                                 tool_call_id=tc["id"])
                     for tc in response.tool_calls
                 ]
-                self._append_to_messages(synth)
-                self._persist_conversation(synth)
+                self.window.append_and_persist(synth)
                 raise
 
             # 将工具执行结果以 tool 角色消息加入 in-context，并持久化
@@ -1009,8 +835,7 @@ class Agent:
                     content=result.text,
                     tool_call_id=tc["id"],
                 )
-                self._append_to_messages(tool_msg)
-                self._persist_conversation([tool_msg])
+                self.window.append_and_persist(tool_msg)
 
             # 终止型工具：submit 类成功提交即本 agent 任务终结——直接
             # 结束 ReAct 循环，不再进下一轮 LLM 调用（否则模型可能反复重复提交同一裁决，
@@ -1023,15 +848,14 @@ class Agent:
                 # 正文来自工具结果而非模型回复,故不挂响应信封——挂上会得到一条
                 # finish_reason=tool_calls 的误导性元信息(它不是这次的回答)。
                 final = AssistantMessage(content=final_text)
-                self._append_to_messages(final)
-                self._persist_conversation([final])
+                self.window.append_and_persist(final)
                 return final_text
 
             # 本轮工具调用处理完毕，循环继续（回到开头，将新的上下文送交 LLM 进行下一轮推理）。
 
         # 安全阀触发：LLM 陷入了无法在限定轮数内退出的循环。
         # 失败残渣随消息逐条落盘（Recall 保留原始记录含失败轮）；MaxTurnsExceeded
-        # 只中断本轮回放，不回滚已落盘消息。下轮 _load_in_context 会看到失败残渣，
+        # 只中断本轮回放，不回滚已落盘消息。下轮 window.load() 会看到失败残渣，
         # 由调用方（CLI）决定是否重试。
         raise MaxTurnsExceeded(
             f"ReAct loop did not finish within {self.max_turns} turns"

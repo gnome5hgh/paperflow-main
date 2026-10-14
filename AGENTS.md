@@ -157,7 +157,7 @@ Every agent lives in `agents/<name>/` with two files:
 
 `Agent.run(task) -> str` 是 async ReAct 循环:
 
-1. 构造 head：① AGENT.md(system_prompt) ② SKILLS 清单（若有）③ `<available_agents>` 可派发子 agent 清单（按能力选型；非派发方为空串整块省略）④ `Memory.compile()`（仅渲染 `system/` 块 assistant/profile + 文件树索引，渐进暴露）⑤ INTENT 块（意图启用且本轮判定有结果时）；末尾 user task。构建 head **之前**先加载会话历史（`_load_in_context`）并把最近若干轮对话文本递给意图层（`begin(task, history=…)`）——否则判定读不懂「再下载一篇」这类指代。意图关闭时 `intent_service` 为 None，以上各步全部 no-op（零残留）
+1. 构造 head：① AGENT.md(system_prompt) ② SKILLS 清单（若有）③ `<available_agents>` 可派发子 agent 清单（按能力选型；非派发方为空串整块省略）④ `Memory.compile()`（仅渲染 `system/` 块 assistant/profile + 文件树索引，渐进暴露）⑤ INTENT 块（意图启用且本轮判定有结果时）；末尾 user task。构建 head **之前**先加载会话历史（`window.load()`）并把最近若干轮对话文本递给意图层（`begin(task, history=…)`）——否则判定读不懂「再下载一篇」这类指代。意图关闭时 `intent_service` 为 None，以上各步全部 no-op（零残留）
 2. 从 MessageManager 加载该会话 in-context 消息（跨轮回放，Letta 语义）；当前 user task 落盘
 3. 调 LLM 前检查压缩（`should_compress` → `run_compaction`，只改 in-context 窗口不删 SQL）；随后 `chat()` 或 `chat_stream()`（挂 stream_callback 才走流式）
 4. 无 tool_calls → 顺序执行各中间件 `on_finish` 钩子（可改写最终回答）→ 落盘 → 返回。**截断续写**：`finish_reason=="length"` 时暂存半截、把「半截 + 续写提示」放回 in-context 继续循环，绝不把残缺内容当最终回答交付
