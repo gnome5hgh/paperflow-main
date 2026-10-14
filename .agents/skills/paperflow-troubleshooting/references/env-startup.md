@@ -17,21 +17,21 @@
 - **修法**：Docker Desktop 调 VM 内存 ≥4GB 后 `docker compose up -d` 重建；数据卷在 `.paperflow/infra/milvus/` 不用动。
 - **验证**：`docker compose ps` 中 milvus 状态 Up 且 9091 健康检查通过，不再重启。
 
-### `index_all` 被某一篇 PDF 中断
-- **根因**：解析是进程内 PyMuPDF（无外部服务，也没有超时这回事），但索引器**没有单篇容错**——`index_all` 逐篇调 `index_document`，其中 `extract_pdf` 对损坏/加密/非 PDF 文件会抛异常并一路穿出去，整批就此停住。
-- **修法**：`index_paths(paths=[...])` 逐条回报 indexed/skipped/empty/failed，**不因单篇失败中断**——批量入库用它而不是 `index_all`；排查是哪一篇时看它的逐条回报。
+### 批量入库被某一篇 PDF 中断（旧工具名 `index_all`，该工具已退役）
+- **根因**：解析是进程内 PyMuPDF（无外部服务，也没有超时这回事），但索引器**没有单篇容错**——逐篇调 `index_document`，其中 `extract_pdf` 对损坏/加密/非 PDF 文件会抛异常并一路穿出去，整批就此停住。
+- **修法**：`index_paths(paths=[...])` 逐条回报 indexed/skipped/empty/failed，**不因单篇失败中断**；排查是哪一篇时看它的逐条回报（现役三件：`index_paths` 入库 / `reindex_all` 删除后收敛 / `index_status` 体检）。
 - **验证**：`index_paths` 跑完并列出那一篇的 failed 原因；`index_status` 显示其余篇目已入库。
 
 ### 某篇 PDF 读不出来 / 取不到标题
 - **根因**：解析全在进程内（PyMuPDF），失败只有两类：①文件本身损坏、加密或根本不是 PDF（抛异常，工具层转成错误文本）；②文件正常但**标题判据不过**——元数据标题被判为垃圾、或首页版面候选全是页眉/水印/作者行。第二类**不报错，只是标题为空**（宁空勿错的设计），表现为该 PDF 不进语料索引、笔记头部拿不到引用标题。
-- **修法**：①损坏/加密的手工确认后换文件；②标题为空的用 `extract_title` 显式取一次看返回值，仍为空就**让用户提供标题**（不要拿文件名顶上），要入库则走 `add_external` 手动提供字段。
+- **修法**：①损坏/加密的手工确认后换文件；②标题为空的用 `extract_title` 显式取一次看返回值，仍为空就**让用户提供标题**（不要拿文件名顶上），要入库则走 `add_citation(external=true)` 手动提供字段（`add_external` 是底层 manager 的方法名，不是工具名）。
 - **验证**：`read_pdf` 秒级返回正文或明确错误；`extract_title` 给出标题或明确的「未能取到可靠标题」提示。
 
 ### 一个子 agent 承包多篇 PDF 阅读，撞穿子 agent 超时帽（早先版本误记为「并发拖垮依赖栈」）
-- **根因**：**任务形状**。一次「读一下某目录下所有论文」实测：supervisor 把整批交给一个 qa-agent，它对该目录 3 篇 PDF 逐个 `read_pdf`。当时的读路径是 `ReadPdfTool → RAGService.parse_pdf_cached`，而那把缓存**解析全程持 `RAGService` 全局锁**，同一批并发发起的多个 `read_pdf` 到了这一层会被**串行化**——三篇解析分别约 60.1 / 61.0 / 13.7 秒，墙钟合计约 135 秒，再加一轮 LLM 与工具开销就超过 qa-agent 的 180 秒预算。
+- **根因**：**任务形状**。一次「读一下某目录下所有论文」实测：supervisor 把整批交给当时的一个 `qa-agent`（该角色已删除，现按域拆成 paper-agent / note-agent），它对该目录 3 篇 PDF 逐个 `read_pdf`。当时的读路径经 `ReadPdfTool → RAGService.parse_pdf_cached`（该缓存函数已不存在——读 PDF 现已与索引栈解耦），那把缓存**解析全程持 `RAGService` 全局锁**，同一批并发发起的多个 `read_pdf` 到这一层会被**串行化**——三篇解析分别约 60.1 / 61.0 / 13.7 秒，墙钟合计约 135 秒，再加一轮 LLM 与工具开销就超过该角色 180 秒的预算（现役同类角色预算：note-agent 900s / paper-agent 420s，见 `config.agents.timeouts`）。
 - **别误判成「并发解析压垮了依赖栈」**：那把锁使这些解析并没有真正并发，且 Milvus 同期重启与「读 PDF 的并发」之间没有因果证据（本条早先版本这么写过，已纠正）。
-- **修法**：任务侧「同类 N 件 → N 路 spawn，一个对象一个子 agent」——每路各有独立预算，即便底层串行也各自等得起。读路径现已与索引栈解耦，不再受这把锁影响。
-- **验证**：单个子 agent 的 `read_pdf` 不再连续跑多个不同 path；单篇精读子任务不再撞 180 秒帽。
+- **修法**：任务侧「同类 N 件 → N 路 spawn，一个对象一个子 agent」——每路各有独立预算，即便底层串行也各自等得起。
+- **验证**：单个子 agent 的 `read_pdf` 不连续跑多个不同 path；单篇精读子任务不撞超时帽。
 
 ### 启动报「LLM API key 未配置」
 - **根因**：`config.yaml` 的 `llm.api_key` 未配且无环境变量 `PAPERFLOW_LLM_API_KEY`；`config.yaml` gitignored，新环境常缺。
@@ -54,8 +54,8 @@
 - **验证**：设变量后启动秒进 REPL，无服务探测输出。
 
 ### 改了 `config.yaml` 里的一个字段，程序行为完全没变（无报错、静默不生效）
-- **根因**：2026-10-05 配置模块化（spec 2026-10-05-constants-and-config-reorg）后 `config.yaml` 是纯覆盖文件，加载器 `_merge`（`paperflow/config.py`）对 dataclass 树里不存在的键**静默忽略、不报错**；键名一次性迁移且无兼容层——按旧平铺键名（如 `milvus_uri`，`docs/SERVER.md` 仍这么写）或拼错、放错层级的字段改动等于没改。另注意：优先级 `PAPERFLOW_*` 环境变量 > YAML，且 config 仅启动时 `from_env()` 加载一次，改完必须重启进程。
-- **修法**：键名/层级对照 `config.example.yaml` 与 `paperflow/config.py` 的 dataclass 字段路径改写（旧→新键映射见 spec §4）；重启进程；确认 shell/`.env` 无同名 `PAPERFLOW_*` 变量顶掉 YAML 值。
+- **根因**：2026-10-05 配置模块化（spec 2026-10-05-constants-and-config-reorg）后 `config.yaml` 是纯覆盖文件，加载器 `_merge`（`paperflow/config/services/loader.py`）对 dataclass 树里不存在的键**静默忽略、不报错**；键名一次性迁移且无兼容层——按旧平铺键名（如 `milvus_uri`，`docs/SERVER.md` 仍这么写）或拼错、放错层级的字段改动等于没改。另注意：优先级 `PAPERFLOW_*` 环境变量 > YAML，且 config 仅启动时 `from_env()` 加载一次，改完必须重启进程。
+- **修法**：键名/层级对照 `config.example.yaml` 与 `paperflow/config/schemas/sections.py` 的 dataclass 字段路径改写（旧→新键映射见 spec §4）；重启进程；确认 shell/`.env` 无同名 `PAPERFLOW_*` 变量顶掉 YAML 值。
 - **验证**：`conda run -n paperflow python -c "from paperflow.config import PaperFlowConfig; print(PaperFlowConfig.from_env().<改动字段的路径，如 rag.storage.uri>)"` 输出与 config.yaml 改后的值一致；不一致时按 `tests/core/test_config.py` 的 `_leaf_unknowns` 口径扫 config.yaml 未生效键（未知键列表应只为命中的旧键）。
 
 ### 重负载任务跑到一半 Milvus 崩溃循环（`streaming node is not alive` / `Slow etcd operation` / `session is expired`）
@@ -65,8 +65,8 @@
 - **验证**：重负载任务跑完后 `docker inspect milvus-standalone --format '{{.RestartCount}}'` 不再增长；`curl -s localhost:9091/healthz` 持续返回 OK；`docker ps` 各容器 uptime 连续不归零。
 
 ### Milvus 半死时单次 `rag_retrieve` 阻塞 25~90 秒（`Connection recovery failed` / `Fail connecting to server on localhost:19530` / `DEADLINE_EXCEEDED`）
-- **根因**：Milvus 端口仍开着但服务已半死（或正在重启）时，检索不是立刻失败而是长时间阻塞——`paperflow/core/rag/storage/vector_store.py` 构造 `MilvusClient(uri=uri)` **未传 timeout**，全部 RPC 也无 timeout，于是走 pymilvus 默认值：`retry_on_rpc_failure`（`retry_times=75`、backoff 上限 3s）与 `connection_manager._recover → reconnect`（connect deadline 被规范化为 10s）。而一次 `Retriever.retrieve()` 要做**多次** Milvus RPC（首次 `all_documents()` 重建 BM25 + 每个改写 query 一次 `query` + 至多两次 `fetch_by_ids`），几个 10s 恢复等待累加即 25s/64s/90s 量级。仓库内没有超时、没有熔断（`RAGService.milvus_available()` 结果永久缓存且**无人调用**，是死代码）。
-- **放大伤害**：子 agent 超时帽是预算制（qa-agent 默认 180s，见 `paperflow/config.py`），1~2 次阻塞检索就能吃穿整个预算 → 子 agent `timeout` → supervisor 重派仍超时 → 整轮十几分钟拿不到结果，最后只能转成 ask_user 请示。
+- **根因**：Milvus 端口仍开着但服务已半死（或正在重启）时，检索不是立刻失败而是长时间阻塞——`paperflow/core/rag/storage/vector_store.py` 构造 `MilvusClient(uri=uri)` **未传 timeout**，全部 RPC 也无 timeout，于是走 pymilvus 默认值：`retry_on_rpc_failure`（`retry_times=75`、backoff 上限 3s）与 `connection_manager._recover → reconnect`（connect deadline 被规范化为 10s）。而一次 `Retriever.retrieve()` 要做**多次** Milvus RPC（首次 `all_documents()` 重建 BM25 + 每个改写 query 一次 `query` + 至多两次 `fetch_by_ids`），几个 10s 恢复等待累加即 25s/64s/90s 量级。**下面这些「没有超时、没有熔断」的断言说的是当时那个版本**——当时 `RAGService.milvus_available()` 结果永久缓存且无人调用（现已是带 TTL 的可连性探测，并被 `IndexStatus` 消费）。
+- **放大伤害**：子 agent 超时帽是预算制（当时 qa-agent 默认 180s——该角色已删除；现役同类角色 note-agent 900s / paper-agent 420s，见 `paperflow/config/schemas/sections.py` 与 `config.agents.timeouts`），1~2 次阻塞检索就能吃穿整个预算 → 子 agent `timeout` → supervisor 重派仍超时 → 整轮十几分钟拿不到结果，最后只能转成向用户请示（旧的 `ask_user` 工具已删除——现在是把问题写进最终回答）。
 - **附注**：Milvus 不可用时 `rag_retrieve` **不会**软降级成纯 BM25，而是返回固定文本「⚠️ 向量检索不可用（Milvus 异常）」（`paperflow/tools/rag/rag_retrieve.py`）；`Retriever` 里只有 embedding 与 reranker 两路有 try/except，向量路与 BM25 路的 `fetch_by_ids` 均无保护——BM25 索引虽在本地内存，其元数据仍依赖 Milvus，所以「退纯 BM25」在 Milvus 挂掉时物理上不可行。别把这条与「embedding 未配 key → 退纯 BM25」的软降级混淆。
 - **修法（已实施）**：各 RPC 传 `rag.storage.timeout`（读路径 5s / 写路径 60s），并在 `rag_retrieve` 边界加检索侧熔断器（`paperflow/core/rag/services/breaker.py`，冷却 60s，跳闸期间直接返回降级文本）。旧版本上遇到时先升到含 `RetrievalBreaker` 的版本。
 - **验证**：`docker stop milvus-standalone` 后调一次 `rag_retrieve`，应在数秒内返回降级文本，而不是阻塞数十秒；再调一次应瞬时返回（熔断短路）；Milvus 起来后过冷却窗口自动恢复，无需重启进程。

@@ -9,7 +9,7 @@
 
 ### 检索质量整体下降（参数与评测口径核对）
 - **根因**：可调参数被改动，或评测被改写噪声干扰（改写器 LLM 噪声 mrr ±0.034，曾压过参数效应）。
-- **修法**：核对 `rrf_k=30`、`rerank_candidates=24`（config.py 唯一声明点）；归因评测用冻结改写集（噪声 ±0.0003），脚本在 `scripts/rag/`。
+- **修法**：核对 `rrf_k=30`、`rerank_candidates=24`（唯一声明点 `paperflow/config/schemas/sections.py`，实测默认值仍是 24 / 30）；归因评测用冻结改写集（噪声 ±0.0003），脚本在 `scripts/rag/rag_eval/`。
 - **验证**：冻结改写集评测 mrr 回到基线 ±0.01 内。
 
 ### 引用出处对不上 / 溯源可疑（citation provenance）
