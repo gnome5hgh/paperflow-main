@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from paperflow.core.memory.constants import MessageRole
+from paperflow.core.common.constants import MessageRole
 from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.schemas.message import StoredMessage
 

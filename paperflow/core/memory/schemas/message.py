@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from paperflow.core.memory.constants import MessageRole
+from paperflow.core.common.constants import MessageRole
 
 __all__ = ["StoredMessage"]
 

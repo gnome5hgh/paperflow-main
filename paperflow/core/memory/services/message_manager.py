@@ -11,7 +11,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from paperflow.core.llm import Message
-from paperflow.core.memory.constants import MessageRole
+from paperflow.core.common.constants import MessageRole
 from paperflow.core.memory.storage import message as message_orm
 from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.schemas.message import StoredMessage

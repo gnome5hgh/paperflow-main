@@ -4,7 +4,6 @@
 （块/消息/agent 管理器 + MemFS）、压缩配置、
 MemoryConsolidator 后台整合与常量。分层依赖单向：constants/schemas → storage → services → tools。
 """
-from paperflow.core.memory.constants import MessageRole
 from paperflow.core.memory.schemas.block import BaseBlock, Block
 from paperflow.core.memory.schemas.memory import Memory
 from paperflow.core.memory.schemas.message import StoredMessage
@@ -19,7 +18,7 @@ from paperflow.core.memory.services.consolidation import MemoryConsolidator
 from paperflow.core.memory import constants
 
 __all__ = [
-    "BaseBlock", "Block", "Memory", "StoredMessage", "MessageRole",
+    "BaseBlock", "Block", "Memory", "StoredMessage",
     "AgentState", "MemoryDB",
     "BlockManager", "GitEnabledBlockManager", "MemFS", "MessageManager",
     "AgentManager",

@@ -5,11 +5,12 @@
 - ``frontmatter.py`` —— AGENT.md / SKILL.md 的 YAML frontmatter 解析（core.agent 与 core.skills 共用）
 - ``tokenization.py`` —— tiktoken token 计数单点（rag 切块与 core.memory 上下文压缩共用）
 - ``text.py`` —— 未配对 surrogate 清洗（信任边界统一清洗：llm 客户端、记忆落盘、终端、rag 编码器都过它）
-- ``constants.py`` —— 没有子包归属、又被两个以上子包消费的纯取值（重试退避基数）
+- ``constants/`` —— 没有子包归属、又被两个以上子包消费的纯取值与枚举
+  （重试退避基数；消息角色 `MessageRole`）
 
 判据是「**被多个子包横向消费**」：只服务单一消费方的模块留在消费方自己的包里。
 """
-from paperflow.core.common.constants import RETRY_BACKOFF_BASE
+from paperflow.core.common.constants import RETRY_BACKOFF_BASE, MessageRole
 from paperflow.core.common.frontmatter import parse_frontmatter
 from paperflow.core.common.text import sanitize_surrogates
 from paperflow.core.common.tokenization import TOKEN_ENCODING, get_token_encoder
@@ -20,4 +21,5 @@ __all__ = [
     "TOKEN_ENCODING",
     "get_token_encoder",
     "RETRY_BACKOFF_BASE",
+    "MessageRole",
 ]
