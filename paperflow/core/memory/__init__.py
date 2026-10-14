@@ -6,7 +6,7 @@ MemoryConsolidator 后台整合与常量。分层依赖单向：constants/schema
 """
 from paperflow.core.memory.schemas.block import BaseBlock, Block
 from paperflow.core.memory.schemas.memory import Memory
-from paperflow.core.memory.schemas.message import StoredMessage
+from paperflow.core.memory.schemas.stored_message import StoredMessage
 from paperflow.core.memory.schemas.agent import AgentState
 from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.services.block_manager import BlockManager, GitEnabledBlockManager

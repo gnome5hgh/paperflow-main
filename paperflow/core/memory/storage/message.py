@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from paperflow.core.common.constants import MessageRole
 from paperflow.core.memory.storage.database import MemoryDB
-from paperflow.core.memory.schemas.message import StoredMessage
+from paperflow.core.memory.schemas.stored_message import StoredMessage
 
 __all__ = ["insert_message", "select_messages_by_agent", "select_messages_by_ids",
            "search_messages", "count_messages"]
