@@ -4,7 +4,7 @@
 现在是一个独立的协作对象。**只有构造后不会被替换的东西才按值注入**：
 
 - 构造期：中间件链、agent_type / session_id / instance_id / has_human_confirm；
-- 调用期传入：`tools`、`confirm_callback`、`sink` —— 这三样在真实流程里会被构造后
+- 调用期传入：`tools`、`confirm_callback`、`stream_sink` —— 这三样在真实流程里会被构造后
   替换（spawn 用 `_wrap_confirm_callback` 把用户确认等待排除出超时预算；REPL 在
   renderer 造好之后才把流式回调挂到 supervisor；测试直接整表换 `tools`）。按值
   捕获会拿到过期引用，所以每次调用由调用方现取现传。
@@ -39,7 +39,7 @@ __all__ = ["ToolExecutor"]
 _PATH_LOCKS: dict[str, asyncio.Lock] = {}
 
 
-def path_lock(path: str) -> asyncio.Lock:
+def _path_lock(path: str) -> asyncio.Lock:
     """取目标路径的串行锁（无则建；setdefault 原子，多循环场景安全）。
 
     Args:
@@ -53,7 +53,7 @@ def path_lock(path: str) -> asyncio.Lock:
     return _PATH_LOCKS.setdefault(path, asyncio.Lock())
 
 
-def diffstat_of(old: str, new: str) -> tuple[int, int]:
+def _diffstat(old: str, new: str) -> tuple[int, int]:
     """unified diff 行级统计 (added, removed)，不计 +++/--- 头。
 
     Args:
@@ -72,7 +72,7 @@ def diffstat_of(old: str, new: str) -> tuple[int, int]:
     return added, removed
 
 
-def read_text_or_none(path: str) -> str | None:
+def _read_text_or_none(path: str) -> str | None:
     """读文件文本；不存在返回 ""（新写文件场景），IO/解码失败返回 None（无徽标）。
 
     Args:
@@ -119,16 +119,16 @@ class ToolExecutor:
     async def execute(self, tool_call: dict, *, trace_id: str | None,
                       turn: int = 0, confirm_lock: asyncio.Lock | None = None,
                       tools: dict, confirm_callback,
-                      sink) -> ToolResult:
+                      stream_sink) -> ToolResult:
         """
         执行单个 LLM 请求的工具调用，内部处理所有异常。
 
         流程(中间件管道)::
 
-            0. 发射 tool_start 事件（门控 stream_callback；带 tool_name/summary）
+            0. 发射 tool_start 事件（门控 stream_sink；带工具名与已解析参数）
             1. 构造 ToolContext（trace_id / session_id / agent_type / 工具 / 参数）
                —— ctx 在参数解析前构造，保证所有路径都能走 after 链审计
-            2. _exec_tool_parsed 执行解析后的管道（原 3-8 步）：
+            2. _run_parsed 走解析后的管道：
                a. 解析 JSON 参数（失败 → 走 after 链 → 错误 ToolResult）
                b. 非 dict 参数归一化为 {}（防止 ** 展开崩溃，审计记录空参数）
                c. 写类工具采样目标旧文本（diffstat 徽标数据源）
@@ -151,9 +151,17 @@ class ToolExecutor:
         反馈给 LLM。LLM 在下一轮中看到错误文本后可自行决定重试、调整参数或放弃。
 
         Args:
-            tool_call: LLM 返回的工具调用字典 {"id": str, "function": {"name": str, "arguments": str}}其中 arguments 为 JSON 字符串，此方法负责 json.loads 解析
-            confirm_lock: 并发确认串行锁(asyncio.Lock | None)。同一 message 的 多个工具调用并发执行时由 run() 传入同一个锁,把确认回调调用串行化 (CLI 标准输入并发读会竞态);None = 非并发路径,确认行为与现状一致
-            turn: ReAct 轮次,注入审计条目供跨轮回溯;run() 每轮透传,直接调用 _exec_tool 时默认 0
+            tool_call: LLM 返回的工具调用字典 {"id": str, "function": {"name": str,
+                "arguments": str}}，其中 arguments 为 JSON 字符串，本方法负责解析
+            trace_id: 本次 run 的追踪 ID，写进 ToolContext 并决定运行期容器
+            turn: ReAct 轮次，注入审计条目供跨轮回溯
+            confirm_lock: 并发确认串行锁（asyncio.Lock | None）。同一 message 的多个
+                工具调用并发执行时由调用方传入同一个锁，把确认回调调用串行化（CLI
+                标准输入并发读会竞态）；None = 非并发路径
+            tools: dict，本次调用的工具表（调用方现取——它可能被整表替换）
+            confirm_callback: 用户确认回调（调用方现取——spawn 会把它包一层）
+            stream_sink: 事件回调（调用方现取——REPL 在构造之后才挂上）；None 时
+                零开销：既不解析参数用于展示，也不发事件
 
         Returns:
             ToolResult，始终返回（不抛异常）
@@ -166,15 +174,15 @@ class ToolExecutor:
         # 终端渲染器也能及时清空中间内容缓冲区，避免把思考文本误判为最终答案。
         # 事件只带已解析的原始参数（tool_name + args），活动行摘要与调用行由终端
         # 层现算——引擎不做排版。参数非法或为空时传 None，终端显示纯工具名。
-        # 门控：仅当 stream_callback 存在时才执行（即 CLI 交互模式），否则零开销。
-        if sink is not None:
+        # 门控：仅当挂了 stream_sink 时才执行（即 CLI 交互模式），否则零开销。
+        if stream_sink is not None:
             try:
                 parsed_args = json.loads(tool_call["function"]["arguments"])
             except (json.JSONDecodeError, TypeError):
                 parsed_args = None
             if not isinstance(parsed_args, dict) or not parsed_args:
                 parsed_args = None
-            sink(AgentEvent(
+            stream_sink(AgentEvent(
                 AgentEventKind.TOOL_START, "", self._agent_type,
                 tool_name=name, args=parsed_args))
 
@@ -201,20 +209,20 @@ class ToolExecutor:
                                       confirm_callback, confirm_lock, turn)
         finally:
             # tool_end 恰好一条：正常/异常/拦截/解析失败都经 finally 收口
-            if sink is not None:
-                sink(self._tool_end_event(ctx))
+            if stream_sink is not None:
+                stream_sink(self._tool_end_event(ctx))
 
     async def _run_parsed(
-        self, tool_call: dict, ctx: ToolContext, tool, ctx_tools,
+        self, tool_call: dict, ctx: ToolContext, tool, tools,
         confirm_callback, confirm_lock, turn
     ) -> ToolResult:
-        """_exec_tool 的解析后管道（原 3-8 步）；tool_end 收口在调用方 finally。
+        """解析后的管道；tool_end 收口在调用方 finally。
 
         Args:
             tool_call: dict，工具调用（含 function.arguments）
             ctx: ToolContext，调用上下文
             tool: Tool | None，命中的工具实例
-            ctx_tools: dict，本次调用的工具表（写互斥拒绝时给模型回报可用工具）
+            tools: dict，本次调用的工具表（写互斥拒绝时给模型回报可用工具）
             confirm_callback: 用户确认回调（本次调用现取）
             confirm_lock: asyncio.Lock | None，确认串行锁
             turn: int，当前轮次
@@ -244,7 +252,7 @@ class ToolExecutor:
             target = (tool.effective_target_path(ctx.args)
                       if tool is not None else ctx.args.get("path"))
             if isinstance(target, str):
-                ctx.diffstat_old = read_text_or_none(target)
+                ctx.diffstat_old = _read_text_or_none(target)
 
         # 并行写同一个文件会引出三件事，由三把不同的锁各管一段。把粒度与归属写清楚，
         # 免得后续把某一层误当成另一层：
@@ -252,10 +260,10 @@ class ToolExecutor:
         # 1）同一 agent 内部的多次同路径写——丢写竞态 + 重复确认。两个协程对同一文件并发读-改-写，
         #    后写者会覆盖先写者；两个工具又各自弹确认框，用户输入的「a」（本会话放行）只覆盖先弹框的
         #    那个，后到者会再弹一次（而且两个协程并发读 CLI 标准输入本身就是竞态）。解法是模块级按路径
-        #    注册表 `_path_lock`：只有写类工具（side_effects 含文件写）才走这个加锁分支，按
-        #    `effective_target_path` 取该路径的 `asyncio.Lock`，且锁要包住 `_exec_tool_guarded` **整体**
-        #    （确认决策 + 执行，即 5-8 步，含 before 钩子里的 ConfirmRequired → confirm_callback → 工具
-        #    执行），不能只包执行那一步——这是设计关键，所以 `async with` 放在 `_exec_tool` 这一层包住
+        #    注册表 `path_lock`：只有写类工具（side_effects 含文件写）才走这个加锁分支，按
+        #    `effective_target_path` 取该路径的 `asyncio.Lock`，且锁要包住 `_run_guarded` **整体**
+        #    （确认决策 + 执行，含 before 钩子里的 ConfirmRequired → confirm_callback → 工具
+        #    执行），不能只包执行那一步——这是设计关键，所以 `async with` 放在 `execute` 这一层包住
         #    调用，而不是放进 guarded 函数内部。第二个并发调用因此在锁上等到第一个完整走完「用户确认 +
         #    写文件」；它拿到锁时授权键已进已授权集合，于是不再弹框直接放行——既消除重复弹框，又把同路径
         #    写串行化，丢写竞态随之消失。键经 `tool.effective_target_path` 导出而非直接读 `args["path"]`：
@@ -268,7 +276,7 @@ class ToolExecutor:
         #    丢更新」，本仓要防的正是跨子 agent 的静默丢失，所以让第二个写根本不发生。登记是纯同步字典
         #    操作（无 await），所以能在这层 fail-fast，不会像中间件那样先排到路径锁后面才拒。
         #
-        # 三者互补：`_path_lock` 管同一个 agent 自己的多次调用排队，`confirm_lock` 管输入通道，
+        # 三者互补：`path_lock` 管同一个 agent 自己的多次调用排队，`confirm_lock` 管输入通道，
         # 写占用管跨实例。写者身份用 `side_effects` 判定；写占用键复用 `effective_target_path`——它已是
         # 确认键、串行锁与 diffstat 的唯一权威，对交付物写者返回的就是写目标（不做第二套路径概念）。
         target = tool.effective_target_path(ctx.args) if tool is not None else None
@@ -288,9 +296,9 @@ class ToolExecutor:
                     is_error=True)
         try:
             if isinstance(target, str) and is_writer(tool):
-                async with path_lock(target):
-                    return await self._run_guarded(tool, ctx, ctx_tools, confirm_callback, confirm_lock, turn)
-            return await self._run_guarded(tool, ctx, ctx_tools, confirm_callback, confirm_lock, turn)
+                async with _path_lock(target):
+                    return await self._run_guarded(tool, ctx, tools, confirm_callback, confirm_lock, turn)
+            return await self._run_guarded(tool, ctx, tools, confirm_callback, confirm_lock, turn)
         finally:
             # 异常、取消、用户拒绝都会走到——所以占用不需要 TTL 兜底。
             # 取消场景有一处已知的宽松：占用在此释放时，`asyncio.to_thread` 起的 worker 线程可能仍在跑
@@ -300,14 +308,14 @@ class ToolExecutor:
             if claimed:
                 rs.release_write(target, owner)
 
-    async def _run_guarded(self, tool, ctx, ctx_tools, confirm_callback,
+    async def _run_guarded(self, tool, ctx, tools, confirm_callback,
                            confirm_lock, turn) -> ToolResult:
-        """确认与执行段（_exec_tool 的 5-8 步）：同路径锁保护下运行。
+        """确认与执行段：同路径锁保护下运行。
 
         Args:
             tool: Tool | None，命中的工具实例
             ctx: ToolContext，调用上下文
-            ctx_tools: dict，本次调用的工具表（未知工具时回报可用清单）
+            tools: dict，本次调用的工具表（未知工具时回报可用清单）
             confirm_callback: 用户确认回调（本次调用现取）
             confirm_lock: asyncio.Lock | None，确认串行锁
             turn: int，当前轮次
@@ -323,7 +331,7 @@ class ToolExecutor:
             ctx.error = ValueError(f"Unknown tool: {ctx.tool_name}")
             await self._run_after_hooks(ctx)
             return ToolResult(
-                text=f"Unknown tool: {ctx.tool_name}. Available: {list(ctx_tools.keys())}"
+                text=f"Unknown tool: {ctx.tool_name}. Available: {list(tools.keys())}"
             )
 
         # 6. before 阶段：顺序执行所有安全中间件的 before 钩子。
@@ -397,9 +405,9 @@ class ToolExecutor:
         if ctx.tool_name in {"write_file", "edit_file"} and ctx.diffstat_old is not None:
             target = (ctx.tool.effective_target_path(ctx.args)
                       if ctx.tool is not None else ctx.args.get("path"))
-            new_text = read_text_or_none(target) if isinstance(target, str) else None
+            new_text = _read_text_or_none(target) if isinstance(target, str) else None
             if new_text is not None:
-                added, removed = diffstat_of(ctx.diffstat_old, new_text)
+                added, removed = _diffstat(ctx.diffstat_old, new_text)
                 diffstat = (target, added, removed)
         completion = (ctx.result.completion
                       if ctx.result is not None and ctx.result.completion else None)

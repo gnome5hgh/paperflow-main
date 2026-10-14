@@ -24,7 +24,8 @@ class ToolResult:
     """
     text: str
     summary: dict = field(default_factory=dict)
-    #: 终端完成摘要（如 "File written: <path>"），_exec_tool 见非空则发完成状态行
+    #: 工具给的完成文本（如 "File written: <path>"）——随 tool_end 事件上报，
+    #: 终端据此显示完成行（引擎不拼文案）
     completion: str | None = None
     #: 错误结果标记：安全扫描对错误结果不套「外部内容」横幅
     is_error: bool = False

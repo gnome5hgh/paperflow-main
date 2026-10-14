@@ -115,7 +115,7 @@ class Tool(ABC):
     def effective_target_path(self, args: dict) -> str | None:
         """导出本次调用的有效目标路径（无法解析时 None）。
 
-        会话确认键（PolicyEngineMiddleware）与同路径写锁（runtime._path_lock）
+        会话确认键（PolicyEngineMiddleware）与同路径写锁（ToolExecutor 的路径锁）
         统一经此取目标，而不直接读 ``args["path"]``——工具若有 pathless 便捷
         入口（如 write_file 的 filename+dir 模式），子类覆写为组合后的落盘
         路径，保证：同一文件无论从哪个入口写，键一致（同锁同确认）；不同

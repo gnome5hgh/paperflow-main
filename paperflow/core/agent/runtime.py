@@ -29,11 +29,11 @@ ReAct 循环流程::
 
 错误处理策略：
 
-- **_exec_tool 中的异常被内部捕获**：JSON 解析失败、未知工具名、
-  工具执行异常都转为 ToolResult(text="...")，作为正常对话流的一部分
+- **工具调用的异常被内部捕获**（管道见 `services/tool_executor.py`）：JSON 解析失败、
+  未知工具名、工具执行异常都转为 ToolResult(text="...")，作为正常对话流的一部分
   反馈给 LLM，由 LLM 自行决定是否重试或调整参数
 - **中间件的拦截不抛异常**：ConfirmRequired / SecurityBlocked 等 SecurityError
-  被 _exec_tool 捕获并转为带 summary.decision 的 ToolResult
+  被执行管道捕获并转为带 summary.decision 的 ToolResult
   （user_denied / security_blocked），LLM 在下一轮看到
   决策结果后可自行调整行为
 - **only MaxTurnsExceeded 向上抛**：这是唯一"不可恢复"的错误 ——
@@ -43,7 +43,6 @@ ReAct 循环流程::
 import asyncio
 import hashlib
 import json
-import sys
 import uuid
 from typing import Callable
 
@@ -879,4 +878,5 @@ class Agent:
         return await self.tool_executor.execute(
             tool_call, trace_id=self._trace_id, turn=turn,
             confirm_lock=_confirm_lock, tools=self.tools,
-            confirm_callback=self.confirm_callback, sink=self.stream_callback)
+            confirm_callback=self.confirm_callback,
+            stream_sink=self.stream_callback)
