@@ -176,7 +176,7 @@ Every agent lives in `agents/<name>/` with two files:
 - `chat(messages, tools=..., ...)` — 非流式，ReAct 主路径；StructuredOutput 等 JSON 抽取也用
 - `chat_stream(messages, tools=..., on_delta=...)` — 流式，仅 CLI 实时渲染用；`on_delta` 跑在线程池线程内，只能追加/打印，别碰事件循环
 
-`Message` is a dataclass (`role`, `content`, `tool_calls`, `tool_call_id`) that serializes to OpenAI wire format (`_message_to_openai`，出站时清洗未配对 surrogate)。**它是请求侧的信封**；模型回话那一侧是 `LLMResponse`（`core/llm/domain/dto/response.py`，继承 `Message` 再多一个回复专属的 `truncated`），也是 `chat()` / `chat_stream()` 的返回类型——消费方按 `.content` / `.tool_calls` / `.truncated` 读它，与读一条 assistant 消息无异。`tool_to_openai_schema(t) -> dict` converts a Tool to the OpenAI function-calling JSON Schema.
+`Message` is a dataclass (`role`, `content`, `tool_calls`, `tool_call_id`, `truncated`) that serializes to OpenAI wire format (`_message_to_openai`，出站时清洗未配对 surrogate)。**进出两个方向共用这一个类型**：`chat()` / `chat_stream()` 返回的就是一条 assistant Message，随即被 append 进 in-context 窗口、下一轮原样作为请求消息发回去——wire 上本来就是同一个形状，故不另设「回复」类型。唯一的例外字段是 `truncated`（由响应信封的 `finish_reason` 派生，**不上 wire**、只对 assistant 回复有意义），Agent 据此走截断续写。`tool_to_openai_schema(t) -> dict` converts a Tool to the OpenAI function-calling JSON Schema.
 
 关键行为：
 - **参数降级重试**：端点不支持 `response_format` / `extra_body` / `stream_options` 时（不同兼容端点措辞各异），去掉该参数重试一次（`_looks_like_unsupported_param`）

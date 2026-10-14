@@ -930,7 +930,7 @@ class Agent:
             # await 抛 TypeError——门控同时是零开销路径（无 UI 调用方不受影响）。
             tools = self._tool_schemas if self._tool_schemas else None
 
-            # response 是 LLMResponse（字段语义见 core/llm/domain/dto/response.py）：
+            # response 是一条 Message（字段语义见 core/llm/domain/dto/message.py）：
             # 纯工具调用时 content 被规整为空串；tool_calls 的 arguments 是 JSON 字符串，
             # 由 _exec_tool 负责 json.loads；truncated 为真时走续写而不是交付半截内容。
             if self.stream_callback is not None:

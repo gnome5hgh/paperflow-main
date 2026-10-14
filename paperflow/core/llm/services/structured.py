@@ -23,7 +23,6 @@ from typing import Callable, get_origin, get_args, Union
 from pydantic import BaseModel, ValidationError
 
 from paperflow.core.llm.domain.dto.message import Message
-from paperflow.core.llm.domain.dto.response import LLMResponse
 # 行为参数住在 domain/dto（组件自己的参数，不随 config.yaml 走）；这里再导出，
 # 让既有的 `from ...services.structured import StructuredOutputConfig` 继续可用。
 from paperflow.core.llm.domain.dto.structured_output_config import StructuredOutputConfig
@@ -107,7 +106,7 @@ class StructuredOutput:
             Message(role="user", content=user_content),
         ]
         last_error: Exception | None = None
-        resp: LLMResponse | None = None
+        resp: Message | None = None
         attempts = 0
 
         for attempt in range(self.config.max_retries + 1):

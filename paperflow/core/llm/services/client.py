@@ -19,7 +19,7 @@ LLM 客户端 —— OpenAI-compatible API 的异步封装。
 4. **双模式：非流式 `chat()` + 流式 `chat_stream()`**
    `chat()` 保持非流式——ReAct 循环需要完整解析 tool_calls 才能决定下一步，
    StructuredOutput 等 JSON 抽取也要完整响应。`chat_stream()` 为 CLI 的实时
-   反馈而设：stream=True + on_delta 回调，返回与 chat() 同形状的 `LLMResponse`。
+   反馈而设：stream=True + on_delta 回调，返回与 chat() 同形状的 `Message`。
 """
 
 import asyncio
@@ -35,7 +35,6 @@ from openai import OpenAI
 
 from paperflow.config import LLMConfig
 from paperflow.core.llm.domain.dto.message import Message
-from paperflow.core.llm.domain.dto.response import LLMResponse
 
 
 class LLMClient:
@@ -123,7 +122,7 @@ class LLMClient:
         temperature: float | None = None,
         extra_body: dict | None = None,
         telemetry_callback=None,
-    ) -> LLMResponse:
+    ) -> Message:
         """
         单次非流式 LLM 调用，返回 assistant message（可能包含 tool_calls）。
         流式变体见 chat_stream()。
@@ -138,7 +137,7 @@ class LLMClient:
             telemetry_callback: 调用结束后同步回调元数据 dict （model/response_model/provider/input_tokens/output_tokens/duration_ms/started_at/finish_reason），供审计 replay 使用；不含消息正文。None 时零开销跳过
 
         Returns:
-            封装后的 assistant 回复（``LLMResponse``，含 tool_calls 与截断标记）
+            封装后的 assistant 消息（``Message``，含 tool_calls 与截断标记）
 
         Raises:
             SDK 异常直接向上抛，由 Agent 自行决定是否 recover
@@ -220,7 +219,7 @@ class LLMClient:
 
         # content 可能是 None（OpenAI 2.x 行为：纯 tool-call 响应不含 content）
         # truncated：finish_reason=="length" 表示输出被 max_tokens 截断，调用方须续写
-        msg = LLMResponse(
+        msg = Message(
             role=choice.role,
             content=choice.content or "",
             tool_calls=tool_calls,
@@ -246,7 +245,7 @@ class LLMClient:
         return msg
 
     async def chat_stream(self, messages, tools=None, tool_choice="auto",
-                          on_delta=None, telemetry_callback=None) -> LLMResponse:
+                          on_delta=None, telemetry_callback=None) -> Message:
         """流式版 chat()：stream=True + 边收边回调 on_delta，返回完整回复。
 
         仅 Agent（ReAct）消费；StructuredOutput 等要完整 JSON 的调用方继续用 chat()。
@@ -272,11 +271,11 @@ class LLMClient:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
 
-        def _do_stream() -> LLMResponse:
+        def _do_stream() -> Message:
             """在同一个线程内创建流并迭代收齐结果（Stream 是同步迭代器，交回事件循环会阻塞 loop）。
 
             Returns:
-                累加完成后的回复（``LLMResponse``，含 truncated 标记）。
+                累加完成后的消息（``Message``，含 truncated 标记）。
             """
             # create 与 iterate 必须同线程：Stream 是同步迭代器，逐 chunk 阻塞在
             # httpx 读取上；不能把 Stream 交回事件循环再迭代（否则阻塞 loop，
@@ -305,7 +304,7 @@ class LLMClient:
                     "started_at": _started_wall,
                     "finish_reason": finish_reason,
                 })
-            return LLMResponse(role=role, content=content, tool_calls=tool_calls,
+            return Message(role=role, content=content, tool_calls=tool_calls,
                                truncated=(finish_reason == "length"))
 
         return await asyncio.to_thread(_do_stream)

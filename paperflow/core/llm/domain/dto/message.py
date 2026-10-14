@@ -3,9 +3,9 @@
 它等价于 OpenAI Chat Completion 的一条 message，用 dataclass 而非 SDK 内部类型
 表达，便于序列化与上下文管理（增删改统一走它，不依赖 SDK 类型）。
 
-**它是请求侧的信封**：进出两个方向共用同一形状，但只描述「要发出去的一条消息」
-该有什么字段。模型回话那一侧另有专属载体 ``LLMResponse``（多一个截断标记），
-见 ``response.py``。
+**进出两个方向共用这一个类型**：`chat` / `chat_stream` 返回的就是一条 Message
+（assistant 角色），而它随即被 append 进 in-context 窗口、下一轮原样作为请求消息
+发回去——回复与请求在 wire 上本来就是同一个形状，所以不另设「回复」类型。
 """
 from dataclasses import dataclass
 
@@ -28,6 +28,7 @@ class Message:
         content: str | list[dict]，消息正文；视觉调用时为 OpenAI content parts 列表（tool_calls 消息可为空串）
         tool_calls: list[dict] | None，LLM 返回的工具调用（仅 assistant 有值）
         tool_call_id: str | None，关联的工具调用 ID（仅 tool 消息有值）
+        truncated: bool，响应因输出长度被截断（finish_reason==length），Agent 据此续写而非交付半截内容
     """
 
     #: 消息角色："system" | "user" | "assistant" | "tool"
@@ -44,3 +45,10 @@ class Message:
     #: 关联的工具调用 ID，仅 tool 角色消息有值，用于将 tool result 关联到对应的 tool_call
     tool_call_id: str | None = None
 
+    #: 响应因输出长度上限被截断(finish_reason=="length")。Agent 据此续写而非把
+    #: 半截内容当最终回答——否则长笔记草稿会被静默截断成残缺内容交付。
+    #:
+    #: **这一项不上 wire**（`_message_to_openai` 不输出它），它是从响应信封的
+    #: finish_reason 派生的本地注解，只对 assistant 回复有意义；如实为 False 时
+    #: 等价于「没被截断」，故请求侧消息带默认值即可。
+    truncated: bool = False
