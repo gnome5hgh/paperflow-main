@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from paperflow.core.llm import Message, SystemMessage
-from paperflow.core.common.tokenization import get_token_encoder
+from paperflow.core.common.services.tokenization import get_token_encoder
 
 __all__ = ["CompactionSettings", "SummarySchema", "estimate_tokens",
            "blend_token_ratio", "should_compress", "run_compaction"]
@@ -118,7 +118,7 @@ def estimate_tokens(messages: list[Message]) -> int:
         估算的总 token 数（整数）。
     """
     total = 0
-    # 编码器单点在 core.common.tokenization（与 rag 切块共用同一口径）。
+    # 编码器单点在 core.common.services.tokenization（与 rag 切块共用同一口径）。
     enc = get_token_encoder()
     for m in messages:
         total += len(enc.encode(_countable_text(m))) + _PROTOCOL_OVERHEAD

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import httpx
 
 from paperflow.core.common.constants import RETRY_BACKOFF_BASE
-from paperflow.core.common.text import sanitize_surrogates
+from paperflow.core.common.services.text import sanitize_surrogates
 
 logger = logging.getLogger(__name__)
 

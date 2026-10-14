@@ -25,7 +25,7 @@ from pathlib import Path
 
 from paperflow.core.agent.constants import AgentEventKind
 from paperflow.core.agent.domain import AgentEvent
-from paperflow.core.agent.state import get_run_state
+from paperflow.core.agent.services.state import get_run_state
 from paperflow.core.security import (
     ApprovalOutcome, ConfirmRequired, SecurityError, ToolContext,
 )

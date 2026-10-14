@@ -6,7 +6,7 @@
 - ``install_skill`` / ``update_skill`` / ``uninstall_skill`` / ``enable_skill``
   / ``list_skills_command`` / ``load_lock`` ← install（准入/更新/停用与 lock 治理）
 - ``merge_tools`` ← assembly（装配期工具并入 + 命名空间唯一性）
-依赖方向：本包依赖 core.tool / core.common.frontmatter；core.agent 经本包做 L1 注入与工具并入。
+依赖方向：本包依赖 core.tool / core.common.services.frontmatter；core.agent 经本包做 L1 注入与工具并入。
 """
 
 from paperflow.core.skills.services.assembly import apply_pre_approval, merge_tools

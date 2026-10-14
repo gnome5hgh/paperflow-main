@@ -11,7 +11,7 @@ import httpx
 from paperflow.core.security.services import endpoint_guard
 
 from paperflow.core.common.constants import RETRY_BACKOFF_BASE
-from paperflow.core.common.text import sanitize_surrogates
+from paperflow.core.common.services.text import sanitize_surrogates
 
 
 class Reranker(Protocol):

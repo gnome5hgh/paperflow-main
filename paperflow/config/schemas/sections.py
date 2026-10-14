@@ -383,7 +383,7 @@ class ChunkerConfig:
         overlap_tokens: int，相邻块重叠 token 数
     """
 
-    #: 每块最大 token 数（token，按 core.common.tokenization 近似计数）。
+    #: 每块最大 token 数（token，按 core.common.services.tokenization 近似计数）。
     max_tokens: int = 512
     #: 相邻块重叠 token 数（token），约为块长的 1/8。
     overlap_tokens: int = 64

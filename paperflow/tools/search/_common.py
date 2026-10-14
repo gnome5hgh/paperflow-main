@@ -1,7 +1,7 @@
 # paperflow/tools/search/_common.py
 """搜索/下载公共运行状态（去重池），不再承载查询缓存/熔断。
 
-每轮去重池已收进运行期状态容器（paperflow/core/agent/state.py 的 RunState，由核心
+每轮去重池已收进运行期状态容器（paperflow/core/agent/services/state.py 的 RunState，由核心
 运行时懒注入给声明 wants_run_state 的搜索工具）：failed_urls 负缓存 + downloaded
 成功短路。本模块保留标题规范化 helper，并再导出 get_run_state 兼容既有导入点。
 直接检索客户端（web_search 及 arXiv/OpenAlex/S2 clients）已退役，检索收敛到

@@ -1,4 +1,4 @@
-# paperflow/core/common/tokenization.py
+# paperflow/core/common/services/tokenization.py
 """Token 计数编码单点共享。
 
 RAG 切块（``rag/parsers/chunker.py``）与 core.memory 上下文压缩

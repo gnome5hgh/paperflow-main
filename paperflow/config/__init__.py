@@ -22,11 +22,12 @@ env 名约定：字段路径以 ``_`` 连接并大写，前缀 ``PAPERFLOW_``。
     config = PaperFlowConfig.from_env()          # 自动加载
     config = PaperFlowConfig.from_env("my.yaml") # 指定 YAML 路径
 
-包内按角色分两个模块：``sections.py``（配置分区 dataclass 树）+ ``loader.py``
-（合并与派生）；本文件只做再导出，消费方一律 ``from paperflow.config import ...``。
+包内按角色收进子包：``schemas/sections.py``（配置分区 dataclass 树）+
+``services/loader.py``（合并与派生）；本文件只做再导出，消费方一律
+``from paperflow.config import ...``。
 """
-from paperflow.config.loader import PaperFlowConfig
-from paperflow.config.sections import (
+from paperflow.config.services.loader import PaperFlowConfig
+from paperflow.config.schemas.sections import (
     AgentsConfig,
     ChunkerConfig,
     CorpusConfig,

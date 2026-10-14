@@ -12,7 +12,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from paperflow.config.sections import (
+from paperflow.config.schemas.sections import (
     AgentsConfig,
     CorpusConfig,
     IntentConfig,

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from paperflow.cli.bootstrap import _ensure_services
+from paperflow.cli.services.bootstrap import _ensure_services
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent
 from paperflow.core.agent import AgentRegistry

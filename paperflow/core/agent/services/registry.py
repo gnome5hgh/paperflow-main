@@ -1,4 +1,4 @@
-# paperflow/core/agent/registry.py
+# paperflow/core/agent/services/registry.py
 """
 Agent 注册表 —— 扫描 agents/ 目录,统一加载配置和工具。
 
@@ -20,7 +20,7 @@ import importlib.util
 from pathlib import Path
 
 from paperflow.core.agent.config import AgentConfig
-from paperflow.core.common.frontmatter import parse_frontmatter
+from paperflow.core.common.services.frontmatter import parse_frontmatter
 from paperflow.core.tool import Tool, validate_tool
 
 
@@ -110,7 +110,7 @@ class AgentRegistry:
 
     def _parse_agent_md(self, path: Path) -> tuple[dict, str]:
         """
-        解析 AGENT.md 文件，分离 YAML frontmatter 和 Markdown body（解析实现在 core/common/frontmatter.py 共享）。
+        解析 AGENT.md 文件，分离 YAML frontmatter 和 Markdown body（解析实现在 core/common/services/frontmatter.py 共享）。
 
         AGENT.md 格式::
 

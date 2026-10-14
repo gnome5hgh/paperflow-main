@@ -29,7 +29,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from paperflow.core.common.frontmatter import parse_frontmatter
+from paperflow.core.common.services.frontmatter import parse_frontmatter
 
 #: skill name 字符集（agentskills.io 规范）：小写字母/数字/连字符，不以连字符
 #: 开头结尾，无连续连字符。只做形态校验，不要求与来源目录名一致（见 describe_skill）。

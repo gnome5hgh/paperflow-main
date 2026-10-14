@@ -499,7 +499,7 @@ def _message_to_openai(m: Message) -> dict:
     # 出站边界清洗未配对 surrogate（PDF 提取/工具结果可能携带）——否则 openai
     # SDK UTF-8 编码消息时抛 UnicodeEncodeError: surrogates not allowed，
     # 整轮 ReAct 崩溃（见 core/security/text.py）。
-    from paperflow.core.common.text import sanitize_surrogates
+    from paperflow.core.common.services.text import sanitize_surrogates
     content = m.content
     if isinstance(content, list):
         # 视觉 content parts：逐 part 清洗 text 的 surrogate，图片 part 原样透传
@@ -525,7 +525,7 @@ def _sanitize_content_part(part: dict) -> dict:
     Returns:
         清洗后的新 dict（仅 text part 被改写，图片 part 原样透传）。
     """
-    from paperflow.core.common.text import sanitize_surrogates
+    from paperflow.core.common.services.text import sanitize_surrogates
     if part.get("type") == "text" and isinstance(part.get("text"), str):
         part = dict(part)
         part["text"] = sanitize_surrogates(part["text"])

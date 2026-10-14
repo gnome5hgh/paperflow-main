@@ -6,7 +6,7 @@
 from abc import ABC, abstractmethod
 
 from paperflow.core.constants import SideEffect
-from paperflow.core.tool.result import ToolResult
+from paperflow.core.tool.domain.dto.tool_result import ToolResult
 
 #: 判定「写者」身份的副作用集合。写互斥（同一文件不许两个写者同时改）与
 #: 写围栏（落盘目标必须在声明根内）共用这一份判据——两处都只关心

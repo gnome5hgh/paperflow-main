@@ -6,19 +6,18 @@
 - Tool 实例统一通过 ``agents/<name>/tools.py`` 模块级 ``TOOLS`` 列表暴露，
   由 AgentRegistry 通过 importlib 动态加载
 
-按角色分文件：``base.py``（Tool ABC 本体）、``result.py``（执行结果对象）、
-``constants.py``（summary 的跨模块键）、``validation.py``（安全元数据校验）。
+包内按角色分子包：``domain/``（本领域的公共词汇：``entity/`` 契约与 ``dto/`` 结果载体）、
+``services/``（加载期校验）、``constants/``（summary 的跨模块键）。
 消费方一律从本包取（``from paperflow.core.tool import Tool, ToolResult``），
 不关心内部怎么分文件。
 """
-from paperflow.core.tool.base import WRITE_EFFECTS, Tool, is_writer
 from paperflow.core.tool.constants import (
     SUMMARY_DECISION,
     SUMMARY_TERMINAL,
     SUMMARY_VIOLATIONS,
 )
-from paperflow.core.tool.result import ToolResult
-from paperflow.core.tool.validation import validate_tool
+from paperflow.core.tool.domain import WRITE_EFFECTS, Tool, ToolResult, is_writer
+from paperflow.core.tool.services import validate_tool
 
 __all__ = [
     "SUMMARY_DECISION",

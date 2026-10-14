@@ -10,7 +10,7 @@ Python 导入机制规定，当 ``security.py`` 模块与 ``security/`` 包同�
 也避免循环导入。具体中间件（审计、工作区路径边界、内容防护与策略检查）
 在 ``middleware/`` 子包；与中间件无关的独立防护能力（SSRF 校验）在 ``services/``；
 跨模块词汇（决策/审批结果/结果状态词表）在 ``constants/``；未配对代理字符清洗是
-跨包共用的叶子，已移入 ``core/common/text.py``。
+跨包共用的叶子，已移入 ``core/common/services/text.py``。
 """
 from paperflow.core.security.constants import (
     ApprovalOutcome,

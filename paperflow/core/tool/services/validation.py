@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from paperflow.core.constants import PROVENANCE_KINDS, RISK_LEVELS, SIDE_EFFECTS
 
 if TYPE_CHECKING:
-    from paperflow.core.tool.base import Tool
+    from paperflow.core.tool.domain.entity.tool import Tool
 
 
 def validate_tool(tool: "Tool") -> None:

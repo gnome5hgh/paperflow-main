@@ -7,7 +7,7 @@
 
 派发前 _admit 的五道闸（未知类型 / spawn 白名单 /
 同指纹去重（同一批内的机械重复） / 审稿预算 / 每轮派发上限）与闸门状态容器
-（session/run 两作用域,见 core/agent/state.py）都在本模块;顺序与并行由父
+（session/run 两作用域,见 core/agent/services/state.py）都在本模块;顺序与并行由父
 agent 自主决定,框架不强制。
 """
 import asyncio

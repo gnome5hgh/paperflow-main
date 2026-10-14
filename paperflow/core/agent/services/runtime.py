@@ -1,4 +1,4 @@
-# paperflow/core/agent/runtime.py
+# paperflow/core/agent/services/runtime.py
 """
 Agent 基类 —— ReAct（Reasoning + Acting）循环的核心实现。
 
@@ -56,12 +56,12 @@ from paperflow.core.agent.services.context_window import (
 from paperflow.core.agent.services.tool_executor import ToolExecutor
 from paperflow.core.agent.constants import AgentEventKind
 from paperflow.core.agent.domain.dto.agent_event import AgentEvent
-from paperflow.core.agent.registry import AgentRegistry
+from paperflow.core.agent.services.registry import AgentRegistry
 from paperflow.core.skills import SkillRegistry
-from paperflow.core.agent.base_prompt import BASE_PROMPT
+from paperflow.core.agent.constants.base_prompt import BASE_PROMPT
 from paperflow.core.security import ConfirmRequired, SecurityMiddleware
 from paperflow.core.tool import SUMMARY_TERMINAL, ToolResult
-from paperflow.core.common.text import sanitize_surrogates
+from paperflow.core.common.services.text import sanitize_surrogates
 
 #: Agent 与意图识别之间只有一个缝：可选的集成适配器。未装配时整套意图层不存在。
 from paperflow.core.intent.services.service import IntentService

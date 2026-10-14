@@ -22,7 +22,7 @@ import importlib.util
 import logging
 from pathlib import Path
 
-from paperflow.core.common.frontmatter import parse_frontmatter
+from paperflow.core.common.services.frontmatter import parse_frontmatter
 from paperflow.core.skills.config import SkillConfig
 from paperflow.core.tool import Tool, validate_tool
 
