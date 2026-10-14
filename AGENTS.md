@@ -1,413 +1,201 @@
 # AGENTS.md
 
-本文件是 `paperFlow` 仓库的总 manifest，对所有 AI 编码代理（ZCode / Claude Code / Codex 等）生效。
+本文件为 AI 编码代理（ZCode / Claude Code / Codex 等）提供 `paperFlow` 仓库的进入方式、阅读路径与必须遵守的规则。
+
+**本文件只写规则，不写现状快照**：字段表、文件清单、枚举取值、当前数量都以源码为准，抄一份到这里必然过期，而读到的旧快照比读不到更糟。判据是「删掉它，agent 会不会做错事」——不会、但得去源码翻的，就删掉。唯一保留的非规则是**导航**（目录地图与「去哪里找」的指针）。
 
 ## Scope
 
-- 作用范围覆盖整个 `paperFlow` 仓库；本文件是根级治理 manifest，与子目录 manifest 构成两级路由。
-- **就近优先**：进入更深层目录后，优先服从距离更近的 `AGENTS.md`（当前有：`paperflow/` 及其 `core/`〔内含 `rag/` `vision/`〕`tools/` `citations/` `terminal/`、`agents/`、`.paperflow/`）；根 manifest 负责「如何进入」，不替代子目录内部说明。
-- 事实优先级：源码与测试 > 本 manifest 及各级子 manifest > `docs/` 设计文档。manifest 是入口，不是终点——文档与代码冲突时以代码为准。
+- 本文件是 `paperFlow` 根工作区的总 manifest，负责建立仓库边界、阅读路径、治理规则与公共约束。
+- 作用范围覆盖整个仓库；进入更深层目录后，服从该目录更近的 `AGENTS.md`。
+- **子 manifest 不会自动注入**：客户端只注入从当前目录向上找到的**第一份** manifest，不逐层合并。所以**改某个模块之前，按 Routing 主动读它那份**——那里面是必须遵守的约定，不是可读可不读的背景。
+- 事实优先级：源码与测试 > 本 manifest 及各级子 manifest > `docs/` 设计文档。文档与代码冲突时以代码为准。
+
+## 模块定位
+
+- 名称：`paperFlow`
+- 路径：`.`
+- 角色：`repo-root-workspace-manifest`
+- 当前定位：LLM 驱动的学术研究流程助手。单根 agent（supervisor）接收每一轮用户输入 → 可选的意图预处理 → ReAct 循环 → 拆解子任务派发子 agent → 聚合各子 agent 的结构化摘要后汇总回答。
+- 绑定环境：Python 3.11 / conda env `paperflow`。
 
 ## 目录结构
 
 ```text
-paperFlow/
-├─ agents/            # Agent 插件：<name>/AGENT.md(frontmatter+system_prompt) + tools.py（有 AGENTS.md）
-├─ .paperflow/        # 运行时数据根 + 资产目录：skills/（Skill 插件）与 intent/（意图知识库）入库，其余为运行期产物（有 AGENTS.md）
-├─ paperflow/         # 主包源码：cli/ config/ core/（内含 rag/ vision/）citations/ tools/ terminal/
-│                     #   （包根只有 __init__.py 与 __main__.py；各包 AGENTS.md 逐级）
-├─ docs/              # 设计文档（gitignored 本地文档）：adr/ learning/ superpowers/(spec/plan) CONTEXT.md
-├─ scripts/           # 实验与标定脚本（gitignored）：intent/ rag/ 等
-├─ tests/             # 测试套件（gitignored）
-├─ config.yaml        # 本地配置（gitignored），示例见 config.example.yaml
-├─ AGENTS.md          # 本文件：根级治理 manifest（入库）
-└─ CLAUDE.md          # Claude Code 入口薄指针（本地，不入库）
+paperFlow-main/
+├─ paperflow/          # 主包：cli/(装配) config/(参数) core/(运行层，内含 rag/ vision/)
+│                      #   citations/ tools/ terminal/
+├─ agents/             # Agent 插件：AGENT.md（契约）+ tools.py
+├─ .paperflow/         # 运行时数据根 + 静态资产（skills/ intent/）
+├─ .agents/skills/     # 给编码代理按需加载的 skill（与本仓运行时无关）
+├─ docs/               # 设计文档：adr/ learning/ research/ superpowers/
+├─ tests/              # 测试套件
+├─ scripts/            # 实验与标定脚本
+├─ config.yaml         # 本地配置（gitignored），模板见 config.example.yaml
+├─ docker-compose.yml  # 依赖服务栈（Milvus Standalone + MinIO）
+└─ AGENTS.md
 ```
 
-- `docs/`、`scripts/`、`tests/` 不入库是既定策略；其内容仍是排查与设计的一手资料，但运行期产物与个人路径不得入库。
-- 运行期目录（`.paperflow/` 下非反选子目录、`.venv/`、`__pycache__/` 等）不作为事实源，除非用户明确要求排查运行时产物。
-
-## Commands
-
-```bash
-# Install dev dependencies (in conda env)
-conda run -n paperflow pip install -e ".[dev]"
-
-# Run all tests
-conda run -n paperflow python -m pytest tests/ -v
-
-# Run a single test
-conda run -n paperflow python -m pytest tests/agent/test_agent.py::TestExecTool -v
-
-# Start 依赖服务栈（Milvus Standalone RAG 向量库）；单测用 Milvus Lite 内嵌，无需此服务
-# `paperflow` 启动时会自动拉起，此命令用于手动管理
-docker compose up -d
-
-# Run the app — 交互式 REPL（⚠️ 不能经 conda run）
-# conda run 不转发 stdin 给子进程 → 交互式 REPL 的 input() 立即 EOF 退出。必须先激活 env：
-conda activate paperflow && paperflow
-# 等价：python -m paperflow（同一 env 内）
-# 启动时自动探测依赖服务（Milvus），未起则自动 docker compose up -d 并等待健康；
-# 失败只警告不阻塞（软依赖降级）。手动管理服务仍用 docker compose up -d；
-# 跳过预检：PAPERFLOW_SKIP_BOOTSTRAP=1
-```
-
-Always use `conda run -n paperflow` for 非交互命令（测试/脚本/安装）——never bare `python` or `pip`. **例外：交互式 REPL（`paperflow`）不能经 `conda run`**——它不转发 stdin，REPL 一启动就 EOF 退出；需 `conda activate paperflow` 后直接 `paperflow`。
-
-**API key 配置**：key 经 `config.yaml` 的 `llm.api_key`（配置文件 gitignored，可参考仓库根 `config.example.yaml` 复制为 `config.yaml`）或环境变量 `PAPERFLOW_LLM_API_KEY` 提供，**不硬编码在代码里**。未配置时启动即报「LLM API key 未配置」。RAG 嵌入/精排的 key 独立经 `rag.embedding.api_key` / `PAPERFLOW_RAG_EMBEDDING_API_KEY` 提供（留空则路由退纯 BM25、检索跳稠密路）。
-
-## 文档同步规则
-
-修改代码时，必须同步更新关联的设计文档：
-
-- **新增/修改任何代码后，都要先思考是否需要同步更新 ADR / spec / plan**：接口签名、行为语义、结构或已记录决策发生变化都算。需要同步时，在**测试代码通过后**再更新对应文档——先让代码行为被测试锁住，再让文档描述现状
-- 如果在实现过程中发现 Layer N 的 spec/plan 文档与最终代码不一致，修改代码后需同步更新对应的 spec（`docs/superpowers/specs/`）和 plan（`docs/superpowers/plans/`）
-- 如果当前 Layer 的修改影响了上层 Layer 的 spec/plan（如 Layer 1 实现时发现 Layer 0 的接口需要调整），同样需要回修受影响的上层文档
-- ADR（`docs/adr/`）维护规则：
-  - **按模块划分，一份 ADR = 一个模块**：0001 RAG、0002 安全、0003 ReAct 多 Agent 架构（引擎）、0004 记忆、0005 SubAgent×Tool 映射、0006 结构化输出、0007 意图识别、0008 引用管理、0009 图片提取与多模态、0010 终端与 CLI 入口。新模块决策扩展对应模块的 ADR；确属新模块时新建，编号顺延
-  - **正文恒为最新设计**：设计变更直接改写 ADR 正文对应小节，使读者任何时候读到的都是模块现状——不在正文写「修正说明 / 修正（日期）」等历史痕迹，也不在正文叙事里写「原方案被废弃」
-  - **修正史统一进 `docs/adr/修正记录.md`**：每次改写正文，在该文件按时间追加一条（日期 / 模块 ADR / 变更摘要 / 来源 spec 或决策出处），保留「为什么变成现在这样」的追溯通道
-  - **跨模块变更按归属拆分**写入各模块 ADR，不设跨模块 ADR；每个 ADR 与相邻模块的分工边界在文中显式声明（如确认中心：终端侧架构在 0010、安全语义在 0002）
-  - **编号不回收、空缺须补齐**：删除或合并 ADR 后重编号（顺延补齐空位），并同步更新所有活文档引用（本文件设计文档索引、CONTEXT.md、docs/learning、修复清单）；历史 spec/plan 中的旧编号是历史记录，不回改
-  - 文中互相引用只写「见 ADR XXXX」，不写「见 ADR XXXX 修正说明」——修正史在修正记录文件里，不在 ADR 正文
-
-## Code style
-
-注释面向所有人——包括新人和非维护者。用中文写,不出现内部项目代号(任务/决策/评审编号、日期、spec/ADR 章节引用),也不写过程流水账。需要背景时用一句白话说明。
-
-每个函数/方法的 docstring 至少说明其**作用**;参数含义不显而易见时说明;返回值复杂时说明「是什么」;关键算法思路、非显而易见的边界条件(安全/并发/失败处理)是重点。非显而易见的逻辑保留 WHY,但用通俗语言,不写成变更日志。
-
-按逻辑块组织注释:同一逻辑块的多行代码合并成一条块注释,放在块首;避免每行一注。每条注释紧跟其描述的代码。
-
-Good comments explain the reason, not the mechanics:
-```python
-# BAD: "Loop over items and add to result"
-# GOOD: "遍历所有 items 并去重,因为多源搜索结果可能包含同一篇论文的不同版本"
-```
-
-修改代码时同步更新注释——过期注释比没有注释更糟。
-
-## Architecture
-
-paperFlow 是 LLM 驱动的学术研究流程助手（ADR 0003）。单根 agent（supervisor）接收每一轮用户输入 → 可选的意图预处理（启用时注入 INTENT 块）→ ReAct 循环 → 拆解子任务 spawn 子 agent（paper-agent/note-agent/research-agent/review-agent/citation-agent/rag-agent/memory-agent）→ 聚合各子 agent 的结构化摘要（digest）→ 汇总回答。**角色按领域责任人划分**（一个 agent = 一类产物的责任人），`supervisor` 是唯一例外——它只编排、能自答的先自答，不持有执行类工具。
-
-代码分层（自底向上）:
-
-```
-paperflow/
-  core/          核心运行层:只放子包。constants(跨模块词汇:风险等级/副作用) + agent(ReAct 循环) + llm(wire 消息家族 + 客户端 + 结构化输出)
-                 + security(安全中间件) + memory(记忆系统) + intent(意图识别)
-                 + mcp(MCP 客户端平台:后台循环 + 工具桥接) + skills(Skill 注册表) + tool(Tool 抽象)
-                 + common(跨子包共享叶子:frontmatter 解析 + token 计数)
-                 + rag(RAG 检索栈:领域模型 domain/ + 解析/分块/向量/混合检索,懒加载单例)
-                 + vision(视觉分析:pdffigures2 提取管线 parsers/ 解析 + detectors/ 图检测 + 编排 + 视觉模型看图)
-  citations/     引用管理(溯源落地):storage/bib 读写 + services(编排/语料索引/key 生成)
-                 + schemas 数据模型
-  tools/         原子工具:file/ search/ review/ orchestration/ citations/ rag/ vision/ memory/ common
-  terminal/      终端交互:repl(主循环) / io(输入) / render(渲染) / confirm(确认中心) / commands(斜杠命令)
-agents/<name>/   Agent 插件:AGENT.md(frontmatter+system_prompt) + tools.py(TOOLS 列表)
-.paperflow/skills/<name>/  Skill 插件:SKILL.md(agentskills.io 格式) + 可选 tools.py/references/
-```
-
-**`rag` 与 `vision` 住在 `core/` 里**：rag 的媒体块要向 vision 取图提取与视觉描述，两者是一个依赖簇；把 vision 留在 core 之外会让 `core/rag → vision → core/llm` 构成包级环。代价是「core 不 import 上层模块」这条规则管的对象里不再有它俩——core 对 `tools`/`terminal`/`citations` 的出边现在仍为 0（可实测）。
-
-设计文档索引（ADR 按模块划分，正文恒为最新设计，修正史见 docs/adr/修正记录.md）：0001(RAG 管线)、0002(安全设计)、0003(ReAct 多 Agent 架构)、0004(记忆系统)、0005(SubAgent×Tool 映射)、0006(结构化输出)、0007(意图识别)、0008(引用管理)、0009(图片提取与多模态)、0010(终端与 CLI 入口)、0011(Skill 系统)、0012(MCP 客户端平台)。
-
-### Agent plugin system
-
-Every agent lives in `agents/<name>/` with two files:
-- `AGENT.md` — YAML frontmatter (`name`, `description`, `allowed_spawns`) + Markdown body(契约式结构:派发类 worker 为五段式——身份/边界/能力/交付契约/方法启发式;review-agent 按角色裁剪。编排决策由 LLM 运行时自主,不写跨 agent 编排序列。**流程步骤沉在 skill 里**——写笔记/写选题计划/三类审查的做法在 `.paperflow/skills/` 的五份流程 skill 中,AGENT.md 指向它)
-- `tools.py` — module-level `TOOLS: list[Tool]` list. Each Tool is a subclass of `Tool` ABC with `name`, `description`, `parameters` (JSON Schema for OpenAI function calling), and `execute(**kwargs) -> ToolResult`
-
-`AgentRegistry(agents_dir)` scans this directory at init time, parses frontmatter, dynamically imports `TOOLS` from each `tools.py`, and exposes `get_config(agent_type) -> AgentConfig` plus `list_agents()`. It is the single entry point for agent plugin discovery — the Skill system keeps a parallel registry (`SkillRegistry`, see below), which registers installed skills rather than agents.
-
-装配时 `Agent.__init__` 在角色定义后拼接全 agent 共有的行为基座 `BASE_PROMPT`(`core/agent/base_prompt.py`:诚实性协议/交付契约语义/协作语义)——通用铁律不重复写在各 AGENT.md。
-
-**Skill 体系**（`paperflow/core/skills/services/registry.py`）：Skill 是给**现有** agent 注入领域知识/流程指令/轻量工具的可安装能力包（agentskills.io 格式），无独立推理循环——与上面 agent 插件机制是平行而非同一概念。`SkillRegistry(skills_dir)` 单级扫描 `<项目根>/.paperflow/skills/`（内置与用户安装同层，`/skill install` 准入通道（REPL 内）或手动拷贝，版本对齐经集中 lock 文件），三级渐进披露：L1 `<available_skills>` name+description 清单注入 head（无 skill 零开销）→ L2 `load_skill` 工具按需加载正文 → L3 `load_skill(name=…, resource=…)` 读资源（路径围栏限 skill 目录内；`SkillRegistry.resource_path` 是同一道围栏的「给路径」出口，供走不了 `load_skill` 的确定性工具用）。**skill 对全部 agent 可见**（规范无 per-agent 可见性字段，领域边界由 `description` 的触发语境承担）——supervisor 也能读到清单，但它没有可执行工具，读入也落不了地。skill 捆绑的 `tools.py` 经 `merge_tools` 并入子 agent 工具表——supervisor 代码级恒不并入（权限最小化红线）；含代码的安装强制人工过目（`-y` 拒绝，须显式 `--allow-code`）。
-
-**流程与模板都住在 skill 里**：五份流程 skill 承载「怎么做」——`write-note`（写笔记）、`write-research-plan`（选题与计划）、`review-note` / `review-plan` / `review-download`（三类审查）；对应的角色 AGENT.md 只写契约与启发式并指向它（开工前 `load_skill`）。产物标准（笔记模板、四份选题模板）作为资源随流程分发在各自 `references/` 下；审查 skill 另持一份**副本**（`review-note` 一份、`review-plan` 四份），让审查方自包含地读到验收标准而不必跨 skill 借写作流程的资源。两份内容一致靠约定与人工同步（改模板就改写作 skill 那份、副本跟着改），代码层不做一致性校验。
-
-**MCP 客户端平台**（`paperflow/core/mcp/`，ADR 0012）：config.yaml 顶层 `mcp_servers` 声明的任意 MCP server，其工具经 `McpClientManager`（自持一条后台事件循环线程，每 server 一条持久 `ClientSession`，全部活在后台循环里）发现、经 `bridge.py` 逐工具桥接为原生 Tool（`mcp__<server>__<tool>`，schema 规范化 + allowed/disabled/风险分级过滤），在 cli.py 装配循环经 `merge_tools` 第 4 组（`("mcp", …)`）注入 agent；连接失败的 server 跳过不挡启动，调用失败重连一次后以错误文本回传模型（绝不抛进 ReAct 循环）；REPL `/mcp` 命令看各 server 状态。执行链路：runtime 的 `asyncio.to_thread(tool.execute)` 工作线程 → 投递后台循环执行。
-
-现有 8 个 agent（`agents/` 下），命名一律 `<域>-agent`（`supervisor` 是编排层的例外）:
-
-| agent | 职责 | allowed_spawns | 工具要点 |
-|---|---|---|---|
-| `supervisor` | 调度主管:拆解任务、spawn、汇总;能自答的先自答 | 硬编码放行所有（绕过白名单） | 仅 1 个调度工具（`spawn_sub_agent`），无执行类工具、无记忆工具；问用户不占工具（把问题写进最终回答） |
-| `paper-agent` | 论文域责任人:多源搜索 → review-agent 门禁 → 可选下载;读 PDF 与图表 | `[review-agent, rag-agent, memory-agent]` | MCP 检索（mcp__paper-search__*） + fetch_pdf + read_pdf + analyze_figures + delete_file + spawn |
-| `note-agent` | 笔记域责任人:基于指定 PDF 起草结构化笔记,内部 spawn review-agent 审稿 | `[review-agent, memory-agent, citation-agent]` | 原子文件工具（含 delete_file, extract_title）+ spawn + glob/grep + analyze_figures；引用查 key/入库派 **citation-agent**（笔记不进知识库，无需触达检索责任人） |
-| `research-agent` | 选题域责任人:基于本地语料盘点→survey/gaps→idea 卡→外部新颖性验证(源优先 semantic scholar,失败如实标「未经外部验证」)→研究计划 | `[paper-agent, review-agent, rag-agent, citation-agent]` | read/write/edit（含 delete_file）+ spawn；检索派 rag-agent、溯源 key 与参考文献渲染派 **citation-agent** |
-| `review-agent` | 审查域责任人:笔记审查 / 下载门禁 / 选题产物审查（开审前加载对应审查流程 skill） | `[citation-agent]` | 只读 + submit_review / submit_download_review + `format_check` + lookup_venue_rank + spawn（专为派 citation-agent 做溯源核验） |
-| `citation-agent` | 引用域责任人:references.bib 同步/新增/删除/查询导出 | `[]` | 6 引用工具全装 + read_pdf（元数据缺失时读首页取标题/作者，不属内容分析） |
-| `rag-agent` | 语料索引责任人:检索 + 看图 + 入库 + 删除后全量收敛 + 索引体检 | `[]` | rag_retrieve + view_image + index_paths + reindex_all + index_status（RAG 一域读写、看图与诊断同归一处） |
-| `memory-agent` | 记忆域责任人:记忆读写全归它 | `[]` | `get_memory_tools()` 全集 9 件（blocks 6 / recall 1 / 未读清单 2）+ read_file / glob（读块内容——MemFS 把块投影成 markdown，记忆工具本身没有读动作）；取标题不归它（那是 `tools/file/extract_title`） |
-
-`allowed_spawns` 已由 spawn 工具在运行时强制（同时是 head 里可派发清单的来源，见 Orchestration）。记忆工具经 `get_memory_tools()` 装配后**全装给 `memory-agent`、其余 agent 一件不装**——需要记账或查记忆时（如 paper-agent 下载完要记未读、supervisor 要查清单）**派发 `memory-agent`**；读取惯例与写入惯例见各 agent 的 AGENT.md。
-
-### Agent and ReAct loop
-
-`Agent(llm, agent_registry, agent_type)` uses pull mode — it calls `agent_registry.get_config(agent_type)` internally to load tools and system prompt. Agent 的完整可注入依赖（`__init__` 参数）:
-
-- `security_middleware` — 安全中间件列表（before/after/on_finish 洋葱模型，见 Security）
-- `confirm_callback` — 确认回调；默认 fail-safe 拒绝（`_default_confirm` → `False`）
-- `intent_service` — 意图识别（可选预处理层；启用时由 CLI 构造 `IntentService` 注入，引用为 `None` 即「关」——所有钩子 no-op；spawn 的子 agent 不做意图识别）
-- `session_id` — 跨多轮 run 的会话标识；与 CLI 的 AgentManager.create_agent id 必须一致（记忆/MemoryConsolidator 按它键控）
-- 记忆服务句柄：`memory` / `agent_manager` / `block_manager` / `message_manager` / `compaction` / `structured`（None 时相关路径零开销跳过）
-- `stream_callback` — 流式事件回调（CLI 渲染器消费）；None = 非流式路径（`run()` 保持调 `chat()`）
-
-`Agent.run(task) -> str` 是 async ReAct 循环:
-
-1. 构造 head：① AGENT.md(system_prompt) ② SKILLS 清单（若有）③ `<available_agents>` 可派发子 agent 清单（按能力选型；非派发方为空串整块省略）④ `Memory.compile()`（仅渲染 `system/` 块 assistant/profile + 文件树索引，渐进暴露）⑤ INTENT 块（意图启用且本轮判定有结果时）；末尾 user task。构建 head **之前**先加载会话历史（`window.load()`）并把最近若干轮对话文本递给意图层（`begin(task, history=…)`）——否则判定读不懂「再下载一篇」这类指代。意图关闭时 `intent_service` 为 None，以上各步全部 no-op（零残留）
-2. 从 MessageManager 加载该会话 in-context 消息（跨轮回放，Letta 语义）；当前 user task 落盘
-3. 调 LLM 前检查压缩（`should_compress` → `run_compaction`，只改 in-context 窗口不删 SQL）；随后 `chat()` 或 `chat_stream()`（挂 stream_callback 才走流式）
-4. 无 tool_calls → 顺序执行各中间件 `on_finish` 钩子（可改写最终回答）→ 落盘 → 返回。**截断续写**：`finish_reason=="length"` 时暂存半截、把「半截 + 续写提示」放回 in-context 继续循环，绝不把残缺内容当最终回答交付
-5. 有 tool_calls → 并发执行（`asyncio.gather` + 信号量上限 4 + 确认锁串行，结果按调用顺序返回），tool 结果以 `role="tool"` 消息落盘 + 附加 in-context
-6. 超过 `max_turns`（默认 20）→ 抛 `MaxTurnsExceeded`（唯一向上抛的错误——LLM 陷入无法自主退出的循环，调用方须介入）
-
-`_exec_tool`（薄委托，管道在 `core/agent/services/tool_executor.py` 的 `ToolExecutor`）的中间件管道：构造 ToolContext → 解析 JSON 参数（失败走 after 链）→ 未知工具检查 → before 钩子（可抛 `ConfirmRequired`/`SecurityError`，被捕获转为带 `summary.decision` 的 ToolResult：`user_denied`/`auto_denied`/`security_blocked`）→ 执行工具（`asyncio.to_thread`，异常转错误 ToolResult）→ 逆序 after 钩子。所有错误都「降级为文本」反馈给 LLM，由 LLM 决定重试/调整/放弃。
-
-记忆会话内即时生效：`_refresh_head_memory` 每轮开头重建记忆块并替换 head——同轮里 `memory_replace` 改的块，下一轮 LLM 调用即见。
-
-运行期状态容器（`core/agent/state.py`）：把过去散在各模块、生命周期不一的模块级字典收成两个显式作用域——`SessionState`（跨 run 存活：只剩同 agent_type 连续失败计数；去重注册表在 run 作用域）与 `RunState`（按一次用户任务 / `trace_id` 隔离：搜索去重池与负缓存、在途派发去重注册表、审稿与每轮派发预算计数、在途写占用、产物账本）。两者都按 TTL 惰性清扫（run 整份丢弃、session 逐条过期——只剩失败计数；取用时顺手剔除过期条目，不起定时任务；run 作用域按滑动窗口推进取用时刻，活跃任务不会被自身清扫误删）。
-
-### LLM client
-
-`LLMClient(config: LLMConfig)` wraps the `openai` SDK as an async client via `asyncio.to_thread`. Two modes:
-- `chat(messages, tools=..., ...)` — 非流式，ReAct 主路径；StructuredOutput 等 JSON 抽取也用
-- `chat_stream(messages, tools=..., on_delta=...)` — 流式，仅 CLI 实时渲染用；`on_delta` 跑在线程池线程内，只能追加/打印，别碰事件循环
-
-`paperflow/core/llm/domain/dto/messages/` 是 **wire 消息家族**：基类 `Message` 只持 `content`，四个角色子类（`SystemMessage` / `UserMessage` / `AssistantMessage` / `ToolMessage`）各以 `ClassVar` 固定自己的 `role`——构造时不用（也传不进去）写 role，角色写错从类型层面消失；角色特有字段只出现在对应子类上（`tool_calls` 在 assistant、`tool_call_id` 在 tool）。`_message_to_openai` 是唯一的 wire 出口，按类型取字段（`role` 取 `.value`；无 tool_calls 时不输出该键——OpenAI 拒绝空值）。`message_from_role()` 是反向的**唯一漏斗**（持久化层的 role 是字符串，回放时在这里还原成具体类型）。
-
-**进出两个方向共用这一族类型**：`chat()` / `chat_stream()` 返回的就是一条 `AssistantMessage`，随即被 append 进 in-context 窗口、下一轮原样作为请求消息发回去——wire 上本来就是同一个形状，故不另设「回复」类型。`AssistantMessage.meta`（`ResponseMeta`，含 `Usage`——这两个不是消息类型，作为层间载体住在同级的 `dto/response_meta.py` 与 `dto/usage.py`）承载**响应信封**：`finish_reason` / token 用量 / 模型快照 / 思维链 / 拒答 / 补全 id。`truncated` 是从 `meta.finish_reason == "length"` **派生的 property**（不再单存字段，杜绝两处漂移），Agent 据此走截断续写。信封**不上 wire**（出站只取正文与 tool_calls），但**随 assistant 消息落盘**——messages 表一列 JSON，由信封自己持有 dict 往返（`response_meta_to_dict` / `response_meta_from_dict`，重建按已知字段名过滤以容忍端点与版本漂移）。它在内存里随消息对象走 in-context 窗口、在库里随会话存活，**读出口是持久化消息 `StoredMessage.meta`**——要按会话/日期汇总用量、或事后查一次回答由哪个模型快照产出，查这里；审计的 telemetry 元数据也从同一个信封派生，但那是另一条并行通道（JSONL、按天轮转、不绑消息身份）。`tool_to_openai_schema(t) -> dict` converts a Tool to the OpenAI function-calling JSON Schema.
-
-关键行为：
-- **参数降级重试**：端点不支持 `response_format` / `extra_body` / `stream_options` 时（不同兼容端点措辞各异），去掉该参数重试一次（`_looks_like_unsupported_param`）
-- **telemetry_callback**：LLM 调用元数据回调（model/tokens/duration_ms/finish_reason，**不含消息正文**），供审计 replay；None 时零开销跳过
-- api_key 留空时 fail-fast 抛「LLM API key 未配置」，给出可行动配置指引
-
-### Security middleware
-
-安全模型在 `paperflow/core/security/`（协议与五个中间件都在 `middleware/`——`base.py` 是协议，`middleware/` 下另有 audit / workspace 路径权威 / content_guard 内容防护 / command_guard 命令防护 / policy_engine 策略引擎；`services/` 放被工具与客户端直接调用的防护能力——`network.py` 统一出网出口、`command.py` 命令解析、`classifier.py` 语义判定；`constants/` 放跨模块词表——决策类型 `ToolDecision`（`SecurityError.decision` 与审计 `policy_decision` 同一套词）与审批结果 `ApprovalOutcome`、结果状态 `ToolResultStatus`；未配对代理字符清洗是跨包共用叶子，已归 `core/common/text.py`；包根 `__init__.py` 集中导出）。
-
-**两条正交的轴，本项目只有策略轴。**策略轴在进程内运行、决定「这次调用要不要用户点头」（路径黑名单、内容防护、档位确认、命令熔断）——性质是贴张纸写着请勿越界，一个 bug 就能绕过。隔离轴（边界由操作系统与容器强制）**本项目不做**：曾设计过一条沙箱轴但未落地，代码与设计已整体移出主干，只留 `feat/sandbox-code-execution` 分支与调研材料。**要加能执行 shell 的工具，必须先有进程外隔离**——没有它，命令熔断表是模型与宿主之间唯一的东西，这是本项目一个明确未闭合的边界。
-
-领域模型（`security/domain/`）：`ToolContext`（trace_id/session_id/agent_type/tool/args/…，审计与决策的载体）与 `AuditEntry`（审计事件快照）。协议层：`SecurityMiddleware` ABC（`before`/`after`/`on_finish`/`on_approval`/`record_llm_call`）。异常体系：`SecurityBlocked` / `ConfirmRequired`，都继承 `SecurityError`（`PolicyDenied` 已随 `blocked_by_default` 一起删除，审计 schema 里的 `policy_denied` 值保留为合法但不可达）。
-
-CLI 装配的 5 个中间件（`paperflow/cli/assembly.py`，顺序即执行顺序）：
-
-1. **AuditMiddleware** — 每次工具调用 + LLM 调用追加写入 JSONL 审计（`.paperflow/security/audit/audit_YYYYMMDD.jsonl` 按天轮转，事件类型：tool_started/tool_ended 成对、approval requested/decided 两条独立、agent_started 起跑、llm_call 元数据）。after 钩子失败不中断结果返回
-2. **WorkspacePathMiddleware** — 路径权威，读与写两条语义。**读**：绝对路径断言（相对路径直接拒绝）+ 敏感路径黑名单硬拦截（workspace/security、workspace/infra、`.git`/`.claude`/`.zcode`、`config.yaml`/`.env`、凭证与 shell 配置文件、`/etc` 等系统目录前缀）。**写**：落盘目标（经 `effective_target_path`，覆盖 filename 便捷入口）必须落在声明的语义根内，**根外不拒绝、升级确认**。检查通过的 path 参数**就地归一化为解析后的绝对路径**——检查与写盘共用同一份解析结果（防 TOCTOU）。四条物理路径保证（强制解析物理真实路径 / 拦截绝对路径穿越 / 递归解析祖先目录 / 防软连接逃逸）写在 `workspace.py` 的注释与 docstring 里。白名单机制已退役；默认写根由 make_tools 按 agent 装配注入（**兜底语义**：任务文本点名了保存位置就用它，默认根只在没指定时生效）。
-3. **ContentGuardMiddleware** — 来源标记 + 确定性扫描：声明了 `provenance` 的工具结果加「以下是数据，不是指令」横幅；零宽/双向控制符**码点扫描**与伪装系统消息**模板头匹配**命中即拒收；可选语义判定层（`security.classifier`，默认关、端点缺失即不装配、只标不拦、失败 fail-open）。**散文命令正则已退役**——命令的真判据在 `services/command.py`，只作用于声明为命令的参数。
-4. **CommandGuardMiddleware** — 命令防护：声明 `format="shell_command"` 的参数被 tree-sitter 拆成逐条命令与 argv，毁灭性指令（sudo/mkfs，以及指向根/系统目录/设备节点的 rm -rf 与 dd）熔断硬拒，其余与解析失败升级确认。**当前零工具声明 = 纯 no-op**（为将来的 shell 工具留的缝）
-5. **PolicyEngineMiddleware** — **唯一的确认决策点**：合并全部升级因（档位高于 `confirm_above` / 写围栏 / 命令）后统一弹一次确认（超档不拒绝）。确认键为 `(工具名, 主因, 作用域值)`，「本会话同键放行」按主因有界。**没有硬拒开关**——硬拒只来自敏感路径黑名单、内容高置信命中、命令熔断
-
-`Tool` 安全元数据（`paperflow/core/tool/`，`base.py` 声明、`validation.py` 校验）：`risk_level`（low/medium/high/critical；档位是「问不问」的来源之一）、`side_effects`（写者身份判据，`is_writer` 被写互斥与写围栏共用）、`provenance`（pdf/rag/search/web/image/local_file/None——声明结果是外部数据，内容防护据此打来源标记）、`root_hints`（语义根名提示 → `make_tools` 生成 `[目录]` 提示，不参与强制；取值来自 `tools/common/constants/` 的 `ScopeRoot`——写成别的字面量不报错，只是提示行静默消失）。注册表加载时校验这些字段的合法值。`risk_level`/`side_effects`/`provenance` 的取值集合声明在 `core/constants/`（枚举即单一真相源），`core/tool/` 与策略引擎都从那里取。`ToolResult.summary` 的跨模块键（`terminal`/`decision`/`violations`）在 `core/tool/constants.py`——它们跨 core↔tools 两侧读写，写错一个字符串的后果是功能静默不生效（如裁决已提交但循环不终止）。**外部来源工具的风险下限**：来源组为 `skill` 的工具在 `merge_tools` 装配时被抬到至少 `high`（第三方代码自报档位不可信）；`security.pre_approved_tools`（与 `mcp_servers.*.write_tools` 的并集）内的工具降 `medium`——降档不是旁路，会话调严时照样会被问。
-
-**常量与枚举的落点**：一个模块的枚举与被两个以上模块消费的取值契约收进该模块的 `constants/` 包，且**一个枚举一个文件**（`constants/enums/<name>.py`，`__init__.py` 只做再导出）；其余常量放同包的 `constants.py`。判据是「有没有第二个消费方」——只有一个消费方的常量就地声明，不搬家。没有子包归属、又被两个以上子包消费的纯取值放 `core/common/constants/`（同样是「枚举进 `enums/`、其余进 `constants.py`」的两级布局；`MessageRole` 就住这里——wire 消息家族与记忆层同时消费它，没有单一子包归属）。
-
-**两类 `config/`**：顶层 `paperflow/config/` 是与 config.yaml 同构、可经 env 派生的**全局可调参数**；各子包的 `config/` 放该包**组件自己的行为参数**（调用点各给一套、不进 config.yaml）——`core/llm/config/StructuredOutputConfig`、`core/agent/config/AgentConfig`、`core/skills/config/SkillConfig`。判据是「这个值用户会不会在 config.yaml 里改」：会，进顶层；不会（只有代码调用点决定），跟组件走。
-
-### Memory system
-
-`paperflow/core/memory/` 是 **Letta 记忆栈的忠实移植**（取代旧的文件式 MemoryStore/GitStore/Dream）。分层：
-
-- `constants/` — 工具名集合与播种文案（角色词 `MessageRole` 已归 `core/common/constants/`，wire 与持久化共同消费它）
-- `schemas/` — pydantic 数据模型（`Block`/`Memory`/`StoredMessage`/`AgentState`）。`StoredMessage` 是**落盘**的持久化消息，与 wire 侧的 `Message` 家族是两个类型：它有 id/created_at 等存储字段、content 恒为 `str | None`（落盘不做 JSON 类型猜测）、`meta` 持响应信封（落盘为 JSON 一列，旧行 NULL），由 `MessageManager` 来回转换
-- `storage/` — SQLite 持久化：`MemoryDB`（stdlib sqlite3 单例，`threading.Lock` 包裹写事务，`check_same_thread=False`）；表：blocks/block_history/messages/agent_state。建表脚本 `_SCHEMA` 只管新库，给**已有表**加列要同时登记到 `_ADDITIVE_COLUMNS`——`init_schema()` 打开库时按它比对并 `ALTER TABLE ADD COLUMN` 补齐（只做加列、幂等，历史行新列留 NULL），否则老库缺列会在读写时报 `no such column`
-- `common/` — 领域异常（并发写冲突、块字符上限）
-- `services/` — 业务层管理器 + `compaction.py`（上下文压缩）+ `consolidation.py`（记忆整合）
-- 记忆工具在 `paperflow/tools/memory/`（9 件，一工具一文件，blocks/recall/paper_lists 三组；`runtime_context.py` 提供它的运行时上下文）
-
-**核心服务**（装配顺序即依赖方向，见 `paperflow/cli/assembly.py`）：
-
-| 服务 | 角色 |
-|---|---|
-| `BlockManager` / `GitEnabledBlockManager` | 核心记忆块 CRUD。写入是**一次持锁的原子读-改-写 + 写入 CAS**（带期望版本的条件更新，版本被并发写者推进即拒绝而非静默覆盖）；**读-改-写类块写入（工具与 MemoryConsolidator 的块更新）必须经 `mutate_block`**——追加/替换类操作把「读旧值→算新值→写回」整段放进一次持锁事务，避免两个并发写者各自基于同一份旧值计算后互相抹掉（CAS 冲突重读最新值重放 mutator）；整体设值的 `update_block_value` 是同款原子 + CAS 路径；写前 `block_history` 快照（undo/redo）；`read_only` 块拒绝读写、块长上限 2000；`ensure_default_blocks()` 播种 assistant/profile（幂等，不覆盖用户已编辑块）。Git 变体每次变更同步 MemFS markdown 投影并 git commit |
-| `MessageManager` | 对话全量落盘（Recall）。`get_in_context_messages()` 按 `AgentState.message_ids` 回放窗口；`get_messages_by_agent_id()` 按会话直查全量 |
-| `AgentManager` | Agent 生命周期：`AgentState` JSON 行（keyed by agent_id；message_ids = in-context 窗口） |
-| `MemFS` | Git 托管的 markdown 投影层：`system/assistant.md` + `system/profile.md` + 其他块；自动生成 `memory_filesystem.md` 索引；`detect_file_changes()` 检测手工编辑回写块（双向同步） |
-| 标题与书目 | 标题由 RAG 解析器出口给（元数据 + 首页版面，判据**宁空勿错**）；书目（作者/年份/期刊）由引用域两级取：先经 pdf2bib 取（本地找 DOI/arXiv 标识符 → 联网取权威书目），取不到再用模型读首页兜底；两级都拿不到即如实为空。**绝不回退到 PDF 文件名** |
-
-**关键不变式**：
-- **SQL 块是真相源，markdown 是投影**——与旧 GitStore 的语义正好相反
-- 记忆工具在 **`paperflow/tools/memory/`**，经 **`get_memory_tools()`**（`tools/memory/__init__.py`）惰性构建 9 个工具（模块级单例，双重检查加锁，每次返回新列表副本）；执行时经 **`set_memory_context(MemoryToolsContext(...))`** 绑定一次（cli.py）+ `get_memory_context()` 取运行时上下文；未装配时工具降级为错误文本而非崩溃
-- 9 个记忆工具分 3 组：**blocks**（`memory`/`memory_replace`/`memory_insert`/`memory_rethink`/`memory_apply_patch`/`memory_finish_edits`）、**recall**（`conversation_search`，默认过滤 tool 消息防递归噪音）、**paper_lists**（`unread_list_add`/`unread_list_remove`——未读清单的行级增删，`unread_list_add` 要求真实标题绝不用文件名）
-- **Compaction**（`services/compaction.py`）：只压缩 in-context 窗口（驱逐旧对话 + 插 SummarySchema 摘要 + 保留尾部），**永不删 SQL 行**；`estimate_tokens`（本地 tiktoken 估算：正文 + 工具调用 JSON + 协议开销常数）+ `blend_token_ratio`（拿上一次请求的真实 `prompt_tokens` ÷ 当时的本地估算得校准系数，夹紧在 [0.5, 2.0] 后 EMA 并入；端点不报用量时保持 1.0）+ `should_compress`（估算 × 系数 × 1.1 超 `trigger_ratio × context_size` 触发）+ `run_compaction`（滑动窗口，保留 tool 消息与其结果的配对，尾部孤儿清理）
-- **MemoryConsolidator**（`services/consolidation.py`）：记忆整合，REPL **每轮对话收尾**调 `consolidate()`（本轮无新消息则不调 LLM）。输入 = 游标之后的新消息 + **全部可写块的当前内容**——喂旧值是「不产生矛盾条目」的前提。产出 `MemoryEditBatch` 的**行级**指令（`add` 新增一行 / `supersede` 按行首前缀换掉旧行 / `drop` 删掉旧行 / `rewrite` 整块重写，仅 profile 与 assistant），**空批次即 NOOP**；目标块 label 由代码按「类型 + 当天日期」拼装，写满自动续号 `_2`，条目被取代/删除后空掉的分册收尾整块删除（使「全量喂旧记忆」的总量有界——记忆 = 当前有效知识，历史交给 Recall）。`supersede`/`drop` 跨**整个分册家族（含往日分册）**按行首前缀找人。流程：全量预验证（动作与目标匹配、必要字段齐全，一条不过整批不写）→ 逐条应用（单条失败只跳过该条并留日志）→ 结算；失败一律记日志，抽取阶段失败保留游标重试（连败 3 次强制推进防死锁），应用阶段失败照常推进游标（重放会产生重复写入）
-- 装配不变式：CLI `session_id` == `AgentManager.create_agent` id == `Agent.session_id`，三者错位会各自读到空数据
-
-### Intent recognition
-
-`paperflow/core/intent/` — 意图识别是**可选的预处理层**（总开关 `config.intent.enabled`，默认关——关掉即纯 ReAct：不装载知识库、不注入 INTENT 块与规则块，代码路径全为 no-op）。
-
-**它只做一件事：把本轮输入归到一个类别，连同确定性实体一起注入 head 的 `INTENT` 块。** 它不决定派发、不作门禁、不持跨轮状态——`spawn.py` 与整个 `tools/orchestration/` 对意图零引用，子 agent 不传 `intent_service`。选型与编排由 supervisor 读 `<available_agents>` 按能力自主决定。
-
-**两层，前一层不命中才进下一层：**
-
-1. **规则层**（已实现，纯代码零成本）— ① `entities.extract_entities`：确定性正则抽 pdf_path / arxiv_id / doi / note_path / figure（只抽实体不判意图）；② `taxonomy.Taxonomy.match`：读 `.paperflow/intent/rules.yaml` 的高精度模式，命中即定类（`source=rule`，置信度记 1.0），**不命中即放行**。规则层**永不猜测**，也不做「抑制」——命中与不命中是两件事，没有分值也没有阈值。
-2. **判定服务**（`core/intent/services/jev.py`）— 规则不命中时由结合对话史的模型判定（`source=jev`）。**网关是托管 API，账户须先绑定信用卡**，因此启用前要过启动探测（探测失败 → 整套意图层不装配，见 Config）。它的输入是运行时递进来的最近若干轮对话文本（`intent.history_messages`，默认 6，只取 user/assistant 正文、不含工具结果——**assistant 侧必须保留**，否则「再下载一篇」这类指代读不懂），由 `IntentService.render_state` 拼成逐行「用户：…／助手：…」的共享状态，**末行是本轮输入**（判定口径写明「判最后一条用户消息」）。请求带 `providerOptions.gateway`：`zeroDataRetention` 与 `only: [厂商]`。**零保留被拒时按「该层不可用」处理，不摘掉这一项重试**——要不要在无保留保证下发送对话史是隐私决定。任何失败都退回规则层，绝不抛进 ReAct 循环。
-
-**类别 11 值**（`IntentType` 是类别词汇的唯一声明点，知识库按它 fail-closed 校验）：7 类各自对应一个领域责任人——`paper`（论文事务：检索/下载/读指定论文/分析图表/删 PDF）、`note`（撰写/删除笔记）、`research`（选题/研究计划/删产物）、`citation`（references.bib 同步/增删/查询导出）、`index`（语料入库/重建/体检）、`memory`（记忆与清单查询、记账，**用户陈述自身信息也归此类**）、`question`（即问即答，supervisor 先自答）；另 4 类不派发领域角色——`chitchat` / `help` / `out_of_scope`（明确拒绝或先向用户问清）/ `feedback`（只派 memory-agent 记日志）。**类别按产物主人划分**：值得单列的区别要两条同时成立——supervisor 的动作确实不同，且这个区别从用户原句里读不出来；能从文本读出的动作（读/写/删/查）与类别正交，单列只会制造误差（三个删除类因此并入了各自领域）。
-
-**知识库**（`.paperflow/intent/`，随仓库发布）两份：`taxonomy.yaml`（每类的判定口径 + 示例句，两者一起构成判定模型的 criteria；口径写清「是什么 / 不包什么」——类别之间的边界才是难点）+ `rules.yaml`（高精度模式，每条带说明）。`taxonomy.load_taxonomy` 装载并做 **fail-closed** 校验：类别缺条目、缺描述、缺示例、规则指向未知类别、模式非法正则、模式与示例逐字重复，都在启动期报错并**点名具体类别**。
-
-**产出契约**：`IntentOutput` = `intent`（单类别，不是列表）+ `confidence`（规则命中记 1.0；**没有判定消费者**，只作展示与排查）+ `entities` + `source`（`rule` / `jev`）。注入形态是一行 `INTENT: {json}`，序列化全部四个字段。
-
-**集成缝**：`IntentService`（`core/intent/services/service.py`）——Agent 侧只持一个可选的 `intent_service`（`None` 即关），唯一的钩子是 `begin(task, history)`，返回要注入的块与可用任务文本（**不改写任务**）。字段语义与各类别的动作说明由 `IntentService.rules_block` 产出、仅在启用时注入（关掉时提示词零意图痕迹），其中**必须写明两处从类别降级到提示层的区分**：`memory` 类内「用户在陈述自身信息」vs「在查询记忆」，`out_of_scope` 的「明确越界」vs「看不出要做什么」。
-
-**旧实现已整体退役**（勿复活）：混合路由器与稠密/稀疏编码、路由知识库与向量缓存、LLM 兜底面（`IntentionResult`）、澄清（判据 / 强制轮 / 编号选项原语）、追问检测与跨轮状态（`ConversationState` / `prev_intent`）、选项答复检测、边界仲裁、意图确认通道、`IntentType` 的旧 18 值、`INTENT_LABELS_ZH`、`dispatch_allowed`。旧知识库 `.paperflow/intent/routes.yaml`（按 18 类标注的例句 + 标定阈值）与路由向量缓存随之一并退役；**题集数据仍保留在 `scripts/intent/calibration/goldens/`**（`scripts/` 不入库，删掉不可恢复），标定与评测脚本已删。
-
-### RAG
-
-`paperflow/core/rag/` — 检索增强栈，`RAGService` 是唯一门面（indexer 与 retriever 是同一实例的两个视图，共享一把锁，增量写入对查询立即可见）。**领域模型集中在 `core/rag/domain/`**（各层公共词汇，只依赖 `constants/`）：`entity/` 放实体与值对象（`Chunk` 检索块、`Section` 章节，连同块文本派生 `indexed_text`/`section_label`/`context_prefix`），`dto/` 放层间载体（解析产物 `PdfText`/`Block`、索引结果 `IndexOutcome`/`IndexRunOutcome`/`IndexStatus`、改写结果 `RewriteResult`），一模型一文件，消费方一律 `from paperflow.core.rag.domain import ...`。**懒加载单例**：`get_rag_service(config=None)`（双重检查加锁），所有重量组件（embedder/reranker/vector_store/bm25）首次访问才构造——`core/rag/__init__.py` 因此在包导入期不拉重型依赖。
-
-端到端链路：**解析**（`pdf_extract`：PyMuPDF 本地版面解析，按字号还原章节标题并分级、按阅读顺序合段，每个渲染块带页码与四边包围盒；同一模块另出一条轻路径 `pdf_title`；**无外部服务、无降级分支**）→ **分块**（`AcademicChunker`：按节切 → 句界装窗 512/overlap 64——不切句、重叠取上一窗尾完整句、单句超长回退 token 滑窗；丢弃判据：参考文献 + 期刊样板章节（`_DROP_HEADS`：致谢/资助/利益冲突/数据可用性等，标题子串匹配）+ 解析残渣正文（<12 token 且无句末标点的微碎片/空正文）；**块文本存干净正文**，「标题 > 章节位」由 `indexed_text()` 在使用点现拼（章节位 = `heading or caption`）；Chunk id = sha1(绝对路径:index) 幂等）→ **索引**（`RagIndexer` 增量扫描，只扫 `pdf_dir`；state 文件 `index_state.json` 带**配方哈希**（`_recipe_hash`，输入含 `RECIPE_LOGIC_REVISION` 与 chunker 的 max/overlap、embedding 的 embed_model；指纹不符放弃旧状态全量重扫重嵌，改切块参数自动失效）；**图/表各成媒体块**（图注进 `caption`、可检索正文进 `text`：**图块 `text` = 视觉模型生成的描述**，**表块 `text` = 版面几何重建的 markdown + 描述**；描述在索引期生成、**一直开启无开关**，prompt 只转写图上可见内容并禁止推断——图块正文若不带描述就只剩「标题 > 图注」可检索，实测 12 条图块题一条都召不回；`chunk_type` 记 figure/table，位置取区域包围盒；定位与描述都由 `core/vision` 提供，是 `core.rag → core.vision` 的边且惰性 import；原图另存对象存储、块上只留 `image_key`）；文档级「删旧建新」（`doc_chunk_ids` 定点取旧块 id），Milvus upsert + BM25 同步（两侧用同一份带前缀文本）；含一致性恢复）→ **检索**（`Retriever` 混合：query 侧加指令前缀（`_QUERY_INSTRUCTION`，Qwen3 官方 Instruct 格式）编码；BM25 top-30 + 向量 top-30 → RRF 融合 → 取 max(2×top_k, `rag.retriever.rerank_candidates`（默认来自 `RERANK_CANDIDATES=24`）) 个候选 → `RagReranker` 重排 → 有序 Chunks；零全表扫描：向量路元数据随结果带回、BM25 路定点 `fetch_by_ids` 补齐）。评测（单入口 `scripts/rag/rag_eval/run.py --stage retrieval|answer|chunking|sweep`，题集与产物在 `rag_eval/goldens/` 与 `rag_eval/results/`，口径唯一出处 `scripts/rag/实验方案.md`）：检索侧题集每行 `{"query": …, "slice": "core|media", "expected": [{"path": …, "heading": …, "chunk_type": …, "contains": …}]}`——`path` 必填，后三项可选（`chunk_type` 限定块类型、`contains` 限定图注/正文子串，媒体块题靠它锁到具体表注）；带非空 `excluded` 的题不进题集。指标 hit_rate@k / recall@k / precision@k / MRR / MAP@k / NDCG@k 并按 slice 分档（`map`/`ndcg` 按文档去重）；回答层忠实度 / response_relevancy / citation_precision / citation_coverage；切块层内在体检 + Chroma 式区间级指标 + 媒体体检（描述覆盖率、原图可回取率）；`--stage sweep` 是参数标定，`--rewrite-fixture` 冻结改写集消除 LLM 噪声。
-
-存储与模型：
-- `VectorStore` — Milvus（`pymilvus.MilvusClient`，单 collection `config.rag.storage.collection`="paperflow"）。**块元数据**：`path`（绝对路径）、`title`、`heading`、`caption`、`chunk_type`、`image_key`（图表原图的对象键）、`page_num_int`、`top_int`、`position_int`、`mtime`、`created_at`；**集合结构自愈**（启动比对所需字段，缺即删集合重建并提示需全量重建）。`config.rag.storage.uri` 默认 `http://localhost:19530` 连 Standalone（`docker compose up -d` 起 etcd+minio+milvus，gRPC 19530 / 健康检查 9091，数据落 `.paperflow/infra/milvus/`）；传本地文件路径则走 Milvus Lite 内嵌（单测用，无需常驻服务）。**每个 RPC 都传超时**（`rag.storage.timeout` 读路径 5s / `write_timeout` 写路径 60s）：该参数在 pymilvus 里既是单次尝试的 gRPC 截止时间、也是整个重试循环的预算（不设则默认重试最多 75 次、退避到 3 秒，服务不可达时一次调用能白等几分钟）；失败交给检索侧熔断器
-- `RetrievalBreaker`（`core/rag/services/breaker.py`）— 检索侧熔断器（closed/open/half-open，冷却 60s）：Milvus 不可达时跳闸，跳闸期间 `rag_retrieve` 直接返回降级文本、不进检索（省掉每次白等一轮连接超时），冷却到期自动放行一次探测、成功即复位，因此 Milvus 恢复不需要重启进程。只保护检索侧，索引写入不被检索侧的瞬时故障牵连；`RAGService.milvus_available()` 是带 TTL 的可连性探测（30s），不在热路径上
-- `Bm25Index` — rank_bm25 + jieba；是向量库文本的**投影**，启动时从 `store.all_documents()` 重建（建索引用的是 `indexed_text()` 拼出的带前缀文本，与向量编码同源）
-- `RagEmbedder`（`core/rag/encoders/embedder.py`）— 云端 `Qwen/Qwen3-Embedding-0.6B`（OpenAI 兼容 `/v1/embeddings`，默认硅基流动；1024 维，客户端 L2 归一化，维度走静态映射不发网络）；`RagReranker`（`core/rag/encoders/reranker.py`）— 云端 `Qwen/Qwen3-Reranker-0.6B`（`/v1/rerank`，返回降序下标）。协议 `Embedder`/`Reranker` 与实现同文件同层——**两件都只服务 RAG**（意图层曾有自己的编码器实例，随混合路由退役），与稀疏的 `Bm25Index` 并列在 `core/rag/encoders/`（三者同属编码器家族，产出形态分别是稀疏权重/向量/分数）；`core/llm` 因此只剩 LLM 客户端与结构化输出
-- 端点/模型经 `config.rag.embedding` 配置；本地 sentence-transformers 栈已退役（无 `resolve_model_dir`、无本地权重下载），api_key 缺失时路由退纯 BM25、检索跳过稠密路、索引明确报错
-
-消费方：`RagRetrieveTool`（`tools/rag/`，`rag_retrieve`：参数 query / top_k，每条命中**一行固定五列**「绝对路径 | 论文标题 | 章节 | 图片对象键 | 摘录」，表头写明列序（媒体块的内容在图里，模型用 `view_image` 按键把原图交给模型看）——元数据靠子任务的最终回答逐字上行）**装配进 `rag-agent`**——RAG 一域的读写同归一处（检索是读侧、索引是写侧，都由它的责任人独占）；note-agent / research-agent / paper-agent 需要检索时派发 `rag-agent`。**索引写入已与写工具解耦**：写盘后不再内联触发入库，改由**论文 PDF 的生产者**（paper-agent 下载、用户手动拷入）写盘或删除成功后**派发 `rag-agent`**（`index_paths` 入库 / `reindex_all` 删除后收敛）——笔记与选题产物不进知识库，那两类生产者不再需要触达检索责任人；代价是这层一致性由契约承担而非代码保证。**`ReadPdfTool` 不经索引栈**——它走同一模块的 markdown 出口（`(路径, mtime, 大小)` 进程内缓存），不碰服务、也不占索引/检索那把全局锁；代码共享（一个实现点）与运行期隔离（各走各的出口）两件事同时成立。RAG 的 `RagEmbedder` 由 `RAGService` 内部按 `config.rag.embedding` 惰性构造——**现在全仓只此一处用它**（意图层曾有自己的编码器实例，随混合路由退役，记忆检索为纯 SQL LIKE 不用向量）。
-
-### Citations
-
-`paperflow/citations/` — 引用管理（溯源落地）。`references.bib` 是引用库**真相源**：追加 + 按条目原文块删除，两种原语都不重写其余内容（用户手工维护的分节注释与未触碰条目逐字节保留）。按角色分四层：`storage/bib.py` 是文件读写原语（原文解析 `parse_entries` 与条目文本生成 `entry_text` 一对，查找/去重/追加/按 key 删除）；`services/corpus.py` 是「语料里有哪些论文」的易变投影（只跟踪 PDF：标题走解析器轻路径、书目走 pdf2bib 提取器 → 全标题精确匹配，按 (path, mtime_ns) 增量重建；`corpus_titles.json` 是它的磁盘缓存，首次 `refresh` 读回、缺失或损坏按冷启动重建、本轮无变更不重写——不读回就等于每次启动把整库 PDF 重读一遍首页并重跑一遍书目提取）；`parsers/paper_meta_extract.py` 是书目提取（作者/年份/期刊：pdf2bib 联网取权威书目，取不到再由 LLM 读首页兜底，两级都失败即如实为空）；`services/keys.py` 是引用键生成规则；`services/manager.py` 编排：引用解析（干净全标题/路径 → key+status）、入库（语料内 PDF / 库外 EXTERNAL）、去重、渲染（author-year/numbered/bibtex/gbt7714）、调和（渲染视图回填空字段，bib 文件不动）；`schemas/` 是跨层数据模型（BibEntry / ResolvedCitation）。懒加载单例 `get_citation_manager()` 在包 `__init__`，重组件（corpus 索引、pdf2bib 书目提取器）首次使用才构造。
-
-6 个引用工具（`tools/citations/`）：**只装配 citation-agent**——全量 6 件 + `read_pdf`（仅读首页补元数据）；`sync_citations`/`remove_citation` 这两个写入口也只有它装。引用库的读写是它的领域：note-agent / research-agent 要查 key、入库、渲染参考文献，review-agent 要核验 `[来源:key§节]` 的 key 是否真实存在（不信任标注本身），都**派发 citation-agent**，自己一件不装——review-agent 为此从叶子变成只派 citation-agent 的派发方。
-
-产物溯源标注：
-- **笔记**头部写 `**论文引用**: [key]`（落盘前**派 citation-agent 确认该 key 真实存在**，未注册则让它按 PDF 路径入库），各节关键论断标节级 `[来源:§X]`，供 review-agent 沿链回溯核对原文
-
-### Tools
-
-`paperflow/tools/` — 原子工具，一工具一文件，按域分包；`paperflow/tools/__init__.py` 再导出全部 12 个工具供消费方统一导入（导出符号名稳定，内部路径随便拆）：
-
-另有**动态 MCP 工具**（不计入 12 的原子工具清单）：config.yaml 顶层 `mcp_servers` 声明的 server，其工具经 `paperflow/core/mcp/` 桥接为原生 Tool 注入 agent（命名 `mcp__<server>__<tool>`，与 skill 工具同一 `merge_tools` 装配缝），**写类工具可见但需逐次用户确认**（按 readOnlyHint 分类，缺注解按「可能写」处理），config 的 `write_tools` 预批准豁免；`readOnlyHint=true` 只读工具自动放行。配置示例见 `docs/learning/11-MCP客户端.md`（docs/ 为本地文档，不入库）。
-
-- `file/` — 读/写/编辑/glob/grep/read_pdf/extract_title（+ `atomic.py` 原子写盘：文本 `atomic_write` / bytes `atomic_write_bytes`；抽取实现与标题轻路径都在 `core/rag/parsers/pdf_extract.py`——代码同一个实现点，运行期各走各的出口，读 PDF 不经索引栈）
-- `search/` — `fetch_pdf`（下载：SSRF 校验 + 写盘后索引热更新；url 取检索结果（含 MCP 工具结果）中的 PDF 链接）；`_common.py` 只保留标题规范化 helper 并再导出 `get_run_state`（兼容既有导入点），搜索去重池已收进 `core/agent/state.py` 的 `RunState`（核心运行时按 `wants_run_state` opt-in 懒注入：failed_urls 负缓存 + downloaded 成功短路）。检索收敛到 MCP（paper-search-mcp），直连 web_search/clients 已退役（2026-10-02，docs/adr/0012-mcp-client.md）
-- `review/` — `submit_review` / `submit_download_review`（审查裁决工具）+ `format_check`（笔记标题树对模板；模板取自 review-note skill 的资源，经 `SkillRegistry.resource_path` 解析成绝对路径——工具与审查方读同一份，不按工作目录拼相对路径）+ `lookup_venue_rank`（期刊/会议等级查询——下载门禁的一个维度，同归审查域）
-- `citations/` — 6 引用工具（`lookup_citation`/`add_citation`/`format_citations`/`list_citations` + `sync_citations`/`remove_citation`；只装配 **citation-agent**（全量六件 + `read_pdf` 补元数据），其余 agent 需要时派发它）
-- `rag/` — `rag_retrieve`（`RagRetrieveTool`：惰性取 RAGService 单例 + 持锁检索 + 格式化结果）+ `view_image`（按对象键取图表原图交模型看）+ `index_paths`（批量入库语料文件，逐条回报 indexed/skipped/empty/failed）+ `reindex_all`（全量收敛：补缺 + 清掉已删文件的索引块）+ `index_status`（只读体检：块数/篇数、幽灵块、未入库、配方是否一致）；五件只装 `rag-agent`
-- `vision/` — `analyze_figures`（`needs_parent=True`：视觉 LLM 调用归属父 agent 轮次进审计）。图提取走 pdffigures2 管线（proposal 候选 + 打分选优 + no-overlap 互斥），随后视觉模型结构化看图分析 + 嵌入落盘；key 缺失/无图/失败全降级
-- `memory/` — 9 个记忆工具（`get_memory_tools()` 惰性单例 + `set_memory_context`/`get_memory_context` 运行时上下文；blocks/recall/paper_lists 三组；全装给 `memory-agent`，其余 agent 一件不装）
-- `orchestration/` — `spawn_sub_agent`（唯一的调度工具；见下）
-- `common/` — `make_tools(config, tool_items, default_write_root=None)` 装配工厂：按 `root_hints` 生成 `[目录] {root}={path}` 提示（scratch 根对 LLM 不透明）、`default_write_root` 盖章到 write_file（note-agent→note、research-agent→research；**只是没指定时的兜底**——supervisor 把用户点名的保存位置拼进子任务文本，领域 agent 收到位置就用它）、注入 `_config`；`_http.py` 共享 HTTP 基础设施
-
-根映射（`_root_map`）：note→`note_dir`、pdf→`pdf_dir`、research→`research_dir` 或 `workspace/research`、memory→`workspace/memory`、scratch→`workspace/scratch`。`templates` 条目已随模板入 skill 退役（读模板改走 `load_skill(name=…, resource=…)` 或 `SkillRegistry.resource_path`）。
-
-### Orchestration
-
-`paperflow/tools/orchestration/spawn.py` — **SpawnSubAgentTool**（`spawn_sub_agent`，`needs_parent=True`）。`aexecute(agent_type, task)` 先过 `_admit` 的**五道闸**（按判定顺序，前两道是纯判定、后三道查共享状态），全过才构造并运行子 agent：
-
-1. **未知 agent 类型** — 不在 `list_agents()` 内 → denied（附可选清单）
-2. **spawn 权限** — `_check_spawn_allowed`：supervisor 硬编码放行；其余 agent 查自己的 `AgentConfig.allowed_spawns` 白名单
-3. **同批同指纹去重**（指纹 = sha256(规范化任务文本)；注册表在 run 状态容器，键 `(父实例 id, 任务指纹)`）：只登记正在执行中的派发、完成即清除、不缓存结果——只拦同一批工具调用内的机械重复，跨轮重派会真跑
-4. **审稿预算** — 同一父实例内派发给 `review-agent` ≤3 次（计数键 `(父实例 id, agent_type)`；审稿的三种形态由「加载哪份审查流程 skill」区分，不再是 mode 字段），超限 denied（轮数预算下沉代码，LLM 不数轮次）
-5. **每轮派发上限** — supervisor 每次 ReAct 迭代内自身派发 ≤8 路，超限 denied（下一轮重新起算）。
-
-闸门状态（去重注册表、失败计数、审稿与每轮预算计数、在途写占用、产物账本）统一由 `core/agent/state.py` 的 session/run 两个状态容器持有（见 Agent and ReAct loop）。**顺序与并行由 supervisor 自主决定**，框架不做限制（契约里的「一个对象一路」是提示层的编排期望，不是闸门——闸门只兜上限：每轮 8 路，超出靠分轮补齐）。**同路径写互斥不在 spawn 闸里**：写工具按真实写目标在 `RunState.writing_paths` 登记写占用、跨实例当场拒绝（见 Agent and ReAct loop 的运行期状态容器与 ADR 0003）。
-
-**子 agent 构造与执行**：继承父的 security_middleware / session_id / confirm_callback / **skill_registry**（子 agent 能加载自己的流程 skill）；**不传**意图管线/会话（子任务是结构化任务非用户意图），也不传问询回调——提问不是工具，子 agent 需要用户给信息时把问题写进自己的最终回答，由 supervisor 决定是否转达。**预算执行**：超时 = 基座超时（`config.agents.timeouts`，按审计数据校准:note-agent 900s/paper-agent 420s/review-agent 300s/research-agent 1800s/rag-agent 900s/citation-agent 300s/memory-agent 180s，未命中回退类默认 120s——新增角色要一并补进表里，别让它在表外静默吃 120s）+ 累计用户确认等待（`_UserWaitClock` 排除 confirm 确认的人工等待）；`asyncio.TimeoutError`→timeout、`PermissionError`→denied、其他异常→failed；同一会话内同 agent_type 连续 2 次非 success → 结果文本追加强指令「勿再派发，改用向用户请示」。**摘要提取**：末尾 2000 字符经 `StructuredOutput` 抽结构化 `digest`（按 agent_type 选 `PaperAgentDigest`/`ReviewAgentDigest`/`NoteAgentDigest`/`ResearchAgentDigest`/`CitationAgentDigest`/`RagAgentDigest`，未注册的类型——含 `memory-agent`——落 `GenericDigest`），失败回退全文摘要。
-
-返回 `ToolResult(text=SubAgentResult.model_dump_json(), summary=model_dump())`。`SubAgentResult.status` ∈ {success, failed, timeout, denied}，`needs_attention=True` 表示「被拒或报缺口且需用户介入」。supervisor 与四个能派发的领域角色（paper-agent/note-agent/research-agent/review-agent）装配此工具——权限最小化：叶子 agent（citation-agent/rag-agent/memory-agent）不递归。
-
-**「问用户」不是工具**：需要用户给信息时把问题写进**最终回答**、本轮结束；交互场景下 REPL 的读入循环（含管道喂入）把用户下一行输入当作下一轮的输入。**子 agent 不能在子任务中途问用户**（运行中暂停只能靠工具），它把缺口写进结果——`needs_attention` 项 + summary 里的问题——由 supervisor 决定是否转达。**与安全确认无关**：写盘/编辑/删除/MCP 写类工具的逐次确认是风险档位高于会话免问上限（`confirm_above`）触发的策略升级（见 Security），不受此影响。
-
-### Terminal
-
-`paperflow/terminal/` — 终端交互隔离层，测试可注入。
-
-- `io/`：`InputIO` 契约（`read`/`confirm`/`confirm_choice` 三态）在 `base.py`，两种实现分文件——`interactive.py` 的 `PromptToolkitIO`（TTY，multiline + 历史；确认框仅 y/a/n 键入，Enter 默认拒绝）vs `fallback.py` 的 `FallbackIO`（非 TTY，内置 `input()`）。`make_input_io(config)` 按 `stdin.isatty()` 二选一。`_confirm_lock` 在契约层串行化并行子 agent 的并发确认（prompt_toolkit 会话非线程安全）
-- `render/`：`renderer.py` 的 `StreamRenderer`（线程安全）经 `on_event` 消费 `AgentEvent`（content/tool）；块渲染契约在 `base.py`，两种实现 `RichBlock`（rich Live + spinner，0.08s 节流重绘）/ `PlainBlock`（增量追加）在 `blocks.py`；活动行映射表在 `activity.py`。工具行 `[{agent_type}] Calling ...`，写/编辑工具完成后发 File written/edited 完成行；`should_print` 去重已流式展示的 root 内容；`suspend()` 在确认框/输入框前停 live（rich Live 与 prompt_toolkit 并发互相干扰——实测坑）
-- `confirm/`：`center.py` 的 `ConfirmCenter` 是全进程确认的唯一消费者（并行子 agent 的确认跨线程汇入主循环排队，弹框期间抑制渲染；看门狗超时自动拒绝），同文件带 Agent 侧确认回调；`presentation.py` 产出确认框提示行与写/编辑的 diff 预览
-- `commands/`：`registry.py` 是命令表与首 token 等价匹配分发，`builtin.py` 是内置命令（`/exit` `/mcp` `/version` `/skill` `/help`）
-- `repl/`：`loop.py` 是每轮主循环，`console.py` 是开场横幅与打印函数工厂，`resume.py` 是 `--resume` 的屏上历史回放
-- `common/diff.py`：`compute_diff`（unified diff ±3）+ `truncate_diff`（≤200 行）——写/编辑确认前渲染 diff 预览；`common/errors.py` 把 API 异常翻译成用户语言
-- **包根只留 `__init__.py`**：每个关注点都落在子包里，子包 `__init__` 只做再导出与装配
-- 启动横幅：Codex 风格方框（`>_ paperFlow Academic Assistant` + model/workspace + Tip），无 emoji/版本/标语
-
-### Config
-
-`paperflow/config/` 按角色分两个模块：`sections.py`（与 config.yaml 同构的 dataclass 树，**所有可调参数默认值的唯一声明点**）+ `loader.py`（`PaperFlowConfig` 与合并/env 派生）；`__init__.py` 只做再导出，消费方一律 `from paperflow.config import ...`。
-
-`PaperFlowConfig.from_env()` 按优先级加载：环境变量（`PAPERFLOW_*`）> `config.yaml` > dataclass 默认值（DeepSeek 端点、`deepseek-flash` 模型——带视觉能力，检索到的图表原图要直接进上下文）。加载器是 **dataclass 树 + 通用递归合并** `_merge`（沿 `fields()` 下行、任意深度，未知键运行期忽略）+ **env 按路径派生**（`PAPERFLOW_` + 配置路径大写、`_` 连接：`rag.storage.uri` → `PAPERFLOW_RAG_STORAGE_URI`，`intent.history_messages` → `PAPERFLOW_INTENT_HISTORY_MESSAGES`）。`config.yaml` 顶层按模块分区（与 dataclass 树同构）：
-
-```
-llm / vision                    # 保留顶层（全局共用、最高频调整）
-runtime:  workspace / agents_dir / confirm_above
-corpus:   note_dir / pdf_dir / research_dir / citations_bib_path
-intent:   enabled / history_messages
-rag:      embedding{...,batch_size,timeout,max_retries} / retriever{top_k,bm25_topk,vector_topk,rerank_candidates,rrf_k}
-          query_rewrite{...,history_messages} / chunker{max_tokens,overlap_tokens}
-          storage{uri,collection,batch_size} / tools{excerpt_chars}
-memory:   consolidation_enabled
-session:  resume_replay / resume_replay_limit
-agents:   timeouts（自由 dict，YAML-only）
-mcp_servers                     # 保留顶层（本身即映射）
-```
-
-| 字段路径 | 说明 |
-|---|---|
-| `llm` (`LLMConfig`) | base_url / api_key / model / max_tokens(393216，给足防长草稿截断) / temperature(0.0) / timeout_connect / timeout_read / max_retries / context_window(1M) |
-| `vision` (`VisionLLMConfig`) | 视觉模型（多模态图表分析）：base_url / api_key / model / max_tokens / 超时；默认 DeepSeek 视觉（与文本 LLM 同一端点/key）；api_key 留空不崩启动，图表分析调用时降级不可用 |
-| `runtime.workspace` | 运行时数据根（`.paperflow/`，默认）：milvus/memory/intent/rag/security/session 等（模板已不在此，随流程 skill 分发） |
-| `runtime.agents_dir` | 插件扫描目录，默认 `agents` |
-| `runtime.confirm_above` | 会话免问上限档：风险档**高于**它的工具执行前升级人工确认（`ConfirmRequired`，超档不拒绝），不高于的静默放行；默认 "medium"。硬拒只来自显式规则（敏感路径黑名单、内容高置信命中、命令熔断） |
-| `security.pre_approved_tools` | 外部来源工具的预批准名单（降 `medium`，**降档不是旁路**）；`mcp_servers.<name>.write_tools` 是其按 server 书写的语法糖，装配时并入同一集合 |
-| `security.classifier` | 语义判定层（可选、默认 `enabled: false`）：base_url / api_key / model / timeout / max_retries。端点或密钥缺失即整层不装配；命中只标记与留痕、不阻断；失败 fail-open |
-| `compaction` | `CompactionSettings`（惰性工厂避免 config→compaction→llm→config 循环导入） |
-| `memory.consolidation_enabled` | 记忆整合开关（每轮对话结束后整合一次；关掉则整合路径不触发，记忆只靠 self-editing 维护） |
-| `corpus.note_dir` / `corpus.pdf_dir` / `corpus.research_dir` | 语料库数据源根（note/pdf/research，个人绝对路径，**无默认值**，须经 config.yaml/env） |
-| `corpus.citations_bib_path` | references.bib 路径（引用库真相源）。默认 `workspace/citations/references.bib`，可指向任意论文项目目录；空则回退默认 |
-| `rag.storage.uri` / `rag.storage.collection` / `rag.storage.batch_size` | Milvus 地址（默认 `http://localhost:19530`）/ 集合名（默认 `paperflow`）/ 全表分页行数（默认 1000） |
-| `rag.storage.minio` (`MinioConfig`) | 图表原图的对象存储：endpoint（默认 `localhost:9000`）/ access_key / secret_key / bucket（默认 `paperflow-images`）/ secure。凭证默认与 compose 里那只绑回环的 MinIO 一致 |
-| `rag.store_images` | 是否把图表原图存进对象存储（bool，默认 `true`）。关掉即退回「只有文字」：不渲染、不写对象 |
-| `rag.storage.timeout` / `rag.storage.write_timeout` | Milvus 单次 RPC 超时（秒）：读路径默认 5、写路径默认 60（批量入库本身耗时故更宽松）。该值同时是 gRPC 截止时间与整个重试循环预算 |
-| `rag.embedding` (`EmbeddingConfig`) | RAG 云端嵌入 + 精排：base_url / api_key / embed_model（Qwen3-Embedding-0.6B）/ rerank_model（Qwen3-Reranker-0.6B）/ batch_size / timeout / max_retries；api_key 留空不崩启动，路由退纯 BM25、检索跳稠密路 |
-| `rag.retriever` (`RetrieverConfig`) | 混合检索参数：top_k / bm25_topk / vector_topk / rerank_candidates / rrf_k（唯一声明点 `paperflow/config/（sections.py + loader.py）`） |
-| `rag.query_rewrite` (`QueryRewriteConfig`) | query 改写模型三元组 base_url / api_key / model（留空逐项继承 `llm`；model 留空 = 沿用主模型）+ history_messages（默认 6） |
-| `rag.chunker` (`ChunkerConfig`) | max_tokens / overlap_tokens（唯一声明点 `paperflow/config/（sections.py + loader.py）`；改动触发配方哈希全量重索引） |
-| `rag.tools.excerpt_chars` | 工具输出单条命中正文摘录上限（默认 400） |
-| `intent.enabled` | 意图识别总开关（bool，默认 `False` = 纯 ReAct；env `PAPERFLOW_INTENT_ENABLED`）。关时整套意图层不挂载：不装载知识库、不注入 INTENT 块与规则块 |
-| `intent.history_messages` | 判定参考的最近对话条数（int，默认 6）。运行时按它截历史切片——只取 user/assistant 正文，不含工具结果 |
-| `intent.jev` (`IntentJevConfig`) | 判定服务：base_url（默认网关 `/v1`）/ api_key（`vck_` 前缀，留空则该层不可用）/ model（默认 `typesafe-ai/jev`）/ timeout 5s / max_retries 1 / `zero_data_retention`（默认 true）/ `only_provider`（默认钉住厂商）。同一请求形态下有多家可选实现，换实现只改 model |
-| `session.resume_replay` / `session.resume_replay_limit` | --resume 屏上历史回放开关 / 条数上限（0 = 整窗） |
-| `agents.timeouts` | 子 agent 超时覆盖表（note-agent 900 / paper-agent 420 / review-agent 300 / research-agent 1800 / rag-agent 900 / citation-agent 300 / memory-agent 180;按审计数据校准,见 spec 2026-09-05-agent-timeout-recalibration）；未命中的 agent 回退类默认 120s；自由 dict，**仅 YAML**（不派生 env） |
-| `mcp_servers` | MCP server 接入配置（顶层 dict，仅 YAML 无环境变量形态）：每 server 声明 transport(stdio/http)/command/args/url/agents/超时/工具名单；连接失败跳过不挡启动，写类工具默认禁用。可注释示例段见 `docs/learning/11-MCP客户端.md`（gitignored 本地文档） |
-
-环境变量（按路径派生，示例非全集）：`PAPERFLOW_LLM_API_KEY` / `PAPERFLOW_LLM_BASE_URL` / `PAPERFLOW_LLM_MODEL` / `PAPERFLOW_VISION_API_KEY` / `PAPERFLOW_VISION_BASE_URL` / `PAPERFLOW_VISION_MODEL` / `PAPERFLOW_RUNTIME_WORKSPACE` / `PAPERFLOW_RUNTIME_AGENTS_DIR` / `PAPERFLOW_RUNTIME_CONFIRM_ABOVE` / `PAPERFLOW_CORPUS_NOTE_DIR` / `PAPERFLOW_CORPUS_PDF_DIR` / `PAPERFLOW_CORPUS_RESEARCH_DIR` / `PAPERFLOW_CORPUS_CITATIONS_BIB_PATH` / `PAPERFLOW_INTENT_ENABLED` / `PAPERFLOW_INTENT_HISTORY_MESSAGES` / `PAPERFLOW_INTENT_JEV_API_KEY` / `PAPERFLOW_INTENT_JEV_BASE_URL` / `PAPERFLOW_INTENT_JEV_MODEL` / `PAPERFLOW_RAG_EMBEDDING_API_KEY` / `PAPERFLOW_RAG_EMBEDDING_BASE_URL` / `PAPERFLOW_RAG_EMBEDDING_EMBED_MODEL` / `PAPERFLOW_RAG_EMBEDDING_RERANK_MODEL` / `PAPERFLOW_RAG_RETRIEVER_TOP_K` / `PAPERFLOW_RAG_RETRIEVER_RERANK_CANDIDATES` / `PAPERFLOW_RAG_QUERY_REWRITE_MODEL` / `PAPERFLOW_RAG_CHUNKER_MAX_TOKENS` / `PAPERFLOW_RAG_CHUNKER_OVERLAP_TOKENS` / `PAPERFLOW_RAG_STORAGE_URI` / `PAPERFLOW_RAG_STORAGE_COLLECTION` / `PAPERFLOW_RAG_STORAGE_TIMEOUT` / `PAPERFLOW_RAG_STORAGE_WRITE_TIMEOUT` / `PAPERFLOW_RAG_TOOLS_EXCERPT_CHARS` / `PAPERFLOW_MEMORY_CONSOLIDATION_ENABLED` / `PAPERFLOW_SESSION_RESUME_REPLAY` / `PAPERFLOW_SESSION_RESUME_REPLAY_LIMIT`。`agents.timeouts` 与 `mcp_servers` 是自由 dict，仅 YAML 可配。env 恒为字符串，按目标字段当前类型做 bool/int 转换。运营类 env（`PAPERFLOW_SKIP_BOOTSTRAP` / `PAPERFLOW_FILE_MODE`）与 `PaperFlowConfig` 无关，不在本表。
-
-### Key design decisions
-
-- **No deterministic pipeline.** Everything — routing, tool selection, task decomposition — is driven by the LLM's ReAct loop. Tools are just JSON Schema definitions fed to the model
-- **`ToolResult.summary: dict`** (default empty) — 结构化摘要通道：决策结果（user_denied / security_blocked）、spawn digest、记忆工具结构化数据都经它承载
-- **`risk_level` 已强制**：PolicyEngineMiddleware 单一判据——风险档高于会话免问上限 `confirm_above` 即升级人工确认（键 = (工具名, 目标路径)，超档不拒绝）；Tool 安全元数据由注册表加载时校验
-- **`allowed_spawns` 已强制**：spawn 工具运行时校验白名单（supervisor 硬编码放行），同时是 head 里 `<available_agents>` 清单的派生来源
-- **安全是中间件洋葱**：before（可拒绝/要求确认）→ 执行 → 逆序 after；每轮 run 结束 on_finish 可改写最终回答。所有拦截降级为 ToolResult 文本，只有 `MaxTurnsExceeded` 向上抛
-- **SQL 是记忆真相源，markdown 是投影**；压缩/窗口驱逐永不删 SQL 行（Recall 完整）；记忆工具**全装给 `memory-agent`、其余 agent 一件不装**——要记账或查记忆就派发它，supervisor 也不直接执行清单操作
-- **编排归 supervisor，意图只作信号**：意图不决定派发顺序、也不作派发门禁（门禁已退役）——选型按 `<available_agents>` 的能力说明，顺序与并行由 supervisor 自主决定。契约里写明「**一个对象一路**」：批量同类对象（目录 / glob 结果 / 清单 / 「这几篇」）先枚举成逐项子任务，再一头一个 `spawn_sub_agent`，不让一个子 agent 承包整批——单个子 agent 只有一份预算，整批压在它身上时预算先被串行处理耗光，中途超时则整批都拿不到结果
-- **`Agent.run()` 返回 str**；子 agent 结果经 `SubAgentResult`（status/summary/digest/needs_attention）结构化回传 supervisor
-- **流式零开销**：`stream_callback`/`telemetry_callback` 为 None 时全链路保持原非流式行为（mock/无 UI 调用方不受影响）
-- **意图是可选的预处理层、只进根 agent**：`config.intent.enabled` 默认关，开启时由 `IntentService` 把一条类别信号注入根 agent 的 head；spawn 的子 agent 不做意图识别。**意图只作信号**——不决定派发、不作门禁、不持跨轮状态（`spawn.py` 对意图零耦合，可断言）
-- **契约式 prompt,两层装配**:编排决策 LLM 运行时自主(AGENT.md 只写契约+启发式);硬不变式下沉代码——诚实性协议在 BASE_PROMPT、审稿轮数预算在 spawn 闸门
+### 当前目录分层含义
+
+- `paperflow/` 是主包；`cli/` 是装配根，`config/` 是参数唯一声明点，`core/` 是运行层（`rag/` 与 `vision/` 已住进 `core/` 内）。
+- `agents/` 是 Agent 插件目录，每个子目录一个角色；它的 `description` 会被自动收进运行时的可派发清单。
+- `.paperflow/` 同时是运行时数据根与静态资产根：`skills/` 与 `intent/` 入库，其余都是运行期产物。
+- `.agents/skills/` 与 `.paperflow/skills/` 是**两条不相干的线**：前者给编码代理用，后者是 paperFlow 运行时的能力包。
+- `docs/`、`scripts/`、`tests/` 不入库是既定策略；运行期目录与个人路径不得入库。
+
+## 技术结构
+
+- 语言与运行时：Python ≥ 3.11；依赖声明在 `pyproject.toml`，开发依赖经 `pip install -e ".[dev]"`。
+- 依赖服务栈：Milvus Standalone（向量库，gRPC 19530 / 健康检查 9091）+ MinIO（图表原图的对象存储），由仓库根 `docker-compose.yml` 一次拉起，数据落 `.paperflow/infra/`。
+- 外部模型端点：对话 LLM、视觉模型、RAG 嵌入与精排都是 OpenAI 兼容的 HTTP 接口，端点、模型名与 key 经配置提供，不硬编码。
+- 可调参数与默认值的唯一声明点是 `paperflow/config/schemas/sections.py`；`config.yaml` 是纯覆盖文件，只写要改的值。
+
+## 环境与依赖
+
+- 两类 API key 都必须由用户提供：LLM（`llm.api_key` / `PAPERFLOW_LLM_API_KEY`）、RAG 嵌入与精排（`rag.embedding.api_key` / `PAPERFLOW_RAG_EMBEDDING_API_KEY`）。LLM key 留空即启动 fail-fast；RAG key 留空不崩，但检索退纯 BM25、索引明确报错、图表视觉描述不可用。
+- `corpus.pdf_dir` / `corpus.note_dir` 这类**个人路径没有默认值、必须显式配**。用户给不出就如实说，不要猜、不要填占位值、不要静默跳过。
+- 依赖服务都是**软依赖**：不可达只警告降级、不阻塞启动。单测用 Milvus Lite 内嵌、不需要这套服务；反之 `scripts/rag/rag_eval/` 的评测要连 Standalone 与 MinIO。
+
+## 仓库职责
+
+- 承载一个可运行的多 agent 学术研究流程助手：意图预处理、ReAct 编排、领域子 agent、RAG 检索、引用管理、记忆系统、终端交互。
+- 维护 agent 插件契约、工具的安全元数据与安全中间件链。
+- 维护设计文档体系：按模块划分的 ADR（正文恒为最新设计）、学习材料、实施期 spec/plan。
+- 承载编码代理的协作资产：各级 manifest、`.agents/skills/`、`.paperflow/skills/`。
+
+## 核心协作逻辑
+
+- **没有确定性 pipeline**：路由、工具选择、任务拆解全由 LLM 的 ReAct 循环驱动；工具只是喂给模型的 JSON Schema 定义。
+- **编排归 supervisor**：它按各子 agent 的 `description` 选型，顺序与并行由它自主决定。契约里写的「一个对象一路」是提示层的编排期望，不是闸门。
+- **意图只作信号**：意图识别是可选预处理层，产出一条类别信号注入根 agent 的 head，不参与任何决策（约束见下方硬红线）。
+- **领域产物各自归口**：记忆、语料索引、引用库各由一位领域 agent 独占读写，其余角色需要时派发它。
+- 会话跨轮靠 SQL 落盘 + `session_id` 一致；`docs/`、`scripts/`、`tests/` 不入库，**文档漂移不会被 git 顶出来**，改完要主动核对。
+
+## 硬红线
+
+以下是不分模块、任何地方都必须成立的不变式。违反它们通常不报错，只会让功能静默失效或让设计倒退。
+
+- **错误一律降级为文本**：工具与中间件的错误转成 `ToolResult` 文本回传模型，由模型决定重试或调整。唯一向上抛的异常是 `MaxTurnsExceeded`。
+- **截断必须续写，绝不交付残缺内容**：模型因长度被截断时，把半截内容与续写提示放回 in-context 继续循环，不能把那半截当最终回答返回。
+- **安全只有策略轴**：进程内决定「要不要用户点头」，性质是贴张纸。**隔离轴（由 OS 或容器强制）本项目不做**——要加能执行 shell 的工具，必须先有进程外隔离。
+- **只有一个确认决策点**：策略引擎合并全部升级因后统一弹一次确认；其余中间件只登记升级原因。硬拒只来自显式规则，不来自档位。
+- **所有拦截走同一条降级通道**：拒绝、确认失败、安全阻断都表现为带 `decision` 的 `ToolResult`，绝不绕过 ReAct 循环。
+- **写工具必须声明安全元数据**（`risk_level` / `side_effects` / `provenance` 等），注册表加载时校验合法值。
+- **路径检查与写盘共用同一份解析结果**：检查通过的路径参数就地归一化为解析后的绝对路径（防 TOCTOU）。
+- **SQL 是记忆真相源，markdown 是投影**：压缩与窗口驱逐**永不删 SQL 行**；读—改—写类块写入必须经一次持锁事务，不能「读旧值→算新值→写回」分三步做。
+- **领域产物的读写各自归口**：记忆归 `memory-agent`、语料索引归 `rag-agent`、引用库归 `citation-agent`；这三类工具**其余 agent 一件不装**。supervisor 不持有任何执行类工具。
+- **`allowed_spawns` 与风险档位由框架强制**，不靠提示词自律；批量同类对象**一个对象一路**派发。
+- **意图只作信号**：不决定派发顺序、不作派发门禁、不持跨轮状态；spawn 对意图零引用，子 agent 不做意图识别。
+- **同一会话的 `session_id` 三处必须一致**（CLI / AgentManager / `Agent.session_id`），错位会让各自读到空数据。
+- **流式零开销**：`stream_callback` / `telemetry_callback` 为 `None` 时，全链路保持非流式行为。
+- **常量与配置的落点**：一个枚举一个文件（`constants/enums/<name>.py`，`__init__` 只再导出）；常量**有第二个消费方才**进 `constants/`；可调参数进顶层 `paperflow/config/`，组件自己的行为参数跟组件走。
+- **标题宁空勿错**：论文标题来自解析器出口，取不到就如实为空；**绝不回退到 PDF 文件名**。
+- **已退役的实现不要复活**：意图的旧混合路由与澄清链路、路径白名单、沙箱轴都已整体移出主干。旧文档里的描述不作论据。
+
+## 关键入口
+
+- 仓库规则与阅读路径：`AGENTS.md`
+- 装配根：`paperflow/cli/services/assembly.py`；启动预检：`paperflow/cli/services/bootstrap.py`
+- 参数声明点：`paperflow/config/schemas/sections.py`
+- 配置模板与字段示例：`config.example.yaml`
+- Agent 插件契约：`agents/AGENTS.md` 与各 `agents/<name>/AGENT.md`
+- 设计文档索引：`docs/adr/`（设计为什么这么做）与 `docs/learning/`（实现怎么运作）
+
+## 渐进式阅读路径
+
+- 仓库边界与公共规则：先读本文件。
+- 改主包某模块：`paperflow/AGENTS.md` → 对应子包 `AGENTS.md` → 源码与 `tests/`。
+- 改某个 agent 的契约：`agents/AGENTS.md` → `agents/<name>/AGENT.md` → `tools.py`。
+- 改运行时能力包（skill）：`.paperflow/AGENTS.md` → `paperflow/core/skills/AGENTS.md`。
+- 追设计背景：`docs/adr/`（按模块一份，正文恒为最新）→ 需要历史时 `docs/adr/修正记录.md`。
+- 想知道某块实现**怎么运作**（而不是为什么这么设计）：`docs/learning/`（按主题一份，正文同样恒为最新）。
+- 排查异常：先过 `.agents/skills/paperflow-troubleshooting/SKILL.md` 的已知根因表。
 
 ## 调查规则
 
-1. 先读本文件建立边界与架构分层，再定位目标模块源码。
-2. manifest 不够时深入 `pyproject.toml`、源码、`tests/` 与调用链核实；代码事实优先于文档概括。
-3. 设计背景查 `docs/adr/`（按模块分文件，正文恒为最新设计）、历史决策查 `docs/adr/修正记录.md`；排查先查 `.agents/skills/paperflow-troubleshooting` 的已知根因表。
-4. 实验与标定事实查 `scripts/<module>/` 下各实验目录的 `results/` 报告；评测产物遵循 `goldens/`（题集）+ `results/`（存档）分目录约定。
-5. 运行期目录与 gitignored 产物默认不是一手事实源。
+1. 先读本文件建立边界，再按 Routing 读目标模块那份子 manifest，最后才读源码。
+2. 设计背景查 `docs/adr/`；历史决策查 `docs/adr/修正记录.md`。
+3. manifest 不够用时深入源码、`pyproject.toml` 与调用链核实。**代码事实优先于任何文档概括**。
+4. 实验与标定事实查 `scripts/<模块>/` 下各实验目录的 `results/` 报告（`scripts/` 不入库，删掉不可恢复）；评测题集在 `goldens/`、产物在 `results/`。
+5. 运行期目录（`.paperflow/` 下非入库子目录、`.venv/`、`__pycache__/`）与 gitignored 产物不作事实源，除非明确要求排查运行时现象。
+
+## 常用命令
+
+```bash
+# 安装开发依赖（conda env 内）
+conda run -n paperflow pip install -e ".[dev]"
+
+# 全量测试
+conda run -n paperflow python -m pytest tests/ -v
+
+# 单个测试
+conda run -n paperflow python -m pytest tests/agent/test_agent.py::TestExecTool -v
+
+# 依赖服务栈（Milvus Standalone + MinIO）；paperflow 启动时会自动拉起，此命令用于手动管理
+docker compose up -d
+
+# 交互式 REPL（⚠️ 不能经 conda run：它不转发 stdin，REPL 会立即 EOF 退出）
+conda activate paperflow && paperflow     # 等价：python -m paperflow（同一 env 内）
+```
+
+- 启动时自动探测依赖服务，未起则自动 `docker compose up -d` 并等待健康；失败只警告不阻塞。跳过预检：`PAPERFLOW_SKIP_BOOTSTRAP=1`。
+- 非交互命令（测试 / 脚本 / 安装）**一律经 `conda run -n paperflow`**，不要用裸 `python` 或 `pip`。唯一例外就是上面的交互式 REPL。
+
+## 统一编码规范
+
+- 注释面向所有人——包括新人和非维护者。用中文写，不出现内部项目代号（任务/决策/评审编号、日期、spec/ADR 章节引用），也不写过程流水账；需要背景时用一句白话说明。
+- 每个函数/方法的 docstring 至少说明其**作用**；关键算法思路、非显而易见的边界条件（安全/并发/失败处理）是重点。非显而易见的逻辑保留 WHY，但用通俗语言，不写成变更日志。
+- **docstring 按 Google 风格写**（三个双引号；首行一句话摘要并以句号收尾，与正文之间空一行）：有参数写 `Args:` 并**逐个**列出，有返回值写 `Returns:`（只返回 `None` 可省），会抛异常写 `Raises:`，生成器用 `Yields:`。函数名与签名本身已说清、且 docstring 只有一句话时，这些段落可以**整段**省略——要么不写、要么列全，不挑「显而易见之外的」写。仓库无 linter 配置，此条靠人工遵守。
+- 按逻辑块组织注释：同一逻辑块的多行代码合并成一条块注释，放在块首；避免每行一注。每条注释紧跟其描述的代码。
+
+```python
+# BAD:  "Loop over items and add to result"        ← 复述代码
+# GOOD: "遍历所有 items 并去重,因为多源搜索结果可能包含同一篇论文的不同版本"
+```
+
+- 修改代码时同步更新注释——过期注释比没有注释更糟。
+- **复用优先**：新增前先检索既有实现，禁止平行造轮子；扩展既有能力优先于新增本地实现。
+
+## 文档维护规则
+
+- **本文件与各级子 manifest 只写规则，不写容易失效的静态计数、一次性状态或临时结论**（详见文首判据）；需要现状就读源码或 ADR / learning。**新增或整理 manifest 时加载 [`agents-md-governance`](.agents/skills/agents-md-governance/SKILL.md)**——判据、根/单元骨架模板、体检清单与装载行为实测都在那份 skill 里。
+- **改代码后先自问要不要同步设计文档**：接口签名、行为语义、结构或已记录决策发生变化都算。需要同步时**先让测试通过再改文档**——先让代码行为被测试锁住，再让文档描述现状。
+- **ADR（`docs/adr/`）**：
+  - 按模块划分，**一份 ADR = 一个模块**（清单见该目录，文件名即模块）。新决策扩展对应模块那份；确属新模块才新建，编号顺延。
+  - **正文恒为最新设计**：设计变更直接改写正文对应小节，不在正文留「修正说明 / 修正（日期）」这类历史痕迹，也不写「原方案被废弃」。
+  - **修正史统一追加进 `docs/adr/修正记录.md`**（日期 / 文档 / 变更摘要 / 来源）——ADR 与 learning 共用这一份。
+  - 跨模块变更**按归属拆分**写进各模块 ADR，不设跨模块 ADR；每个 ADR 要显式声明它与相邻模块的分工边界。
+  - **编号不回收、空缺须补齐**：删除或合并 ADR 后重编号，并同步更新所有活文档的引用。历史 spec/plan 里的旧编号不回改。
+  - 文中互相引用只写「见 ADR XXXX」。
+- **learning（`docs/learning/`）与 ADR 同一套规则**——它与 ADR 只差读者：ADR 讲「为什么这么设计」，learning 讲「实现怎么运作」，**同步义务完全一样**。
+  - 按主题划分，**一份文件 = 一个主题**（清单见该目录，文件名即主题）。新主题才新建，编号顺延。
+  - **正文恒为最新**：行为或结构变了直接改写正文对应小节，**不追加「更新（日期）」节、不在正文留修正痕迹**；历史上已追加的「更新」节要折回正文。
+  - **修正史同样追加进 `docs/adr/修正记录.md`**（同一份文件，标注是 learning 的哪一篇）。不要另起一份 learning 修正记录。
+  - **编号不回收、空缺须补齐**：删除或合并后重编号，并同步更新所有活文档的引用；历史文档里的旧编号不回改。
+  - 文中引用只写指针（如「见 learning 04」）。
+- spec（`docs/superpowers/specs/`）与 plan（`docs/superpowers/plans/`）是**实施期文档**：实现过程中发现它与最终代码不一致，或当前改动影响上层接口，都要回修。
+- **`docs/`、`scripts/`、`tests/` 都不入库**，所以文档漂移不会被 diff 顶出来，也没有 CI 替你拦：改完要主动核对受影响的文档。
 
 ## Routing
 
-- 上级：无（本文件即根 manifest）
-- 子目录 manifest（就近优先）：[`paperflow/AGENTS.md`](paperflow/AGENTS.md)（及其 `core/`〔内含 `rag/` `vision/`〕`tools/` `citations/` `terminal/`）、[`agents/AGENTS.md`](agents/AGENTS.md)、[`.paperflow/AGENTS.md`](.paperflow/AGENTS.md)
-- Agent 插件定义：[`agents/supervisor/AGENT.md`](agents/supervisor/AGENT.md) 等各 `agents/<name>/AGENT.md`
-- 设计文档索引：见上文 Architecture 一节的「设计文档索引」行；ADR 正文在 [`docs/adr/`](docs/adr/)
+- 当前目录是 `paperFlow` 根工作区 manifest。
+- 主包入口：[`paperflow/AGENTS.md`](paperflow/AGENTS.md)（其下 [`cli/`](paperflow/cli/AGENTS.md) / [`config/`](paperflow/config/AGENTS.md) / [`core/`](paperflow/core/AGENTS.md) / [`tools/`](paperflow/tools/AGENTS.md) / [`citations/`](paperflow/citations/AGENTS.md) / [`terminal/`](paperflow/terminal/AGENTS.md)；`core/` 之下的十二份见 core manifest）
+- 插件目录入口：[`agents/AGENTS.md`](agents/AGENTS.md)
+- 资产与数据根入口：[`.paperflow/AGENTS.md`](.paperflow/AGENTS.md)（其下 [`skills/`](.paperflow/skills/AGENTS.md) / [`intent/`](.paperflow/intent/AGENTS.md)）
+- 设计文档索引：[`docs/adr/`](docs/adr/)（修正史：[`docs/adr/修正记录.md`](docs/adr/修正记录.md)）、[`docs/learning/`](docs/learning/)
 - 排障技能：[`.agents/skills/paperflow-troubleshooting/SKILL.md`](.agents/skills/paperflow-troubleshooting/SKILL.md)
-- 配置示例：[`config.example.yaml`](config.example.yaml)
+- manifest 治理技能（搭建 / 增删模块 / 体检）：[`.agents/skills/agents-md-governance/SKILL.md`](.agents/skills/agents-md-governance/SKILL.md)
+
+## References
+
+- [`README.md`](README.md)
+- [`config.example.yaml`](config.example.yaml)
+- [`docker-compose.yml`](docker-compose.yml)
+- [`pyproject.toml`](pyproject.toml)
+- [`paperflow/AGENTS.md`](paperflow/AGENTS.md)
+- [`agents/AGENTS.md`](agents/AGENTS.md)
+- [`.paperflow/AGENTS.md`](.paperflow/AGENTS.md)
+- [`docs/adr/`](docs/adr/)（按模块的设计决策；修正史：[`docs/adr/修正记录.md`](docs/adr/修正记录.md)）
+- [`docs/learning/`](docs/learning/)（按主题的实现讲解，与 ADR 同一套同步规则）
+- [`.agents/skills/paperflow-troubleshooting/SKILL.md`](.agents/skills/paperflow-troubleshooting/SKILL.md)

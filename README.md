@@ -75,7 +75,7 @@ REPL 内置斜杠命令：`/help` 查看命令、`/skill` 管理 skills、`/mcp`
 
 ## 配置说明
 
-所有可调参数的默认值唯一声明在 `paperflow/config/sections.py`（dataclass 字段默认值），`config.yaml` 是纯覆盖文件——只写要改的值，未列出的字段回落代码默认值。主要配置段：
+所有可调参数的默认值唯一声明在 `paperflow/config/schemas/sections.py`（dataclass 字段默认值），`config.yaml` 是纯覆盖文件——只写要改的值，未列出的字段回落代码默认值。主要配置段：
 
 | 配置段 | 用途 |
 |---|---|
@@ -95,14 +95,16 @@ API key 也可经环境变量提供（如 `PAPERFLOW_LLM_API_KEY`、`PAPERFLOW_R
 
 ```
 paperflow/
-  terminal/      终端交互层:REPL + 活动流渲染 + 确认中心 + 会话回放
+  cli/           装配根:对象图组装 + 启动预检
+  config/        全局可调参数的唯一声明点
   core/          核心运行层:agent(ReAct 循环) / llm(客户端 + 结构化输出)
                  / intent(意图识别) / memory(记忆系统) / security(安全中间件)
                  / mcp(MCP 客户端平台) / skills(Skill 注册表) / tool(Tool 抽象)
-  rag/           RAG 检索栈:解析 → 分块 → 向量存储 → 混合检索
+                 / rag(RAG 检索栈:解析 → 分块 → 索引 → 混合检索 → 重排)
+                 / vision(视觉分析:图表检测 + 提取 + 多模态解读)
   citations/     引用管理:bib 读写 + 语料索引 + 编排
-  vision/        视觉分析:图表检测 + 提取 + 多模态解读
   tools/         面向 agent 的工具集:文件 / 记忆 / 引用 / RAG / 搜索等
+  terminal/      终端交互层:REPL + 活动流渲染 + 确认中心 + 会话回放
 
 agents/          各角色 agent 的 AGENT.md + tools.py（插件目录，位于仓库根）
 .paperflow/      运行时数据根与资产目录:skills(流程 skill) / intent(意图知识库)
@@ -112,4 +114,4 @@ agents/          各角色 agent 的 AGENT.md + tools.py（插件目录，位于
 
 ## AI 协作入口
 
-仓库根的 `AGENTS.md` 是面向所有 AI 编码代理（ZCode / Claude Code / Codex 等）的治理 manifest（架构、命令、编码规范、文档同步规则），并与子目录逐级 manifest（`paperflow/` 及其 `core/rag/tools/citations/vision/terminal/`、`agents/`、`.paperflow/`）构成两级路由，就近优先。`CLAUDE.md` 是 Claude Code 的入口薄指针（本地维护、不入库）。事实优先级：源码与测试 > AGENTS.md > `docs/` 设计文档。
+仓库根的 `AGENTS.md` 是面向所有 AI 编码代理（ZCode / Claude Code / Codex 等）的治理 manifest——只写**规则**（该怎么做、什么不许做、去哪里找），不写字段表、文件清单这类会被代码改活的现状快照。`paperflow/` 及其 `cli/`、`config/`、`core/`（再往下十二份）、`tools/`、`citations/`、`terminal/`，以及 `agents/`、`.paperflow/`（再往下 `skills/`、`intent/`）各有一份子 manifest 写就地约定。注意：客户端只**自动注入其中一份**（从当前目录向上找到的第一份），所以改某个模块前要按 AGENTS.md 的 Routing 主动读它那份。`CLAUDE.md` 是 Claude Code 的入口薄指针（本地维护、不入库）。事实优先级：源码与测试 > AGENTS.md 及各级子 manifest > `docs/` 设计文档。

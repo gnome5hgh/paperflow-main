@@ -1,41 +1,90 @@
-# .paperflow/
+# .paperflow
 
 ## Scope
 
-- 本文件覆盖 `.paperflow/` 用户级数据目录。它同时是**两样东西**：Skill 插件的根目录（`skills/`，内置与用户安装同层、单级结构），以及**运行时数据根**（`config.runtime.workspace` 的默认值，记忆/审计/会话历史/Milvus 卷等都落在这里）。
-- 入库的只有静态资产：本 manifest、`skills/`、`intent/`；其余子目录是运行期产物，gitignore 已盖（反选规则见根 `.gitignore`）。
+- 覆盖 `.paperflow/` 用户级数据目录。它同时是**两样东西**：Skill 插件的根目录（单级结构、内置与用户安装同层），以及**运行时数据根**的默认位置。
+- 入库的只有静态资产：本 manifest、`skills/`、`intent/`；其余子目录都是运行期产物，已由 gitignore 覆盖。
+
+## Module Positioning
+
+- 角色：`asset-and-runtime-root-manifest`
+- 职责：同时承载「要分发给谁」的静态资产（skill、意图知识库）与「跑起来才有」的运行期数据（记忆、审计、会话历史、索引状态、服务卷）。
 
 ## Directory Structure
 
 ```text
 .paperflow/
-├─ AGENTS.md        # 本 manifest（入库）
-├─ skills/          # Skill 插件唯一根目录（入库）
-│  └─ <skill-name>/ # 一个 skill 一个目录，目录名 = frontmatter 的 name
-│     ├─ SKILL.md   # agentskills.io 格式：frontmatter(name/description/…) + 正文
-│     ├─ tools.py   # 可选：module-level TOOLS，经 merge_tools 并入子 agent 工具表
-│     └─ references/# 可选：L3 资源（load_skill(name=..., resource=...) 读取，路径围栏限本目录内）
-├─ intent/          # 意图知识库（taxonomy.yaml + rules.yaml，随仓库发布，入库）
-├─ memory/          # 记忆库（memory.db + MemFS markdown 投影，Git 变体在此另起一个 git 仓库）
-├─ security/audit/  # 审计 JSONL（按日落盘）
-├─ session/         # REPL 输入历史（repl_history.txt）
-├─ rag/             # 索引状态文件（index_state.json，带配方哈希）
-├─ citations/       # references.bib 默认落点（引用库真相源）
-└─ infra/milvus/    # Milvus Standalone 数据卷（etcd / minio / milvus 三份）
+├─ skills/         # Skill 插件唯一根目录（入库，有 manifest）；每份 skill 一个目录，目录名 = frontmatter 的 name
+├─ intent/         # 意图知识库（入库，随仓库发布，有 manifest）
+├─ memory/         # 记忆库与它的 markdown 投影
+├─ security/       # 审计落盘（按天轮转的 JSONL）
+├─ session/        # REPL 输入历史
+├─ rag/            # 索引状态文件（带配方哈希）
+├─ citations/      # references.bib 的默认落点
+└─ infra/          # 依赖服务（Milvus / MinIO）的数据卷
 ```
 
-## Core Rules
+## Responsibilities
 
-- **agentskills.io 规范强制**：frontmatter 必填 `name` 且必须与目录名一致，违反注册即报错（fail-closed）。
-- **三级渐进披露**：L1 清单（name+description）注入 head 零成本 → L2 `load_skill` 按需加载正文 → L3 资源读取限 skill 目录内。
-- **对所有 agent 可见**：L1 清单不按 agent 收窄——每份 skill 对包括 supervisor 在内的所有 agent 可见（含代码的 skill 其工具仍不并入 supervisor）。领域边界由 `description` 的触发语境承担（「谁该在什么时候加载它」写在描述里），不用私有字段做准入。
-- **含代码的 skill 强制人工过目**：安装时 `-y` 被拒，须显式 `--allow-code`；skill 捆绑的 tools.py 并入子 agent 工具表，但 supervisor 代码级恒不并入（权限最小化红线）。
-- 版本对齐经集中 lock 文件（`skills.lock.json`）：pin sha、update/enable-disable 走 `/skill` 斜杠命令，不手改。
-- **`security/` 与 `infra/` 受保护**：WorkspacePolicy 按 `workspace/security`、`workspace/infra` 前缀硬拦读写（审计防篡改、服务卷不许 agent 碰）——工作区根换成 `.paperflow/` 后这两条保护自动跟着生效，无需另配。
-- **意图知识库随仓库发布**：`intent/` 由 `paperflow/core/intent/rules/taxonomy.py` 装载并做 fail-closed 校验，路径锚仓库安装根（不随 `PAPERFLOW_RUNTIME_WORKSPACE` 重定向）。
+- 作为 skill 与意图知识库的分发根，供运行时装载。
+- 作为运行期数据根，收拢记忆、审计、会话历史、索引状态与服务卷。
+- 用 gitignore 边界把「资产」与「产物」分开。
+
+## Core Logic
+
+- **只有静态资产入库**：往本目录下新增子目录时先想清楚它是不是运行期产物——是，就补进 gitignore；不是，才允许进版本库。
+- **`security/` 与 `infra/` 受硬拦**：路径权威按前缀拦掉这两个目录的读写（审计防篡改、服务卷不许 agent 碰）。工作区根改到别处时，这两条保护要跟着配——改路径不补规则等于把门敞开。
+- **意图知识库随仓库发布、路径锚仓库安装根**：它由装载器做 fail-closed 校验，**不随运行数据根的重定向而搬家**——它是内容资产，不是运行时数据。
+
+## Key Entry Points
+
+- `skills/` — skill 根目录（每份 skill 一个子目录）
+- `intent/` — 意图知识库的两份文件（判定口径与示例、高精度规则）
+- `memory/` — 记忆库与 markdown 投影
+- `security/` — 审计落盘
+
+## Usage And Change Notes
+
+- **skill 的规范细节归 [`paperflow/core/skills/AGENTS.md`](../paperflow/core/skills/AGENTS.md)**：frontmatter 强制项、渐进披露、准入安装与 lock 治理都以那份 manifest 为准，本文件不重复。
+- **运行期数据可以丢**：清空或重建下面的运行期目录只影响历史与索引，不改变任何代码事实。但它也不是事实源——排查时不要拿它当依据。
+- 依赖服务的数据卷在 `infra/` 下；清空它会连图表原图一起清掉，重建后要重跑索引。
+- `.agents/skills/` 与这里的 `skills/` **是两条不相干的线**：前者给编码代理用，后者是 paperFlow 运行时的能力包。
+
+## Dependencies And Collaboration
+
+- 被 `paperflow/core/skills/`（发现与安装）、`paperflow/core/intent/rules/`（装载知识库）、`paperflow/core/memory/`、`paperflow/core/security/middleware/audit.py`、`paperflow/core/rag/` 与 `paperflow/citations/` 消费。
+- 运行数据根的位置由运行时配置的 `workspace` 决定，本目录是它的默认值。
+
+## Investigation Rule
+
+1. 先确认要查的是「资产」还是「产物」：资产看 `skills/` 与 `intent/`，产物只在用户明确要求排查时看。
+2. skill 不生效看 [`paperflow/core/skills/AGENTS.md`](../paperflow/core/skills/AGENTS.md)；意图知识库装载报错看 `paperflow/core/intent/rules/`。
+3. 运行数据根的具体子目录名以配置与存储实现为准，不要凭记忆猜。
+4. 文档与代码冲突时以代码事实为准。
+
+## Core Commands
+
+```bash
+conda run -n paperflow python -m pytest tests/core -k "skill or config" -q
+```
+
+## Verification
+
+```bash
+conda run -n paperflow python -m pytest tests/core -k "skill or config" -q
+```
 
 ## Routing
 
 - 上级：[`../AGENTS.md`](../AGENTS.md)
-- 注册与安装逻辑：[`../paperflow/core/AGENTS.md`](../paperflow/core/AGENTS.md)（skills/registry.py、install.py）
-- 意图知识库装载：[`../paperflow/core/intent/`](../paperflow/core/intent/)（rules/taxonomy.py）
+- Skill 资产根与创作规则：[`skills/AGENTS.md`](skills/AGENTS.md)
+- 意图知识库创作规则：[`intent/AGENTS.md`](intent/AGENTS.md)
+- Skill 体系（装载与安装）：[`../paperflow/core/skills/AGENTS.md`](../paperflow/core/skills/AGENTS.md)
+- 意图知识库装载：[`../paperflow/core/intent/AGENTS.md`](../paperflow/core/intent/AGENTS.md)
+
+## References
+
+- [`skills/`](skills/)
+- [`intent/`](intent/)
+- [`../paperflow/core/skills/AGENTS.md`](../paperflow/core/skills/AGENTS.md)
+- [`../.gitignore`](../.gitignore)
