@@ -2,8 +2,9 @@
 
 与 `paperflow.core.llm` 的 wire 消息家族（Message 及其各角色子类）区分：本类型是
 落盘到 messages 表的持久化消息，由 MessageManager 从 wire 消息转换生成，补上
-id / created_at 等存储字段。content 恒为字符串（str | None），落盘与回放都不做
-JSON 类型猜测。
+id / created_at 等存储字段。content 恒为字符串（str | None），对它落盘与回放都
+不做 JSON 类型猜测；meta 不适用这条——它是显式类型化的响应信封，按自己的
+dict 往返还原（见 `response_meta_to_dict` / `response_meta_from_dict`）。
 """
 from __future__ import annotations
 

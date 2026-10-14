@@ -53,6 +53,11 @@ _META_FIELDS = frozenset(f.name for f in fields(ResponseMeta))
 _USAGE_FIELDS = frozenset(f.name for f in fields(Usage))
 
 
+def _known_only(d: dict, allowed: frozenset[str]) -> dict:
+    """只留下 allowed 里的键——落盘回读的版本漂移护栏，两处过滤共用。"""
+    return {k: v for k, v in d.items() if k in allowed}
+
+
 def response_meta_to_dict(meta: ResponseMeta) -> dict:
     """信封 → 可 JSON 序列化的 dict（内嵌的 Usage 一并展开成子 dict）。
 
@@ -79,10 +84,6 @@ def response_meta_from_dict(d: dict) -> ResponseMeta:
         ResponseMeta；输入缺字段时该项为默认 None。
     """
     raw_usage = d.get("usage")
-    usage = None
-    if isinstance(raw_usage, dict):
-        usage = Usage(**{k: v for k, v in raw_usage.items() if k in _USAGE_FIELDS})
-    return ResponseMeta(
-        usage=usage,
-        **{k: v for k, v in d.items() if k in _META_FIELDS and k != "usage"},
-    )
+    usage = (Usage(**_known_only(raw_usage, _USAGE_FIELDS))
+             if isinstance(raw_usage, dict) else None)
+    return ResponseMeta(usage=usage, **_known_only(d, _META_FIELDS - {"usage"}))

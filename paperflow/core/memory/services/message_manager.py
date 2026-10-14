@@ -1,16 +1,16 @@
 """MessageManager：完整对话落盘（Recall）+ 检索。
 
 wire 消息（`paperflow.core.llm` 的 Message）→ StoredMessage（补 id/created_at）→ messages 表。
-add_message 是全部消息持久化的唯一漏斗：在此清洗 surrogateescape 残留、
-并让 ask_recorder 捕获子 agent 的 Q&A。检索为纯 SQL LIKE，不做语义检索。
+add_message 是全部消息持久化的唯一漏斗：在此清洗 surrogateescape 残留（content 与响应
+信封里的思维链/拒答一视同仁）。检索为纯 SQL LIKE，不做语义检索。
 """
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import datetime, timezone
 
-from paperflow.core.llm import Message, response_meta_from_dict
+from paperflow.core.llm import Message, ResponseMeta, response_meta_from_dict
 from paperflow.core.common.constants import MessageRole
 from paperflow.core.memory.storage import message as message_orm
 from paperflow.core.memory.storage.database import MemoryDB
@@ -20,6 +20,25 @@ from paperflow.core.common.text import sanitize_surrogates
 __all__ = ["MessageManager"]
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_response_meta(meta: ResponseMeta) -> ResponseMeta:
+    """清洗信封里的文本字段（思维链与拒答是模型自由文本，同样可能带未配对代理）。
+
+    messages 表严格 UTF-8，代理码点写入会炸——信封与 content 进同一张表，故共用同一道
+    清洗。不清的后果不是丢一个字符，而是整条消息落盘失败（INSERT 抛 UnicodeEncodeError）。
+
+    Args:
+        meta: 从端点响应派生的信封。
+
+    Returns:
+        文本字段已清洗的副本（数字字段原样）。
+    """
+    values = {f.name: getattr(meta, f.name) for f in fields(meta)}
+    for name, value in values.items():
+        if isinstance(value, str):
+            values[name] = sanitize_surrogates(value)
+    return replace(meta, **values)
 
 
 def _wire_to_schema(wire: Message) -> StoredMessage:
@@ -97,8 +116,9 @@ class MessageManager:
         """落盘一条消息并返回持久化版本（全部消息持久化的唯一漏斗）。
 
         信任边界：清洗代理码点（surrogateescape 残留）——messages 表严格 UTF-8
-        写入，代理会炸。ask_user 回答等路径不经 agent.run 清洗，add_message 是
-        它们共同必经的单点，在此堵漏最稳（replace 生成副本，不改调用方 wire）。
+        写入，代理会炸。落盘的消息来自多个来源（用户输入、工具结果、合成消息、模型
+        自由文本），add_message 是它们共同必经的单点，在此堵漏最稳（replace 生成
+        副本，不改调用方 wire）。信封里的思维链与拒答同样是模型自由文本，走同一道清洗。
 
         Args:
             agent_id: 所属 agent 标识。
@@ -113,6 +133,9 @@ class MessageManager:
         """
         # 清洗 content 中的 surrogateescape 残留（防止写入 SQLite 时 UnicodeEncodeError）
         wire = replace(wire, content=sanitize_surrogates(wire.content))
+        meta = getattr(wire, "meta", None)
+        if meta is not None:
+            wire = replace(wire, meta=_sanitize_response_meta(meta))
         m = _wire_to_schema(wire)
         message_orm.insert_message(self.db, agent_id, m)
         return m
