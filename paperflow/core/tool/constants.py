@@ -14,7 +14,9 @@ __all__ = ["SUMMARY_DECISION", "SUMMARY_TERMINAL", "SUMMARY_VIOLATIONS"]
 #: 语义是「本 agent 的任务已终结」——返回值即裁决全文，不能再进下一轮 LLM 调用。
 SUMMARY_TERMINAL = "terminal"
 
-#: 决策结果键：被拒（user_denied / auto_denied）或安全拦截（security_blocked）时写入
+#: 决策结果键：被拒（user_denied / auto_denied）或安全拦截（security_blocked）时写入。
+#: 两条路径的取值来自两个值域重叠的词表——审批结果（ApprovalOutcome）与决策类型
+#: （ToolDecision）；这个键回答的是「这次调用为什么没执行」，落盘值就是那个字符串。
 SUMMARY_DECISION = "decision"
 
 #: 违规明细键：内容防护命中的规则列表，与决策结果一同写入

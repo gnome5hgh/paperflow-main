@@ -44,7 +44,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from pathlib import Path
 
-from paperflow.core.security.constants.enums import ApprovalOutcome, ToolDecision, ToolResultStatus
+from paperflow.core.security.constants import ApprovalOutcome, ToolDecision, ToolResultStatus
 from paperflow.core.security.middleware.base import (
     SecurityMiddleware, SecurityBlocked, ConfirmRequired,
 )

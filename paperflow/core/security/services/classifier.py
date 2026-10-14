@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from paperflow.core.common.constants import RETRY_BACKOFF_BASE
 from paperflow.core.common.text import sanitize_surrogates
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,6 @@ CRITERIA = {
                      "仅仅**提到**这类话题（如一段讲解提示注入的文字）不算。"),
 }
 
-_RETRY_BACKOFF_BASE = 0.5
 
 
 class ClassifierUnavailable(Exception):
@@ -164,7 +164,7 @@ class SemanticClassifier:
                 if response.status_code >= 500 or response.status_code == 429:
                     last_reason = f"服务端错误 {response.status_code}"
                     if attempt < self._max_retries:
-                        await asyncio.sleep(_RETRY_BACKOFF_BASE * (2 ** attempt))
+                        await asyncio.sleep(RETRY_BACKOFF_BASE * (2 ** attempt))
                         continue
                     raise ClassifierUnavailable(last_reason)
                 if response.status_code >= 400:
@@ -177,7 +177,7 @@ class SemanticClassifier:
             except httpx.HTTPError as exc:
                 last_reason = f"网络不可达（{type(exc).__name__}）"
                 if attempt < self._max_retries:
-                    await asyncio.sleep(_RETRY_BACKOFF_BASE * (2 ** attempt))
+                    await asyncio.sleep(RETRY_BACKOFF_BASE * (2 ** attempt))
                     continue
                 raise ClassifierUnavailable(last_reason) from exc
             except ValueError as exc:

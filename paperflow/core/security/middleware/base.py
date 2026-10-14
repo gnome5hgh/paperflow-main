@@ -11,7 +11,7 @@
 
 from abc import ABC
 
-from paperflow.core.security.constants.enums import ToolDecision
+from paperflow.core.security.constants import ToolDecision
 from paperflow.core.security.domain.dto.tool_context import ToolContext
 
 

@@ -1,7 +1,7 @@
 """一次工具调用的上下文快照：调用方信息、入参与结果异常，供各中间件检查与审计。"""
 from dataclasses import dataclass, field
 
-from paperflow.core.security.constants.enums import ApprovalOutcome
+from paperflow.core.security.constants import ApprovalOutcome
 from paperflow.core.tool import Tool, ToolResult
 
 

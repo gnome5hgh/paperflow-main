@@ -24,12 +24,11 @@ from pydantic import BaseModel, ValidationError
 
 from paperflow.core.llm.domain.dto.message import Message
 from paperflow.core.llm.domain.dto.response import LLMResponse
+# 行为参数住在 domain/dto（组件自己的参数，不随 config.yaml 走）；这里再导出，
+# 让既有的 `from ...services.structured import StructuredOutputConfig` 继续可用。
 from paperflow.core.llm.domain.dto.structured_output_config import StructuredOutputConfig
 
 __all__ = ["StructuredOutput", "StructuredOutputConfig", "StructuredOutputError"]
-
-#: 行为参数住在 domain/dto（组件自己的参数，不随 config.yaml 走）；此处再导出，
-#: 让既有的 `from ...services.structured import StructuredOutputConfig` 继续可用。
 
 
 class StructuredOutputError(Exception):
