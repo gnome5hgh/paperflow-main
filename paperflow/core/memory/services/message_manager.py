@@ -1,6 +1,6 @@
 """MessageManager：完整对话落盘（Recall）+ 检索。
 
-wire（core/llm.py::Message）→ schemas Message（补 id/created_at）→ messages 表。
+wire 消息（`paperflow.core.llm` 的 Message）→ StoredMessage（补 id/created_at）→ messages 表。
 add_message 是全部消息持久化的唯一漏斗：在此清洗 surrogateescape 残留、
 并让 ask_recorder 捕获子 agent 的 Q&A。检索为纯 SQL LIKE，不做语义检索。
 """
@@ -10,11 +10,11 @@ import logging
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from paperflow.core.llm import Message as WireMessage
+from paperflow.core.llm import Message
 from paperflow.core.memory.constants import MessageRole
 from paperflow.core.memory.storage import message as message_orm
 from paperflow.core.memory.storage.database import MemoryDB
-from paperflow.core.memory.schemas.message import Message
+from paperflow.core.memory.schemas.message import StoredMessage
 from paperflow.core.common.text import sanitize_surrogates
 
 __all__ = ["MessageManager"]
@@ -22,16 +22,16 @@ __all__ = ["MessageManager"]
 logger = logging.getLogger(__name__)
 
 
-def _wire_to_schema(wire: WireMessage) -> Message:
-    """把 OpenAI wire 消息转成持久化 Message：补 role 枚举 / 空 tool_calls / 时间戳。
+def _wire_to_schema(wire: Message) -> StoredMessage:
+    """把 wire 消息转成 StoredMessage：补 role 枚举 / 空 tool_calls / 时间戳。
 
     Args:
-        wire: 来自 LLM 层的原始消息（role 为字符串，content 可能为字符串或 None）。
+        wire: LLM 层的原始消息（role 为字符串，content 可能为字符串或 None）。
 
     Returns:
-        持久化层 Message 对象，自动填充当前 UTC 时间作为 created_at。
+        StoredMessage 对象，自动填充当前 UTC 时间作为 created_at。
     """
-    return Message(
+    return StoredMessage(
         role=MessageRole(wire.role),
         content=wire.content,
         tool_calls=wire.tool_calls or [],  # 确保为列表，避免 None
@@ -40,26 +40,26 @@ def _wire_to_schema(wire: WireMessage) -> Message:
     )
 
 
-def _row_to_schema(row: dict) -> Message:
-    """把 DB 行转回持久化 Message（tool_calls 从 JSON 还原）。
+def _row_to_schema(row: dict) -> StoredMessage:
+    """把 DB 行转回 StoredMessage（tool_calls 从 JSON 还原）。
 
     content 落盘恒为字符串（_wire_to_schema 只产出 str；schema content 为
     str|None），直接原样回放即可——不能对以 {/[ 开头的字符串内容做 json.loads，
-    否则会把它变成 dict/list，Message.content 类型校验（str|None）直接抛
+    否则会把它变成 dict/list，StoredMessage.content 类型校验（str|None）直接抛
     ValidationError。
 
     Args:
         row: 数据库行（dict 形式）。
 
     Returns:
-        Message 实例。
+        StoredMessage 实例。
 
     重要边界：
         - content 字段保持原样字符串，不做 JSON 解析（即使内容看起来像 JSON）。
         - tool_calls 字段是 JSON 数组字符串，需反序列化为 list。
     """
     import json
-    return Message(
+    return StoredMessage(
         id=row["id"], role=MessageRole(row["role"]), content=row["content"],
         tool_calls=json.loads(row["tool_calls"]) if row["tool_calls"] else [],
         tool_call_id=row["tool_call_id"], step_id=row["step_id"],
@@ -86,7 +86,7 @@ class MessageManager:
         self.db = db
         self.agent_manager = agent_manager  # 可选：读 AgentState.message_ids（in-context 窗口）
 
-    def add_message(self, agent_id: str, wire: WireMessage) -> Message:
+    def add_message(self, agent_id: str, wire: Message) -> StoredMessage:
         """落盘一条消息并返回持久化版本（全部消息持久化的唯一漏斗）。
 
         信任边界：清洗代理码点（surrogateescape 残留）——messages 表严格 UTF-8
@@ -98,7 +98,7 @@ class MessageManager:
             wire: LLM 层的原始消息。
 
         Returns:
-            持久化后的 Message 对象（含生成的 id 和 created_at）。
+            持久化后的 StoredMessage 对象（含生成的 id 和 created_at）。
 
         注意：
             - 使用 dataclasses.replace 生成新对象，不修改原 wire。
@@ -111,7 +111,7 @@ class MessageManager:
         return m
 
     def get_messages_by_agent_id(self, agent_id: str,
-                                 limit: int | None = None) -> list[Message]:
+                                 limit: int | None = None) -> list[StoredMessage]:
         """按 agent 取全部消息（升序）；limit 可选。
 
         Args:
@@ -119,13 +119,13 @@ class MessageManager:
             limit: 最多返回条数（None 表示全部）。
 
         Returns:
-            Message 列表，按 created_at 升序排列（同刻按 rowid 排序保证插入顺序）。
+            StoredMessage 列表，按 created_at 升序排列（同刻按 rowid 排序保证插入顺序）。
         """
         rows = message_orm.select_messages_by_agent(self.db, agent_id, limit=limit)
         return [_row_to_schema(r) for r in rows]
 
     def get_in_context_messages(self, agent_id: str,
-                                limit: int | None = None) -> list[Message]:
+                                limit: int | None = None) -> list[StoredMessage]:
         """回放该 agent 的 in-context 消息（AgentState.message_ids 指定的窗口）。
 
         有 agent_manager 且 message_ids 非空时按 id 返回（压缩后的窗口：摘要 + 保留
@@ -137,7 +137,7 @@ class MessageManager:
             limit: 若降级到全部消息查询时，可选的条数限制（当 message_ids 存在时忽略）。
 
         Returns:
-            Message 列表，顺序与 message_ids 一致（若使用窗口），或按时间升序（降级模式）。
+            StoredMessage 列表，顺序与 message_ids 一致（若使用窗口），或按时间升序（降级模式）。
 
         降级策略：
             - 优先从 AgentState.message_ids 取消息（已压缩的窗口）。
@@ -160,7 +160,7 @@ class MessageManager:
     def search_messages(self, agent_id: str, query: str,
                         roles: list[str] | None = None, limit: int = 5,
                         start_date: str | None = None,
-                        end_date: str | None = None) -> list[Message]:
+                        end_date: str | None = None) -> list[StoredMessage]:
         """按内容 LIKE 检索消息（供 conversation_search 工具使用）。
 
         Args:
@@ -172,7 +172,7 @@ class MessageManager:
             end_date: 结束时间（ISO 字符串）。
 
         Returns:
-            Message 列表，按时间倒序（最新的在前）。
+            StoredMessage 列表，按时间倒序（最新的在前）。
 
         注意：此检索为纯 SQL LIKE 模式，不支持复杂语义搜索；如需语义检索可后续扩展。
         """
@@ -192,7 +192,7 @@ class MessageManager:
         """
         return message_orm.count_messages(self.db, agent_id)
 
-    def list_user_messages_for_agent(self, agent_id: str) -> list[Message]:
+    def list_user_messages_for_agent(self, agent_id: str) -> list[StoredMessage]:
         """返回该 agent 的全部 user 消息（供需要「只看用户说了什么」的场景）。
 
         Args:

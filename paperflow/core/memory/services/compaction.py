@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from paperflow.core.llm import Message as WireMessage
+from paperflow.core.llm import Message
 from paperflow.core.common.tokenization import get_token_encoder
 
 __all__ = ["CompactionSettings", "SummarySchema", "should_compress", "run_compaction"]
@@ -92,11 +92,11 @@ class CompactionSettings:
         return model_window // 2
 
 
-def _estimate_tokens(messages: list[WireMessage]) -> int:
+def _estimate_tokens(messages: list[Message]) -> int:
     """粗估消息 token 总量：每条内容 token 数 + 4 的协议开销常数。
 
     Args:
-        messages: 消息列表（WireMessage 格式）。
+        messages: 消息列表（Message 格式）。
 
     Returns:
         估算的总 token 数（整数）。
@@ -109,7 +109,7 @@ def _estimate_tokens(messages: list[WireMessage]) -> int:
     return total
 
 
-def should_compress(messages: list[WireMessage], settings: CompactionSettings,
+def should_compress(messages: list[Message], settings: CompactionSettings,
                     context_window: int) -> bool:
     """判断当前窗口是否该压缩：估算 token × 1.1 > trigger_ratio × 预算。
 
@@ -128,9 +128,9 @@ def should_compress(messages: list[WireMessage], settings: CompactionSettings,
     return estimate * 1.1 > settings.trigger_ratio * ctx_size
 
 
-async def run_compaction(messages: list[WireMessage], settings: CompactionSettings,
+async def run_compaction(messages: list[Message], settings: CompactionSettings,
                          llm, structured, summary_text: str | None = None,
-                         context_window: int | None = None) -> list[WireMessage]:
+                         context_window: int | None = None) -> list[Message]:
     """执行压缩（sliding_window 默认）：驱逐旧对话 + index 1 插摘要 + 保留近期尾部。
 
     摘要文本可由调用方传入（测试/已有 summary），否则用 StructuredOutput 生成。
@@ -164,15 +164,15 @@ async def run_compaction(messages: list[WireMessage], settings: CompactionSettin
     # 3. 根据模式决定是否保留尾部
     #    all_messages / self_compact_all 模式：完全压缩，无尾部保留
     if settings.mode in ("all_messages", "self_compact_all"):
-        return head + [WireMessage(role="system", content=summary_text)]
+        return head + [Message(role="system", content=summary_text)]
 
     # 4. sliding_window 模式：保留尾部（近期对话）
     tail = _recent_tail(messages, settings, context_window)
-    return head + [WireMessage(role="system", content=summary_text)] + tail
+    return head + [Message(role="system", content=summary_text)] + tail
 
 
-def _recent_tail(messages: list[WireMessage], settings: CompactionSettings,
-                 context_window: int | None = None) -> list[WireMessage]:
+def _recent_tail(messages: list[Message], settings: CompactionSettings,
+                 context_window: int | None = None) -> list[Message]:
     """从后往前保留对话到 reserve_ratio × context_size 预算。
 
     两个关键约束：
@@ -196,7 +196,7 @@ def _recent_tail(messages: list[WireMessage], settings: CompactionSettings,
     budget = int(ctx_size * settings.reserve_ratio)
 
     # 2. 从后往前遍历，累积保留消息直至预算耗尽
-    kept: list[WireMessage] = []
+    kept: list[Message] = []
     used = 0
     for m in reversed(messages):
         # 跳过 system 消息（已由头部处理）

@@ -7,7 +7,7 @@ MemoryConsolidator 后台整合与常量。分层依赖单向：constants/schema
 from paperflow.core.memory.constants import MessageRole
 from paperflow.core.memory.schemas.block import BaseBlock, Block
 from paperflow.core.memory.schemas.memory import Memory
-from paperflow.core.memory.schemas.message import Message
+from paperflow.core.memory.schemas.message import StoredMessage
 from paperflow.core.memory.schemas.agent import AgentState
 from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.services.block_manager import BlockManager, GitEnabledBlockManager
@@ -19,7 +19,7 @@ from paperflow.core.memory.services.consolidation import MemoryConsolidator
 from paperflow.core.memory import constants
 
 __all__ = [
-    "BaseBlock", "Block", "Memory", "Message", "MessageRole",
+    "BaseBlock", "Block", "Memory", "StoredMessage", "MessageRole",
     "AgentState", "MemoryDB",
     "BlockManager", "GitEnabledBlockManager", "MemFS", "MessageManager",
     "AgentManager",

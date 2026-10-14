@@ -1,8 +1,8 @@
-"""Recall 持久化消息模型：Message / MessageRole。
+"""Recall 持久化消息模型：StoredMessage / MessageRole。
 
-与 paperflow/core/llm.py::Message（OpenAI wire 格式）区分：本类型是落盘到
-messages 表的持久化消息，由 MessageManager 从 wire 格式转换生成，补上 id /
-created_at 等存储字段。content 恒为字符串（str | None），落盘与回放都不做
+与 `paperflow.core.llm` 的 wire 消息家族（Message 及其各角色子类）区分：本类型是
+落盘到 messages 表的持久化消息，由 MessageManager 从 wire 消息转换生成，补上
+id / created_at 等存储字段。content 恒为字符串（str | None），落盘与回放都不做
 JSON 类型猜测。
 """
 from __future__ import annotations
@@ -15,16 +15,16 @@ from pydantic import BaseModel, Field
 
 from paperflow.core.memory.constants import MessageRole
 
-__all__ = ["Message"]
+__all__ = ["StoredMessage"]
 
 
-class Message(BaseModel):
+class StoredMessage(BaseModel):
     """持久化消息：含 Recall 检索所需的全部字段。
 
     tool_calls / tool_call_id 记录工具调用轨迹；step_id / run_id / otid 是
     审计与轨迹追踪的关联键。
 
-    与 paperflow.core.llm.Message（wire 格式）的区别：
+    与 wire 消息（`paperflow.core.llm` 的 Message 家族）的区别：
         - wire 格式的 content 可以是 str、list 或 dict（多模态或结构化内容），
           而本模型 content 保证为 str | None，便于 SQLite 存储与统一检索。
         - 本模型增加了持久化辅助字段：id、created_at，以及追踪字段 step_id 等。

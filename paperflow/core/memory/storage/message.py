@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from paperflow.core.memory.constants import MessageRole
 from paperflow.core.memory.storage.database import MemoryDB
-from paperflow.core.memory.schemas.message import Message
+from paperflow.core.memory.schemas.message import StoredMessage
 
 __all__ = ["insert_message", "select_messages_by_agent", "select_messages_by_ids",
            "search_messages", "count_messages"]
@@ -33,7 +33,7 @@ def _row_to_dict(row) -> dict:
     return dict(row)
 
 
-def insert_message(db: MemoryDB, agent_id: str, m: Message) -> None:
+def insert_message(db: MemoryDB, agent_id: str, m: StoredMessage) -> None:
     """插入一条消息行：content 只存字符串（list/dict 内容序列化为 JSON），
     tool_calls 序列化为 JSON，created_at 缺省取当前时间。
 
