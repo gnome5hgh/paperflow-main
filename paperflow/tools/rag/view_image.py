@@ -78,7 +78,7 @@ class ViewImageTool(Tool):
         llm = self._llm
         if store is None or llm is None:
             # 只在真的缺依赖时才去取全局服务（测试两样都注入时就不碰它）
-            from paperflow.rag.services.rag_service import get_rag_service
+            from paperflow.core.rag.services.rag_service import get_rag_service
             svc = get_rag_service()
             if store is None:
                 store = svc.image_store

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from paperflow.core.security.middleware.workspace import is_denied_path
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.common.constants import SEARCH_HINTS
 
 
 class GlobTool(Tool):
@@ -18,7 +19,7 @@ class GlobTool(Tool):
         description: str，工具描述（含 root 说明）
         parameters: dict，JSON Schema（pattern/root）
         risk_level: str，"low"（只读）
-        root_hints: list[str]，["note", "pdf", "memory"]
+        root_hints: list[str]，SEARCH_HINTS（笔记/论文/记忆根）
     """
     name = "glob"
     description = ("按 glob 模式列出文件路径（如 **/*.pdf、**/*Disentangled*.pdf）。"
@@ -33,7 +34,7 @@ class GlobTool(Tool):
         "required": ["pattern"],
     }
     risk_level = "low"
-    root_hints = ["note", "pdf", "memory"]
+    root_hints = SEARCH_HINTS
 
     def execute(self, pattern: str, root: str | None = None) -> ToolResult:
         """按 glob 模式列出匹配的文件路径(最多 50 条);根目录可显式指定。

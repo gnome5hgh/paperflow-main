@@ -18,32 +18,18 @@ Schema 递归展开：``_schema_to_prompt`` 将 pydantic 模型展开为字段�
 import json
 import re
 import types
-from dataclasses import dataclass
 from typing import Callable, get_origin, get_args, Union
 
 from pydantic import BaseModel, ValidationError
 
 from paperflow.core.llm.domain.dto.message import Message
+from paperflow.core.llm.domain.dto.response import LLMResponse
+from paperflow.core.llm.domain.dto.structured_output_config import StructuredOutputConfig
 
+__all__ = ["StructuredOutput", "StructuredOutputConfig", "StructuredOutputError"]
 
-@dataclass
-class StructuredOutputConfig:
-    """StructuredOutput 的行为参数：重试次数、LLM 采样温度、是否关思维链、
-    是否强制 JSON 模式、schema 递归展开的最大深度。
-
-    Attributes:
-        max_retries: int，校验失败后的重试次数
-        temperature: float，采样温度（0.0 = 确定性）
-        disable_thinking: bool，是否关闭思维链（思维链尾随散文会破坏 JSON）
-        json_mode: bool，是否强制 JSON 输出格式
-        max_schema_depth: int，schema 递归展开的最大深度（防自引用模型无限递归）
-    """
-
-    max_retries: int = 2
-    temperature: float = 0.0
-    disable_thinking: bool = True
-    json_mode: bool = True
-    max_schema_depth: int = 3
+#: 行为参数住在 domain/dto（组件自己的参数，不随 config.yaml 走）；此处再导出，
+#: 让既有的 `from ...services.structured import StructuredOutputConfig` 继续可用。
 
 
 class StructuredOutputError(Exception):
@@ -122,7 +108,7 @@ class StructuredOutput:
             Message(role="user", content=user_content),
         ]
         last_error: Exception | None = None
-        resp: Message | None = None
+        resp: LLMResponse | None = None
         attempts = 0
 
         for attempt in range(self.config.max_retries + 1):

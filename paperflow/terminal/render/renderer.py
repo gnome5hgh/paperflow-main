@@ -36,7 +36,7 @@ from rich.markdown import Markdown
 from rich.markup import escape
 from rich.syntax import Syntax
 
-from paperflow.core.agent import StreamEvent
+from paperflow.core.agent import StreamEvent, StreamEventKind
 from ..common import truncate_diff
 from .activity import activity_label, format_activity
 class StreamRenderer:
@@ -185,9 +185,9 @@ class StreamRenderer:
         Args:
             ev: StreamEvent，待处理事件（content 流式；tool 型事件按行打印）
         """
-        if ev.kind == "content":
+        if ev.kind == StreamEventKind.CONTENT:
             self._on_content(ev)
-        elif ev.kind in ("tool", "tool_start", "tool_end"):
+        elif ev.kind in ("tool", StreamEventKind.TOOL_START, StreamEventKind.TOOL_END):
             self._on_tool(ev)
 
     def _on_content(self, ev) -> None:
@@ -256,11 +256,11 @@ class StreamRenderer:
         Args:
             ev: StreamEvent，待处理事件（按 kind 分发）
         """
-        if ev.kind == "content":
+        if ev.kind == StreamEventKind.CONTENT:
             self._on_content_activity(ev)
-        elif ev.kind == "tool_start":
+        elif ev.kind == StreamEventKind.TOOL_START:
             self._on_tool_start(ev)
-        elif ev.kind == "tool_end":
+        elif ev.kind == StreamEventKind.TOOL_END:
             self._on_tool_end(ev)
 
     def _on_content_activity(self, ev) -> None:

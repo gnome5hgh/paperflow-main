@@ -20,10 +20,10 @@
 - 脱敏（``_sanitize``）：只遮蔽凭证类键值（api_key/token/password/secret →
   ``"***"``），路径类键保留原值，**内容不再隐藏**——入参与返回都是全量原文，
   供事后取证回放（审计目录在防篡改黑名单内、且从不回灌模型，不构成注入面）；
-- 决策推导（``_derive_decision``）：根据调用结果推导出 auto_allowed /
-  user_confirmed / policy_denied / security_blocked / user_denied；
-- 状态推导（``_result_status``）：根据异常类型推导出 success /
-  security_blocked / user_denied / error。
+- 决策推导（``_derive_decision``）：根据调用结果推导出 ``ToolDecision``
+  （auto_allowed / user_confirmed / policy_denied / security_blocked / user_denied）；
+- 状态推导（``_result_status``）：根据异常类型推导出 ``ToolResultStatus``
+  （success / security_blocked / user_denied / error）。
 
 调用链通过 contextvar 维护：``before`` 写 start 事件后压栈，``after`` 写 end
 事件后弹栈；子 agent 在 to_thread + asyncio.run 里自动继承父链，各并发任务持
@@ -44,6 +44,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from pathlib import Path
 
+from paperflow.core.security.constants.enums import ApprovalOutcome, ToolDecision, ToolResultStatus
 from paperflow.core.security.middleware.base import (
     SecurityMiddleware, SecurityBlocked, ConfirmRequired,
 )
@@ -105,16 +106,16 @@ def _derive_decision(ctx: ToolContext) -> str:
     """
     if ctx.error is None:
         # 无异常：根据用户确认标志区分自动允许与用户确认
-        return "user_confirmed" if ctx.user_confirmed else "auto_allowed"
+        return ToolDecision.USER_CONFIRMED if ctx.user_confirmed else ToolDecision.AUTO_ALLOWED
 
     if isinstance(ctx.error, ConfirmRequired):
         # 即使 ConfirmRequired 最终被确认，但走到这里时 error 仍存在，
         # 说明是用户拒绝或超时未确认，一律视为 user_denied
-        return "user_denied"
+        return ToolDecision.USER_DENIED
 
     # 其他异常（SecurityError 子类或普通异常）取异常的 decision 属性，
-    # 若无则兜底为 "error"（工具抛出的普通异常（RuntimeError 等）没有 decision 属性）
-    return getattr(ctx.error, "decision", "error")
+    # 若无则兜底为 error（工具抛出的普通异常（RuntimeError 等）没有 decision 属性）
+    return getattr(ctx.error, "decision", ToolDecision.ERROR)
 
 
 def _result_status(ctx: ToolContext) -> str:
@@ -127,12 +128,12 @@ def _result_status(ctx: ToolContext) -> str:
         结果状态字符串（success/security_blocked/user_denied/error）。
     """
     if ctx.error is None:
-        return "success"
+        return ToolResultStatus.SUCCESS
     if isinstance(ctx.error, SecurityBlocked):
-        return "security_blocked"
+        return ToolResultStatus.SECURITY_BLOCKED
     if isinstance(ctx.error, ConfirmRequired):
-        return "user_denied"
-    return "error"
+        return ToolResultStatus.USER_DENIED
+    return ToolResultStatus.ERROR
 
 
 def _extract_violations(ctx: ToolContext) -> dict | None:
@@ -383,7 +384,7 @@ class AuditMiddleware(SecurityMiddleware):
         Args:
             ctx: ToolContext，工具调用上下文
             phase: str，"requested" 或 "decided"
-            approval_outcome: str | None，仅 decided 阶段有效（user_confirmed/user_denied/auto_denied）
+            approval_outcome: ApprovalOutcome | None，仅 decided 阶段有效
         """
         # 审批生命周期：requested（发起确认时）与 decided（决策后）是两条独立事件，
         # decided 通过 causation_id 回溯 requested（合规要求：请求≠决策）。

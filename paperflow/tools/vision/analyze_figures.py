@@ -12,8 +12,9 @@ from pathlib import Path
 from paperflow.config import PaperFlowConfig
 from paperflow.core.llm import LLMClient
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.common.constants import ScopeRoot
 from paperflow.tools.file.atomic import atomic_write_bytes
-from paperflow.vision import FigureAnalyzer, FigureExtractor
+from paperflow.core.vision import FigureAnalyzer, FigureExtractor
 
 #: 单次分析图数上限（防超长论文拖死工具；超限截断并如实标注）
 MAX_FIGURES = 12
@@ -27,7 +28,7 @@ class AnalyzeFiguresTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（path/figure/embed_dir）
         risk_level: str，"low"
-        root_hints: list[str]，["note", "pdf"]
+        root_hints: list[str]，笔记根与论文根
         provenance: str，"image"（图表分析结果属外部内容）
         side_effects: list[str]，["read_file", "write_file"]
         needs_parent: bool，True（视觉调用归属父 agent 轮次进审计）
@@ -49,7 +50,7 @@ class AnalyzeFiguresTool(Tool):
         "required": ["path"],
     }
     risk_level = "low"
-    root_hints = ["note", "pdf"]              # 提示:读 PDF + 产图落 note（embed_dir）
+    root_hints = [ScopeRoot.NOTE, ScopeRoot.PDF]              # 提示:读 PDF + 产图落 note（embed_dir）
     provenance = "image"                     # 图表分析结果属外部内容
     side_effects = ["read_file", "write_file"]
     #: 需要父 Agent 引用：视觉调用归属父 agent 的轮次进审计（见 _telemetry）

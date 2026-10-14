@@ -1,6 +1,6 @@
 """ExtractTitleTool：读 PDF 取论文标题（本地版面解析，禁文件名）。"""
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.parsers.pdf_extract import pdf_title
+from paperflow.core.rag.parsers.pdf_extract import pdf_title
 
 
 class ExtractTitleTool(Tool):

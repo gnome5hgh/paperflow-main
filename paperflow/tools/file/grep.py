@@ -9,6 +9,7 @@ from pathlib import Path
 
 from paperflow.core.security.middleware.workspace import is_denied_path
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.common.constants import SEARCH_HINTS
 
 _TEXT_SUFFIXES = (".md", ".txt", ".py", ".jsonl")
 
@@ -21,7 +22,7 @@ class GrepTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（pattern/path）
         risk_level: str，"low"（只读）
-        root_hints: list[str]，["note", "pdf", "memory"]
+        root_hints: list[str]，SEARCH_HINTS（笔记/论文/记忆根）
     """
     name = "grep"
     description = ("在文件或目录内搜索文本（正则），返回 file:line 匹配行。"
@@ -42,7 +43,7 @@ class GrepTool(Tool):
     }
     risk_level = "low"
     provenance = "local_file"                  # 读的是用户文件：内容是外部数据
-    root_hints = ["note", "pdf", "memory"]
+    root_hints = SEARCH_HINTS
 
     def execute(self, pattern: str, path: str | None = None,
                 root: str | None = None) -> ToolResult:

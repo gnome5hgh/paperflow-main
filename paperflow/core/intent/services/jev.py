@@ -15,17 +15,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
 
 import httpx
 
+from paperflow.core.common.constants import RETRY_BACKOFF_BASE
 from paperflow.core.common.text import sanitize_surrogates
+from paperflow.core.intent.schemas import JevDecision
 
 logger = logging.getLogger(__name__)
-
-#: 指数退避基数（秒）：第 attempt 次重试前 sleep(BASE * 2 ** attempt)。
-#: 与云端编码/精排客户端同一语义——只为可恢复错误退避，4xx 立即放弃。
-RETRY_BACKOFF_BASE = 0.5
 
 #: 判定问题的类型：从 criteria 的候选里选一个（网关的 choice 原语）
 _QUESTION_TYPE = "choice"
@@ -54,19 +51,6 @@ class JevUnavailable(RuntimeError):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
-
-
-@dataclass(frozen=True)
-class JevDecision:
-    """一次判定的结果。
-
-    Attributes:
-        choice: str，模型选中的类别名（调用方负责校验它是已知类别）。
-        confidence: float | None，选中项的概率。**没有判定消费者**，只作展示与排查。
-    """
-
-    choice: str
-    confidence: float | None
 
 
 def _reason_for_status(status: int, detail: str) -> str:

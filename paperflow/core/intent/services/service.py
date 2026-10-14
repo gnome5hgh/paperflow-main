@@ -6,27 +6,13 @@ INTENT 块与规则块。Agent 的 ReAct 循环只持一个可选的本类实例
 引用为 None 即「关」，一切退化为空操作。
 """
 import logging
-from dataclasses import dataclass
 
 from paperflow.core.intent.constants import IntentStep, IntentType
 from paperflow.core.intent.rules.entities import extract_entities
-from paperflow.core.intent.schemas import IntentOutput
+from paperflow.core.intent.schemas import IntentOutput, Turn
 from paperflow.core.intent.rules.taxonomy import Taxonomy
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class Turn:
-    """一次 run 开头的意图预处理结果。
-
-    Attributes:
-        head_block: str | None，要注入的 INTENT 块文本；本轮没有判定结果时为 None
-        task: str，可供使用的任务文本（判定不改写任务，原样返回）
-    """
-
-    head_block: str | None
-    task: str
 
 
 class IntentService:

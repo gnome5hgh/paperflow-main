@@ -319,7 +319,7 @@ class PaperMetaExtractor:
             # 没配模型 = 这一级不可用，不是错误（第一级失败就如实为空）
             return BibMeta()
         try:
-            from paperflow.rag.parsers.pdf_extract import first_page_text
+            from paperflow.core.rag.parsers.pdf_extract import first_page_text
             text = first_page_text(pdf_path)[:FIRST_PAGE_CHARS]
         except Exception as e:
             logger.warning("读 PDF 首页失败，书目留空：%s", e)

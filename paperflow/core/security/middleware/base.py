@@ -11,6 +11,7 @@
 
 from abc import ABC
 
+from paperflow.core.security.constants.enums import ToolDecision
 from paperflow.core.security.domain.dto.tool_context import ToolContext
 
 
@@ -79,8 +80,8 @@ class SecurityMiddleware(ABC):
         Args:
             ctx: 工具调用的上下文（此时尚未执行工具）
             phase: "requested" 或 "decided"
-            approval_outcome: 仅当 phase == "decided" 时有效，值为 "user_confirmed"、
-                "user_denied" 或 "auto_denied"（fail-safe 默认拒绝）。
+            approval_outcome: 仅当 phase == "decided" 时有效，取
+                ``ApprovalOutcome``（用户放行 / 用户拒绝 / 无人值守默认拒绝 / 取消）。
         """
         return
 
@@ -93,10 +94,10 @@ class SecurityError(Exception):
     （RuntimeError 等）没有该属性，兜底取 "error"。
 
     Attributes:
-        decision: str，安全决策类型（子类覆盖为具体值，如 security_blocked）
+        decision: ToolDecision，安全决策类型（子类覆盖为具体值，如 security_blocked）
     """
 
-    decision: str   # 子类必须覆盖为具体的决策字符串，如 "security_blocked"
+    decision: ToolDecision   # 子类必须覆盖为具体的决策值，如 ToolDecision.SECURITY_BLOCKED
 
 
 class ConfirmRequired(SecurityError):
@@ -107,7 +108,7 @@ class ConfirmRequired(SecurityError):
     未确认（异常未放行）一律视为拒绝——只有最终放行的调用才算允许。
 
     Attributes:
-        decision: str，固定为 "confirm_required"
+        decision: ToolDecision，固定为 ToolDecision.CONFIRM_REQUIRED
         tool_name: str，需要用户确认的工具名
         params: dict，本次调用的参数（展示给用户）
         risk_level: str，工具风险等级
@@ -117,7 +118,7 @@ class ConfirmRequired(SecurityError):
         _on_confirmed: 回调 | None，确认后触发（把本次确认记入已确认集合）
     """
 
-    decision = "confirm_required"
+    decision = ToolDecision.CONFIRM_REQUIRED
 
     def __init__(self, tool_name, params, risk_level, side_effects,
                  cause="risk_threshold", on_confirmed=None):
@@ -152,12 +153,12 @@ class SecurityBlocked(SecurityError):
     """安全拦截：内容或路径检查发现违规，携带违规明细列表。
 
     Attributes:
-        decision: str，固定为 "security_blocked"
+        decision: ToolDecision，固定为 ToolDecision.SECURITY_BLOCKED
         reason: str，拦截原因摘要
         violations: list[dict]，违规明细（每项含 rule_id/severity/snippet）
     """
 
-    decision = "security_blocked"
+    decision = ToolDecision.SECURITY_BLOCKED
 
     def __init__(self, reason: str, violations: list[dict]):
         """记录拦截原因与违规明细。

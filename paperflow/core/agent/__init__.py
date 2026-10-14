@@ -5,6 +5,7 @@
 - ``Agent`` / ``MaxTurnsExceeded`` ← runtime
 - ``AgentRegistry`` ← registry
 - ``StreamEvent`` / ``AgentConfig`` ← domain/dto（跨包契约对象）
+- ``StreamEventKind`` ← constants（流式事件类型词表）
 - ``get_run_state`` / ``get_session_state`` ← state（运行期状态容器取用点）
 
 `state.py` 的两个取用函数在此导出，是为了让 `tools/` 侧不再深引
@@ -14,6 +15,7 @@
 core.memory / core.security / core.intent；反向（它们 import 本包）不被允许。
 """
 
+from paperflow.core.agent.constants import StreamEventKind
 from paperflow.core.agent.domain import AgentConfig, StreamEvent
 from paperflow.core.agent.registry import AgentRegistry
 from paperflow.core.agent.runtime import Agent, MaxTurnsExceeded
@@ -25,6 +27,7 @@ __all__ = [
     "AgentRegistry",
     "MaxTurnsExceeded",
     "StreamEvent",
+    "StreamEventKind",
     "get_run_state",
     "get_session_state",
 ]

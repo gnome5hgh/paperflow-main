@@ -9,6 +9,7 @@ from pathlib import Path
 
 from paperflow.config import PaperFlowConfig
 from paperflow.core.tool import Tool
+from paperflow.tools.common.constants import ScopeRoot
 from paperflow.tools.file.write_file import WriteFileTool
 
 
@@ -22,12 +23,12 @@ def _root_map(config: PaperFlowConfig) -> dict[str, str]:
         语义根名 → 绝对路径的映射（note/pdf/research/memory/scratch）。
     """
     return {
-        "note": config.corpus.note_dir,
-        "pdf": config.corpus.pdf_dir,
-        "research": config.corpus.research_dir or str(Path(config.runtime.workspace) / "research"),
-        "memory": str(Path(config.runtime.workspace) / "memory"),
+        ScopeRoot.NOTE: config.corpus.note_dir,
+        ScopeRoot.PDF: config.corpus.pdf_dir,
+        ScopeRoot.RESEARCH: config.corpus.research_dir or str(Path(config.runtime.workspace) / "research"),
+        ScopeRoot.MEMORY: str(Path(config.runtime.workspace) / "memory"),
         # 模板已随流程入 skill（format_check 的模板经 SkillRegistry 解析）;scratch 仍从 workspace 派生
-        "scratch": str(Path(config.runtime.workspace) / "scratch"),
+        ScopeRoot.SCRATCH: str(Path(config.runtime.workspace) / "scratch"),
     }
 
 
@@ -86,7 +87,7 @@ def make_tools(config: PaperFlowConfig, tool_items: list[type[Tool] | Tool],
         # 路径发现:把解析后的绝对路径追加进 description,LLM 经函数 schema 可见。
         # 排除 scratch——scratch 路径对 LLM 不透明(草稿路径由任务文本给出,无枚举工具)
         for r in tool.root_hints:
-            if r in roots and r != "scratch":
+            if r in roots and r != ScopeRoot.SCRATCH:
                 tool.description += f"\n[目录] {r}={roots[r]}"
         if (default_write_root and isinstance(tool, WriteFileTool)
                 and default_write_root in roots):

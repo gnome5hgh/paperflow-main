@@ -4,7 +4,7 @@
 与 SubmitReviewTool 同款校验哲学：decision/verdict 枚举 + 一致性 + 可行动理由，
 非法输入返回可行动报错文本，不静默吞（让 review-agent 的 LLM 修正后重试）。
 """
-from paperflow.core.tool import Tool, ToolResult
+from paperflow.core.tool import SUMMARY_TERMINAL, Tool, ToolResult
 from paperflow.tools.review._validate import VERDICTS, enum_check
 
 
@@ -99,4 +99,4 @@ class SubmitDownloadReviewTool(Tool):
             reason = "；".join(item.get("reasons") or [])
             lines.append(f"- [{tag}] {item['title']} | {reason} | {item.get('source_link')}")
         # 终止标记：同 submit_review——裁决全文即最终回答（digest 提取依赖它）
-        return ToolResult(text="\n".join(lines), summary={"terminal": True})
+        return ToolResult(text="\n".join(lines), summary={SUMMARY_TERMINAL: True})

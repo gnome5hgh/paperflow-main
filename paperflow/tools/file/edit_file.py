@@ -9,7 +9,7 @@ LLM 只需输出变更部分(省 token),且不误伤无关内容。安全边界�
 from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.tools.file._constants import NOTE_HINTS
+from paperflow.tools.common.constants import NOTE_HINTS
 from paperflow.tools.file.atomic import atomic_write
 
 

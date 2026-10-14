@@ -1,6 +1,7 @@
 """一次工具调用的上下文快照：调用方信息、入参与结果异常，供各中间件检查与审计。"""
 from dataclasses import dataclass, field
 
+from paperflow.core.security.constants.enums import ApprovalOutcome
 from paperflow.core.tool import Tool, ToolResult
 
 
@@ -74,6 +75,6 @@ class ToolContext:
 
     # 内容防护的结论（违规明细、语义判定结论）——只留痕，不参与策略决策
     content_findings: list[dict] = field(default_factory=list)
-    approval_outcome: str | None = None # 审批最终结果（"user_confirmed" / "user_denied" / "auto_denied"）
+    approval_outcome: ApprovalOutcome | None = None  # 审批最终结果（ApprovalOutcome 的取值）
     approval_decided_span_id: str | None = None  # 审批决策事件的 span ID（用于审计回溯）
 

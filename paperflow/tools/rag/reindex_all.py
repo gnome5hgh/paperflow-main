@@ -6,7 +6,7 @@
 确有变更时产生写入。
 """
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.services.rag_service import get_rag_service
+from paperflow.core.rag.services.rag_service import get_rag_service
 
 
 class ReindexAllTool(Tool):

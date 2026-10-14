@@ -5,7 +5,8 @@
 在锁内完成，本工具只负责批量编排与把每一条的结果如实报出来。
 """
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.services.rag_service import get_rag_service
+from paperflow.core.rag.constants import IndexOutcomeStatus
+from paperflow.core.rag.services.rag_service import get_rag_service
 
 #: 单次入库的路径条数上限。上限的作用是让超量请求显式失败并提示分批，
 #: 而不是静默处理一批耗时很长的文档把子 agent 预算耗光。
@@ -72,7 +73,7 @@ class IndexPathsTool(Tool):
                 failed.append(p)
                 lines.append(f"- {p}：入库失败（{e}）")
                 continue
-            if out.status == "indexed":
+            if out.status == IndexOutcomeStatus.INDEXED:
                 indexed += 1
                 lines.append(f"- {p}：已入库 {out.chunks} 块")
             else:

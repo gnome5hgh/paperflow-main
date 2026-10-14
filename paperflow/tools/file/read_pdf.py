@@ -8,7 +8,8 @@
 from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.parsers.pdf_extract import extract_pdf
+from paperflow.tools.common.constants import ScopeRoot
+from paperflow.core.rag.parsers.pdf_extract import extract_pdf
 
 
 def _normalize_path(p: str) -> str:
@@ -32,7 +33,7 @@ class ReadPdfTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（path）
         risk_level: str，"low"（只读）
-        root_hints: list[str]，["pdf"]
+        root_hints: list[str]，论文语料根
         provenance: str，"pdf"（论文全文属外部内容）
         side_effects: list[str]，["read_file"]
     """
@@ -47,7 +48,7 @@ class ReadPdfTool(Tool):
         "required": ["path"],
     }
     risk_level = "low"
-    root_hints = ["pdf"]                    # 提示语料库 PDF 根（只读语义在中间件）
+    root_hints = [ScopeRoot.PDF]                    # 提示语料库 PDF 根（只读语义在中间件）
     provenance = "pdf"                       # 论文全文属外部内容
     side_effects = ["read_file"]
 

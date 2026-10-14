@@ -9,7 +9,7 @@ from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
 from paperflow.core.security.middleware.workspace import is_denied_path
-from paperflow.tools.file._constants import NOTE_HINTS
+from paperflow.tools.common.constants import NOTE_HINTS
 from paperflow.tools.file.atomic import atomic_write
 
 

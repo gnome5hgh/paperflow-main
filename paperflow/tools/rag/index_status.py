@@ -7,7 +7,7 @@
 不写任何东西、不触发重扫。查出不一致时由调用方决定是否跑一次 reindex_all 收敛。
 """
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.services.rag_service import get_rag_service
+from paperflow.core.rag.services.rag_service import get_rag_service
 
 #: 幽灵 / 未入库清单在输出里的展示上限（超出只报总数，避免几十篇刷屏）
 _LIST_CAP = 10

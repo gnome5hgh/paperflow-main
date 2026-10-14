@@ -6,7 +6,8 @@
 的 miss/multi 报错:非法输入返回可行动报错文本,不静默吞——让 review-agent 的 LLM
 修正后重试。
 """
-from paperflow.core.tool import Tool, ToolResult
+from paperflow.core.tool import SUMMARY_TERMINAL, Tool, ToolResult
+from paperflow.tools.common.constants import ScopeRoot
 from paperflow.tools.review._validate import VERDICTS, enum_check
 
 #: severity 合法值(blocking 必须修才能通过;major 应修;minor 可忽略)
@@ -24,7 +25,7 @@ class SubmitReviewTool(Tool):
         parameters: dict，JSON Schema（path/verdict/issues）
         risk_level: str，"low"（只读格式化，无副作用）
         terminal: bool，True（提交成功即终结本轮任务）
-        root_hints: list[str]，["note", "scratch", "research"]（仅生成 [目录] 提示）
+        root_hints: list[str]，笔记/草稿/选题根（仅生成 [目录] 提示）
     """
     name = "submit_review"
     description = ("汇总对一篇笔记的审查裁决（review-agent 笔记审查模式返回）。"
@@ -53,7 +54,7 @@ class SubmitReviewTool(Tool):
     terminal = True
     # 审稿流目标是 scratch/note 草稿路径；execute 不读文件内容（只格式化提交字段），
     # 声明 scratch 仅生成 [目录] 提示、零安全影响（强制在 WorkspacePolicy，与本声明无关）。
-    root_hints = ["note", "scratch", "research"]
+    root_hints = [ScopeRoot.NOTE, ScopeRoot.SCRATCH, ScopeRoot.RESEARCH]
 
     def execute(self, path: str, verdict: str, issues: list) -> ToolResult:
         """校验并格式化审查裁决;非法输入返回可行动报错文本。
@@ -67,7 +68,7 @@ class SubmitReviewTool(Tool):
             issues: list[dict]，每条含 severity/dimension/location/action
 
         Returns:
-            ToolResult；非法输入返回可行动报错文本，通过时回裁决全文并置 summary["terminal"]。
+            ToolResult；非法输入返回可行动报错文本，通过时回裁决全文并置 summary 的终止标记。
         """
         # ① verdict 枚举校验（enum_check 共享，同 submit_download_review）
         bad = enum_check(verdict, VERDICTS, "verdict")
@@ -96,6 +97,6 @@ class SubmitReviewTool(Tool):
             for issue in issues:
                 if issue["severity"] == sev:
                     lines.append(f"- [{sev.upper()}] {issue['dimension']} | {issue['location']} | {issue['action']}")
-        # 终止标记：Agent.run 见 summary["terminal"] 即结束循环，裁决全文即最终回答
+        # 终止标记：Agent.run 见 summary 里的终止键即结束循环，裁决全文即最终回答
         # （spawn 的 digest 提取依赖裁决全文，不能只回一句「已提交」）
-        return ToolResult(text="\n".join(lines), summary={"terminal": True})
+        return ToolResult(text="\n".join(lines), summary={SUMMARY_TERMINAL: True})

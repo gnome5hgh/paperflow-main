@@ -13,6 +13,7 @@
 from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.common.constants import ScopeRoot
 
 
 class FormatCheckTool(Tool):
@@ -23,7 +24,7 @@ class FormatCheckTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（path）
         risk_level: str，"low"
-        root_hints: list[str]，["note", "scratch"]
+        root_hints: list[str]，笔记根与草稿根
         needs_skill_registry: bool，True——模板路径由 SkillRegistry 解析（不自行拼路径）
         _template_path: str | None，模板路径覆盖（测试注入用；设了就不再走注册表）
         _skill_registry: SkillRegistry | None，运行时注入的 skill 注册表
@@ -39,7 +40,7 @@ class FormatCheckTool(Tool):
         "required": ["path"],
     }
     risk_level = "low"
-    root_hints = ["note", "scratch"]
+    root_hints = [ScopeRoot.NOTE, ScopeRoot.SCRATCH]
     #: 两侧都只读：读笔记与读模板比结构，不写任何落点
     side_effects = ["read_file"]
 

@@ -37,15 +37,15 @@ class AuditEntry:
         turn: int，ReAct 轮次（从 0 起）
         started_at: str | None，事件开始时间（ISO）
         ended_at: str | None，事件结束时间（ISO）
-        policy_decision: str，策略最终决策（auto_allowed/user_confirmed/policy_denied/security_blocked/user_denied/error）
-        result_status: str，结果状态（success/policy_blocked/security_blocked/user_denied/error）
+        policy_decision: str，策略最终决策（ToolDecision 的取值）
+        result_status: str，结果状态（ToolResultStatus 的取值）
         duration_ms: int，执行耗时（毫秒）
         security_scan: dict | None，安全扫描违规明细（仅 SecurityBlocked 场景）
         error: str | None，格式化的错误信息（类型名 + 消息，截断 200 字符）
         output: Any，工具返回的**全量原文**（取证回放用，不截断）
         summary: dict | str | None，结构化摘要通道（spawn digest / RAG documents 等结构化数据，已脱敏）
         policy_rules: dict | None，策略评估快照（checked/fired/reason/policy_context）
-        approval_outcome: str | None，人工审批结果（user_confirmed/user_denied/auto_denied）
+        approval_outcome: str | None，人工审批结果（ApprovalOutcome 的取值）
         causation_id: str | None，因果回溯 span ID（decided 指向对应的 requested）
         request_model: str | None，请求的模型名（仅 llm_call / agent_started）
         response_model: str | None，端点实际报告的模型快照（仅 llm_call）
@@ -84,14 +84,13 @@ class AuditEntry:
     started_at: str | None = None
     #: 事件结束时间的 ISO 格式时间戳。
     ended_at: str | None = None
-    #: 策略引擎的最终决策。由 _derive_decision 推导，可能值：
-    #: "auto_allowed"（自动放行）、"user_confirmed"（用户确认放行）、
-    #: "policy_denied"（策略拒绝）、"security_blocked"（安全拦截）、
-    #: "user_denied"（用户拒绝）、"error"（普通异常）。
+    #: 策略引擎的最终决策。由 _derive_decision 推导，取值为
+    #: `ToolDecision`（auto_allowed / user_confirmed / policy_denied /
+    #: security_blocked / user_denied / error）。
     policy_decision: str = ""
-    #: 工具执行的结果状态。由 _result_status 推导，可能值：
-    #: "success"（成功）、"policy_blocked"（策略阻断）、"security_blocked"（安全阻断）、
-    #: "user_denied"（用户拒绝）、"error"（执行异常）。
+    #: 工具执行的结果状态。由 _result_status 推导，取值为
+    #: `ToolResultStatus`（success / policy_blocked / security_blocked /
+    #: user_denied / error）。
     result_status: str = ""
     #: 工具执行耗时，单位为毫秒。由 started_at 和 ended_at 计算得出。
     duration_ms: int = 0
@@ -112,8 +111,7 @@ class AuditEntry:
     #: 用于事后 replay 当时决策依据。
     policy_rules: dict | None = None
     #: 人工审批结果。仅在 approval_decided 或 tool_ended 场景下有效，
-    #: 可能值："user_confirmed"（用户放行）、"user_denied"（用户拒绝）、
-    #: "auto_denied"（无人值守默认拒绝）、"cancelled"（取消路径）。
+    #: 取值为 `ApprovalOutcome`（user_confirmed / user_denied / auto_denied / cancelled）。
     approval_outcome: str | None = None
     #: 用于跨事件回溯的跨度 ID。在 approval_decided 事件中指向对应的
     #: approval_requested 事件，实现"请求 ≠ 决策"的因果关联。

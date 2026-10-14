@@ -6,6 +6,7 @@
 from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.common.constants import READ_HINTS
 
 
 class ReadFileTool(Tool):
@@ -16,7 +17,7 @@ class ReadFileTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（path）
         risk_level: str，"low"（只读）
-        root_hints: list[str]，["note", "pdf", "memory", "scratch", "research"]
+        root_hints: list[str]，READ_HINTS（含草稿根）
         provenance: str，"local_file"（外部文件内容打未校验横幅）
         side_effects: list[str]，["read_file"]
     """
@@ -32,7 +33,7 @@ class ReadFileTool(Tool):
     }
     risk_level = "low"
     # scratch（子 agent 读落盘桥草稿）
-    root_hints = ["note", "pdf", "memory", "scratch", "research"]
+    root_hints = READ_HINTS
     provenance = "local_file"                  # 外部文件内容 → 内容防护打来源标记
     side_effects = ["read_file"]
 

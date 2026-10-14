@@ -20,42 +20,11 @@ import yaml
 from paperflow.core.intent.constants import (
     INTENT_CLASSES, RULES_PATH, TAXONOMY_PATH,
 )
+from paperflow.core.intent.schemas import IntentClass, Rule
 
 
 class TaxonomyError(ValueError):
     """知识库装载校验失败。fail-closed：宁可启动就报错，不要运行期静默走偏。"""
-
-
-@dataclass(frozen=True)
-class IntentClass:
-    """一个类别：判定口径 + 示例句。
-
-    Attributes:
-        name: str，类别名（= INTENT_CLASSES 之一）
-        description: str，判定口径，写清「是什么 / 不包什么」
-        examples: tuple[str, ...]，示例句（与描述一起进判定模型的 criteria）
-    """
-
-    name: str
-    description: str
-    examples: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class Rule:
-    """规则层的一条高精度模式。
-
-    Attributes:
-        intent: str，命中后判定的类别
-        pattern: re.Pattern，已编译的模式
-        raw: str，模式原文（报错与查重时用）
-        note: str，这条规则为什么算高精度（给维护者看的判据）
-    """
-
-    intent: str
-    pattern: re.Pattern[str]
-    raw: str
-    note: str = ""
 
 
 @dataclass(frozen=True)

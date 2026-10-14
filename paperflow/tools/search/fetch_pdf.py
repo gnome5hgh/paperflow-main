@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlparse
 
 from paperflow.core.security.services.network import validate_url_target
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.common.constants import ScopeRoot
 from paperflow.citations import get_citation_manager
 from paperflow.tools.file.atomic import atomic_write_bytes
 from paperflow.tools.search._common import _norm_title
@@ -25,7 +26,7 @@ class FetchPdfTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（url/download_to/title）
         risk_level: str，"medium"（写操作，只读会话不应触碰本地资料库）
-        root_hints: list[str]，["pdf"]
+        root_hints: list[str]，论文语料根（落点）
         side_effects: list[str]，["network", "write_file"]
         provenance: str | None，None（返回本地路径与状态，无外部内容，不打横幅）
         wants_run_state: bool，True（注入失败 URL 负缓存与已下载短路池）
@@ -51,7 +52,7 @@ class FetchPdfTool(Tool):
     }
     #: 下载是写操作——只读会话(风险上限 low)不应触碰本地资料库
     risk_level = "medium"
-    root_hints = ["pdf"]
+    root_hints = [ScopeRoot.PDF]
     side_effects = ["network", "write_file"]
     #: 返回本地路径与状态，无外部内容——不需打 mark 横幅
     provenance = None

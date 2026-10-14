@@ -1,5 +1,6 @@
 """add_citation：把论文加入 references.bib（语料库内 PDF，或库外 EXTERNAL）。"""
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.common.constants import ScopeRoot
 
 
 class AddCitationTool(Tool):
@@ -11,7 +12,7 @@ class AddCitationTool(Tool):
         parameters: dict，JSON Schema（pdf_path/title/authors/year/journal/external）
         risk_level: str，"medium"（写文件）
         side_effects: list[str]，["write_file"]
-        root_hints: list[str]，["pdf"]（pdf_path 属语料库 pdf 根）
+        root_hints: list[str]，论文语料根（pdf_path 属语料库 pdf 根）
         manager: CitationManager，注入的引用库门面
     """
     name = "add_citation"
@@ -31,7 +32,7 @@ class AddCitationTool(Tool):
     }
     risk_level = "medium"              # 写文件
     side_effects = ["write_file"]
-    root_hints = ["pdf"]            # pdf_path 是语料库内 PDF（语料库 pdf 根）
+    root_hints = [ScopeRoot.PDF]            # pdf_path 是语料库内 PDF（语料库 pdf 根）
 
     def __init__(self, manager):
         """注入引用库门面。

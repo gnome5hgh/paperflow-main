@@ -19,7 +19,7 @@ from typing import Callable
 from pydantic import BaseModel
 
 from paperflow.config import PaperFlowConfig
-from paperflow.core.agent import Agent, StreamEvent
+from paperflow.core.agent import Agent, StreamEvent, StreamEventKind
 # 运行期状态由容器持有:去重注册表与各类预算计数在 run 作用域(按 trace 隔离),
 # 失败计数在会话作用域(跨 run 累计)。容器取用时顺手清扫过期条目,故此处不再单独清理。
 from paperflow.core.agent import get_run_state, get_session_state
@@ -472,7 +472,7 @@ def _make_child_stream_callback(parent) -> Callable[[StreamEvent], None] | None:
         Args:
             ev: StreamEvent，子 agent 的流式事件
         """
-        if ev.kind in ("tool_start", "tool_end"):
+        if ev.kind in (StreamEventKind.TOOL_START, StreamEventKind.TOOL_END):
             pcb(ev)          # 前缀由渲染器统一加，此处不再拼 agent_type
     return child_cb
 

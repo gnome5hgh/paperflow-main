@@ -1,0 +1,15 @@
+"""paperflow RAG 检索子系统：文档解析、向量/稀疏索引与混合检索。
+
+对外统一导出解析器、服务门面与检索工具；领域模型从 `domain/`、编码器与向量存储
+等底层组件经由各自子包访问（`encoders/` 下稀疏/稠密/精排三件）。重依赖（pymilvus、
+jieba、rank_bm25）由 RAGService 内部惰性加载，包导入本身不拉取，避免拖慢应用与
+测试启动。
+"""
+from paperflow.core.rag.domain import Block, Chunk, PdfText, Section
+from paperflow.core.rag.parsers.chunker import AcademicChunker
+from paperflow.core.rag.services.rag_service import RAGService, get_rag_service
+from paperflow.core.rag.services.indexer import RagIndexer
+from paperflow.core.rag.services.retriever import Retriever
+
+__all__ = ["AcademicChunker", "Chunk", "Section", "PdfText", "Block",
+           "RAGService", "get_rag_service", "RagIndexer", "Retriever"]

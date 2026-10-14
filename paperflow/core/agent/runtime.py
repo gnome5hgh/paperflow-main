@@ -55,14 +55,18 @@ from paperflow.core.llm import (
     LLMClient, Message, tool_to_openai_schema,
 )
 from paperflow.core.llm.services.client import _message_to_openai
+from paperflow.core.agent.constants import StreamEventKind
 from paperflow.core.agent.domain.dto.stream_event import StreamEvent
 from paperflow.core.agent.registry import AgentRegistry
 from paperflow.core.skills import SkillRegistry
 from paperflow.core.agent.base_prompt import BASE_PROMPT
 from paperflow.core.security import (
-    ToolContext, ConfirmRequired, SecurityError, SecurityMiddleware,
+    ApprovalOutcome, ToolContext, ConfirmRequired, SecurityError, SecurityMiddleware,
 )
-from paperflow.core.tool import ToolResult, is_writer
+from paperflow.core.tool import (
+    SUMMARY_DECISION, SUMMARY_TERMINAL, SUMMARY_VIOLATIONS,
+    ToolResult, is_writer,
+)
 from paperflow.core.common.text import sanitize_surrogates
 from paperflow.core.agent.state import get_run_state
 
@@ -926,19 +930,14 @@ class Agent:
             # await 抛 TypeError——门控同时是零开销路径（无 UI 调用方不受影响）。
             tools = self._tool_schemas if self._tool_schemas else None
 
-            # response 结构：
-            #| 字段 | 类型 | 说明 |
-            # | --- | --- | --- |
-            # | role | str | 此处恒为 "assistant" |
-            # | content | str \| list[dict] | 回答文本；纯工具调用时 SDK 返回 None，这里规整为 ""；只有视觉调用才是 content parts 列表 |
-            # | tool_calls | list[dict] \| None | 模型请求的工具调用，已从 SDK 对象规整为 {"id", "type": "function", "function": {"name", "arguments"}}；arguments 是 JSON 字符串，由 Agent._exec_tool 负责 json.loads（client.py:222） |
-            # | tool_call_id | str \| None | assistant 消息恒为 None，只有 tool 角色消息才带 |
-            # | truncated | bool | finish_reason == "length" 时为 True——输出被 max_tokens 截断，runtime 据此走续写逻辑而不是把半截内容当最终回答 |
+            # response 是 LLMResponse（字段语义见 core/llm/domain/dto/response.py）：
+            # 纯工具调用时 content 被规整为空串；tool_calls 的 arguments 是 JSON 字符串，
+            # 由 _exec_tool 负责 json.loads；truncated 为真时走续写而不是交付半截内容。
             if self.stream_callback is not None:
                 response = await self.llm.chat_stream(
                     messages, tools=tools,
                     on_delta=lambda d: self._emit(
-                        StreamEvent("content", d, self.agent_type)),
+                        StreamEvent(StreamEventKind.CONTENT, d, self.agent_type)),
                     telemetry_callback=self._make_llm_telemetry(turn),
                 )
             else:
@@ -1068,8 +1067,8 @@ class Agent:
             # 结束 ReAct 循环，不再进下一轮 LLM 调用（否则模型可能反复重复提交同一裁决，
             # 每轮都白烧一遍推理 token）。返回值即提交文本：spawn 的 digest 提取依赖裁决
             # 全文，不能只回一句「已提交」。on_finish 钩子照常执行（安全扫描一致性）。
-            if any(r.summary.get("terminal") for r in results):
-                final_text = next(r.text for r in results if r.summary.get("terminal"))
+            if any(r.summary.get(SUMMARY_TERMINAL) for r in results):
+                final_text = next(r.text for r in results if r.summary.get(SUMMARY_TERMINAL))
                 for mw in self.security_middleware:
                     final_text = await mw.on_finish(self, final_text)
                 final = Message(role="assistant", content=final_text)
@@ -1198,7 +1197,7 @@ class Agent:
             except (json.JSONDecodeError, TypeError):
                 args_for_summary = {}
             self._emit(StreamEvent(
-                "tool_start", _format_tool_call(
+                StreamEventKind.TOOL_START, _format_tool_call(
                     name, tool_call["function"]["arguments"]), self.agent_type,
                 tool_name=name,
                 summary=_tool_summary(name, args_for_summary) or None))
@@ -1421,7 +1420,7 @@ class Agent:
             text = f"Tool failed: {ctx.error}"
         else:
             text = ""
-        return StreamEvent("tool_end", text, self.agent_type,
+        return StreamEvent(StreamEventKind.TOOL_END, text, self.agent_type,
                            tool_name=ctx.tool_name or None,
                            summary=_tool_summary(
                                ctx.tool_name,
@@ -1480,15 +1479,18 @@ class Agent:
                     # 未落——显式结算为 cancelled 后再抛，审计不再出现「有 requested
                     # 无 decided」的悬空；确认集合不加键（下次同路径仍会询问）。
                     for mw in self.security_middleware:
-                        await mw.on_approval(ctx, "decided", approval_outcome="cancelled")
+                        await mw.on_approval(
+                            ctx, "decided",
+                            approval_outcome=ApprovalOutcome.CANCELLED)
                     raise
 
                 # 根据确认结果和是否有人工回调，标记决策类型
                 # 决策语义:确认通过 → user_confirmed;被拒时按是否有真实人工回调区分
                 # user_denied / auto_denied(fail-safe 默认拒绝,无人值守)。
                 outcome = (
-                    "user_confirmed" if confirmed else (
-                        "user_denied" if self._has_human_confirm else "auto_denied"))
+                    ApprovalOutcome.USER_CONFIRMED if confirmed else (
+                        ApprovalOutcome.USER_DENIED if self._has_human_confirm
+                        else ApprovalOutcome.AUTO_DENIED))
                 ctx.approval_outcome = outcome
 
                 # 通知中间件决策已做出
@@ -1504,7 +1506,7 @@ class Agent:
                     await self._run_after_hooks(ctx)
                     return ToolResult(
                         text=f"User denied: {cr.tool_name}",
-                        summary={"decision": outcome, "tool": cr.tool_name},
+                        summary={SUMMARY_DECISION: outcome, "tool": cr.tool_name},
                     )
 
                 # 确认通过：标记 ctx，继续执行（不返回，后续会执行工具）
@@ -1517,7 +1519,8 @@ class Agent:
                 await self._run_after_hooks(ctx)
                 return ToolResult(
                     text=f"{se.decision}: {se.reason}",
-                    summary={"decision": se.decision, "violations": getattr(se, "violations", [])},
+                    summary={SUMMARY_DECISION: se.decision,
+                             SUMMARY_VIOLATIONS: getattr(se, "violations", [])},
                 )
         # 全部通过
         return None

@@ -7,8 +7,8 @@ query），再持锁检索。检索与融合算法本身在 `rag/services/retrie
 import logging
 
 from paperflow.core.tool import Tool, ToolResult
-from paperflow.rag.domain import section_label
-from paperflow.rag.services.rag_service import get_rag_service
+from paperflow.core.rag.domain import section_label
+from paperflow.core.rag.services.rag_service import get_rag_service
 from paperflow.tools.memory.runtime_context import get_memory_context
 
 logger = logging.getLogger(__name__)

@@ -1,5 +1,6 @@
 """lookup_citation：引用前必查——确认论文是否在语料库并拿到 key。"""
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.common.constants import ScopeRoot
 
 
 class LookupCitationTool(Tool):
@@ -10,7 +11,7 @@ class LookupCitationTool(Tool):
         description: str，工具描述
         parameters: dict，JSON Schema（title/path）
         risk_level: str，"low"
-        root_hints: list[str]，["pdf"]（path 是语料内 PDF 路径）
+        root_hints: list[str]，论文语料根（path 是语料内 PDF 路径）
         manager: CitationManager，注入的引用库门面
     """
     name = "lookup_citation"
@@ -26,7 +27,7 @@ class LookupCitationTool(Tool):
         "required": [],
     }
     risk_level = "low"
-    root_hints = ["pdf"]           # path 是语料内 PDF 路径（溯源只跟踪 PDF）
+    root_hints = [ScopeRoot.PDF]           # path 是语料内 PDF 路径（溯源只跟踪 PDF）
 
     def __init__(self, manager):
         """注入 CitationManager（引用库路径来自 config，非 LLM 可控）。

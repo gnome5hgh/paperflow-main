@@ -217,7 +217,7 @@ class CorpusIndex:
             tuple[str, dict]: (标题, 书目字段字典)。标题拿不准时为空串。
         """
         try:
-            from paperflow.rag.parsers.pdf_extract import pdf_title
+            from paperflow.core.rag.parsers.pdf_extract import pdf_title
             title = pdf_title(path)
         except Exception:
             # 读不动（损坏/加密/不存在）等同「没标题」——不索引该 PDF

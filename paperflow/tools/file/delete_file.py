@@ -6,6 +6,7 @@
 from pathlib import Path
 
 from paperflow.core.tool import Tool, ToolResult
+from paperflow.tools.common.constants import ScopeRoot
 
 
 class DeleteFileTool(Tool):
@@ -37,7 +38,7 @@ class DeleteFileTool(Tool):
     }
     risk_level = "critical"                    # 不可逆操作；即使免问档调到 high 仍会确认
     side_effects = ["delete_file"]
-    root_hints = ["note", "pdf", "research"]
+    root_hints = [ScopeRoot.NOTE, ScopeRoot.PDF, ScopeRoot.RESEARCH]
 
     def effective_target_path(self, args: dict) -> str | None:
         """导出写互斥键：被删的那个路径（基类默认行为，显式声明以表明契约）。
