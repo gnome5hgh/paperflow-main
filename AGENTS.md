@@ -322,7 +322,7 @@ CLI 装配的 5 个中间件（`paperflow/cli/assembly.py`，顺序即执行顺�
 `paperflow/terminal/` — 终端交互隔离层，测试可注入。
 
 - `io/`：`InputIO` 契约（`read`/`confirm`/`confirm_choice` 三态）在 `base.py`，两种实现分文件——`interactive.py` 的 `PromptToolkitIO`（TTY，multiline + 历史；确认框仅 y/a/n 键入，Enter 默认拒绝）vs `fallback.py` 的 `FallbackIO`（非 TTY，内置 `input()`）。`make_input_io(config)` 按 `stdin.isatty()` 二选一。`_confirm_lock` 在契约层串行化并行子 agent 的并发确认（prompt_toolkit 会话非线程安全）
-- `render/`：`renderer.py` 的 `StreamRenderer`（线程安全）经 `on_event` 消费 `StreamEvent`（content/tool）；块渲染契约在 `base.py`，两种实现 `RichBlock`（rich Live + spinner，0.08s 节流重绘）/ `PlainBlock`（增量追加）在 `blocks.py`；活动行映射表在 `activity.py`。工具行 `[{agent_type}] Calling ...`，写/编辑工具完成后发 File written/edited 完成行；`should_print` 去重已流式展示的 root 内容；`suspend()` 在确认框/输入框前停 live（rich Live 与 prompt_toolkit 并发互相干扰——实测坑）
+- `render/`：`renderer.py` 的 `StreamRenderer`（线程安全）经 `on_event` 消费 `AgentEvent`（content/tool）；块渲染契约在 `base.py`，两种实现 `RichBlock`（rich Live + spinner，0.08s 节流重绘）/ `PlainBlock`（增量追加）在 `blocks.py`；活动行映射表在 `activity.py`。工具行 `[{agent_type}] Calling ...`，写/编辑工具完成后发 File written/edited 完成行；`should_print` 去重已流式展示的 root 内容；`suspend()` 在确认框/输入框前停 live（rich Live 与 prompt_toolkit 并发互相干扰——实测坑）
 - `confirm/`：`center.py` 的 `ConfirmCenter` 是全进程确认的唯一消费者（并行子 agent 的确认跨线程汇入主循环排队，弹框期间抑制渲染；看门狗超时自动拒绝），同文件带 Agent 侧确认回调；`presentation.py` 产出确认框提示行与写/编辑的 diff 预览
 - `commands/`：`registry.py` 是命令表与首 token 等价匹配分发，`builtin.py` 是内置命令（`/exit` `/mcp` `/version` `/skill` `/help`）
 - `repl/`：`loop.py` 是每轮主循环，`console.py` 是开场横幅与打印函数工厂，`resume.py` 是 `--resume` 的屏上历史回放

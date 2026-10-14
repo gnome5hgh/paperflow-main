@@ -56,8 +56,8 @@ from paperflow.core.llm import (
     message_from_role, tool_to_openai_schema,
 )
 from paperflow.core.llm.services.client import _message_to_openai
-from paperflow.core.agent.constants import StreamEventKind
-from paperflow.core.agent.domain.dto.stream_event import StreamEvent
+from paperflow.core.agent.constants import AgentEventKind
+from paperflow.core.agent.domain.dto.agent_event import AgentEvent
 from paperflow.core.agent.registry import AgentRegistry
 from paperflow.core.skills import SkillRegistry
 from paperflow.core.agent.base_prompt import BASE_PROMPT
@@ -347,7 +347,7 @@ class Agent:
         compaction=None,            # CompactionSettings | None
         structured=None,            # StructuredOutput | None
         max_turns: int = 20,
-        stream_callback: Callable[[StreamEvent], None] | None = None,
+        stream_callback: Callable[[AgentEvent], None] | None = None,
         skill_registry: SkillRegistry | None = None,   # Skill 注册表；None = 无 skill 体系
         trace_id: str | None = None,   # 继承的追踪 ID；None = 每次 run 自行生成
     ):
@@ -502,11 +502,11 @@ class Agent:
         """
         return False
 
-    def _emit(self, ev: StreamEvent) -> None:
-        """转发流式事件；无回调时零开销空操作（非 CLI 调用方完全不受影响）。
+    def _emit(self, ev: AgentEvent) -> None:
+        """转发事件；无回调时零开销空操作（非 CLI 调用方完全不受影响）。
 
         Args:
-            ev: StreamEvent，待转发的事件
+            ev: AgentEvent，待转发的事件
         """
         cb = self.stream_callback
         if cb is not None:
@@ -966,7 +966,7 @@ class Agent:
                 response = await self.llm.chat_stream(
                     messages, tools=tools,
                     on_delta=lambda d: self._emit(
-                        StreamEvent(StreamEventKind.CONTENT, d, self.agent_type)),
+                        AgentEvent(AgentEventKind.CONTENT, d, self.agent_type)),
                     telemetry_callback=self._make_llm_telemetry(turn),
                 )
             else:
@@ -1233,8 +1233,8 @@ class Agent:
                 args_for_summary = json.loads(tool_call["function"]["arguments"])
             except (json.JSONDecodeError, TypeError):
                 args_for_summary = {}
-            self._emit(StreamEvent(
-                StreamEventKind.TOOL_START, _format_tool_call(
+            self._emit(AgentEvent(
+                AgentEventKind.TOOL_START, _format_tool_call(
                     name, tool_call["function"]["arguments"]), self.agent_type,
                 tool_name=name,
                 summary=_tool_summary(name, args_for_summary) or None))
@@ -1432,14 +1432,14 @@ class Agent:
         # tool_end 事件文本（_tool_end_event），保证每条工具调用恰好一条收口。
         return ctx.result
 
-    def _tool_end_event(self, ctx: ToolContext) -> StreamEvent:
+    def _tool_end_event(self, ctx: ToolContext) -> AgentEvent:
         """tool_end 事件：耗时 + 写类 diffstat + completion/错误兜底文本。
 
         Args:
             ctx: ToolContext，本次工具调用上下文
 
         Returns:
-            tool_end 流式事件（耗时 + 写类 diffstat + completion/错误兜底文本）。
+            tool_end 事件（耗时 + 写类 diffstat + completion/错误兜底文本）。
         """
         duration = (int((time.monotonic() - ctx.started_at) * 1000)
                     if ctx.started_at is not None else None)
@@ -1457,7 +1457,7 @@ class Agent:
             text = f"Tool failed: {ctx.error}"
         else:
             text = ""
-        return StreamEvent(StreamEventKind.TOOL_END, text, self.agent_type,
+        return AgentEvent(AgentEventKind.TOOL_END, text, self.agent_type,
                            tool_name=ctx.tool_name or None,
                            summary=_tool_summary(
                                ctx.tool_name,

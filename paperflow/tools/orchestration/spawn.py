@@ -19,7 +19,7 @@ from typing import Callable
 from pydantic import BaseModel
 
 from paperflow.config import PaperFlowConfig
-from paperflow.core.agent import Agent, StreamEvent, StreamEventKind
+from paperflow.core.agent import Agent, AgentEvent, AgentEventKind
 # 运行期状态由容器持有:去重注册表与各类预算计数在 run 作用域(按 trace 隔离),
 # 失败计数在会话作用域(跨 run 累计)。容器取用时顺手清扫过期条目,故此处不再单独清理。
 from paperflow.core.agent import get_run_state, get_session_state
@@ -448,7 +448,7 @@ async def _run_child_with_budget(coro, timeout: float, clock: _UserWaitClock):
         raise
 
 
-def _make_child_stream_callback(parent) -> Callable[[StreamEvent], None] | None:
+def _make_child_stream_callback(parent) -> Callable[[AgentEvent], None] | None:
     """构造子 agent 的流式回调：不流 content，结构化 tool 事件透传（前缀由渲染器统一加）。
 
     子 agent 推理内容不向终端流式输出（多路并发会串字），只透传结构化工具事件
@@ -466,13 +466,13 @@ def _make_child_stream_callback(parent) -> Callable[[StreamEvent], None] | None:
     if pcb is None:
         return None
 
-    def child_cb(ev: StreamEvent) -> None:
+    def child_cb(ev: AgentEvent) -> None:
         """只把结构化工具事件透传给父渲染器（前缀由渲染层统一加）。
 
         Args:
-            ev: StreamEvent，子 agent 的流式事件
+            ev: AgentEvent，子 agent 的事件
         """
-        if ev.kind in (StreamEventKind.TOOL_START, StreamEventKind.TOOL_END):
+        if ev.kind in (AgentEventKind.TOOL_START, AgentEventKind.TOOL_END):
             pcb(ev)          # 前缀由渲染器统一加，此处不再拼 agent_type
     return child_cb
 

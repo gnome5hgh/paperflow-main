@@ -1,5 +1,5 @@
 # paperflow/terminal/render/renderer.py
-"""活动流渲染器——把 Agent 流式事件渲染进终端，并决定最终结果如何打印。
+"""活动流渲染器——把 Agent 事件渲染进终端，并决定最终结果如何打印。
 
 双模式（终端交互界面重构）：
     - activity=False（非 TTY / 测试）：legacy 路径，行为与重构前完全一致——
@@ -36,14 +36,14 @@ from rich.markdown import Markdown
 from rich.markup import escape
 from rich.syntax import Syntax
 
-from paperflow.core.agent import StreamEvent, StreamEventKind
+from paperflow.core.agent import AgentEvent, AgentEventKind
 from ..common import truncate_diff
 from .activity import activity_label, format_activity
 class StreamRenderer:
-    """将 Agent 流式事件渲染为终端输出，并决定最终结果如何打印。
+    """将 Agent 事件渲染为终端输出，并决定最终结果如何打印。
 
     核心职责：
-        1. 接收 StreamEvent（content / tool_start / tool_end），按模式渲染。
+        1. 接收 AgentEvent（content / tool_start / tool_end），按模式渲染。
         2. 使用 BlockRenderer 实现富文本（TTY）或纯文本（非TTY）输出。
         3. 节流重绘（render_interval）避免高频刷新。
         4. 管理 shown 缓冲（仅真正渲染过的 root content）用于 should_print 去重。
@@ -149,7 +149,7 @@ class StreamRenderer:
         Ctrl+C 中断当前 run：设置 cancelled 标志、落屏聚合中的活动行并终止当前 live 块。
 
         由于 asyncio.to_thread 无法真正取消正在执行的输入线程，
-        中断前已发出的后续 StreamEvent 靠此标志丢弃，避免污染界面（已知限制）。
+        中断前已发出的后续 AgentEvent 靠此标志丢弃，避免污染界面（已知限制）。
         """
         with self._lock:
             self._cancelled = True
@@ -159,10 +159,10 @@ class StreamRenderer:
 
     def on_event(self, ev) -> None:
         """
-        处理 Agent 流式事件（content/tool_start/tool_end），可被多线程并发调用，锁内串行。
+        处理 Agent 事件（content/tool_start/tool_end），可被多线程并发调用，锁内串行。
 
         Args:
-            ev: StreamEvent 对象，包含 kind、text、agent_type 及 tool_* 结构化字段。
+            ev: AgentEvent 对象，包含 kind、text、agent_type 及 tool_* 结构化字段。
         """
         with self._lock:
             if self._cancelled:
@@ -183,11 +183,11 @@ class StreamRenderer:
         """legacy 分发：content 流式；tool 型事件（含 tool_start/tool_end）按行打 text。
 
         Args:
-            ev: StreamEvent，待处理事件（content 流式；tool 型事件按行打印）
+            ev: AgentEvent，待处理事件（content 流式；tool 型事件按行打印）
         """
-        if ev.kind == StreamEventKind.CONTENT:
+        if ev.kind == AgentEventKind.CONTENT:
             self._on_content(ev)
-        elif ev.kind in ("tool", StreamEventKind.TOOL_START, StreamEventKind.TOOL_END):
+        elif ev.kind in ("tool", AgentEventKind.TOOL_START, AgentEventKind.TOOL_END):
             self._on_tool(ev)
 
     def _on_content(self, ev) -> None:
@@ -199,7 +199,7 @@ class StreamRenderer:
             - content → tool：由 _on_tool 处理。
 
         Args:
-            ev: StreamEvent，content 事件（text 为增量片段）
+            ev: AgentEvent，content 事件（text 为增量片段）
         """
         seg = "root" if ev.agent_type == self._root else "child"
         # 若上一个段是 root 或 child，且与当前段不同，则结束旧块并补换行
@@ -227,7 +227,7 @@ class StreamRenderer:
               因为那些内容属于工具执行前的过程，不应作为最终答案的流式缓冲。
 
         Args:
-            ev: StreamEvent，tool 型事件（打印前必须先停 live，否则部分行会被重绘吞掉）
+            ev: AgentEvent，tool 型事件（打印前必须先停 live，否则部分行会被重绘吞掉）
         """
         # 如果上一个段是 root/child，需要结束块并补换行
         if self._last_segment in ("root", "child"):
@@ -254,13 +254,13 @@ class StreamRenderer:
         """活动流分发：content → _on_content_activity；tool_start/tool_end → 各自处理。
 
         Args:
-            ev: StreamEvent，待处理事件（按 kind 分发）
+            ev: AgentEvent，待处理事件（按 kind 分发）
         """
-        if ev.kind == StreamEventKind.CONTENT:
+        if ev.kind == AgentEventKind.CONTENT:
             self._on_content_activity(ev)
-        elif ev.kind == StreamEventKind.TOOL_START:
+        elif ev.kind == AgentEventKind.TOOL_START:
             self._on_tool_start(ev)
-        elif ev.kind == StreamEventKind.TOOL_END:
+        elif ev.kind == AgentEventKind.TOOL_END:
             self._on_tool_end(ev)
 
     def _on_content_activity(self, ev) -> None:
@@ -271,7 +271,7 @@ class StreamRenderer:
           中间过程不该抢滚动区，最终答案由 should_print 交还），child content 同样忽略。
 
         Args:
-            ev: StreamEvent，content 事件（首个 tool_start 之后静默丢弃）
+            ev: AgentEvent，content 事件（首个 tool_start 之后静默丢弃）
         """
         if self._started_tools:
             return
@@ -286,7 +286,7 @@ class StreamRenderer:
           format_activity(..., done=False) + "…"（block.show，spinner 一体）。
 
         Args:
-            ev: StreamEvent，tool_start 事件（同动词同 agent 连续调用合并计数）
+            ev: AgentEvent，tool_start 事件（同动词同 agent 连续调用合并计数）
         """
         self._end_block()
         verb, count_word = activity_label(ev.tool_name)
@@ -319,7 +319,7 @@ class StreamRenderer:
         - diffstat（仅写类工具）按 path 累积进 _changed，finalize 时汇成徽标。
 
         Args:
-            ev: StreamEvent，tool_end 事件（记录耗时、累积写类 diffstat）
+            ev: AgentEvent，tool_end 事件（记录耗时、累积写类 diffstat）
         """
         if ev.diffstat is not None:
             path, added, removed = ev.diffstat
