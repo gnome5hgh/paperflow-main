@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 from typing import Literal
 
 from pydantic import BaseModel
@@ -13,7 +14,16 @@ from pydantic import BaseModel
 from paperflow.core.llm import Message, SystemMessage
 from paperflow.core.common.tokenization import get_token_encoder
 
-__all__ = ["CompactionSettings", "SummarySchema", "should_compress", "run_compaction"]
+__all__ = ["CompactionSettings", "SummarySchema", "estimate_tokens",
+           "blend_token_ratio", "should_compress", "run_compaction"]
+
+#: 每条消息的协议开销（3 条消息框架 + 1 个角色名，对齐 OpenAI 的计数口径）。
+_PROTOCOL_OVERHEAD = 4
+
+#: 校准系数的夹紧区间与 EMA 权重：单次观测可能偏得离谱（缓存命中、端点口径差异），
+#: 夹紧后折半并入，不让一次异常带偏整体估算。
+_RATIO_MIN, _RATIO_MAX = 0.5, 2.0
+_RATIO_WEIGHT = 0.5
 
 
 class SummarySchema(BaseModel):
@@ -92,11 +102,17 @@ class CompactionSettings:
         return model_window // 2
 
 
-def _estimate_tokens(messages: list[Message]) -> int:
-    """粗估消息 token 总量：每条内容 token 数 + 4 的协议开销常数。
+def estimate_tokens(messages: list[Message]) -> int:
+    """粗估消息 token 总量：逐条算正文与工具调用，再加协议开销。
+
+    协议开销固定 4（3 条消息框架 + 1 个角色名，对齐 OpenAI 的计数口径），不按角色
+    分档——分档只会得到一桌拍出来的常数，真正的偏差在别处（工具调用的 JSON 此前
+    完全没算，而 arguments 常是一整段内容）。
+
+    视觉 content parts 只计其中的文本部分：图片 token 由模型侧按块决定，本地算不出来。
 
     Args:
-        messages: 消息列表（Message 格式）。
+        messages: 消息列表（Message 家族）。
 
     Returns:
         估算的总 token 数（整数）。
@@ -105,27 +121,78 @@ def _estimate_tokens(messages: list[Message]) -> int:
     # 编码器单点在 core.common.tokenization（与 rag 切块共用同一口径）。
     enc = get_token_encoder()
     for m in messages:
-        total += len(enc.encode(m.content or "")) + 4
+        total += len(enc.encode(_countable_text(m))) + _PROTOCOL_OVERHEAD
+        tool_calls = getattr(m, "tool_calls", None)
+        if tool_calls:
+            total += len(enc.encode(json.dumps(tool_calls, ensure_ascii=False)))
     return total
 
 
-def should_compress(messages: list[Message], settings: CompactionSettings,
-                    context_window: int) -> bool:
-    """判断当前窗口是否该压缩：估算 token × 1.1 > trigger_ratio × 预算。
+def _countable_text(m: Message) -> str:
+    """取一条消息里可计数的文本：正文为字符串时就是它，content parts 时只取文本部分。
 
-    1.1 是触发裕量：token 估算有误差，预留 10% 安全边际防撞硬窗口上限。
+    Args:
+        m: 一条消息。
+
+    Returns:
+        用于 token 计数的文本（图片等非文本部分为空）。
+    """
+    content = m.content
+    if content is None or isinstance(content, str):
+        return content or ""
+    return "".join(part.get("text", "") for part in content
+                   if isinstance(part, dict) and part.get("type") == "text")
+
+
+def blend_token_ratio(current: float, actual_prompt_tokens: int | None,
+                      estimated_prompt_tokens: int | None) -> float:
+    """用一次真实用量校准「本地估算 → 云端实际」的比例（EMA + 夹紧）。
+
+    本地估算只能逼近，偏差是系统性的（口径不同、工具定义不计入正文等），故拿上一次
+    请求的真实 ``prompt_tokens`` 除以当时的本地估算，得到一个乘数。出现三种情况时
+    原样返回当前系数：没有真实用量（端点不报、流式未开 include_usage）、没有当时的
+    估算、或估算为 0。
+
+    单次观测先夹紧在 [0.5, 2.0]——缓存命中、端点计数口径差异都可能让某一次偏得很远，
+    不该让它带偏整体；再用 EMA 折半并入（内容结构每轮都在变，不直接把系数打到观测值）。
+
+    Args:
+        current: 当前系数（初始 1.0 = 不校准）。
+        actual_prompt_tokens: 上一次请求端点上报的输入 token 数。
+        estimated_prompt_tokens: 上一次请求发送前的本地估算。
+
+    Returns:
+        新的校准系数。
+    """
+    if not actual_prompt_tokens or not estimated_prompt_tokens:
+        return current
+    observed = actual_prompt_tokens / estimated_prompt_tokens
+    observed = min(max(observed, _RATIO_MIN), _RATIO_MAX)
+    return (1 - _RATIO_WEIGHT) * current + _RATIO_WEIGHT * observed
+
+
+def should_compress(messages: list[Message], settings: CompactionSettings,
+                    context_window: int, *, estimate: int | None = None,
+                    ratio: float = 1.0) -> bool:
+    """判断当前窗口是否该压缩：估算 token × 校准系数 × 1.1 > trigger_ratio × 预算。
+
+    1.1 是触发裕量：token 估算有误差，预留 10% 安全边际防撞硬窗口上限；
 
     Args:
         messages: 当前 in-context 消息列表。
         settings: 压缩配置（含 trigger_ratio 等）。
         context_window: 模型的实际上下文窗口大小（token 数）。
+        estimate: 已算好的消息 token 估算；None 表示现算（调用方已算过时传进来，
+            省一次全窗口编码）。
+        ratio: 校准系数（见 ``blend_token_ratio``），1.0 = 沿用本地估算原值。
 
     Returns:
         True 表示应触发压缩，False 表示无需压缩。
     """
     ctx_size = settings.resolve_context_size(context_window)
-    estimate = _estimate_tokens(messages)
-    return estimate * 1.1 > settings.trigger_ratio * ctx_size
+    if estimate is None:
+        estimate = estimate_tokens(messages)
+    return estimate * ratio * 1.1 > settings.trigger_ratio * ctx_size
 
 
 async def run_compaction(messages: list[Message], settings: CompactionSettings,
@@ -203,7 +270,7 @@ def _recent_tail(messages: list[Message], settings: CompactionSettings,
         if m.role == "system":
             continue
         # 估算当前消息 token 数
-        cost = _estimate_tokens([m])
+        cost = estimate_tokens([m])
         # 若超过预算且已有保留消息，则停止（至少保留一条尾部消息）
         if used + cost > budget and kept:
             break

@@ -442,6 +442,12 @@ class Agent:
         #: 结构化输出（StructuredOutput | None）：compaction 摘要生成路径消费
         self.structured = structured
 
+        #: token 估算的校准系数：本地估算与实际用量的比值，每次拿到真实 prompt_tokens
+        #: 就更新一次（见 _calibrate_token_ratio）。1.0 = 未校准。
+        self._token_ratio = 1.0
+        #: 本轮发送前的本地估算，供返回后用真实用量校准（0 表示本轮还没算过）。
+        self._last_sent_estimate = 0
+
         #: in-context 消息缓冲区（内部 _messages 是真实缓冲区，外部 messages 是
         #: 只读 wire 视图）。run() 每轮从 MessageManager 重新加载，跨轮消息经 SQL
         #: 持久化回放，不在内存里跨 run 累积。
@@ -817,16 +823,38 @@ class Agent:
 
         依赖 message_manager 存在:无持久化层时压缩无从安置(摘要无处回放),跳过。
 
+        这里顺手记下本轮发送前的本地估算——LLM 返回后用它和真实 prompt_tokens 算
+        校准系数。**无论是否装配压缩都要记**，否则校准会拿上一轮的旧估算对这一次的
+        用量，比例算出来是错的。
+
         Args:
             messages: list[Message]，当前 in-context 消息
 
         Returns:
             True 表示已超压缩阈值（无持久化层时恒 False）。
         """
-        from paperflow.core.memory.services.compaction import should_compress
+        from paperflow.core.memory.services.compaction import estimate_tokens, should_compress
+        self._last_sent_estimate = estimate_tokens(messages)
         if self.compaction is None or self.message_manager is None:
             return False
-        return should_compress(messages, self.compaction, self.llm.context_window)
+        return should_compress(messages, self.compaction, self.llm.context_window,
+                               estimate=self._last_sent_estimate, ratio=self._token_ratio)
+
+    def _calibrate_token_ratio(self, response) -> None:
+        """用一次真实的 prompt_tokens 校准本地估算系数（同步，无返回值）。
+
+        只在端点报了用量时生效：流式未开 include_usage、或兼容端点不报 usage 时，
+        系数保持不变（沿用本地估算原值）。假回复（鸭子类型、没有 meta）同样跳过。
+
+        Args:
+            response: 本轮 LLM 返回的消息（可能带响应信封）。
+        """
+        from paperflow.core.memory.services.compaction import blend_token_ratio
+        meta = getattr(response, "meta", None)
+        usage = getattr(meta, "usage", None) if meta is not None else None
+        actual = getattr(usage, "prompt_tokens", None) if usage is not None else None
+        self._token_ratio = blend_token_ratio(
+            self._token_ratio, actual, self._last_sent_estimate)
 
     async def run(self, task: str) -> str:
         """
@@ -945,6 +973,9 @@ class Agent:
                 response = await self.llm.chat(
                     messages, tools=tools,
                     telemetry_callback=self._make_llm_telemetry(turn))
+
+            # 用真实 prompt_tokens 校准本地 token 估算（端点没报用量就保持原系数）
+            self._calibrate_token_ratio(response)
 
             # LLM 没有请求调用任何工具（判定任务完成）：返回无 tool_calls 的纯文本消息
             if not response.tool_calls:
