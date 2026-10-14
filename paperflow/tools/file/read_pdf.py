@@ -33,7 +33,7 @@ class ReadPdfTool(Tool):
         parameters: dict，JSON Schema（path）
         risk_level: str，"low"（只读）
         root_hints: list[str]，["pdf"]
-        output_scan: str，"mark"
+        provenance: str，"pdf"（论文全文属外部内容）
         side_effects: list[str]，["read_file"]
     """
 
@@ -48,7 +48,7 @@ class ReadPdfTool(Tool):
     }
     risk_level = "low"
     root_hints = ["pdf"]                    # 提示语料库 PDF 根（只读语义在中间件）
-    output_scan = "mark"
+    provenance = "pdf"                       # 论文全文属外部内容
     side_effects = ["read_file"]
 
     def execute(self, path: str) -> ToolResult:

@@ -4,7 +4,7 @@ AgentRegistry 与 SkillRegistry 共用：不安全配置不进系统。
 """
 from typing import TYPE_CHECKING
 
-from paperflow.core.constants import RISK_LEVELS, SIDE_EFFECTS
+from paperflow.core.constants import PROVENANCE_KINDS, RISK_LEVELS, SIDE_EFFECTS
 
 if TYPE_CHECKING:
     from paperflow.core.tool.base import Tool
@@ -15,7 +15,7 @@ def validate_tool(tool: "Tool") -> None:
 
     AgentRegistry 与 SkillRegistry 共用：不安全配置不进系统。
     校验点：risk_level ∈ RISK_LEVELS；side_effects 每个值 ∈ SIDE_EFFECTS；
-    output_scan ∈ (None, "mark")。
+    provenance 为 None 或 ∈ PROVENANCE_KINDS。
 
     Args:
         tool: 待校验的 Tool 实例
@@ -35,8 +35,8 @@ def validate_tool(tool: "Tool") -> None:
             f"Tool '{tool.name}': 非法 side_effects: {invalid_effects}，"
             f"合法值: {sorted(SIDE_EFFECTS)}"
         )
-    if tool.output_scan not in (None, "mark"):
+    if tool.provenance is not None and tool.provenance not in PROVENANCE_KINDS:
         raise ValueError(
-            f"Tool '{tool.name}': 非法 output_scan '{tool.output_scan}'，"
-            f"合法值: None / 'mark'"
+            f"Tool '{tool.name}': 非法 provenance '{tool.provenance}'，"
+            f"合法值: None / {sorted(PROVENANCE_KINDS)}"
         )

@@ -2,7 +2,7 @@
 
 `SkillConfig`（插件配置实体）在 `../domain/`。
 """
-from paperflow.core.skills.services.assembly import merge_tools
+from paperflow.core.skills.services.assembly import apply_pre_approval, merge_tools
 from paperflow.core.skills.services.install import (
     enable_skill,
     install_skill,

@@ -14,7 +14,7 @@
 
 should_print 比对「真正渲染过的 root content」（_shown_buffer）与最终答案，
 防止重复打印——中间件的 on_finish 钩子可能改写最终回答（如安全扫描的
-SAFE_PROMPT 替换）。三态逻辑两种模式共用：直答 shown==result → 只补换行；
+被内容防护打码）。三态逻辑两种模式共用：直答 shown==result → 只补换行；
 有工具轮 shown≠result → 补打最终答案；纯工具轮 shown 空 → 原样打印。
 
 活动行映射（emoji+动词、计数词）与格式化在 paperflow.terminal.render.activity

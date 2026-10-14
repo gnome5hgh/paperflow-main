@@ -26,6 +26,11 @@ dependencies = [
     "minio>=7.2",
     "rich>=13.0.0",
     "prompt_toolkit>=3.0.0",
+    # 命令解析：把一条命令按语法树拆成逐条命令与 argv（区分 `rm -rf /work` 与
+    # `rm -rf /`），供声明了 format="shell_command" 的参数做风险判定。
+    # 有预编译 wheel，无需本地编译。
+    "tree-sitter>=0.23",
+    "tree-sitter-bash>=0.23",
 ]
 
 [project.scripts]

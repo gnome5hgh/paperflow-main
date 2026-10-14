@@ -13,14 +13,16 @@ from paperflow.cli.bootstrap import _ensure_services
 from paperflow.config import PaperFlowConfig
 from paperflow.core.agent import Agent
 from paperflow.core.agent import AgentRegistry
-from paperflow.core.skills import merge_tools
+from paperflow.core.skills import apply_pre_approval, merge_tools
 from paperflow.core.skills import SkillRegistry, load_lock
 from paperflow.core.mcp.services.bridge import collect_mcp_agent_tools
 from paperflow.tools.skills.load_skill import LoadSkillTool
+from paperflow.tools.common.factory import declared_roots
 from paperflow.core.llm import LLMClient
+from paperflow.core.security.services.classifier import build_classifier
 from paperflow.core.security import (
     AuditMiddleware, WorkspacePolicyMiddleware,
-    SecurityScanMiddleware, PolicyEngineMiddleware,
+    ContentGuardMiddleware, CommandGuardMiddleware, PolicyEngineMiddleware,
 )
 from paperflow.core.llm import StructuredOutput
 from paperflow.core.memory.storage.database import MemoryDB
@@ -37,6 +39,24 @@ from paperflow.terminal.io import make_input_io
 from paperflow.terminal.render import make_renderer
 from paperflow.terminal.repl import _repl, _make_print_fn
 from paperflow.terminal.repl import build_resume_replay
+
+
+def _approved_tools(config: PaperFlowConfig) -> set[str]:
+    """预批准的工具名集合：security.pre_approved_tools 与各 MCP server 的 write_tools 并集。
+
+    两种写法等价——按 server 书写的 write_tools 只是同一个概念的语法糖；装配时并成
+    一个集合再统一降档，避免两套名单各管一段、行为不一致。
+
+    Args:
+        config: PaperFlowConfig，配置来源
+
+    Returns:
+        set[str]，允许降档（medium）的工具名集合。
+    """
+    approved = set(config.security.pre_approved_tools or [])
+    for server in (config.mcp_servers or {}).values():
+        approved |= set(getattr(server, "write_tools", None) or [])
+    return approved
 
 
 def _select_resume_session(agent_manager: AgentManager, io) -> str | None:
@@ -179,6 +199,9 @@ def main(argv: list[str] | None = None) -> int | None:
             ("framework", [_load_skill_tool]),
             ("mcp", collect_mcp_agent_tools(_agent_type, config.mcp_servers, mcp_manager)),
         )
+        # 预批准名单统一：security.pre_approved_tools 与各 server 的 write_tools 并成
+        # 一个集合后再降档，两种写法等价
+        apply_pre_approval(_cfg.tools, _approved_tools(config))
 
     # 终端装配：TTY → prompt_toolkit 输入 + rich Live 渲染；非 TTY（管道/CI/测试）→
     # FallbackIO + PlainBlock 降级。renderer 须在 supervisor 前构造——confirm_callback
@@ -260,8 +283,13 @@ def main(argv: list[str] | None = None) -> int | None:
         # PAPERFLOW_RUNTIME_WORKSPACE 重定向时审计仍写进仓库 .paperflow/security/audit，与其他会话的审计混写；
         # 且 cwd 下的 .paperflow/security/audit 落在 WorkspacePolicy 的 ws/security 保护约定之外)
         AuditMiddleware(audit_dir=str(Path(config.runtime.workspace) / "security" / "audit")),
-        WorkspacePolicyMiddleware(workspace=config.runtime.workspace),
-        SecurityScanMiddleware(),
+        # write_roots = 已声明的产物根 + 工作区：写目标落在其外时升级确认
+        WorkspacePolicyMiddleware(workspace=config.runtime.workspace,
+                                  write_roots=declared_roots(config)),
+        # 语义判定层按配置构造：未启用或缺端点即 None（整层不装配）
+        ContentGuardMiddleware(classifier=build_classifier(config)),
+        # 命令防护：零工具声明 format="shell_command" 时是纯 no-op（为将来的 shell 工具留的缝）
+        CommandGuardMiddleware(),
         PolicyEngineMiddleware(confirm_above=config.runtime.confirm_above),
     ]
 

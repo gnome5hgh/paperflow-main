@@ -85,6 +85,7 @@ class RagRetrieveTool(Tool):
         "required": ["query"],
     }
     risk_level = "low" # 工具风险等级：只读操作，无风险
+    provenance = "rag"  # 检索块是外部数据：加来源标记并过确定性扫描
 
     def __init__(self):
         """创建检索工具；_service 延迟到首次 execute 时取全局单例（也支持测试注入）。"""

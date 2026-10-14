@@ -6,7 +6,7 @@ L1（name+description 清单）由 SkillRegistry.skills_block 在装配期注入
 本工具承载 L2（SKILL.md 正文）与 L3（references/assets 等资源）的按需加载。
 
 安全设计：
-- ``output_scan="mark"``：skill 正文是外部内容 → SecurityScan 做提示注入扫描并打
+- ``provenance="local_file"``：skill 正文是外部内容 → 内容防护打来源标记并扫描
   读入标记、Audit 记审计——相对业界「bash 直读」的核心安全优势。
 - 返回正文带来源头 + 指令位阶声明（skill 指令 < AGENT.md 角色定义 < 铁律）——
   针对「正文即 dropper」的上下文级缓解（ClawHub 供应链教训）。
@@ -27,7 +27,7 @@ class LoadSkillTool(Tool):
         parameters: dict，JSON Schema（name/resource）
         risk_level: str，"low"（只读）
         side_effects: list[str]，空（无副作用）
-        output_scan: str，"mark"（正文是外部内容，扫描并打读入标记）
+        provenance: str，"local_file"（正文是外部内容，扫描并打来源标记）
     """
 
     #: 工具名称
@@ -62,7 +62,7 @@ class LoadSkillTool(Tool):
     side_effects: list[str] = []
 
     #: 正文是外部内容：SecurityScan 扫描 + 打读入标记
-    output_scan = "mark"
+    provenance = "local_file"
 
     def __init__(self, skill_registry: SkillRegistry):
         """

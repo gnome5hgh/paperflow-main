@@ -23,7 +23,7 @@
 - 决策推导（``_derive_decision``）：根据调用结果推导出 auto_allowed /
   user_confirmed / policy_denied / security_blocked / user_denied；
 - 状态推导（``_result_status``）：根据异常类型推导出 success /
-  policy_blocked / security_blocked / user_denied / error。
+  security_blocked / user_denied / error。
 
 调用链通过 contextvar 维护：``before`` 写 start 事件后压栈，``after`` 写 end
 事件后弹栈；子 agent 在 to_thread + asyncio.run 里自动继承父链，各并发任务持
@@ -45,7 +45,7 @@ from typing import Any
 from pathlib import Path
 
 from paperflow.core.security.middleware.base import (
-    SecurityMiddleware, PolicyDenied, SecurityBlocked, ConfirmRequired,
+    SecurityMiddleware, SecurityBlocked, ConfirmRequired,
 )
 from paperflow.core.security.domain import AuditEntry, ToolContext
 from paperflow.core.common.text import sanitize_surrogates
@@ -112,7 +112,7 @@ def _derive_decision(ctx: ToolContext) -> str:
         # 说明是用户拒绝或超时未确认，一律视为 user_denied
         return "user_denied"
 
-    # 其他异常（PolicyDenied / SecurityBlocked 或普通异常）取异常的 decision 属性，
+    # 其他异常（SecurityError 子类或普通异常）取异常的 decision 属性，
     # 若无则兜底为 "error"（工具抛出的普通异常（RuntimeError 等）没有 decision 属性）
     return getattr(ctx.error, "decision", "error")
 
@@ -124,12 +124,10 @@ def _result_status(ctx: ToolContext) -> str:
         ctx: ToolContext，本次工具调用上下文
 
     Returns:
-        结果状态字符串（success/policy_blocked/security_blocked/user_denied/error）。
+        结果状态字符串（success/security_blocked/user_denied/error）。
     """
     if ctx.error is None:
         return "success"
-    if isinstance(ctx.error, PolicyDenied):
-        return "policy_blocked"
     if isinstance(ctx.error, SecurityBlocked):
         return "security_blocked"
     if isinstance(ctx.error, ConfirmRequired):
@@ -146,9 +144,12 @@ def _extract_violations(ctx: ToolContext) -> dict | None:
     Returns:
         违规明细 dict（仅 SecurityBlocked 场景）；其余情况 None。
     """
-    # 如果 ctx.error 是 SecurityBlocked 类的实例，则执行后续操作
-    if isinstance(ctx.error, (SecurityBlocked,)):
-        return {"violations": ctx.error.violations}
+    findings = list(getattr(ctx, "content_findings", None) or [])
+    if isinstance(ctx.error, SecurityBlocked):
+        return {"violations": ctx.error.violations, "content_findings": findings}
+    # 未被拦截但内容防护有结论（如语义判定命中）——同样入审计，便于事后回看
+    if findings:
+        return {"violations": [], "content_findings": findings}
     return None
 
 
@@ -194,7 +195,7 @@ def _build_policy_rules(ctx: ToolContext) -> dict | None:
     if ctx.policy_context is None and fired is None:
         return None
     return {
-        "checked": ["blocked_by_default", "risk_threshold"],
+        "checked": ["risk_threshold"],
         "fired": fired,
         "reason": str(ctx.error) if ctx.error else None,
         "policy_context": ctx.policy_context,

@@ -27,7 +27,7 @@ class FetchPdfTool(Tool):
         risk_level: str，"medium"（写操作，只读会话不应触碰本地资料库）
         root_hints: list[str]，["pdf"]
         side_effects: list[str]，["network", "write_file"]
-        output_scan: str | None，None（返回本地路径与状态，无外部内容，不打横幅）
+        provenance: str | None，None（返回本地路径与状态，无外部内容，不打横幅）
         wants_run_state: bool，True（注入失败 URL 负缓存与已下载短路池）
         _client: tuple | None，惰性构造的 (httpx.Client, ssrf_check)
     """
@@ -54,7 +54,7 @@ class FetchPdfTool(Tool):
     root_hints = ["pdf"]
     side_effects = ["network", "write_file"]
     #: 返回本地路径与状态，无外部内容——不需打 mark 横幅
-    output_scan = None
+    provenance = None
     #: 注入 per-run 状态：失败 URL 负缓存（同 URL 本任务内不重复尝试）
     wants_run_state = True
 

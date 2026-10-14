@@ -10,8 +10,8 @@
 ``validation.py``（安全元数据校验）。消费方一律从本包取（``from paperflow.core.tool
 import Tool, ToolResult``），不关心内部怎么分文件。
 """
-from paperflow.core.tool.base import Tool
+from paperflow.core.tool.base import WRITE_EFFECTS, Tool, is_writer
 from paperflow.core.tool.result import ToolResult
 from paperflow.core.tool.validation import validate_tool
 
-__all__ = ["Tool", "ToolResult", "validate_tool"]
+__all__ = ["Tool", "ToolResult", "validate_tool", "is_writer", "WRITE_EFFECTS"]

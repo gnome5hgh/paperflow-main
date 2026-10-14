@@ -125,7 +125,7 @@ class McpToolAdapter(Tool):
         parameters: dict | None，规范化后的 JSON Schema
         risk_level: str，写类为 high、预批准写类为 medium、只读为 low
         side_effects: list[str]，写类含 network+write_file，只读含 network
-        output_scan: str，固定 "mark"（MCP 结果为外部内容）
+        provenance: str，固定 "search"（MCP 结果为外部内容，按检索来源对待）
         pre_approved: bool，是否在 write_tools 预批准名单内（信任降档 medium）
         _manager / _server_name / _tool_name: McpClientManager 与目标（调用时投递给它）
     """
@@ -153,7 +153,7 @@ class McpToolAdapter(Tool):
         # side_effects 只能用 tool.SIDE_EFFECTS 里的合法值（{write_file, delete_file,
         # network, read_file}），否则 validate_tool 抛 ValueError、AgentRegistry 装载即崩。
         self.side_effects = ["network", "write_file"] if write_enabled else ["network"]
-        self.output_scan = "mark"
+        self.provenance = "search"
         # 写类默认可见但需逐次确认，write_tools 预批准降档豁免；readOnlyHint=true
         # 只读工具自动放行（与业界「可见但审批」的做法一致，不默认隐藏）。
         self._manager = manager

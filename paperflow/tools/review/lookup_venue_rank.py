@@ -125,7 +125,7 @@ class LookupVenueRankTool(Tool):
         parameters: dict，JSON Schema（venue/issn）
         risk_level: str，"low"
         side_effects: list[str]，["network"]
-        output_scan: str，"mark"（返回网页解析结果，打未校验横幅）
+        provenance: str，"web"（返回网页解析结果，打未校验横幅）
         _client: _VenueClient | None，惰性构造的抓取客户端
     """
     name = "lookup_venue_rank"
@@ -142,7 +142,7 @@ class LookupVenueRankTool(Tool):
     }
     risk_level = "low"
     side_effects = ["network"]
-    output_scan = "mark"                     # 返回外部内容（网页解析结果）→ 未校验横幅
+    provenance = "web"                       # 返回外部内容（网页解析结果）→ 来源标记
 
     def __init__(self):
         """初始化工具；抓取客户端留待在线兜底路径才懒建（本地/缓存命中不走网络）。"""

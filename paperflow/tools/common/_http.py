@@ -4,7 +4,7 @@
 搜索与 lookup_venue_rank 等级查询共用同一 SSRF mixin。PDF 下载的抓取与 SSRF 校验见
 FetchPdfTool（paperflow/tools/search/fetch_pdf.py）。
 """
-from paperflow.core.security.services.network import resolve_url_target
+from paperflow.core.security.services.network import check_egress, resolve_url_target
 
 
 class _HttpClientMixin:
@@ -30,7 +30,9 @@ class _HttpClientMixin:
         Returns:
             httpx 响应对象；重定向前后各做一次 SSRF 校验。
         """
-        self.ssrf_check(url)
+        # 统一出网入口：外部内容带来的 URL 走 SSRF（含重定向逐跳校验）；
+        # 返回的目标 host 即出网登记的凭据（调用方可记入审计）。
+        check_egress(url)
         url = resolve_url_target(url)          # 重定向逐跳校验（httpx 已是硬依赖）
-        self.ssrf_check(url)
+        check_egress(url)
         return self.client.get(url)

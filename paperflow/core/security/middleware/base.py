@@ -28,7 +28,7 @@ class SecurityMiddleware(ABC):
         实现者可以：
             - 检查 ctx.args、ctx.tool 等字段；
             - 修改 ctx 中的内容（如添加额外元数据）；
-            - 抛出 SecurityError 子类（PolicyDenied / ConfirmRequired / SecurityBlocked）来阻止执行；
+            - 抛出 SecurityError 子类（ConfirmRequired / SecurityBlocked）来阻止执行；
             - 正常返回则继续下一个中间件。
 
         Args:
@@ -93,36 +93,17 @@ class SecurityError(Exception):
     （RuntimeError 等）没有该属性，兜底取 "error"。
 
     Attributes:
-        decision: str，安全决策类型（子类覆盖为具体值，如 policy_denied）
+        decision: str，安全决策类型（子类覆盖为具体值，如 security_blocked）
     """
 
-    decision: str   # 子类必须覆盖为具体的决策字符串，如 "policy_denied"
-
-
-class PolicyDenied(SecurityError):
-    """策略拒绝：工具被策略检查判定为不可执行，携带拒绝原因。
-
-    Attributes:
-        decision: str，固定为 "policy_denied"
-        reason: str，人类可读的拒绝理由（反馈给 LLM）
-    """
-
-    decision = "policy_denied"
-
-    def __init__(self, reason: str):
-        """记录拒绝理由。
-
-        Args:
-            reason: str，拒绝理由；写入实例供上层反馈给 LLM
-        """
-        self.reason = reason   # 人类可读的拒绝理由，将反馈给 LLM
+    decision: str   # 子类必须覆盖为具体的决策字符串，如 "security_blocked"
 
 
 class ConfirmRequired(SecurityError):
-    """需要确认：工具风险较高，等待用户确认后才能继续执行。
+    """需要确认：存在未放行的升级因，等待用户确认后才能继续执行。
 
-    携带工具名、入参、风险等级、副作用说明与确认回调；用户放行后调用
-    ``confirm()`` 触发回调，把本次确认记进已确认集合（见 PolicyEngineMiddleware）。
+    携带工具名、入参、风险等级、副作用说明、触发主因与确认回调；用户放行后调用
+    ``confirm()`` 触发回调，把本次全部待确认键记进已确认集合（见 PolicyEngineMiddleware）。
     未确认（异常未放行）一律视为拒绝——只有最终放行的调用才算允许。
 
     Attributes:
@@ -131,12 +112,15 @@ class ConfirmRequired(SecurityError):
         params: dict，本次调用的参数（展示给用户）
         risk_level: str，工具风险等级
         side_effects: str，可能的副作用说明（如「写入文件」）
+        cause: str，触发主因（risk_threshold / path_fence / command）——确认框据此
+               说明「这次问的是哪件事」
         _on_confirmed: 回调 | None，确认后触发（把本次确认记入已确认集合）
     """
 
     decision = "confirm_required"
 
-    def __init__(self, tool_name, params, risk_level, side_effects, on_confirmed=None):
+    def __init__(self, tool_name, params, risk_level, side_effects,
+                 cause="risk_threshold", on_confirmed=None):
         """记录待确认工具的展示信息与放行回调。
 
         Args:
@@ -144,12 +128,14 @@ class ConfirmRequired(SecurityError):
             params: dict，本次调用参数（展示给用户）
             risk_level: str，工具风险等级
             side_effects: str，副作用说明
+            cause: str，触发主因
             on_confirmed: 回调 | None，用户放行后触发，用于记入已确认集合
         """
         self.tool_name = tool_name          # 需要用户确认的工具名
         self.params = params                # 本次调用的参数（用于展示给用户）
         self.risk_level = risk_level        # 工具的风险等级（如 "high"）
         self.side_effects = side_effects    # 工具可能产生的副作用说明（如 "写入文件"）
+        self.cause = cause                  # 触发主因（确认框据此说明问的是哪件事）
         self._on_confirmed = on_confirmed   # 确认后触发的回调（由 PolicyEngineMiddleware 传入，用于更新已确认集合）
 
     def confirm(self) -> None:

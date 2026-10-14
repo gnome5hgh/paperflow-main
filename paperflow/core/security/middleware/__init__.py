@@ -1,8 +1,10 @@
-"""安全中间件子包：审计、工作区、内容扫描与策略检查的具体实现。"""
+"""安全中间件子包：审计、路径权威、内容防护、命令防护与策略检查的具体实现。"""
 from paperflow.core.security.middleware.audit import AuditEntry, AuditMiddleware
 from paperflow.core.security.middleware.workspace import WorkspacePolicy, WorkspacePolicyMiddleware
-from paperflow.core.security.middleware.scanner import SecurityScanMiddleware, has_critical, scan
+from paperflow.core.security.middleware.content_guard import ContentGuardMiddleware, has_critical, scan
+from paperflow.core.security.middleware.command_guard import CommandGuardMiddleware
 from paperflow.core.security.middleware.policy_engine import PolicyEngineMiddleware
 
 __all__ = ["AuditEntry", "AuditMiddleware", "WorkspacePolicy", "WorkspacePolicyMiddleware",
-           "SecurityScanMiddleware", "has_critical", "scan", "PolicyEngineMiddleware"]
+           "ContentGuardMiddleware", "has_critical", "scan",
+           "CommandGuardMiddleware", "PolicyEngineMiddleware"]

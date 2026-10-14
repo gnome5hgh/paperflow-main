@@ -41,6 +41,7 @@ class GrepTool(Tool):
         "required": ["pattern"],
     }
     risk_level = "low"
+    provenance = "local_file"                  # 读的是用户文件：内容是外部数据
     root_hints = ["note", "pdf", "memory"]
 
     def execute(self, pattern: str, path: str | None = None,

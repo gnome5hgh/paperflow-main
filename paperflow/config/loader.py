@@ -21,6 +21,8 @@ from paperflow.config.sections import (
     MemoryConfig,
     RagConfig,
     RuntimeConfig,
+    ClassifierConfig,
+    SecurityConfig,
     SessionConfig,
     VisionLLMConfig,
     parse_mcp_servers,
@@ -119,6 +121,7 @@ class PaperFlowConfig:
         runtime: RuntimeConfig，运行时基础设施
         corpus: CorpusConfig，语料库与产物路径
         intent: IntentConfig，意图识别
+        security: SecurityConfig，安全模块（预批准名单）
         rag: RagConfig，RAG 检索栈
         memory: MemoryConfig，记忆系统
         session: SessionConfig，会话恢复
@@ -141,6 +144,9 @@ class PaperFlowConfig:
 
     #: 意图识别子系统（总开关 + 编码器 + 路由器）
     intent: IntentConfig = field(default_factory=IntentConfig)
+
+    #: 安全模块（外部来源工具的预批准名单 + 可选语义判定层）
+    security: SecurityConfig = field(default_factory=SecurityConfig)
 
     #: RAG 检索栈（嵌入/检索/改写/切块/索引/存储/解析/工具）
     rag: RagConfig = field(default_factory=RagConfig)

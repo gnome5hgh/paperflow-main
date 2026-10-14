@@ -31,6 +31,35 @@ def _root_map(config: PaperFlowConfig) -> dict[str, str]:
     }
 
 
+def declared_roots(config: PaperFlowConfig) -> list[str]:
+    """已声明的产物根（写围栏的允许集合）：语义根 + 工作区本身。
+
+    工作区也算在内——记忆块投影、scratch、引用库、审计都在它下面，agent 在自己
+    数据根里的写入属「声明内」，不该平白弹一次确认。返回值全部解析为绝对路径、
+    保持顺序并去重，供 WorkspacePolicyMiddleware 判定「写目标在不在声明内」。
+
+    Args:
+        config: PaperFlowConfig，路径来源
+
+    Returns:
+        list[str]，允许写入的根目录绝对路径列表。
+    """
+    candidates = list(_root_map(config).values())
+    candidates.append(config.runtime.workspace)
+    seen: set[str] = set()
+    roots: list[str] = []
+    for candidate in candidates:
+        # 空配置不能当根：Path("").resolve() 会得到当前目录，那等于把整个仓库
+        # 当成「声明内」——围栏形同虚设。没配的根直接跳过。
+        if not candidate:
+            continue
+        resolved = str(Path(candidate).resolve())
+        if resolved not in seen:
+            seen.add(resolved)
+            roots.append(resolved)
+    return roots
+
+
 def make_tools(config: PaperFlowConfig, tool_items: list[type[Tool] | Tool],
                default_write_root: str | None = None) -> list[Tool]:
     """装配工具列表,兼容"类"与"已实例化工具"两种传参。

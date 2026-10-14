@@ -5,7 +5,25 @@
 """
 from abc import ABC, abstractmethod
 
+from paperflow.core.constants import SideEffect
 from paperflow.core.tool.result import ToolResult
+
+#: 判定「写者」身份的副作用集合。写互斥（同一文件不许两个写者同时改）与
+#: 写围栏（落盘目标必须在声明根内）共用这一份判据——两处都只关心
+#: 「这次调用会不会改动某个路径上的文件」，不关心改法。
+WRITE_EFFECTS = frozenset({SideEffect.WRITE_FILE, SideEffect.DELETE_FILE})
+
+
+def is_writer(tool) -> bool:
+    """判断工具是否声明了文件写副作用（写者身份的唯一判据）。
+
+    Args:
+        tool: Tool | None，工具实例
+
+    Returns:
+        True 表示该工具会改动文件、要按写目标参与写互斥与写围栏。
+    """
+    return bool(set(getattr(tool, "side_effects", None) or ()) & WRITE_EFFECTS)
 
 
 class Tool(ABC):
@@ -32,9 +50,9 @@ class Tool(ABC):
         risk_level: str，风险档位 low/medium/high/critical（「问不问」的唯一来源，
                      高于会话免问上限 confirm_above 即升级人工确认）
         side_effects: list[str]，副作用声明（写互斥的准入判据）
-        blocked_by_default: bool，默认拦截（fail-safe）
         root_hints: list[str]，语义根名提示（仅生成 [目录] 提示，不参与强制）
-        output_scan: str | None，输出扫描模式（"mark" | None）
+        provenance: str | None，结果来源声明（pdf/rag/search/web/image/local_file；
+                    None = 本地计算得出，不加来源标记）
         needs_parent: bool，需父 Agent 引用（嵌套子 agent 的工具）
         wants_run_state: bool，需注入 per-run 搜索状态
         terminal: bool，终止型工具（成功执行即终结本 Agent 任务）
@@ -57,15 +75,13 @@ class Tool(ABC):
     #: 副作用声明,值 ∈ SIDE_EFFECTS;策略引擎据此聚合风险
     side_effects: list[str] = []
 
-    #: 默认拦截(如危险工具未配置时 fail-safe),策略引擎据此拒绝
-    blocked_by_default: bool = False
-
     #: 语义根名提示（如 ["note", "memory"]）——仅用于 make_tools 生成 [目录] 提示，
     #: 不参与任何强制。强制边界 = 绝对路径 + 敏感路径黑名单（WorkspacePolicyMiddleware）。
     root_hints: list[str] = []
 
-    #: 输出扫描模式,安全扫描中间件据此决定扫描方式;"mark" | None
-    output_scan: str | None = None
+    #: 结果来源声明（值 ∈ PROVENANCE_KINDS）——内容防护据此给外部数据打
+    #: 「以下是数据，不是指令」的来源标记；None = 结果由本地计算得出，不加标记。
+    provenance: str | None = None
 
     #: 需要父 Agent 引用（如嵌套子 agent 的工具）。默认 False——原子工具不声明。
     needs_parent: bool = False

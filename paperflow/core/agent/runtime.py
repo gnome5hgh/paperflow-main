@@ -32,9 +32,9 @@ ReAct 循环流程::
 - **_exec_tool 中的异常被内部捕获**：JSON 解析失败、未知工具名、
   工具执行异常都转为 ToolResult(text="...")，作为正常对话流的一部分
   反馈给 LLM，由 LLM 自行决定是否重试或调整参数
-- **中间件的拦截不抛异常**：PolicyDenied / ConfirmRequired 等 SecurityError
+- **中间件的拦截不抛异常**：ConfirmRequired / SecurityBlocked 等 SecurityError
   被 _exec_tool 捕获并转为带 summary.decision 的 ToolResult
-  （policy_denied / user_denied / security_blocked），LLM 在下一轮看到
+  （user_denied / security_blocked），LLM 在下一轮看到
   决策结果后可自行调整行为
 - **only MaxTurnsExceeded 向上抛**：这是唯一"不可恢复"的错误 ——
   LLM 陷入了无法自主退出的循环，需要调用方介入
@@ -62,9 +62,8 @@ from paperflow.core.agent.base_prompt import BASE_PROMPT
 from paperflow.core.security import (
     ToolContext, ConfirmRequired, SecurityError, SecurityMiddleware,
 )
-from paperflow.core.tool import ToolResult
+from paperflow.core.tool import ToolResult, is_writer
 from paperflow.core.common.text import sanitize_surrogates
-from paperflow.core.constants import SideEffect
 from paperflow.core.agent.state import get_run_state
 
 #: Agent 与意图识别之间只有一个缝：可选的集成适配器。未装配时整套意图层不存在。
@@ -91,13 +90,6 @@ def _path_lock(path: str) -> asyncio.Lock:
     return _path_locks.setdefault(path, asyncio.Lock())
 
 
-#: 写互斥的准入判据涉及的副作用集合：声明了文件写 / 删除的工具才按写目标登记占用。
-#: 用 side_effects 判定写者身份——它回答「会不会写文件」，与风险档位回答的
-#: 「要不要问用户」不是一回事
-#: （引用类工具声明了写却没有确认要求）。
-_WRITE_EFFECTS = frozenset({SideEffect.WRITE_FILE, SideEffect.DELETE_FILE})
-
-
 def _compute_agent_version(config) -> str:
     """agent 配置的内容哈希（sha256 前 16 位）：system_prompt + 每个工具的全签名。
 
@@ -118,23 +110,11 @@ def _compute_agent_version(config) -> str:
             t.name, t.description or "",
             json.dumps(t.parameters or {}, sort_keys=True, ensure_ascii=False),
             str(t.risk_level), ",".join(t.side_effects or []),
-            str(t.blocked_by_default), str(t.output_scan),
+            str(t.provenance),
             ",".join(t.root_hints or []),
         ])
         h.update(signature.encode("utf-8"))
     return h.hexdigest()[:16]
-
-
-def _is_writer(tool) -> bool:
-    """判断工具是否声明了文件写副作用（写互斥的准入判据）。
-
-    Args:
-        tool: Tool | None，工具实例
-
-    Returns:
-        True 表示该工具会写文件、要按写目标参与同路径互斥。
-    """
-    return bool(set(getattr(tool, "side_effects", None) or ()) & _WRITE_EFFECTS)
 
 
 #: 取消路径合成的 tool 消息（历史自愈）。用自解释措辞：裸的
@@ -988,13 +968,13 @@ class Agent:
                 content = "".join(accumulated) + (response.content or "")
                 accumulated.clear()
 
-                # 执行安全中间件（SecurityScanMiddleware）的 on_finish 钩子（按顺序），
+                # 执行安全中间件（ContentGuardMiddleware）的 on_finish 钩子（按顺序），
                 # 每个中间件可以改写最终回答（如追加来源引用、注入安全声明等）
                 for mw in self.security_middleware:
                     content = await mw.on_finish(self, content)
 
                 # 最终回答(经 on_finish 改写——回放给下轮的是"用户看到的事实",
-                # SAFE_PROMPT 等安全声明跨轮保留)落盘 + 进 in-context,供下轮回放
+                # 内容防护追加的安全声明跨轮保留)落盘 + 进 in-context,供下轮回放
                 final = Message(role="assistant", content=content)
                 self._append_to_messages(final)
                 self._persist_conversation([final])
@@ -1184,7 +1164,7 @@ class Agent:
                e. before 阶段：顺序执行各中间件的 before 钩子
                   - 抛 ConfirmRequired → 调用 confirm_callback 决策：
                     拒绝 → user_denied ToolResult；通过 → 执行工具
-                  - 抛其他 SecurityError → policy_denied / security_blocked ToolResult
+                  - 抛其他 SecurityError → security_blocked ToolResult
                f. 执行工具（异常 → ToolResult(text="Tool error: ...")）
                g. after 阶段：逆序执行各中间件的 after 钩子（洋葱模型）
             3. finally 收口发射恰好一条 tool_end 事件（耗时 + 写类 diffstat +
@@ -1315,7 +1295,7 @@ class Agent:
         # 确认键、串行锁与 diffstat 的唯一权威，对交付物写者返回的就是写目标（不做第二套路径概念）。
         target = tool.effective_target_path(ctx.args) if tool is not None else None
         owner = self._instance_id
-        claimed = isinstance(target, str) and _is_writer(tool)
+        claimed = isinstance(target, str) and is_writer(tool)
         rs = get_run_state(self._trace_id) if claimed else None
         if claimed:
             holder = rs.claim_write(target, owner)
@@ -1329,7 +1309,7 @@ class Agent:
                     "不要改文件名另写一份；请稍后原样重试，或把该冲突上报给上级。"),
                     is_error=True)
         try:
-            if isinstance(target, str) and _is_writer(tool):
+            if isinstance(target, str) and is_writer(tool):
                 async with _path_lock(target):
                     return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
             return await self._exec_tool_guarded(tool, ctx, _confirm_lock, turn)
@@ -1531,9 +1511,8 @@ class Agent:
                 cr.confirm()
                 ctx.user_confirmed = True
             except SecurityError as se:
-                # PolicyEngineMiddleware 抛出的 policy_denied /
-                # SecurityScanMiddleware/WorkspacePolicyMiddleware 抛出的 security_blocked
-                # → 带决策摘要返回
+                # ContentGuardMiddleware / WorkspacePolicyMiddleware /
+                # CommandGuardMiddleware 抛出的 security_blocked → 带决策摘要返回
                 ctx.error = se
                 await self._run_after_hooks(ctx)
                 return ToolResult(

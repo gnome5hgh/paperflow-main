@@ -9,6 +9,8 @@ import time
 from typing import Protocol
 
 import httpx
+
+from paperflow.core.security.services import endpoint_guard
 import numpy as np
 
 from paperflow.core.common.text import sanitize_surrogates
@@ -84,7 +86,10 @@ class RagEmbedder:
         self._batch_size = batch_size
         self._max_retries = max_retries
         kwargs = {"base_url": base_url.rstrip("/"), "timeout": timeout,
-                  "headers": {"Authorization": f"Bearer {api_key}"}}
+                  "headers": {"Authorization": f"Bearer {api_key}"},
+                  # 出网绑定：请求只准打配置声明的 host（禁跨 host 重定向）
+                  "event_hooks": {"request": [endpoint_guard(base_url)]},
+                  "follow_redirects": False}
         if transport is not None:
             kwargs["transport"] = transport   # 测试注入口（MockTransport）
         self._client = httpx.Client(**kwargs)

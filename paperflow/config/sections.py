@@ -224,6 +224,49 @@ class IntentConfig:
     jev: IntentJevConfig = field(default_factory=IntentJevConfig)
 
 
+# ── security ────────────────────────────────────────────────────────────────
+
+@dataclass
+class SecurityConfig:
+    """安全模块配置：外部来源工具的预批准名单。
+
+    预批准是**降档表达信任**（降到会话免问档内），不是旁路——会话把免问上限调严
+    （如 confirm_above=low）时，名单内的工具照样会被问。MCP server 配置里的
+    write_tools 按 server 书写，装配时并入同一集合，两种写法等价。
+
+    Attributes:
+        pre_approved_tools: list[str]，允许静默执行的工具名（外部来源工具默认要问）
+        classifier: ClassifierConfig，语义判定层（可选、默认关）
+    """
+
+    #: 预批准的工具名（降 medium）——外部来源工具默认逐次确认，这里显式放行
+    pre_approved_tools: list[str] = field(default_factory=list)
+
+    #: 语义判定层（判定网关；端点或密钥缺失即整层不装配）
+    classifier: "ClassifierConfig" = field(default_factory=lambda: ClassifierConfig())
+
+
+@dataclass
+class ClassifierConfig:
+    """语义判定层配置：只判 L1 覆盖不到的语义诱导，命中只标记不阻断。
+
+    Attributes:
+        enabled: bool，总开关（默认 False——每次读入都要付一次网络调用）
+        base_url: str，判定网关地址（与意图判定同款形态）
+        api_key: str，网关密钥（留空 = 该层不可用）
+        model: str，判定模型名
+        timeout: float，单次调用超时（秒）
+        max_retries: int，可恢复错误重试次数
+    """
+
+    enabled: bool = False
+    base_url: str = "https://ai-gateway.vercel.sh/v1"
+    api_key: str = ""
+    model: str = "typesafe-ai/jev"
+    timeout: float = 5.0
+    max_retries: int = 1
+
+
 # ── rag ─────────────────────────────────────────────────────────────────────
 
 @dataclass

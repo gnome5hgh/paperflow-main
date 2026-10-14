@@ -1,41 +1,53 @@
 # paperflow/core/security/middleware/policy_engine.py
 """
-策略引擎中间件：在工具执行前做两级检查。
+策略引擎中间件：合并全部升级因，决定一次工具调用是否升级人工确认。
 
-``before`` 阶段按顺序执行：
+**它是唯一决定「问不问」的地方**——其余中间件（写围栏、命令防护）只把判定结果
+登记到 ``ctx.escalations``，不自己弹框。这条不变量换来三件事：三态确认与审计的
+``approval_requested/decided`` 双事件只有一条路径；会话级授权只有一个账本；
+改动升级规则时只有一个地方要看。
 
-1. ``blocked_by_default``：工具被标记为默认禁止，直接抛 ``PolicyDenied``——
-   这是不依赖风险档位的硬拒入口（连同工作区路径黑名单，是仅有的两个）；
-2. 风险档位：工具 ``risk_level`` 高于会话免问上限 ``confirm_above`` 的调用
-   抛 ``ConfirmRequired``，升级为人工确认——**超档不拒绝，只是要用户点头**；
+升级因来自两处：
+
+1. 本中间件按风险档位判定——工具 ``risk_level`` 高于会话免问上限 ``confirm_above``；
    未知风险档（声明笔误）按最高档处理，fail-safe：只会多问一次，不会静默放行。
+2. 其他中间件登记的（``ctx.escalations``）。
 
-风险档位是「问不问」的唯一来源，没有独立的「需要确认」布尔与它并行——
-整份判定只有一个比较式，没有任何按档分支。确认行为统一为三态（本次放行 /
-本会话同键放行 / 拒绝），确认键为 ``(工具名, 有效目标路径)``：写类工具若只按
-工具名确认一次，后续任意路径都会被静默写入，可能误覆盖用户手写笔记，因此
-同一工具的不同路径仍需单独确认。
+任一升级因未在本会话放行过，即抛 ``ConfirmRequired``——**一次弹框覆盖本次调用
+登记的全部升级因**；**超档不拒绝，只是要用户点头**。
+
+**确认键为 ``(工具名, 主因, 作用域值)``**（主因 ∈ risk_threshold / path_fence /
+command）。分开主因是为了让授权范围有界：在档位上点过一次头，不该顺带把围栏与
+命令也放行。作用域值 = 有效目标路径（经 ``effective_target_path`` 导出，覆盖
+filename 便捷入口）或命令原文。
+
+硬拒不在这里：只有显式规则（敏感路径黑名单、写入内容的高置信命中、命令熔断）
+产生拒绝，档位机制本身只能升级确认。
 """
 
 from paperflow.core.constants import RISK_ORDER
 from paperflow.core.security.middleware.base import (
-    SecurityMiddleware, PolicyDenied, ConfirmRequired,
+    SecurityMiddleware, ConfirmRequired,
 )
 from paperflow.core.security.domain import ToolContext
 
+#: 风险档位升级的主因名（与审计 policy_rules.checked 同一套词汇）
+CAUSE_RISK = "risk_threshold"
+
 
 class PolicyEngineMiddleware(SecurityMiddleware):
-    """策略检查中间件：默认禁止、风险档位升级确认两级检查。
+    """策略检查中间件：合并升级因，决定静默放行还是升级人工确认。
 
     Attributes:
         confirm_above: str，会话免问上限档（风险档高于它的工具执行前需用户确认）
-        _confirmed: set[tuple[str, str | None]]，本会话已放行的 (工具名, 目标路径) 集合
+        _confirmed: set[tuple[str, str, str | None]]，本会话已放行的
+                    (工具名, 主因, 作用域值) 集合
     """
 
     def __init__(self, confirm_above: str = "medium"):
         """指定会话免问上限档；非法档位在构造期即失败。
 
-        初始化已确认集合——存放本会话内用户放行过的 (工具名, 目标路径)，
+        初始化已确认集合——存放本会话内用户放行过的 (工具名, 主因, 作用域值)，
         同一键不再重复询问。
 
         Args:
@@ -52,33 +64,25 @@ class PolicyEngineMiddleware(SecurityMiddleware):
             )
         self.confirm_above = confirm_above
 
-        # 已确认集合，键为 (工具名, 目标路径)：同一工具的不同路径仍需单独确认。
-        # 目标路径经 tool.effective_target_path(args) 导出：有 path 参数的工具取
-        # args["path"]；有 pathless 便捷入口的工具（如 write_file 的 filename 模式）
-        # 覆写为组合落盘路径——否则键会塌缩为 (工具名, None)，一次授权即放行
-        # 全会话 pathless 写。返回 None 的确认工具键为 (工具名, None)，
-        # 退化为按工具名确认的行为（防御式）。
-        self._confirmed: set[tuple[str, str | None]] = set()
+        # 已确认集合，键为 (工具名, 主因, 作用域值)：同一工具换了主因或目标仍需
+        # 单独确认。作用域值经 tool.effective_target_path(args) 导出：有 path 参数的
+        # 工具取 args["path"]；有 pathless 便捷入口的工具（如 write_file 的 filename
+        # 模式）覆写为组合落盘路径——否则键会塌缩为 (工具名, 主因, None)，一次授权
+        # 即放行全会话 pathless 写。返回 None 的确认工具键作用域值为 None（防御式）。
+        self._confirmed: set[tuple[str, str, str | None]] = set()
 
     async def before(self, ctx: ToolContext) -> None:
-        """按 默认禁止 → 风险档位升级 的顺序检查工具，违规即抛异常。
-
-        两级检查依次进行，任一环节终止后续检查并抛出对应异常：
-            1. 默认禁止（blocked_by_default）：工具声明中标记为永久禁止 → PolicyDenied
-            2. 风险档位（risk_threshold）：工具风险档高于会话免问上限 → ConfirmRequired
-
-        只有两级检查全部通过，工具才被允许执行。
+        """合并升级因；存在未放行的即抛一次 ConfirmRequired。
 
         Args:
-            ctx: 工具调用上下文，包含工具定义、参数等信息
+            ctx: 工具调用上下文，包含工具定义、参数与其他中间件登记的升级因
 
         Raises:
-            PolicyDenied: 第1级检查失败时抛出
-            ConfirmRequired: 第2级检查失败（风险档高于免问上限且未确认过）时抛出
+            ConfirmRequired: 存在本会话未放行的升级因
         """
         # 未知工具（LLM 幻觉或注入）跳过策略检查，交给审计中间件记录错误
         if ctx.tool is None:
-            return        # 未知工具交给 after 钩子做审计
+            return
 
         tool = ctx.tool
 
@@ -86,36 +90,30 @@ class PolicyEngineMiddleware(SecurityMiddleware):
         ctx.policy_context = {
             "confirm_above": self.confirm_above,
             "tool_risk": tool.risk_level,
-            "blocked_by_default": bool(tool.blocked_by_default),
         }
 
-        # ===== 第1级检查：默认禁止 =====
-        # 工具声明 blocked_by_default=True 意味着无论风险档位如何都不可执行
-        # （需管理员手动覆盖策略）——这是档位体系之外的显式硬拒。
-        if tool.blocked_by_default:
-            ctx.policy_fired = "blocked_by_default"
-            raise PolicyDenied(
-                reason=f"'{tool.name}' 被标记为默认禁止，需手动覆盖才可执行"
-            )
-
-        # ===== 第2级检查：风险档位 =====
-        # 单一判据：档位高于免问上限 → 升级确认（超档不拒绝，只是要用户点头）。
-        # 未知风险档（如拼写错误）按最高档处理，fail-safe——笔误只会多问一次，
-        # 不会被静默放行。
+        # ===== 收集升级因 =====
+        causes: list[tuple[str, str | None]] = []
+        # 档位：高于免问上限 → 升级确认。未知风险档（如拼写错误）按最高档处理，
+        # fail-safe——笔误只会多问一次，不会被静默放行。
         tool_risk = RISK_ORDER.get(tool.risk_level, RISK_ORDER["critical"])
-
         if tool_risk > RISK_ORDER[self.confirm_above]:
-            ctx.policy_fired = "risk_threshold"
-            # 确认键为 (工具名, 有效目标路径)：同一工具的不同路径需分别确认。
-            # 路径经 effective_target_path 导出——pathless 入口（filename 模式）
-            # 组合出落盘路径后与 path 模式同键控，不会塌缩为按工具名放行。
-            confirm_key = (tool.name, tool.effective_target_path(ctx.args))
-            if confirm_key not in self._confirmed:
-                raise ConfirmRequired(
-                    tool_name=tool.name,
-                    params=ctx.args,
-                    risk_level=tool.risk_level,
-                    side_effects=tool.side_effects,
-                    # lambda 捕获 confirm_key：回调只往已确认集合里加当前键，闭包安全
-                    on_confirmed=lambda: self._confirmed.add(confirm_key),
-                )
+            causes.append((CAUSE_RISK, tool.effective_target_path(ctx.args)))
+        # 其他中间件登记的主因（写围栏、命令防护…）
+        causes.extend(ctx.escalations)
+
+        pending = [c for c in causes if (tool.name, c[0], c[1]) not in self._confirmed]
+        if not pending:
+            return
+
+        ctx.policy_fired = pending[0][0]
+        raise ConfirmRequired(
+            tool_name=tool.name,
+            params=ctx.args,
+            risk_level=tool.risk_level,
+            side_effects=tool.side_effects,
+            cause=pending[0][0],
+            # lambda 捕获 pending：一次弹框覆盖本次登记的全部升级因，放行即全记
+            on_confirmed=lambda: self._confirmed.update(
+                (tool.name, c, s) for c, s in pending),
+        )

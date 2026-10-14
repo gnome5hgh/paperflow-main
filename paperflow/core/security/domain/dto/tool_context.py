@@ -31,7 +31,10 @@ class ToolContext:
         span_id: str | None，本次调用的审计 span ID（由 AuditMiddleware 生成）
         parent_span_id: str | None，父 span ID（嵌套调用时取栈顶）
         policy_context: dict | None，策略引擎评估时的配置快照
-        policy_fired: str | None，被触发的策略规则名（如 blocked_by_default）
+        policy_fired: str | None，被触发的策略规则名（如 risk_threshold）
+        content_findings: list[dict]，内容防护的结论（含可选语义判定），供审计留痕
+        escalations: list[tuple[str, str | None]]，其他中间件登记的升级因
+                     （主因, 作用域值），由 PolicyEngine 统一消费后弹一次确认
         approval_outcome: str | None，审批最终结果（user_confirmed/user_denied/auto_denied）
         approval_decided_span_id: str | None，审批决策事件的 span ID（审计回溯用）
     """
@@ -64,7 +67,13 @@ class ToolContext:
     parent_span_id: str | None = None  # 父 span ID（嵌套调用时，由 AuditMiddleware 从栈顶读取）
 
     policy_context: dict | None = None # 策略引擎评估时的配置快照（由 PolicyEngineMiddleware 记录）
-    policy_fired: str | None = None    # 被触发的策略规则名（如 "blocked_by_default"）
+    policy_fired: str | None = None    # 被触发的策略规则名（如 "risk_threshold"）
+    # 其他中间件登记的升级因（主因, 作用域值）——它们只判定、不弹框，由
+    # PolicyEngineMiddleware 合并后统一决定「问不问」，保证确认只有一个决策点。
+    escalations: list[tuple[str, str | None]] = field(default_factory=list)
+
+    # 内容防护的结论（违规明细、语义判定结论）——只留痕，不参与策略决策
+    content_findings: list[dict] = field(default_factory=list)
     approval_outcome: str | None = None # 审批最终结果（"user_confirmed" / "user_denied" / "auto_denied"）
     approval_decided_span_id: str | None = None  # 审批决策事件的 span ID（用于审计回溯）
 

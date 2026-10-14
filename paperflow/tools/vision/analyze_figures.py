@@ -28,7 +28,7 @@ class AnalyzeFiguresTool(Tool):
         parameters: dict，JSON Schema（path/figure/embed_dir）
         risk_level: str，"low"
         root_hints: list[str]，["note", "pdf"]
-        output_scan: str，"mark"（图表分析结果属外部内容）
+        provenance: str，"image"（图表分析结果属外部内容）
         side_effects: list[str]，["read_file", "write_file"]
         needs_parent: bool，True（视觉调用归属父 agent 轮次进审计）
         _vision_llm: 视觉模型客户端（可注入；None 时按配置惰性构造）
@@ -50,7 +50,7 @@ class AnalyzeFiguresTool(Tool):
     }
     risk_level = "low"
     root_hints = ["note", "pdf"]              # 提示:读 PDF + 产图落 note（embed_dir）
-    output_scan = "mark"
+    provenance = "image"                     # 图表分析结果属外部内容
     side_effects = ["read_file", "write_file"]
     #: 需要父 Agent 引用：视觉调用归属父 agent 的轮次进审计（见 _telemetry）
     needs_parent = True

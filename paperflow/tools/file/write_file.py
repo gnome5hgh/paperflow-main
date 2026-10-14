@@ -126,9 +126,11 @@ class WriteFileTool(Tool):
             p = self._resolve_target(path, filename, dir)
         except ValueError as e:
             return ToolResult(text=str(e))
-        # filename+dir 模式组合出的路径不经中间件，黑名单在此兜底（防 .env 等敏感名落盘）
+        # filename 模式的组合路径（dir/filename）不经中间件校验——filename 不是
+        # path 参数，只有 dir 被检查；组合结果在此兜底，防 .env 等敏感名落盘。
+        # path 模式已是中间件解析并校验过的绝对路径，不再重复查一遍。
         cfg = getattr(self, "_config", None)
-        if cfg is not None and is_denied_path(p, cfg.runtime.workspace):
+        if filename is not None and cfg is not None and is_denied_path(p, cfg.runtime.workspace):
             return ToolResult(text=f"敏感路径受保护，拒绝写入: {p}")
         atomic_write(p, content)
         if _run_state is not None:

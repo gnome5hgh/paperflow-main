@@ -4,7 +4,8 @@
 再导出，消费方一律从 `paperflow.core.constants` 取，不关心内部分文件。
 """
 
-from .constants import RISK_LEVELS, RISK_ORDER, SIDE_EFFECTS
-from .enums import RiskLevel, SideEffect
+from .constants import PROVENANCE_KINDS, RISK_LEVELS, RISK_ORDER, SIDE_EFFECTS
+from .enums import Provenance, RiskLevel, SideEffect
 
-__all__ = ["RiskLevel", "SideEffect", "RISK_LEVELS", "SIDE_EFFECTS", "RISK_ORDER"]
+__all__ = ["RiskLevel", "SideEffect", "Provenance",
+           "RISK_LEVELS", "SIDE_EFFECTS", "RISK_ORDER", "PROVENANCE_KINDS"]

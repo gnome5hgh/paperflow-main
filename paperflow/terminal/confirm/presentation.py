@@ -12,19 +12,27 @@ from pathlib import Path
 from ..common import compute_diff, truncate_diff
 from ..render.activity import activity_label
 
+#: 升级因 → 确认框里的一句白话。让用户看出这次问的是「哪件事」——
+#: 档位升级是常态（不备注），围栏与命令是新增的主因，必须说清。
+_CAUSE_NOTES = {
+    "path_fence": "目标在声明的产物目录之外",
+    "command": "命令不在安全清单内",
+}
+
 
 def _confirm_prompt(cr) -> str:
-    """确认框一行提示：左边条 + 图标动词 + 目标 + 键提示。
+    """确认框一行提示：左边条 + 图标动词 + 目标 + 原因备注 + 键提示。
 
     图标动词复用活动行的 activity_label；目标取 params 里的 path 尾段
     （basename），取不到 path（如 spawn_sub_agent）就只显示工具名。
+    升级因非档位时附一句原因备注，让用户知道这次问的是哪件事。
     键绑定不变：y=本次放行 / a=本会话放行 / n=拒绝。
 
     Args:
         cr: ConfirmRequired，待确认的工具调用
 
     Returns:
-        确认框一行提示文本（左边条 + 图标动词 + 目标 + 键提示）。
+        确认框一行提示文本（左边条 + 图标动词 + 目标 + 原因备注 + 键提示）。
     """
     tool_name = getattr(cr, "tool_name", "") or ""
     verb, _ = activity_label(tool_name)
@@ -32,7 +40,9 @@ def _confirm_prompt(cr) -> str:
     path = params.get("path") if isinstance(params, dict) else None
     target = (str(path).rstrip("/").rsplit("/", 1)[-1]
               if path else (tool_name or "确认"))
-    return f"┃ {verb} {target}　y 放行 / a 本会话放行 / n 拒绝"
+    note = _CAUSE_NOTES.get(getattr(cr, "cause", "") or "")
+    reason = f"（{note}）" if note else ""
+    return f"┃ {verb} {target}{reason}　y 放行 / a 本会话放行 / n 拒绝"
 
 
 def _confirm_diff_preview(tool_name: str, params: dict) -> str | None:

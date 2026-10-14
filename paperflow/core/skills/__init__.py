@@ -9,7 +9,7 @@
 依赖方向：本包依赖 core.tool / core.common.frontmatter；core.agent 经本包做 L1 注入与工具并入。
 """
 
-from paperflow.core.skills.services.assembly import merge_tools
+from paperflow.core.skills.services.assembly import apply_pre_approval, merge_tools
 from paperflow.core.skills.services.install import (
     enable_skill,
     install_skill,
@@ -29,6 +29,7 @@ __all__ = [
     "list_skills_command",
     "load_lock",
     "merge_tools",
+    "apply_pre_approval",
     "uninstall_skill",
     "update_skill",
 ]

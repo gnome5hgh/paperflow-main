@@ -17,7 +17,7 @@ class ReadFileTool(Tool):
         parameters: dict，JSON Schema（path）
         risk_level: str，"low"（只读）
         root_hints: list[str]，["note", "pdf", "memory", "scratch", "research"]
-        output_scan: str，"mark"（外部文件内容打未校验横幅）
+        provenance: str，"local_file"（外部文件内容打未校验横幅）
         side_effects: list[str]，["read_file"]
     """
     name = "read_file"
@@ -33,7 +33,7 @@ class ReadFileTool(Tool):
     risk_level = "low"
     # scratch（子 agent 读落盘桥草稿）
     root_hints = ["note", "pdf", "memory", "scratch", "research"]
-    output_scan = "mark"                       # 外部文件内容 → SecurityScan 打未校验横幅
+    provenance = "local_file"                  # 外部文件内容 → 内容防护打来源标记
     side_effects = ["read_file"]
 
     def execute(self, path: str) -> ToolResult:

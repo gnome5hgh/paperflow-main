@@ -53,7 +53,7 @@ class AgentRegistry:
             agents_dir: Agent 插件根目录路径，默认为项目根下的 agents/
 
         Raises:
-            ValueError: 任一 Tool 的 risk_level / side_effects / output_scan 非法时抛出，
+            ValueError: 任一 Tool 的 risk_level / side_effects / provenance 非法时抛出，
                 终止构造，防止不安全配置进入系统。
 
         Note: 本构造有副作用（动态导入多个 tools.py），进程内应只构造一次（由装配层持有并传给所有 Agent）。
@@ -154,7 +154,7 @@ class AgentRegistry:
             Tool 实例列表
 
         Raises:
-            ValueError: 如果某个 Tool 的安全元数据（risk_level / side_effects / output_scan）非法，会立即抛出，终止该 Agent 的加载。
+            ValueError: 如果某个 Tool 的安全元数据（risk_level / side_effects / provenance）非法，会立即抛出，终止该 Agent 的加载。
 
         """
         if not tools_path.exists():
