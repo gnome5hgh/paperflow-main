@@ -13,7 +13,7 @@ core/
 ├─ constants/      # 跨模块词汇：constants/enums/(RiskLevel/SideEffect/Provenance 各一文件) + constants.py(RISK_LEVELS/SIDE_EFFECTS/RISK_ORDER，由枚举派生)
 ├─ agent/          # ReAct 循环：runtime.py(Agent.run 主循环) + registry.py(AgentRegistry 插件发现) + base_prompt.py(全 agent 共有行为基座) + state.py(会话/运行期状态容器)
 │                  #   + domain/dto/AgentEvent 引擎事件 + config/AgentConfig 插件配置 + constants/enums/AgentEventKind
-│                  #   + services/context_window.py(in-context 窗口：消息缓冲 + 持久化 id 追踪)
+│                  #   + services/(context_window.py in-context 窗口 + tool_executor.py 工具执行管道)
 ├─ llm/            # 接入层：domain/dto/（messages/ wire 消息家族：基类 + system/user/assistant/tool 四子类
 │                  #     + response_meta/Usage 响应信封，自带 dict 往返供落盘）+ config/StructuredOutputConfig
 │                  #   + services/(client.py 异步客户端 + structured.py 结构化输出)
