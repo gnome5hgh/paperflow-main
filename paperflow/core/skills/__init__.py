@@ -18,7 +18,7 @@ from paperflow.core.skills.services.install import (
     uninstall_skill,
     update_skill,
 )
-from paperflow.core.skills.domain import SkillConfig
+from paperflow.core.skills.config import SkillConfig
 from paperflow.core.skills.services.registry import SkillRegistry
 
 __all__ = [

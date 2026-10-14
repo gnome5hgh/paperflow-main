@@ -23,7 +23,7 @@ import logging
 from pathlib import Path
 
 from paperflow.core.common.frontmatter import parse_frontmatter
-from paperflow.core.skills.domain.dto.skill_config import SkillConfig
+from paperflow.core.skills.config import SkillConfig
 from paperflow.core.tool import Tool, validate_tool
 
 logger = logging.getLogger(__name__)

@@ -16,7 +16,8 @@ core.memory / core.security / core.intent；反向（它们 import 本包）不�
 """
 
 from paperflow.core.agent.constants import StreamEventKind
-from paperflow.core.agent.domain import AgentConfig, StreamEvent
+from paperflow.core.agent.config import AgentConfig
+from paperflow.core.agent.domain import StreamEvent
 from paperflow.core.agent.registry import AgentRegistry
 from paperflow.core.agent.runtime import Agent, MaxTurnsExceeded
 from paperflow.core.agent.state import get_run_state, get_session_state

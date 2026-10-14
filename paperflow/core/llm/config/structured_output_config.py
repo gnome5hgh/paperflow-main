@@ -3,7 +3,7 @@
 与 `LLMConfig` 那类「config.yaml 同构、可经 env 派生」的可调参数不同：这里是
 **组件自己的行为参数**，由各消费方在调用点各给一套（查询改写要 0 次重试、
 看图分析要 1 次、默认 2 次），不进 config.yaml。同类先例见 `AgentConfig`
-（`core/agent/domain/dto/`）与 `SkillConfig`（`core/skills/domain/dto/`）。
+（`core/agent/config/`）与 `SkillConfig`（`core/skills/config/`）。
 """
 from dataclasses import dataclass
 

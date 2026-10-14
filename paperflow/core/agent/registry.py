@@ -19,7 +19,7 @@ Agent 注册表 —— 扫描 agents/ 目录,统一加载配置和工具。
 import importlib.util
 from pathlib import Path
 
-from paperflow.core.agent.domain.dto.agent_config import AgentConfig
+from paperflow.core.agent.config import AgentConfig
 from paperflow.core.common.frontmatter import parse_frontmatter
 from paperflow.core.tool import Tool, validate_tool
 

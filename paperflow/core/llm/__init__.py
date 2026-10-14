@@ -5,7 +5,7 @@
 - wire 消息家族 ← domain/dto/messages：基类 ``Message``，按角色分的
   ``SystemMessage`` / ``UserMessage`` / ``AssistantMessage`` / ``ToolMessage``，
   以及从角色字符串还原类型的 ``message_from_role``（持久化回放用）
-- ``StructuredOutputConfig``（结构化输出的行为参数）← domain/dto
+- ``StructuredOutputConfig``（结构化输出的行为参数）← config
 - ``LLMClient`` / ``tool_to_openai_schema`` / ``StructuredOutput`` /
   ``StructuredOutputError`` ← services
 
@@ -20,13 +20,13 @@ from paperflow.core.llm.domain import (
     AssistantMessage,
     Message,
     ResponseMeta,
-    StructuredOutputConfig,
     SystemMessage,
     ToolMessage,
     Usage,
     UserMessage,
     message_from_role,
 )
+from paperflow.core.llm.config import StructuredOutputConfig
 from paperflow.core.llm.services import (
     LLMClient,
     StructuredOutput,
