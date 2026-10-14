@@ -161,57 +161,6 @@ class MaxTurnsExceeded(Exception):
     """
 
 
-def _compact(v) -> str:
-    """参数值压缩为单行：头尾中间截断，超长标注字符数。
-
-    路径(/ 开头)在行宽预算内也头尾截断——超长路径全展示会被终端宽度硬切
-    (overflow 兜底见渲染层)，头尾各留一段可辨认。截断统一用 "…" 标记。
-
-    Args:
-        v: 任意参数值
-
-    Returns:
-        单行化的摘要文本（超长头尾截断并标注字符数）。
-    """
-    s = str(v).replace("\n", " ")
-    n = len(s)
-    if n <= 40:
-        return s
-    if n <= 120:
-        return s[:35] + "…" + s[-10:]
-    return s[:40] + "…(%d chars)…" % n + s[-20:]
-
-
-#: _tool_summary 的参数键优先级：取第一个非空值作活动行摘要
-_SUMMARY_KEYS = ("path", "url", "query", "pattern", "venue", "pdf_path",
-                 "agent_type", "task")
-
-
-def _tool_summary(name: str, args: dict) -> str:
-    """活动行摘要：按 _SUMMARY_KEYS 优先级取第一个非空参数值。
-
-    path/pdf_path 取尾段（basename）——活动行只关心「哪个文件」，全路径太长；
-    其余键原样。统一经 _compact 头尾截断。args 非法/为空返回 ""（调用方自行兜底）。
-
-    Args:
-        name: str，工具名（保留位，供扩展）
-        args: dict，已解析的工具参数
-
-    Returns:
-        活动行摘要（按优先级取第一个非空参数，路径取尾段）；无可用值时返回 ""。
-    """
-    if not isinstance(args, dict):
-        return ""
-    for key in _SUMMARY_KEYS:
-        v = args.get(key)
-        if v:
-            s = str(v)
-            if key in ("path", "pdf_path"):
-                s = s.rstrip("/").rsplit("/", 1)[-1]
-            return _compact(s)
-    return ""
-
-
 def _diffstat(old: str, new: str) -> tuple[int, int]:
     """unified diff 行级统计 (added, removed)，不计 +++/--- 头。
 
@@ -245,41 +194,6 @@ def _read_text_or_none(path: str) -> str | None:
         return p.read_text(encoding="utf-8") if p.exists() else ""
     except (OSError, UnicodeDecodeError):
         return None
-
-
-def _format_tool_call(name: str, raw_args: str) -> str:
-    """把工具调用格式化为终端一行(如 Calling Read(path))。
-
-    尽力解析参数;LLM 产出非法 JSON 或参数缺失时只显示工具名——错误路径保持可读,
-    且缓冲清理不依赖参数解析成功(见 terminal/render 的 StreamRenderer)。每个值经
-    _compact 头尾截断,超长自动标注字符数。含路径参数(值以 / 开头)的行豁免行宽
-    预算:超长路径已头尾截断,再被 80 列切一刀会把文件名尾部切没——宽度交给渲染层
-    overflow="fold" 兜底(见 _compact 与 terminal/render 的溢出说明)。
-
-    Args:
-        name: str，工具名
-        raw_args: str，LLM 给出的原始参数 JSON 串
-
-    Returns:
-        终端一行调用描述（参数非法 JSON 时只显示工具名）。
-    """
-    try:
-        args = json.loads(raw_args) if (raw_args or "").strip() else {}
-    except json.JSONDecodeError:
-        return f"Calling {name}"
-    if not isinstance(args, dict) or not args:
-        return f"Calling {name}"
-    pairs = ", ".join(f"{k}={_compact(v)}" for k, v in args.items())
-    # 路径参数豁免行宽预算:返回 _compact 后的完整 pairs,尾部(文件名)存活。
-    if any(str(v).lstrip().startswith("/") for v in args.values()):
-        return f"Calling {name}({pairs})"
-    budget = max(0, 80 - len(f"Calling {name}()"))
-    if budget <= 0:
-        return f"Calling {name}()"
-    # 行宽截断处补 "…" 标记(留 1 字符给标记),截断后整行仍 ≤80。
-    if len(pairs) > budget:
-        pairs = pairs[:max(0, budget - 1)] + "…"
-    return f"Calling {name}({pairs})"
 
 
 class Agent:
@@ -1226,18 +1140,21 @@ class Agent:
         name = tool_call["function"]["name"]
 
         # 0. 发送工具调用开始事件（流式渲染）
-        # 目的：在参数解析前就发出流式事件，这样即使后续出现 JSON 解析失败或未知工具，终端渲染器也能及时清空中间内容缓冲区，避免将思考文本误判为最终答案。
+        # 目的：在参数解析前就发出事件，这样即使后续 JSON 解析失败或未知工具，
+        # 终端渲染器也能及时清空中间内容缓冲区，避免把思考文本误判为最终答案。
+        # 事件只带已解析的原始参数（tool_name + args），活动行摘要与调用行由终端
+        # 层现算——引擎不做排版。参数非法或为空时传 None，终端显示纯工具名。
         # 门控：仅当 stream_callback 存在时才执行（即 CLI 交互模式），否则零开销。
         if self.stream_callback is not None:
             try:
-                args_for_summary = json.loads(tool_call["function"]["arguments"])
+                parsed_args = json.loads(tool_call["function"]["arguments"])
             except (json.JSONDecodeError, TypeError):
-                args_for_summary = {}
+                parsed_args = None
+            if not isinstance(parsed_args, dict) or not parsed_args:
+                parsed_args = None
             self._emit(AgentEvent(
-                AgentEventKind.TOOL_START, _format_tool_call(
-                    name, tool_call["function"]["arguments"]), self.agent_type,
-                tool_name=name,
-                summary=_tool_summary(name, args_for_summary) or None))
+                AgentEventKind.TOOL_START, "", self.agent_type,
+                tool_name=name, args=parsed_args))
 
         # 1. 按工具名查找 Tool 实例
         # 若 self.tools 中无此名称，说明 LLM 幻觉或受提示注入攻击生成了非法工具名。此时 tool = None，后续会处理并返回错误 ToolResult。
@@ -1433,13 +1350,18 @@ class Agent:
         return ctx.result
 
     def _tool_end_event(self, ctx: ToolContext) -> AgentEvent:
-        """tool_end 事件：耗时 + 写类 diffstat + completion/错误兜底文本。
+        """tool_end 事件：耗时 + 写类 diffstat + 结果文本（结构化，不排版）。
+
+        completion 与 error 都原样上报，由终端决定这一行怎么显示——引擎不拼
+        "Tool failed: …" 这类文案。diffstat 是例外：±行数需要「写盘前的旧文本」
+        这一现场（在 before 钩子之前采样），写完就取不回来了，终端事后算不出，
+        故只能在这里算好。
 
         Args:
             ctx: ToolContext，本次工具调用上下文
 
         Returns:
-            tool_end 事件（耗时 + 写类 diffstat + completion/错误兜底文本）。
+            tool_end 事件（耗时 + 写类 diffstat + completion/error 原文）。
         """
         duration = (int((time.monotonic() - ctx.started_at) * 1000)
                     if ctx.started_at is not None else None)
@@ -1451,19 +1373,14 @@ class Agent:
             if new_text is not None:
                 added, removed = _diffstat(ctx.diffstat_old, new_text)
                 diffstat = (target, added, removed)
-        if ctx.result is not None and ctx.result.completion:
-            text = ctx.result.completion
-        elif ctx.error is not None:
-            text = f"Tool failed: {ctx.error}"
-        else:
-            text = ""
-        return AgentEvent(AgentEventKind.TOOL_END, text, self.agent_type,
-                           tool_name=ctx.tool_name or None,
-                           summary=_tool_summary(
-                               ctx.tool_name,
-                               ctx.args if isinstance(ctx.args, dict) else {})
-                           or None,
-                           duration_ms=duration, diffstat=diffstat)
+        completion = (ctx.result.completion
+                      if ctx.result is not None and ctx.result.completion else None)
+        return AgentEvent(AgentEventKind.TOOL_END, "", self.agent_type,
+                          tool_name=ctx.tool_name or None,
+                          args=ctx.args if isinstance(ctx.args, dict) and ctx.args else None,
+                          completion=completion,
+                          error=str(ctx.error) if ctx.error is not None else None,
+                          duration_ms=duration, diffstat=diffstat)
 
     async def _run_before_hooks(self, ctx: ToolContext, confirm_lock: asyncio.Lock | None = None) -> ToolResult | None:
         """顺序执行所有安全中间件的 before 钩子。

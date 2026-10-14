@@ -3,8 +3,8 @@
 
 双模式（终端交互界面重构）：
     - activity=False（非 TTY / 测试）：legacy 路径，行为与重构前完全一致——
-      tool 事件（含 tool_start/tool_end，按 "tool" 同型处理）按行打印 ev.text，
-      content 增量流式，段切换补换行。
+      tool 事件（tool_start/tool_end）按行打印，起点行由 format_call_line 现拼、
+      终点行取事件的完成文本或失败文本；content 增量流式，段切换补换行。
     - activity=True（TTY 装配，见 make_renderer）：ZCode 风格活动流——
       首个 tool_start 之前 root content 照旧 live 流式 markdown；此后所有
       content 静默（不进 live、不进 shown 缓冲），工具调用聚合为活动行
@@ -38,7 +38,7 @@ from rich.syntax import Syntax
 
 from paperflow.core.agent import AgentEvent, AgentEventKind
 from ..common import truncate_diff
-from .activity import activity_label, format_activity
+from .activity import activity_label, format_activity, format_call_line, tool_summary
 class StreamRenderer:
     """将 Agent 事件渲染为终端输出，并决定最终结果如何打印。
 
@@ -162,7 +162,8 @@ class StreamRenderer:
         处理 Agent 事件（content/tool_start/tool_end），可被多线程并发调用，锁内串行。
 
         Args:
-            ev: AgentEvent 对象，包含 kind、text、agent_type 及 tool_* 结构化字段。
+            ev: AgentEvent，含 kind 与 agent_type；载荷按 kind 分家——content 用
+                text（正文增量），tool 用 tool_name/args 与完成/失败文本。
         """
         with self._lock:
             if self._cancelled:
@@ -187,7 +188,7 @@ class StreamRenderer:
         """
         if ev.kind == AgentEventKind.CONTENT:
             self._on_content(ev)
-        elif ev.kind in ("tool", AgentEventKind.TOOL_START, AgentEventKind.TOOL_END):
+        elif ev.kind in (AgentEventKind.TOOL_START, AgentEventKind.TOOL_END):
             self._on_tool(ev)
 
     def _on_content(self, ev) -> None:
@@ -236,8 +237,12 @@ class StreamRenderer:
         else:
             # 上一个段是 tool 或 None，只需结束块（可能残留 spinner）
             self._end_block()
-        # 打印工具状态行
-        self._print(f"[{ev.agent_type}] {ev.text}", end="", flush=True, style="dim")
+        # 打印工具状态行：起点行由参数现拼，终点行按「完成文本 / 失败文本」二选一
+        if ev.kind == AgentEventKind.TOOL_END:
+            line = ev.completion or (f"Tool failed: {ev.error}" if ev.error else "")
+        else:
+            line = format_call_line(ev.tool_name, ev.args)
+        self._print(f"[{ev.agent_type}] {line}", end="", flush=True, style="dim")
         self._print("\n", end="")
         # 若工具是 root agent 调用的，清空 shown 缓冲（之前的中间内容作废）
         if ev.agent_type == self._root:
@@ -290,17 +295,18 @@ class StreamRenderer:
         """
         self._end_block()
         verb, count_word = activity_label(ev.tool_name)
+        summary = tool_summary(ev.tool_name, ev.args)
         if (self._pending is not None and self._pending["verb"] == verb
                 and self._pending["agent_type"] == ev.agent_type):
             # 同键：聚合计数，不落屏（上一活动行仍在进行）
             self._pending["count"] += 1
-            self._pending["last_summary"] = ev.summary
+            self._pending["last_summary"] = summary
         else:
             # 键切换（或首个工具）：先落屏上一活动行，再开新行
             self._commit_pending()
             self._pending = {"verb": verb, "count_word": count_word,
                              "agent_type": ev.agent_type, "count": 1,
-                             "last_summary": ev.summary, "duration_ms": None}
+                             "last_summary": summary, "duration_ms": None}
         self._started_tools = True
         if self._block is not None:
             p = self._pending
@@ -333,7 +339,7 @@ class StreamRenderer:
             # 键不匹配（或 pending 为 None）：先落屏已有 pending，再直接落屏该事件行
             self._commit_pending()
             self._print(format_activity(verb, ev.agent_type, self._root,
-                                        summary=ev.summary,
+                                        summary=tool_summary(ev.tool_name, ev.args),
                                         duration_ms=ev.duration_ms, done=True),
                         end="\n", flush=True, style="dim")
 

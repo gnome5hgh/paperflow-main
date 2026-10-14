@@ -1,14 +1,94 @@
 # paperflow/terminal/activity.py
 """工具事件 → ZCode 风格活动行的映射与格式化（纯函数，无 I/O）。
 
-映射表是「工具名 → 图标+动词+计数词」的唯一领域知识所在处；渲染器
-（render.py 活动流模式）只管 live 区调度、聚合状态机与落屏时机。
+映射表是「工具名 → 图标+动词+计数词」的唯一领域知识所在处；参数 → 摘要
+（`tool_summary`）与调用行（`format_call_line`）是它的姊妹知识，同住这里。
+渲染器（render.py 活动流模式）只管 live 区调度、聚合状态机与落屏时机。
 聚合规则：连续同动词合并计数、聚合行省略摘要、
 耗时 ≥ SLOW_MS 才标注、子 agent 调用加 [agent] 前缀。
 """
 
 #: 慢操作阈值：tool_end 耗时 ≥ 此值（毫秒）才在活动行标注耗时
 SLOW_MS = 2000
+
+#: 活动行摘要取参数的键优先级：第一个非空值胜出
+_SUMMARY_KEYS = ("path", "url", "query", "pattern", "venue", "pdf_path",
+                 "agent_type", "task")
+
+
+def compact_value(v) -> str:
+    """参数值压缩为单行：头尾中间截断，超长标注字符数。
+
+    路径（/ 开头）在行宽预算内也头尾截断——超长路径全展示会被终端宽度硬切，
+    头尾各留一段才可辨认。截断统一用 "…" 标记。
+
+    Args:
+        v: 任意参数值
+
+    Returns:
+        单行化的摘要文本（超长头尾截断并标注字符数）。
+    """
+    s = str(v).replace("\n", " ")
+    n = len(s)
+    if n <= 40:
+        return s
+    if n <= 120:
+        return s[:35] + "…" + s[-10:]
+    return s[:40] + "…(%d chars)…" % n + s[-20:]
+
+
+def tool_summary(tool_name: str, args: dict | None) -> str:
+    """活动行摘要：按 _SUMMARY_KEYS 优先级取第一个非空参数值。
+
+    path / pdf_path 只取尾段（活动行关心「哪个文件」，全路径太长），其余键原样；
+    统一经 compact_value 头尾截断。
+
+    Args:
+        tool_name: str，工具名（保留位，供扩展）
+        args: dict | None，工具参数
+
+    Returns:
+        活动行摘要；args 非法或无可用参数时返回 ""。
+    """
+    if not isinstance(args, dict):
+        return ""
+    for key in _SUMMARY_KEYS:
+        v = args.get(key)
+        if v:
+            s = str(v)
+            if key in ("path", "pdf_path"):
+                s = s.rstrip("/").rsplit("/", 1)[-1]
+            return compact_value(s)
+    return ""
+
+
+def format_call_line(tool_name: str, args: dict | None) -> str:
+    """工具调用行（非 TTY 的 legacy 模式）：`Calling name(k=v, …)`。
+
+    参数逐个经 compact_value 头尾截断；含路径参数（值以 / 开头）的行豁免 80 列
+    预算——超长路径已头尾截断，再被切一刀会把文件名尾部切没，宽度交给渲染层的
+    overflow 兜底。
+
+    Args:
+        tool_name: str，工具名
+        args: dict | None，工具参数
+
+    Returns:
+        一行调用描述；args 非法或为空时只有工具名。
+    """
+    if not isinstance(args, dict) or not args:
+        return f"Calling {tool_name}"
+    pairs = ", ".join(f"{k}={compact_value(v)}" for k, v in args.items())
+    if any(str(v).lstrip().startswith("/") for v in args.values()):
+        return f"Calling {tool_name}({pairs})"
+    budget = max(0, 80 - len(f"Calling {tool_name}()"))
+    if budget <= 0:
+        return f"Calling {tool_name}()"
+    # 行宽截断处补 "…" 标记（留 1 字符给标记），截断后整行仍 ≤ 80
+    if len(pairs) > budget:
+        pairs = pairs[:max(0, budget - 1)] + "…"
+    return f"Calling {tool_name}({pairs})"
+
 
 #: 工具名 → (emoji+动词, 计数词)。未知工具走 _DEFAULT。
 #: 完整性由测试守护：遍历 paperflow.tools 包全部 Tool 子类，注册名必须都在表内或有豁免
