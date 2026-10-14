@@ -9,6 +9,7 @@ import json
 from datetime import datetime, timezone
 
 from paperflow.core.common.constants import MessageRole
+from paperflow.core.llm.domain.dto import response_meta_to_dict
 from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.schemas.stored_message import StoredMessage
 
@@ -35,7 +36,7 @@ def _row_to_dict(row) -> dict:
 
 def insert_message(db: MemoryDB, agent_id: str, m: StoredMessage) -> None:
     """插入一条消息行：content 只存字符串（list/dict 内容序列化为 JSON），
-    tool_calls 序列化为 JSON，created_at 缺省取当前时间。
+    tool_calls / meta 序列化为 JSON，created_at 缺省取当前时间。
 
     Args:
         db: 数据库连接。
@@ -47,17 +48,21 @@ def insert_message(db: MemoryDB, agent_id: str, m: StoredMessage) -> None:
           若 m.content 是 list 或 dict（如多模态内容），则序列化为 JSON 字符串存储；
           否则直接存储原字符串（或 None）。
         - tool_calls 始终序列化为 JSON 数组字符串（即使为空列表）。
+        - meta 为 None（非 assistant 消息、或端点未回信封）时存 NULL——「没有信封」
+          与「信封里字段为 None」在库里都是可区分的（后者是一行 JSON）。
         - created_at 若未显式设置，则使用当前 UTC 时间。
     """
     db.execute(
         "INSERT INTO messages (id, agent_id, role, content, tool_calls, tool_call_id,"
-        " step_id, run_id, otid, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        " step_id, run_id, otid, meta, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (m.id, agent_id, m.role.value,
          # 若 content 是 list/dict，转为 JSON 字符串；否则原样保留
          json.dumps(m.content, ensure_ascii=False)
          if isinstance(m.content, (list, dict)) else m.content,
          json.dumps(m.tool_calls, ensure_ascii=False),
          m.tool_call_id, m.step_id, m.run_id, m.otid,
+         json.dumps(response_meta_to_dict(m.meta), ensure_ascii=False)
+         if m.meta is not None else None,
          m.created_at.isoformat() if m.created_at else _now()))
 
 

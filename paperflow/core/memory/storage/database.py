@@ -57,11 +57,19 @@ CREATE TABLE IF NOT EXISTS messages (
     step_id TEXT,                        -- 工作流步骤标识
     run_id TEXT,                         -- 运行标识
     otid TEXT,                           -- 开放追踪 ID
+    meta TEXT,                           -- 响应信封（JSON：结束原因/token 用量/模型快照/思维链等）
     created_at TEXT NOT NULL             -- 创建时间
 );
 -- 复合索引：加速按 agent + 时间查询
 CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id, created_at);
 """
+
+# 增量列迁移清单：(表, 列名, 列定义)。建表脚本只能建出新库——已有库不会因为
+# _SCHEMA 多写一列就自动获得它，故给已有表**加列**时必须同时在这里登记一行，
+# init_schema 会按它比对并补齐。messages 只增不改，历史行新列为 NULL。
+_ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("messages", "meta", "meta TEXT"),
+)
 
 
 class MemoryDB:
@@ -102,13 +110,26 @@ class MemoryDB:
         self.init_schema()
 
     def init_schema(self) -> None:
-        """执行建表脚本（IF NOT EXISTS，幂等）。
+        """建表（幂等）+ 给已有库补齐缺的增量列。
 
-        用于初始化数据库结构，若表已存在则不重复创建。
-        任何表结构变更需在本方法中同步更新 _SCHEMA。
+        注意：新增表/改列定义要同步更新 _SCHEMA；给**已有表**加列还要登记到
+        _ADDITIVE_COLUMNS，否则只影响新库，老库缺列会在读写时报 no such column。
         """
         self._conn.executescript(_SCHEMA)
+        self._migrate_additive_columns()
         self._conn.commit()
+
+    def _migrate_additive_columns(self) -> None:
+        """按 _ADDITIVE_COLUMNS 给已存在的表补列（幂等，仅供 init_schema 调用）。
+
+        只做「加列」这一种变更：列已存在即跳过，可反复执行。表不存在（异常库文件）
+        时跳过而非建表——建表是 executescript 的职责。历史行的新列留 NULL，由读取方
+        按缺省值处理。
+        """
+        for table, column, ddl in _ADDITIVE_COLUMNS:
+            existing = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            if existing and column not in existing:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
     @contextmanager
     def transaction(self):

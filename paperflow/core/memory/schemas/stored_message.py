@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from paperflow.core.common.constants import MessageRole
+from paperflow.core.llm.domain.dto import ResponseMeta
 
 __all__ = ["StoredMessage"]
 
@@ -22,7 +23,7 @@ class StoredMessage(BaseModel):
     """持久化消息：含 Recall 检索所需的全部字段。
 
     tool_calls / tool_call_id 记录工具调用轨迹；step_id / run_id / otid 是
-    审计与轨迹追踪的关联键。
+    审计与轨迹追踪的关联键；meta 是被落盘的响应信封。
 
     与 wire 消息（`paperflow.core.llm` 的 Message 家族）的区别：
         - wire 格式的 content 可以是 str、list 或 dict（多模态或结构化内容），
@@ -39,6 +40,7 @@ class StoredMessage(BaseModel):
         step_id: str | None，工作流步骤标识
         run_id: str | None，单次运行标识
         otid: str | None，开放追踪 ID
+        meta: ResponseMeta | None，响应信封（仅 assistant 消息有值；落盘为 JSON 一列）
         created_at: datetime | None，创建时间（UTC；缺省由 ORM 取当前时间）
     """
 
@@ -61,6 +63,10 @@ class StoredMessage(BaseModel):
     # 工具调用 ID，用于 role="tool" 的消息，关联到对应的 assistant 工具调用。
     # 空字符串或 None 表示非 tool 消息或无关联。
     tool_call_id: str | None = None
+
+    # 响应信封（finish_reason / token 用量 / 模型快照 / 思维链等），来自端点响应。
+    # 只有 assistant 消息可能带值——它是信封唯一的落盘读出口，非 assistant 行为 None。
+    meta: ResponseMeta | None = None
 
     # ---------- 审计与轨迹追踪字段 ----------
     # 这些字段由上层执行引擎（如 Agent 循环）赋值，用于跨步骤/跨运行追踪。

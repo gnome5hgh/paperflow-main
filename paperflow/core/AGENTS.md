@@ -14,13 +14,13 @@ core/
 ├─ agent/          # ReAct 循环：runtime.py(Agent.run 主循环) + registry.py(AgentRegistry 插件发现) + base_prompt.py(全 agent 共有行为基座) + state.py(会话/运行期状态容器)
 │                  #   + domain/dto/StreamEvent 流式事件 + config/AgentConfig 插件配置 + constants/enums/StreamEventKind
 ├─ llm/            # 接入层：domain/dto/（messages/ wire 消息家族：基类 + system/user/assistant/tool 四子类
-│                  #     + response_meta/Usage 响应信封）+ config/StructuredOutputConfig
+│                  #     + response_meta/Usage 响应信封，自带 dict 往返供落盘）+ config/StructuredOutputConfig
 │                  #   + services/(client.py 异步客户端 + structured.py 结构化输出)
 ├─ security/       # 安全中间件洋葱（有 AGENTS.md）：middleware/(base.py 协议 + audit/workspace 策略/输出扫描/策略引擎)
 │                  #   + services/(network.py SSRF 校验 + command.py 命令解析 + classifier.py 语义判定)
 │                  #   + constants/enums/(ToolDecision 决策 + ApprovalOutcome 审批 + ToolResultStatus 结果状态)
 │                  #   + domain/dto/(ToolContext 调用上下文 + AuditEntry 审计事件)
-├─ memory/         # Letta 记忆栈移植：constants/(工具名集合与播种文案；角色词 MessageRole 已归 core/common) + schemas/(含 StoredMessage 持久化消息) + storage/(SQLite) + common/(领域异常) + services/(管理器 + compaction.py + consolidation.py)
+├─ memory/         # Letta 记忆栈移植：constants/(工具名集合与播种文案；角色词 MessageRole 已归 core/common) + schemas/(含 StoredMessage 持久化消息，meta 即响应信封) + storage/(SQLite；加列走 _ADDITIVE_COLUMNS 增量迁移) + common/(领域异常) + services/(管理器 + compaction.py + consolidation.py)
 ├─ intent/         # 意图识别（可选预处理层），按角色分层：constants/(enums/IntentType+IntentStep + 类别词汇/KB 路径) +
 │                  #   schemas/(产出契约 IntentOutput + 回传 Turn + JevDecision + 知识库 IntentClass/Rule) + rules/(实体抽取 + 知识库装载校验) + services/(判定服务客户端 + 集成缝)
 ├─ mcp/            # MCP 客户端平台（有 AGENTS.md）：constants/enums/McpConnectionState + domain/dto/(McpToolSpec 工具描述

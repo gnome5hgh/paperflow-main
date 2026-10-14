@@ -10,7 +10,7 @@ import logging
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from paperflow.core.llm import Message
+from paperflow.core.llm import Message, response_meta_from_dict
 from paperflow.core.common.constants import MessageRole
 from paperflow.core.memory.storage import message as message_orm
 from paperflow.core.memory.storage.database import MemoryDB
@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 def _wire_to_schema(wire: Message) -> StoredMessage:
     """把 wire 消息转成 StoredMessage：补 role 枚举 / 空 tool_calls / 时间戳。
 
-    持久化是全角色的**并集**：表里 tool_calls / tool_call_id 每一行都有列，非本角色
-    的行存空值。故这里按属性取（wire 侧这两个字段只存在于 assistant / tool 子类上），
-    取不到即归一为空。
+    持久化是全角色的**并集**：表里 tool_calls / tool_call_id / meta 每一行都有列，
+    非本角色的行存空值。故这里按属性取（wire 侧这些字段只存在于 assistant / tool
+    子类上），取不到即归一为空。meta 是被落盘的响应信封（token 用量/结束原因等）。
 
     Args:
         wire: LLM 层的原始消息（各角色子类之一）。
@@ -40,12 +40,13 @@ def _wire_to_schema(wire: Message) -> StoredMessage:
         content=wire.content,
         tool_calls=getattr(wire, "tool_calls", None) or [],  # 确保为列表，避免 None
         tool_call_id=getattr(wire, "tool_call_id", None),
+        meta=getattr(wire, "meta", None),
         created_at=datetime.now(timezone.utc),
     )
 
 
 def _row_to_schema(row: dict) -> StoredMessage:
-    """把 DB 行转回 StoredMessage（tool_calls 从 JSON 还原）。
+    """把 DB 行转回 StoredMessage（tool_calls / meta 从 JSON 还原）。
 
     content 落盘恒为字符串（_wire_to_schema 只产出 str；schema content 为
     str|None），直接原样回放即可——不能对以 {/[ 开头的字符串内容做 json.loads，
@@ -61,6 +62,7 @@ def _row_to_schema(row: dict) -> StoredMessage:
     重要边界：
         - content 字段保持原样字符串，不做 JSON 解析（即使内容看起来像 JSON）。
         - tool_calls 字段是 JSON 数组字符串，需反序列化为 list。
+        - meta 字段是信封 JSON 字符串；本列由增量迁移补出，旧行为 NULL。
     """
     import json
     return StoredMessage(
@@ -68,6 +70,7 @@ def _row_to_schema(row: dict) -> StoredMessage:
         tool_calls=json.loads(row["tool_calls"]) if row["tool_calls"] else [],
         tool_call_id=row["tool_call_id"], step_id=row["step_id"],
         run_id=row["run_id"], otid=row["otid"], created_at=row["created_at"],
+        meta=response_meta_from_dict(json.loads(row["meta"])) if row["meta"] else None,
     )
 
 

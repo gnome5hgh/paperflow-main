@@ -1004,8 +1004,13 @@ class Agent:
                     content = await mw.on_finish(self, content)
 
                 # 最终回答(经 on_finish 改写——回放给下轮的是"用户看到的事实",
-                # 内容防护追加的安全声明跨轮保留)落盘 + 进 in-context,供下轮回放
-                final = AssistantMessage(content=content)
+                # 内容防护追加的安全声明跨轮保留)落盘 + 进 in-context,供下轮回放。
+                # 信封随之落盘:token 用量/结束原因/模型快照进 Recall,可事后按会话核算;
+                # 续写场景下 content 由「半截 + 续写」拼接,信封只覆盖最后一段调用——
+                # 各半截的用量已随各自的消息落盘,此处不累计。response 可能是不带信封的
+                # 替身对象,故用 getattr 取。
+                final = AssistantMessage(content=content,
+                                         meta=getattr(response, "meta", None))
                 self._append_to_messages(final)
                 self._persist_conversation([final])
                 return content
@@ -1101,6 +1106,8 @@ class Agent:
                 final_text = next(r.text for r in results if r.summary.get(SUMMARY_TERMINAL))
                 for mw in self.security_middleware:
                     final_text = await mw.on_finish(self, final_text)
+                # 正文来自工具结果而非模型回复,故不挂响应信封——挂上会得到一条
+                # finish_reason=tool_calls 的误导性元信息(它不是这次的回答)。
                 final = AssistantMessage(content=final_text)
                 self._append_to_messages(final)
                 self._persist_conversation([final])

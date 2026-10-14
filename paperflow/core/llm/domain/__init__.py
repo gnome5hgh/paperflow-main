@@ -12,6 +12,8 @@ from paperflow.core.llm.domain.dto import (
     Usage,
     UserMessage,
     message_from_role,
+    response_meta_from_dict,
+    response_meta_to_dict,
 )
 
 __all__ = [
@@ -23,4 +25,6 @@ __all__ = [
     "ResponseMeta",
     "Usage",
     "message_from_role",
+    "response_meta_to_dict",
+    "response_meta_from_dict",
 ]
