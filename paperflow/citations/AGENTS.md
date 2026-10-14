@@ -19,7 +19,7 @@ citations/
     └─ manager.py # 编排：引用解析 → 入库 → 去重 → 渲染 → 调和
 ```
 
-分层依据与 `rag/`、`core/memory/` 同惯例：常量、数据模型、持久化原语、业务逻辑各占一层；`bib.py` 的读侧 `parse_entries` 与写侧 `entry_text` 是一对（拆开各自换家才叫割裂，故同处 storage/）。
+分层依据与 `core/rag/`、`core/memory/` 同惯例：常量、数据模型、持久化原语、业务逻辑各占一层；`bib.py` 的读侧 `parse_entries` 与写侧 `entry_text` 是一对（拆开各自换家才叫割裂，故同处 storage/）。
 
 ## Core Rules
 

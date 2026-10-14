@@ -1,4 +1,4 @@
-# paperflow/vision/
+# paperflow/core/vision/
 
 ## Scope
 
@@ -33,5 +33,5 @@ vision/
 
 ## Routing
 
-- 上级：[`../AGENTS.md`](../AGENTS.md)
-- 工具封装：[`../tools/AGENTS.md`](../tools/AGENTS.md)（vision/ 域）
+- 上级：[`../AGENTS.md`](../AGENTS.md)（core manifest）
+- 工具封装：[`../../tools/AGENTS.md`](../../tools/AGENTS.md)（vision/ 域）
