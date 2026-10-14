@@ -18,7 +18,7 @@ paperflow/
 ├─ __init__.py     # 空（包的标记）
 ├─ __main__.py     # `python -m paperflow` 的结构性入口（5 行，转调 paperflow.cli.main）
 ├─ cli/            # 装配根：bootstrap.py(依赖服务预检) + assembly.py(对象图组装)
-├─ config/         # 全部可调参数的唯一声明点：sections.py(dataclass 树) + loader.py(合并/env 派生)
+├─ config/         # 全局可调参数的唯一声明点：sections.py(dataclass 树) + loader.py(合并/env 派生)
 ├─ core/           # 核心运行层（有 AGENTS.md）：含 rag/ 与 vision/
 ├─ citations/      # 引用管理（有 AGENTS.md）：constants/ schemas/ storage/ services/，懒加载单例
 ├─ tools/          # 原子工具（有 AGENTS.md）
@@ -36,7 +36,7 @@ paperflow/
 
 ## Core Rules
 
-- **`config/` 是唯一声明点**：任何可调参数先在 `config/sections.py` 的 dataclass 树加字段（含 YAML 覆盖与 env 派生），消费模块直接读 config，不在模块内另设常量副本。
+- **顶层 `config/` 是全局可调参数的唯一声明点**：任何可调参数先在 `config/sections.py` 的 dataclass 树加字段（含 YAML 覆盖与 env 派生），消费模块直接读 config，不在模块内另设常量副本。**各子包的 `config/` 是另一档**——放该包**组件自己的行为参数**（调用点各给一套、不进 config.yaml），与顶层构成两级作用域：`core/llm/config/`、`core/agent/config/`、`core/skills/config/`。
 - **懒加载单例**：重量组件（RAGService、CitationManager、记忆工具）用双重检查加锁的模块级单例，包导入期不拉重型依赖。
 - **依赖方向**：terminal/tools 是被消费方；core 依赖 tools 抽象但不反向；citations 经门面（`get_citation_manager`）对外，内部结构不外泄。**core 不 import 上层模块**（tools/terminal/citations）——这是「LLM 客户端不许搬进 `core/agent`」那类判断的硬依据。注意这条规则**不含 `rag`/`vision`**：两者已住进 `core/`（rag 的媒体块依赖 vision 取图与视觉描述，分开摆会让 `core/rag → vision → core/llm` 成环），core 内部彼此依赖是允许的；RAG 的对外仍然是门面 `get_rag_service()`。
 - **枚举一枚举一文件**：各模块 `constants/enums/<name>.py`，`__init__.py` 只做再导出；只有唯一消费方的常量就地声明，不进 `constants/`。

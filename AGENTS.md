@@ -95,7 +95,7 @@ paperFlow 是 LLM 驱动的学术研究流程助手（ADR 0003）。单根 agent
 
 ```
 paperflow/
-  core/          核心运行层:只放子包。constants(跨模块词汇:风险等级/副作用) + agent(ReAct 循环) + llm(消息契约 + 客户端 + 结构化输出)
+  core/          核心运行层:只放子包。constants(跨模块词汇:风险等级/副作用) + agent(ReAct 循环) + llm(wire 消息家族 + 客户端 + 结构化输出)
                  + security(安全中间件) + memory(记忆系统) + intent(意图识别)
                  + mcp(MCP 客户端平台:后台循环 + 工具桥接) + skills(Skill 注册表) + tool(Tool 抽象)
                  + common(跨子包共享叶子:frontmatter 解析 + token 计数)
@@ -176,7 +176,9 @@ Every agent lives in `agents/<name>/` with two files:
 - `chat(messages, tools=..., ...)` — 非流式，ReAct 主路径；StructuredOutput 等 JSON 抽取也用
 - `chat_stream(messages, tools=..., on_delta=...)` — 流式，仅 CLI 实时渲染用；`on_delta` 跑在线程池线程内，只能追加/打印，别碰事件循环
 
-`Message` is a dataclass (`role`, `content`, `tool_calls`, `tool_call_id`, `truncated`) that serializes to OpenAI wire format (`_message_to_openai`，出站时清洗未配对 surrogate)。**进出两个方向共用这一个类型**：`chat()` / `chat_stream()` 返回的就是一条 assistant Message，随即被 append 进 in-context 窗口、下一轮原样作为请求消息发回去——wire 上本来就是同一个形状，故不另设「回复」类型。唯一的例外字段是 `truncated`（由响应信封的 `finish_reason` 派生，**不上 wire**、只对 assistant 回复有意义），Agent 据此走截断续写。`tool_to_openai_schema(t) -> dict` converts a Tool to the OpenAI function-calling JSON Schema.
+`paperflow/core/llm/domain/dto/messages/` 是 **wire 消息家族**：基类 `Message` 只持 `content`，四个角色子类（`SystemMessage` / `UserMessage` / `AssistantMessage` / `ToolMessage`）各以 `ClassVar` 固定自己的 `role`——构造时不用（也传不进去）写 role，角色写错从类型层面消失；角色特有字段只出现在对应子类上（`tool_calls` 在 assistant、`tool_call_id` 在 tool）。`_message_to_openai` 是唯一的 wire 出口，按类型取字段（`role` 取 `.value`；无 tool_calls 时不输出该键——OpenAI 拒绝空值）。`message_from_role()` 是反向的**唯一漏斗**（持久化层的 role 是字符串，回放时在这里还原成具体类型）。
+
+**进出两个方向共用这一族类型**：`chat()` / `chat_stream()` 返回的就是一条 `AssistantMessage`，随即被 append 进 in-context 窗口、下一轮原样作为请求消息发回去——wire 上本来就是同一个形状，故不另设「回复」类型。`AssistantMessage.meta`（`ResponseMeta`，含 `Usage`）承载**响应信封**：`finish_reason` / token 用量 / 模型快照 / 思维链 / 拒答 / 补全 id。`truncated` 是从 `meta.finish_reason == "length"` **派生的 property**（不再单存字段，杜绝两处漂移），Agent 据此走截断续写。信封**不上 wire**，也**不落盘**——它随消息对象活在进程内的窗口里，重启即丢；需要长期留存的元数据由审计通道承担（审计的 telemetry 元数据也正是从同一个信封派生）。`tool_to_openai_schema(t) -> dict` converts a Tool to the OpenAI function-calling JSON Schema.
 
 关键行为：
 - **参数降级重试**：端点不支持 `response_format` / `extra_body` / `stream_options` 时（不同兼容端点措辞各异），去掉该参数重试一次（`_looks_like_unsupported_param`）
@@ -201,14 +203,16 @@ CLI 装配的 5 个中间件（`paperflow/cli/assembly.py`，顺序即执行顺�
 
 `Tool` 安全元数据（`paperflow/core/tool/`，`base.py` 声明、`validation.py` 校验）：`risk_level`（low/medium/high/critical；档位是「问不问」的来源之一）、`side_effects`（写者身份判据，`is_writer` 被写互斥与写围栏共用）、`provenance`（pdf/rag/search/web/image/local_file/None——声明结果是外部数据，内容防护据此打来源标记）、`root_hints`（语义根名提示 → `make_tools` 生成 `[目录]` 提示，不参与强制；取值来自 `tools/common/constants/` 的 `ScopeRoot`——写成别的字面量不报错，只是提示行静默消失）。注册表加载时校验这些字段的合法值。`risk_level`/`side_effects`/`provenance` 的取值集合声明在 `core/constants/`（枚举即单一真相源），`core/tool/` 与策略引擎都从那里取。`ToolResult.summary` 的跨模块键（`terminal`/`decision`/`violations`）在 `core/tool/constants.py`——它们跨 core↔tools 两侧读写，写错一个字符串的后果是功能静默不生效（如裁决已提交但循环不终止）。**外部来源工具的风险下限**：来源组为 `skill` 的工具在 `merge_tools` 装配时被抬到至少 `high`（第三方代码自报档位不可信）；`security.pre_approved_tools`（与 `mcp_servers.*.write_tools` 的并集）内的工具降 `medium`——降档不是旁路，会话调严时照样会被问。
 
-**常量与枚举的落点**：一个模块的枚举与被两个以上模块消费的取值契约收进该模块的 `constants/` 包，且**一个枚举一个文件**（`constants/enums/<name>.py`，`__init__.py` 只做再导出）；其余常量放同包的 `constants.py`。判据是「有没有第二个消费方」——只有一个消费方的常量就地声明，不搬家。没有子包归属、又被两个以上子包消费的纯取值放 `core/common/constants.py`。
+**常量与枚举的落点**：一个模块的枚举与被两个以上模块消费的取值契约收进该模块的 `constants/` 包，且**一个枚举一个文件**（`constants/enums/<name>.py`，`__init__.py` 只做再导出）；其余常量放同包的 `constants.py`。判据是「有没有第二个消费方」——只有一个消费方的常量就地声明，不搬家。没有子包归属、又被两个以上子包消费的纯取值放 `core/common/constants/`（同样是「枚举进 `enums/`、其余进 `constants.py`」的两级布局；`MessageRole` 就住这里——wire 消息家族与记忆层同时消费它，没有单一子包归属）。
+
+**两类 `config/`**：顶层 `paperflow/config/` 是与 config.yaml 同构、可经 env 派生的**全局可调参数**；各子包的 `config/` 放该包**组件自己的行为参数**（调用点各给一套、不进 config.yaml）——`core/llm/config/StructuredOutputConfig`、`core/agent/config/AgentConfig`、`core/skills/config/SkillConfig`。判据是「这个值用户会不会在 config.yaml 里改」：会，进顶层；不会（只有代码调用点决定），跟组件走。
 
 ### Memory system
 
 `paperflow/core/memory/` 是 **Letta 记忆栈的忠实移植**（取代旧的文件式 MemoryStore/GitStore/Dream）。分层：
 
-- `constants/` — 跨模块词汇（`MessageRole` 枚举 + 工具名集合与播种文案）
-- `schemas/` — pydantic 数据模型（`Block`/`Memory`/`Message`/`AgentState`）
+- `constants/` — 工具名集合与播种文案（角色词 `MessageRole` 已归 `core/common/constants/`，wire 与持久化共同消费它）
+- `schemas/` — pydantic 数据模型（`Block`/`Memory`/`StoredMessage`/`AgentState`）。`StoredMessage` 是**落盘**的持久化消息，与 wire 侧的 `Message` 家族是两个类型：它有 id/created_at 等存储字段、content 恒为 `str | None`（落盘不做 JSON 类型猜测），由 `MessageManager` 来回转换
 - `storage/` — SQLite 持久化：`MemoryDB`（stdlib sqlite3 单例，`threading.Lock` 包裹写事务，`check_same_thread=False`）；表：blocks/block_history/messages/agent_state
 - `common/` — 领域异常（并发写冲突、块字符上限）
 - `services/` — 业务层管理器 + `compaction.py`（上下文压缩）+ `consolidation.py`（记忆整合）
@@ -228,7 +232,7 @@ CLI 装配的 5 个中间件（`paperflow/cli/assembly.py`，顺序即执行顺�
 - **SQL 块是真相源，markdown 是投影**——与旧 GitStore 的语义正好相反
 - 记忆工具在 **`paperflow/tools/memory/`**，经 **`get_memory_tools()`**（`tools/memory/__init__.py`）惰性构建 9 个工具（模块级单例，双重检查加锁，每次返回新列表副本）；执行时经 **`set_memory_context(MemoryToolsContext(...))`** 绑定一次（cli.py）+ `get_memory_context()` 取运行时上下文；未装配时工具降级为错误文本而非崩溃
 - 9 个记忆工具分 3 组：**blocks**（`memory`/`memory_replace`/`memory_insert`/`memory_rethink`/`memory_apply_patch`/`memory_finish_edits`）、**recall**（`conversation_search`，默认过滤 tool 消息防递归噪音）、**paper_lists**（`unread_list_add`/`unread_list_remove`——未读清单的行级增删，`unread_list_add` 要求真实标题绝不用文件名）
-- **Compaction**（`services/compaction.py`）：只压缩 in-context 窗口（驱逐旧对话 + 插 SummarySchema 摘要 + 保留尾部），**永不删 SQL 行**；`should_compress`（tiktoken 估算，超 `trigger_ratio × context_size` 触发）+ `run_compaction`（滑动窗口，保留 tool 消息与其结果的配对，尾部孤儿清理）
+- **Compaction**（`services/compaction.py`）：只压缩 in-context 窗口（驱逐旧对话 + 插 SummarySchema 摘要 + 保留尾部），**永不删 SQL 行**；`estimate_tokens`（本地 tiktoken 估算：正文 + 工具调用 JSON + 协议开销常数）+ `blend_token_ratio`（拿上一次请求的真实 `prompt_tokens` ÷ 当时的本地估算得校准系数，夹紧在 [0.5, 2.0] 后 EMA 并入；端点不报用量时保持 1.0）+ `should_compress`（估算 × 系数 × 1.1 超 `trigger_ratio × context_size` 触发）+ `run_compaction`（滑动窗口，保留 tool 消息与其结果的配对，尾部孤儿清理）
 - **MemoryConsolidator**（`services/consolidation.py`）：记忆整合，REPL **每轮对话收尾**调 `consolidate()`（本轮无新消息则不调 LLM）。输入 = 游标之后的新消息 + **全部可写块的当前内容**——喂旧值是「不产生矛盾条目」的前提。产出 `MemoryEditBatch` 的**行级**指令（`add` 新增一行 / `supersede` 按行首前缀换掉旧行 / `drop` 删掉旧行 / `rewrite` 整块重写，仅 profile 与 assistant），**空批次即 NOOP**；目标块 label 由代码按「类型 + 当天日期」拼装，写满自动续号 `_2`，条目被取代/删除后空掉的分册收尾整块删除（使「全量喂旧记忆」的总量有界——记忆 = 当前有效知识，历史交给 Recall）。`supersede`/`drop` 跨**整个分册家族（含往日分册）**按行首前缀找人。流程：全量预验证（动作与目标匹配、必要字段齐全，一条不过整批不写）→ 逐条应用（单条失败只跳过该条并留日志）→ 结算；失败一律记日志，抽取阶段失败保留游标重试（连败 3 次强制推进防死锁），应用阶段失败照常推进游标（重放会产生重复写入）
 - 装配不变式：CLI `session_id` == `AgentManager.create_agent` id == `Agent.session_id`，三者错位会各自读到空数据
 

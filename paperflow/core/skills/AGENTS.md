@@ -9,7 +9,7 @@
 
 ```text
 skills/
-├─ domain/dto/     # skill_config.py：SkillConfig（插件配置实体：名字/描述/正文/metadata/工具/路径）
+├─ config/         # skill_config.py：SkillConfig（组件自有参数：名字/描述/正文/metadata/工具/路径）
 └─ services/       # registry.py(发现+frontmatter 校验+可见性+渐进披露) + install.py(准入安装/更新/停用与 lock 治理)
                    #   + assembly.py(工具并入 merge_tools + 命名空间唯一性)
 ```
