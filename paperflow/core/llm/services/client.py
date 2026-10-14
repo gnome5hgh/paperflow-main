@@ -34,7 +34,11 @@ from paperflow.core.security.services import endpoint_guard
 from openai import OpenAI
 
 from paperflow.config import LLMConfig
-from paperflow.core.llm.domain.dto.message import Message
+from paperflow.core.llm.domain.dto.messages import (
+    AssistantMessage,
+    Message,
+    ToolMessage,
+)
 
 
 class LLMClient:
@@ -122,9 +126,9 @@ class LLMClient:
         temperature: float | None = None,
         extra_body: dict | None = None,
         telemetry_callback=None,
-    ) -> Message:
+    ) -> AssistantMessage:
         """
-        单次非流式 LLM 调用，返回 assistant message（可能包含 tool_calls）。
+        单次非流式 LLM 调用，返回 assistant 消息（可能包含 tool_calls）。
         流式变体见 chat_stream()。
 
         Args:
@@ -137,7 +141,7 @@ class LLMClient:
             telemetry_callback: 调用结束后同步回调元数据 dict （model/response_model/provider/input_tokens/output_tokens/duration_ms/started_at/finish_reason），供审计 replay 使用；不含消息正文。None 时零开销跳过
 
         Returns:
-            封装后的 assistant 消息（``Message``，含 tool_calls 与截断标记）
+            封装后的 assistant 消息（``AssistantMessage``，含 tool_calls 与截断标记）
 
         Raises:
             SDK 异常直接向上抛，由 Agent 自行决定是否 recover
@@ -219,8 +223,7 @@ class LLMClient:
 
         # content 可能是 None（OpenAI 2.x 行为：纯 tool-call 响应不含 content）
         # truncated：finish_reason=="length" 表示输出被 max_tokens 截断，调用方须续写
-        msg = Message(
-            role=choice.role,
+        msg = AssistantMessage(
             content=choice.content or "",
             tool_calls=tool_calls,
             truncated=(response.choices[0].finish_reason == "length"),
@@ -245,7 +248,7 @@ class LLMClient:
         return msg
 
     async def chat_stream(self, messages, tools=None, tool_choice="auto",
-                          on_delta=None, telemetry_callback=None) -> Message:
+                          on_delta=None, telemetry_callback=None) -> AssistantMessage:
         """流式版 chat()：stream=True + 边收边回调 on_delta，返回完整回复。
 
         仅 Agent（ReAct）消费；StructuredOutput 等要完整 JSON 的调用方继续用 chat()。
@@ -271,11 +274,11 @@ class LLMClient:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
 
-        def _do_stream() -> Message:
+        def _do_stream() -> AssistantMessage:
             """在同一个线程内创建流并迭代收齐结果（Stream 是同步迭代器，交回事件循环会阻塞 loop）。
 
             Returns:
-                累加完成后的消息（``Message``，含 truncated 标记）。
+                累加完成后的 assistant 消息（``AssistantMessage``，含 truncated 标记）。
             """
             # create 与 iterate 必须同线程：Stream 是同步迭代器，逐 chunk 阻塞在
             # httpx 读取上；不能把 Stream 交回事件循环再迭代（否则阻塞 loop，
@@ -290,7 +293,7 @@ class LLMClient:
                     stream = self.client.chat.completions.create(**kwargs)
                 else:
                     raise
-            content, tool_calls, role, finish_reason, usage, model = _accumulate_stream_chunks(stream, on_delta)
+            content, tool_calls, finish_reason, usage, model = _accumulate_stream_chunks(stream, on_delta)
             if telemetry_callback is not None:
                 # 流式 usage 仅部分端点提供（多在收尾 chunk 上）；缺失时元数据
                 # 留空，不落 content——与 chat() 一致地只回传元数据
@@ -304,14 +307,14 @@ class LLMClient:
                     "started_at": _started_wall,
                     "finish_reason": finish_reason,
                 })
-            return Message(role=role, content=content, tool_calls=tool_calls,
-                               truncated=(finish_reason == "length"))
+            return AssistantMessage(content=content, tool_calls=tool_calls,
+                                    truncated=(finish_reason == "length"))
 
         return await asyncio.to_thread(_do_stream)
 
 
 def _accumulate_stream_chunks(chunks, on_delta):
-    """把 OpenAI 流式 chunks 累加为 (content, tool_calls, role, finish_reason, usage, model)。
+    """把 OpenAI 流式 chunks 累加为 (content, tool_calls, finish_reason, usage, model)。
 
     on_delta 每收到一段 content 片段即同步回调（跑在流线程内，须线程安全）。
     tool_calls 按 delta.tool_calls[].index 分片累加，arguments 分片拼接。
@@ -320,16 +323,18 @@ def _accumulate_stream_chunks(chunks, on_delta):
     无则 None——调用方据此将 tokens 元数据留空。
     model 取最后一个自报 model 的 chunk（端点的模型快照，与请求串可能不同）。
 
+    不累加角色：一次补全恒为 assistant 输出，调用方直接构造
+    ``AssistantMessage``，无需从 chunk 里读它。
+
     Args:
         chunks: 可迭代的 OpenAI 流式 chunk 序列
         on_delta: 回调 | None，每收到一段 content 片段即同步调用（跑在流线程内，须线程安全）
 
     Returns:
-        (content, tool_calls, role, finish_reason, usage, model) 六元组；usage/model 无则 None。
+        (content, tool_calls, finish_reason, usage, model) 五元组；usage/model 无则 None。
     """
     content_parts: list[str] = []
     tool_acc: dict[int, dict] = {}
-    role = "assistant"
     finish_reason = None
     usage = None
     model = None
@@ -350,8 +355,6 @@ def _accumulate_stream_chunks(chunks, on_delta):
         if fr:
             finish_reason = fr
         delta = chunk.choices[0].delta
-        if delta.role:
-            role = delta.role
         # tool-call 类型的 chunk 常无 content（None）——不回调、不累积
         if delta.content:
             content_parts.append(delta.content)
@@ -380,7 +383,7 @@ def _accumulate_stream_chunks(chunks, on_delta):
                           "arguments": "".join(tool_acc[i]["args"])}}
             for i in sorted(tool_acc)
         ]
-    return "".join(content_parts), tool_calls, role, finish_reason, usage, model
+    return "".join(content_parts), tool_calls, finish_reason, usage, model
 
 
 _UNSUPPORTED_PARAM_PATTERNS = [
@@ -412,13 +415,16 @@ def _looks_like_unsupported_param(e: Exception) -> bool:
 
 
 def _message_to_openai(m: Message) -> dict:
-    """将内部 Message 转为 OpenAI API 接受的 dict 格式。
+    """将内部消息转为 OpenAI API 接受的 dict 格式。
 
     只有非 None 的字段才会出现在输出中 ——
     OpenAI API 拒绝 null tool_call_id 或空 tool_calls 字段。
 
+    角色由消息类型决定（``m.role`` 是子类固定的枚举，取 ``.value`` 出纯字符串）；
+    角色特有的字段按类型取：tool_calls 只在 assistant 上、tool_call_id 只在 tool 上。
+
     Args:
-        m: Message，内部消息对象
+        m: Message，内部消息对象（四个角色子类之一）
 
     Returns:
         OpenAI wire 格式 dict（None 字段不出现；content 经 surrogate 清洗后随消息角色给出）。
@@ -433,10 +439,10 @@ def _message_to_openai(m: Message) -> dict:
         content = [_sanitize_content_part(p) for p in content]
     else:
         content = sanitize_surrogates(content)
-    msg: dict = {"role": m.role, "content": content}
-    if m.tool_calls is not None:
+    msg: dict = {"role": m.role.value, "content": content}
+    if isinstance(m, AssistantMessage) and m.tool_calls is not None:
         msg["tool_calls"] = m.tool_calls
-    if m.tool_call_id is not None:
+    if isinstance(m, ToolMessage) and m.tool_call_id is not None:
         msg["tool_call_id"] = m.tool_call_id
     return msg
 

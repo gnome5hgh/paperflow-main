@@ -110,7 +110,7 @@ class FigureDescriber:
 
     async def _chat(self, data_url: str) -> tuple[str, bool]:
         """发起一次多模态调用，返回 ``(描述文本, 是否被输出预算截断)``。"""
-        from paperflow.core.llm import Message
+        from paperflow.core.llm import UserMessage
 
         llm = self._llm
         if llm is None:
@@ -118,7 +118,7 @@ class FigureDescriber:
 
             llm = LLMClient(self._config.vision)
             self._llm = llm
-        message = Message(role="user", content=[
+        message = UserMessage(content=[
             {"type": "text", "text": _DESCRIBE_PROMPT},
             {"type": "image_url", "image_url": {"url": data_url}},
         ])

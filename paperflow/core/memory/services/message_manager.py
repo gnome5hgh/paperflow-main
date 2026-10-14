@@ -25,8 +25,12 @@ logger = logging.getLogger(__name__)
 def _wire_to_schema(wire: Message) -> StoredMessage:
     """把 wire 消息转成 StoredMessage：补 role 枚举 / 空 tool_calls / 时间戳。
 
+    持久化是全角色的**并集**：表里 tool_calls / tool_call_id 每一行都有列，非本角色
+    的行存空值。故这里按属性取（wire 侧这两个字段只存在于 assistant / tool 子类上），
+    取不到即归一为空。
+
     Args:
-        wire: LLM 层的原始消息（role 为字符串，content 可能为字符串或 None）。
+        wire: LLM 层的原始消息（各角色子类之一）。
 
     Returns:
         StoredMessage 对象，自动填充当前 UTC 时间作为 created_at。
@@ -34,8 +38,8 @@ def _wire_to_schema(wire: Message) -> StoredMessage:
     return StoredMessage(
         role=MessageRole(wire.role),
         content=wire.content,
-        tool_calls=wire.tool_calls or [],  # 确保为列表，避免 None
-        tool_call_id=wire.tool_call_id,
+        tool_calls=getattr(wire, "tool_calls", None) or [],  # 确保为列表，避免 None
+        tool_call_id=getattr(wire, "tool_call_id", None),
         created_at=datetime.now(timezone.utc),
     )
 

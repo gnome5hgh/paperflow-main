@@ -1,8 +1,10 @@
 # paperflow/core/llm/__init__.py
-"""LLM 域包 —— wire 消息契约、对话客户端与结构化输出。
+"""LLM 域包 —— wire 消息家族、对话客户端与结构化输出。
 
 公共出口（下游一律 `from paperflow.core.llm import ...`）：
-- ``Message``（wire 格式消息；请求与回复共用，回复多一个不上 wire 的 `truncated`）← domain/dto
+- wire 消息家族 ← domain/dto/messages：基类 ``Message``，按角色分的
+  ``SystemMessage`` / ``UserMessage`` / ``AssistantMessage`` / ``ToolMessage``，
+  以及从角色字符串还原类型的 ``message_from_role``（持久化回放用）
 - ``StructuredOutputConfig``（结构化输出的行为参数）← domain/dto
 - ``LLMClient`` / ``tool_to_openai_schema`` / ``StructuredOutput`` /
   ``StructuredOutputError`` ← services
@@ -14,7 +16,15 @@
 （只服务 RAG）。私有辅助（``_message_to_openai`` / ``_accumulate_stream_chunks`` /
 ``_extract_json_body`` 等）也不在此导出，需要时从具体子模块 import。
 """
-from paperflow.core.llm.domain import Message, StructuredOutputConfig
+from paperflow.core.llm.domain import (
+    AssistantMessage,
+    Message,
+    StructuredOutputConfig,
+    SystemMessage,
+    ToolMessage,
+    UserMessage,
+    message_from_role,
+)
 from paperflow.core.llm.services import (
     LLMClient,
     StructuredOutput,
@@ -25,6 +35,11 @@ from paperflow.core.llm.services import (
 __all__ = [
     "LLMClient",
     "Message",
+    "SystemMessage",
+    "UserMessage",
+    "AssistantMessage",
+    "ToolMessage",
+    "message_from_role",
     "StructuredOutput",
     "StructuredOutputConfig",
     "StructuredOutputError",

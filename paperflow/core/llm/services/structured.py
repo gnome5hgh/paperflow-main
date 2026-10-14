@@ -22,7 +22,11 @@ from typing import Callable, get_origin, get_args, Union
 
 from pydantic import BaseModel, ValidationError
 
-from paperflow.core.llm.domain.dto.message import Message
+from paperflow.core.llm.domain.dto.messages import (
+    AssistantMessage,
+    SystemMessage,
+    UserMessage,
+)
 # 行为参数住在 domain/dto（组件自己的参数，不随 config.yaml 走）；这里再导出，
 # 让既有的 `from ...services.structured import StructuredOutputConfig` 继续可用。
 from paperflow.core.llm.domain.dto.structured_output_config import StructuredOutputConfig
@@ -99,14 +103,14 @@ class StructuredOutput:
             *({"type": "image_url", "image_url": {"url": url}} for url in images),
         ]
         messages = [
-            Message(role="system", content=(
+            SystemMessage(content=(
                 f"严格按以下 JSON 结构输出，不要附加任何文字：\n"
                 f"{_schema_to_prompt(schema, max_depth=self.config.max_schema_depth)}"
             )),
-            Message(role="user", content=user_content),
+            UserMessage(content=user_content),
         ]
         last_error: Exception | None = None
-        resp: Message | None = None
+        resp: AssistantMessage | None = None
         attempts = 0
 
         for attempt in range(self.config.max_retries + 1):
@@ -128,7 +132,7 @@ class StructuredOutput:
                 return result
             except (json.JSONDecodeError, ValidationError) as e:
                 last_error = e
-                messages.append(Message(role="user", content=(
+                messages.append(UserMessage(content=(
                     f"你上次的输出：{(resp.content if resp else '')[:500]}\n"
                     f"校验失败：{e}\n"
                     f"请对照结构重新输出，不要附加任何说明文字。"

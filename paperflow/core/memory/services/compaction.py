@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from paperflow.core.llm import Message
+from paperflow.core.llm import Message, SystemMessage
 from paperflow.core.common.tokenization import get_token_encoder
 
 __all__ = ["CompactionSettings", "SummarySchema", "should_compress", "run_compaction"]
@@ -164,11 +164,11 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
     # 3. 根据模式决定是否保留尾部
     #    all_messages / self_compact_all 模式：完全压缩，无尾部保留
     if settings.mode in ("all_messages", "self_compact_all"):
-        return head + [Message(role="system", content=summary_text)]
+        return head + [SystemMessage(content=summary_text)]
 
     # 4. sliding_window 模式：保留尾部（近期对话）
     tail = _recent_tail(messages, settings, context_window)
-    return head + [Message(role="system", content=summary_text)] + tail
+    return head + [SystemMessage(content=summary_text)] + tail
 
 
 def _recent_tail(messages: list[Message], settings: CompactionSettings,

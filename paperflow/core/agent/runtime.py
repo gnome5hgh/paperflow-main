@@ -52,7 +52,8 @@ from pathlib import Path
 from typing import Callable
 
 from paperflow.core.llm import (
-    LLMClient, Message, tool_to_openai_schema,
+    LLMClient, AssistantMessage, Message, SystemMessage, ToolMessage, UserMessage,
+    message_from_role, tool_to_openai_schema,
 )
 from paperflow.core.llm.services.client import _message_to_openai
 from paperflow.core.agent.constants import StreamEventKind
@@ -132,19 +133,19 @@ _CANCELLED_TOOL_MSG = (
 
 
 def _schema_to_wire(m) -> Message:
-    """schemas.Message（Recall 持久化视图）→ wire llm.Message（回放进 in-context 窗口）。
+    """StoredMessage（Recall 持久化视图）→ wire 消息（回放进 in-context 窗口）。
 
-    持久化消息经 MessageManager.get_in_context_messages 加载后,须转回 ReAct 循环
-    使用的 wire 格式;role 枚举转字符串,空 content 归一为空串。
+    持久化消息经 MessageManager.get_in_context_messages 加载后，须按角色还原成对应
+    的 wire 消息类型；空 content 归一为空串。
 
     Args:
-        m: schemas.Message，Recall 持久化视图
+        m: StoredMessage，Recall 持久化视图
 
     Returns:
-        wire llm.Message（role 转字符串，空 content 归一为空串）。
+        对应角色的 wire 消息（空 content 归一为空串）。
     """
-    return Message(
-        role=m.role.value,
+    return message_from_role(
+        m.role,
         content=m.content or "",
         tool_calls=m.tool_calls or None,
         tool_call_id=m.tool_call_id,
@@ -575,7 +576,7 @@ class Agent:
         compiled = self.memory.compile(index_text=self._index_text())
         if not compiled:
             return None
-        return Message(role="system", content=compiled)
+        return SystemMessage(content=compiled)
 
     def _intent_history(self) -> list[tuple[str, str]]:
         """截取最近若干轮对话文本，供意图层判定时参考上下文。
@@ -627,19 +628,19 @@ class Agent:
             list[Message]: 头部消息列表 [system_prompt, skills(可选), available_agents(可选), memory(可选), rules(可选), intent(可选), user_task]。
         """
         # ====== 第1层：AGENT.md 系统提示 ======
-        head: list[Message] = [Message(role="system", content=self.system_prompt)]
+        head: list[Message] = [SystemMessage(content=self.system_prompt)]
 
         # ====== 第2层：SKILLS 清单（L1 渐进披露，静态） ======
         # skill 指令的约束力声明写在块内；无已注册 skill 时 skills_block 为空串，整块省略
         if self.skills_block:
-            head.append(Message(role="system", content=self.skills_block))
+            head.append(SystemMessage(content=self.skills_block))
 
         # ====== 第 2.5 层：可派发子 agent 清单（本 agent 的派发权限视图，静态） ======
         # 派发顺序与并行由派发方自主决定，因此它必须先知道有哪些子 agent、各自能做什么；
         # 清单是自身 allowed_spawns 的派生视图（supervisor 为全部），无可派目标时为空串，
         # 整块省略（不产生空 system 消息）。
         if self.agents_block:
-            head.append(Message(role="system", content=self.agents_block))
+            head.append(SystemMessage(content=self.agents_block))
 
         # ====== 第3层：记忆块（核心记忆 + 文件系统索引） ======
         if self.memory is not None:
@@ -653,15 +654,15 @@ class Agent:
         # 预处理拿 INTENT 块与可能被澄清答案附录过的任务文本。
         if self.intent_service is not None:
             if self.intent_service.rules_block:
-                head.append(Message(role="system", content=self.intent_service.rules_block))
+                head.append(SystemMessage(content=self.intent_service.rules_block))
             turn = await self.intent_service.begin(task, history=self._intent_history())
             task = turn.task
             if turn.head_block:
-                head.append(Message(role="system", content=turn.head_block))
+                head.append(SystemMessage(content=turn.head_block))
 
         # ====== 第5层：用户任务 ======
         # 最后将当前用户输入作为 user 消息追加（含澄清答案附录，见 IntentService.begin）。
-        head.append(Message(role="user", content=task))
+        head.append(UserMessage(content=task))
         return head
 
     def _refresh_head_memory(self, head: list[Message]) -> None:
@@ -732,7 +733,8 @@ class Agent:
         for m, mid in zip(self._messages, self._message_ids):
             new_msgs.append(m)
             new_ids.append(mid)
-            tcs = m.tool_calls or []
+            # 只有 assistant 消息可能携带 tool_calls——其余角色没有这个字段
+            tcs = (m.tool_calls or []) if isinstance(m, AssistantMessage) else []
             missing = [
                 tc for tc in tcs
                 if isinstance(tc, dict) and tc.get("id") and tc["id"] not in answered
@@ -740,8 +742,7 @@ class Agent:
             if missing:
                 changed = True
                 for tc in missing:
-                    synth = Message(
-                        role="tool",
+                    synth = ToolMessage(
                         content=_CANCELLED_TOOL_MSG,
                         tool_call_id=tc["id"],
                     )
@@ -930,7 +931,7 @@ class Agent:
             # await 抛 TypeError——门控同时是零开销路径（无 UI 调用方不受影响）。
             tools = self._tool_schemas if self._tool_schemas else None
 
-            # response 是一条 Message（字段语义见 core/llm/domain/dto/message.py）：
+            # response 是一条 AssistantMessage（字段语义见 core/llm/domain/dto/messages/assistant.py）：
             # 纯工具调用时 content 被规整为空串；tool_calls 的 arguments 是 JSON 字符串，
             # 由 _exec_tool 负责 json.loads；truncated 为真时走续写而不是交付半截内容。
             if self.stream_callback is not None:
@@ -957,8 +958,7 @@ class Agent:
                     # max_turns 安全阀确保续写次数有限，不会形成死循环。
                     accumulated.append(response.content or "")
                     self._append_to_messages(response)
-                    self._append_to_messages(Message(
-                        role="user",
+                    self._append_to_messages(UserMessage(
                         content="上一条回答因输出长度上限被截断，请直接从断点继续输出，不要重复已输出的内容。"))
                     self._persist_conversation([response])
                     continue
@@ -974,7 +974,7 @@ class Agent:
 
                 # 最终回答(经 on_finish 改写——回放给下轮的是"用户看到的事实",
                 # 内容防护追加的安全声明跨轮保留)落盘 + 进 in-context,供下轮回放
-                final = Message(role="assistant", content=content)
+                final = AssistantMessage(content=content)
                 self._append_to_messages(final)
                 self._persist_conversation([final])
                 return content
@@ -1044,8 +1044,8 @@ class Agent:
                 # 调用其结果一并丢弃，按「本轮作废」语义统一记为 cancelled（文件
                 # 等盘上副作用不回滚）。
                 synth = [
-                    Message(role="tool", content=_CANCELLED_TOOL_MSG,
-                            tool_call_id=tc["id"])
+                    ToolMessage(content=_CANCELLED_TOOL_MSG,
+                                tool_call_id=tc["id"])
                     for tc in response.tool_calls
                 ]
                 self._append_to_messages(synth)
@@ -1055,8 +1055,7 @@ class Agent:
             # 将工具执行结果以 tool 角色消息加入 in-context，并持久化
             # tool_call_id 字段将结果与对应的 tool_call 请求关联，LLM 在下一轮推理时能看到每个调用的返回值。
             for tc, result in zip(response.tool_calls, results):
-                tool_msg = Message(
-                    role="tool",
+                tool_msg = ToolMessage(
                     content=result.text,
                     tool_call_id=tc["id"],
                 )
@@ -1071,7 +1070,7 @@ class Agent:
                 final_text = next(r.text for r in results if r.summary.get(SUMMARY_TERMINAL))
                 for mw in self.security_middleware:
                     final_text = await mw.on_finish(self, final_text)
-                final = Message(role="assistant", content=final_text)
+                final = AssistantMessage(content=final_text)
                 self._append_to_messages(final)
                 self._persist_conversation([final])
                 return final_text

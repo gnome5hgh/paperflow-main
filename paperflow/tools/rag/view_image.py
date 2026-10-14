@@ -12,7 +12,7 @@
 import asyncio
 import base64
 
-from paperflow.core.llm import LLMClient, Message
+from paperflow.core.llm import LLMClient, UserMessage
 from paperflow.core.tool import Tool, ToolResult
 
 #: 不给问题时默认问什么。要的是「这张图画了什么」，不是泛泛的图片描述。
@@ -92,7 +92,7 @@ class ViewImageTool(Tool):
                 "可继续基于已有文字作答，并如实说明看不到图。"))
 
         data_url = "data:image/png;base64," + base64.b64encode(data).decode()
-        message = Message(role="user", content=[
+        message = UserMessage(content=[
             {"type": "text", "text": (question or _DEFAULT_QUESTION)},
             {"type": "image_url", "image_url": {"url": data_url}},
         ])
