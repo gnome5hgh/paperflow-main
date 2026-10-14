@@ -83,11 +83,14 @@ class RichBlock(BlockRenderer):
     设计要点：
         - 惰性启动 live（_start()）仅在首次 update/spinner/show 时启动。
         - end() 即使 text 为空也必须停止 live，避免 spinner 残留。
+        - 每个块用一个新的 Live 实例（见 _start）——Live 停止后仍留着上次渲染的
+          高度，同一实例再次启动会按那个高度擦掉中间打印的内容。
         - live 可注入（测试用），生产时使用共享 Console。
 
     Attributes:
         _console: rich.Console，控制台实例
-        _live: rich.Live，Live 区域（惰性启动）
+        _live: rich.Live | None，当前块的 Live 区域（开块时建立；每块换新）
+        _fixed_live: rich.Live | None，测试注入的 Live——注入时跨块复用该实例
         _started: bool，live 是否已启动
     """
 
@@ -97,11 +100,21 @@ class RichBlock(BlockRenderer):
 
         Args:
             console: rich.Console 实例（可共享，确保工具行 dim 样式与 live 区域不冲突）。
-            live: 可注入的 Live 实例（测试用），默认使用 20fps 刷新率。
+            live: 可注入的 Live 实例（测试用）。注入后跨块复用同一个实例；
+                默认为 None，此时每个块各建一个新实例（见 _start）。
         """
         self._console = console or Console()
-        self._live = live or Live(console=self._console, refresh_per_second=20)
+        self._fixed_live = live          # 注入的实例跨块复用；None = 每块新建
+        self._live = live                # 未注入时由 _start 建立
         self._started = False
+
+    def _new_live(self) -> Live:
+        """新建一个 Live 区域（20fps 自动刷新，复用所在 Console）。
+
+        Returns:
+            Live: 尚未启动的新实例
+        """
+        return Live(console=self._console, refresh_per_second=20)
 
     def update(self, text: str) -> None:
         """实时重绘：将 markdown 文本渲染进 live 区域（渐进式展示）。
@@ -144,7 +157,17 @@ class RichBlock(BlockRenderer):
         self.show(f"{label} working")
 
     def _start(self) -> None:
-        """惰性启动 live（refresh=False 避免启动时强制重绘当前帧）。"""
+        """惰性启动 live（refresh=False 避免启动时强制重绘当前帧）。
+
+        启动前换一个新的 Live 实例：Live 在 stop 后仍保留上次渲染的高度，同一实例
+        再次启动时，首次重绘会按那个高度把光标上移并逐行擦除——擦掉的正是两个块
+        之间打印的内容（用户回显、工具行、上一轮答案的尾部）。新实例没有这份残留
+        几何，首帧直接落在当前光标处。
+
+        测试注入的实例（_fixed_live）不换，保持可断言性。
+        """
         if not self._started:
+            if self._fixed_live is None:
+                self._live = self._new_live()
             self._live.start(refresh=False)
             self._started = True

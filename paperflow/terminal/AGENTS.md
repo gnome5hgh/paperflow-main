@@ -37,6 +37,7 @@ terminal/
 ## Core Rules
 
 - **渲染与输入互斥**：rich Live 与 prompt_toolkit 并发互相干扰——确认框/输入框出现前必须 `suspend()`；并行子 agent 的 confirm 由确认中心统一消费，不再各自起临时 prompt。
+- **每块一个 Live 实例**：rich 的 Live 停止后仍保留上次渲染的高度，同一个实例再次启动时，首帧会按这个高度把光标上移并逐行擦除——擦掉的正是两块之间打印的内容（用户回显、工具行、上一轮答案的尾部）。`RichBlock` 每次开块换新实例，不复用旧 Live。
 - **事件驱动渲染**：渲染器只消费 `AgentEvent`（content/tool），不反向感知 agent 内部状态；活动行语义（聚合/慢操作标注/子 agent 前缀）集中在 `render/activity.py` 的映射表。
 - **斜杠命令等价匹配**：首 token 等价（非前缀/非包含）；未注册命令打提示后当普通任务送进意图管线；handler 异常就地翻译打印，不杀 REPL。
 - **resume 回放只读**：回放只做数据投影与渲染，绝不改 SQL 会话状态——恢复语义仍由 memory 层唯一决定。
