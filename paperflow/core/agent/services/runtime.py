@@ -704,7 +704,9 @@ class Agent:
                 # 截断续写与压缩重建互斥:压缩可能驱逐"半截+续写提示"(in-context 重建),先弃掉累积器里的半截——续写无参照即完整重答,避免「半截 + 完整重答」重复交付。
                 accumulated.clear()
                 from paperflow.core.memory.services.compaction import run_compaction
-                # 用户消息逐字交给摘要：第 6 节由代码从 SQL 取，不让模型转述。
+                # 摘要的第 6 节是「All user messages」（本次会话全部用户原话）；
+                # 由代码从 SQL 逐字拼入摘要，不让模型转述或概括，避免漏掉硬约束
+                # 与原始措辞。这里把会话内所有 user 消息（含子 agent 的）取出来。
                 user_messages = None
                 if self.message_manager is not None:
                     user_messages = [

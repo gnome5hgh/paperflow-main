@@ -228,16 +228,31 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
     if not settings.enabled:
         return None
 
+    # 1. 旧摘要段原样冻结：它们是之前压缩的产物，不再送回摘要模型，避免
+    #    「递归重摘要」把早期细节一层层改写掉。
     summaries = [m for m in messages if _is_summary(m)]
-    # 兼容旧窗口里的真实 system 头部；摘要段不算头部。
+
+    # 2. 旧窗口可能带一条真正的 system 头部（早期实现留下的）；它属于身份提示，
+    #    不是待摘要的对话，原样保留。摘要段不算头部，否则会把旧摘要当成身份。
     leading_system = [m for m in messages[:3]
                       if m.role == "system" and not _is_summary(m)][:1]
     leading_ids = {id(m) for m in leading_system}
+
+    # 3. 本次真正要压的只有「上次摘要之后」的消息：排除旧摘要与头部 system。
+    #    这样每次压缩只覆盖新增段，旧摘要段不会被重复消费。
     to_summarize = [m for m in messages
                     if not _is_summary(m) and id(m) not in leading_ids]
     if not to_summarize:
         return None
 
+    # 4. 摘要正文与任务锚点由同一次结构化调用产出：
+    #    - SummarySchema 的 8 个字段对应 9 节里的 8 节：核心意图、关键概念、
+    #      文件/路径、错误与修复、解决过程、待办、当前工作、下一步；
+    #    - 第 6 节「All user messages」不交给模型——由 _render_summary 用 SQL
+    #      里的用户原话逐字拼入，防止转述丢掉硬约束和原始措辞；
+    #    - 任务锚点（目标/硬约束/截止时间/未完成步骤）单独存 AgentState，
+    #      不写进摘要正文，避免和叙事摘要互相覆盖。
+    #    失败返回 None，调用方保持原窗口，下一轮重试。
     anchor = None
     if summary_text is None:
         summarized = await _summarize(
@@ -248,9 +263,15 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
         summary_text, anchor = summarized
     if not summary_text:
         return None
+
+    # 5. 锚点由运行层持久化到 AgentState.task_anchor，不进入消息窗口；
+    #    每轮请求时再渲染成 <task_anchor> 注入当前 user task 之前。
     if anchor is not None and anchor_sink is not None:
         anchor_sink(anchor)
 
+    # 6. 尾部按 keep 配置保留；没留下的消息就是本次摘要覆盖的「旧段」。
+    #    返回顺序固定为：旧摘要段 → 新摘要 → 近期尾部；旧段在前、新段在后，
+    #    保证时间顺序；头部 system 若存在则仍在最前。
     tail = _recent_tail(to_summarize, settings, context_window)
     summary_message = UserMessage(content=_ensure_summary_envelope(summary_text))
     return leading_system + summaries + [summary_message] + tail
@@ -496,6 +517,7 @@ def _render_summary(result: SummarySchema, user_messages: list[str],
         ("3. Files and Code Sections", result.files_and_code_sections),
         ("4. Errors and fixes", result.errors_and_fixes),
         ("5. Problem Solving", result.problem_solving),
+        # 第 6 节：All user messages——代码从 SQL 逐字拼入，不让模型转述。
         ("6. All user messages", users),
         ("7. Pending Tasks", result.pending_tasks),
         ("8. Current Work", result.current_work),
