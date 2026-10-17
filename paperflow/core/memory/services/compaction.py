@@ -205,20 +205,13 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
     #    「递归重摘要」把早期细节一层层改写掉。
     summaries = [m for m in messages if _is_summary(m)]
 
-    # 2. 旧窗口可能带一条真正的 system 头部（早期实现留下的）；它属于身份提示，
-    #    不是待摘要的对话，原样保留。摘要段不算头部，否则会把旧摘要当成身份。
-    leading_system = [m for m in messages[:3]
-                      if m.role == "system" and not _is_summary(m)][:1]
-    leading_ids = {id(m) for m in leading_system}
-
-    # 3. 本次真正要压的只有「上次摘要之后」的消息：排除旧摘要与头部 system。
+    # 2. 本次真正要压的只有「上次摘要之后」的消息：排除旧摘要。
     #    这样每次压缩只覆盖新增段，旧摘要段不会被重复消费。
-    to_summarize = [m for m in messages
-                    if not _is_summary(m) and id(m) not in leading_ids]
+    to_summarize = [m for m in messages if not _is_summary(m)]
     if not to_summarize:
         return None
 
-    # 4. 摘要正文与任务锚点由同一次结构化调用产出：
+    # 3. 摘要正文与任务锚点由同一次结构化调用产出：
     #    - SummarySchema 的 8 个字段对应 9 节里的 8 节：核心意图、关键概念、
     #      文件/路径、错误与修复、解决过程、待办、当前工作、下一步；
     #    - 第 6 节「All user messages」不交给模型——由 _render_summary 用 SQL
@@ -240,17 +233,16 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
     if not summary_text:
         return None
 
-    # 5. 锚点由运行层持久化到 AgentState.task_anchor，不进入消息窗口；
+    # 4. 锚点由运行层持久化到 AgentState.task_anchor，不进入消息窗口；
     #    每轮请求时再渲染成 <task_anchor> 注入当前 user task 之前。
     if anchor is not None and anchor_sink is not None:
         anchor_sink(anchor)
 
-    # 6. 尾部按 keep 配置保留；没留下的消息就是本次摘要覆盖的「旧段」。
-    #    返回顺序固定为：旧摘要段 → 新摘要 → 近期尾部；旧段在前、新段在后，
-    #    保证时间顺序；头部 system 若存在则仍在最前。
+    # 5. 尾部按 keep 配置保留；没留下的消息就是本次摘要覆盖的「旧段」。
+    #    返回顺序固定为：旧摘要段 → 新摘要 → 近期尾部，保证时间顺序。
     tail = _recent_tail(to_summarize, settings, context_window)
     summary_message = UserMessage(content=_ensure_summary_envelope(summary_text))
-    return leading_system + summaries + [summary_message] + tail
+    return summaries + [summary_message] + tail
 
 
 def deterministic_trim(messages: list[Message], settings: CompactionSettings,
@@ -270,11 +262,7 @@ def deterministic_trim(messages: list[Message], settings: CompactionSettings,
         降级后的窗口；没有可移出内容时返回 None。
     """
     summaries = [m for m in messages if _is_summary(m)]
-    leading_system = [m for m in messages[:3]
-                      if m.role == "system" and not _is_summary(m)][:1]
-    leading_ids = {id(m) for m in leading_system}
-    rest = [m for m in messages
-            if not _is_summary(m) and id(m) not in leading_ids]
+    rest = [m for m in messages if not _is_summary(m)]
     ctx = settings.resolve_context_size(context_window or 0)
     budget = int(0.8 * ctx) if ctx > 0 else 0
     trim_settings = (replace(settings, keep=ContextSize("tokens", budget))
@@ -286,24 +274,21 @@ def deterministic_trim(messages: list[Message], settings: CompactionSettings,
     placeholder = SystemMessage(content=(
         f"[压缩失败：较早的 {dropped} 条消息已移出窗口；"
         "原文可用 conversation_search 回溯]"))
-    return leading_system + summaries + [placeholder] + tail
+    return summaries + [placeholder] + tail
 
 
 def _ensure_summary_envelope(text: str) -> str:
-    """确保摘要文本以 Claude Code 的开场白与识别标记开头。
+    """确保摘要文本以 Claude Code 的开场白开头；已带开场白则原样返回。
 
     Args:
-        text: 摘要正文，可能已经带开场白或旧版标记。
+        text: 摘要正文。
 
     Returns:
         带完整开场白的摘要内容。
     """
     if text.startswith(_SUMMARY_MARKER):
         return text
-    body = text
-    if body.startswith(_SUMMARY_LABEL):
-        body = body[len(_SUMMARY_LABEL):].lstrip("\n")
-    return f"{_SUMMARY_OPENING}{_SUMMARY_LABEL}\n{body}"
+    return f"{_SUMMARY_OPENING}{_SUMMARY_LABEL}\n{text}"
 
 
 def _recent_tail(messages: list[Message], settings: CompactionSettings,
