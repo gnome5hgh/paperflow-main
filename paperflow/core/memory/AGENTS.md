@@ -15,7 +15,8 @@
 ```text
 memory/
 ├─ constants/    # 工具名集合与块的播种文案
-├─ schemas/      # 数据模型：块 / 记忆 / 持久化消息 / Agent 状态
+├─ domain/entity/ # 压缩产物：摘要 / 任务快照 / CompactionResult 整合体
+├─ schemas/      # 表实体与持久化模型：块 / 记忆 / 消息 / Agent 状态
 ├─ storage/      # SQLite 持久化（库、表结构、增量迁移、messages_fts 全文索引）
 ├─ common/       # 领域异常（并发写冲突、块字符上限）
 └─ services/     # 各管理器 + compaction.py（上下文压缩）+ consolidation.py（记忆整合）
@@ -37,7 +38,7 @@ memory/
 - **压缩只动 in-context 窗口，永不删 SQL 行**：冻结旧摘要段、只压新增段，保留近期尾部；摘要对齐 Claude Code 的 9 节，其中「All user messages」由代码从 SQL 逐字插入；并保持 tool 消息与它对应的结果成对，别留下孤儿。摘要生成失败时保持原窗口，不拿空摘要替换历史。
 - **召回只搜当前会话**：`session_id` 是检索的作用域边界，不提供跨会话参数；跨会话知识由 blocks 承担。FTS5 用 trigram（中文子串），索引不可用时回退 SQL LIKE。
 - **整合是后台 debounce 队列**：轮末只 enqueue（按会话合并，默认 30s 静默窗口、300s 最大延迟），退出/SIGINT/异常路径必须 flush；整合算法本身仍是游标 + 行级编辑，队列不承载消息。
-- **任务锚点不写入消息表**：压缩时与摘要同一次调用抽出目标/硬约束/截止时间/未完成步骤，存 `agent_state.task_anchor`，每轮请求级注入。
+- **任务快照是窗口末尾的独立消息**：压缩时与摘要同一次调用抽出目标/硬约束/截止时间/未完成步骤，渲染成 `SystemMessage` 放在窗口最后；每次压缩只保留最新一条，旧快照随窗口替换移出（SQL 行保留）。它不写 `AgentState`，也不做请求级注入。
 - **记忆整合每轮收尾跑一次，空批次即 NOOP**：本轮没有新消息就不调模型。输入是「游标之后的新消息 + **全部可写块的当前值**」——喂旧值是「不产生矛盾条目」的前提，不要为了省 token 只喂增量。
 - **整合产出的是行级指令，不是整块重写**：新增 / 按行首前缀替换 / 删除，整块重写仅限特定两个块。目标分册名由代码按「类型 + 当天日期」拼装、写满自动续号；**被取代或删除的条目要跨整个分册家族（含往日分册）去找**，空掉的分册整块删除——这样「全量喂旧记忆」的总量才有界。
 - **失败处理是不对称的**：抽取阶段失败要保留游标、下次重试（连败几次后强制推进防死锁）；应用阶段失败照常推进游标（重放会产生重复写入）。改整合流程时别把这条弄反。
@@ -46,7 +47,7 @@ memory/
 ## Key Entry Points
 
 - `storage/` — 库、表结构与增量迁移
-- `services/compaction.py` — 上下文压缩（9 节摘要、锚点抽取、分段冻结）
+- `services/compaction.py` — 上下文压缩（9 节摘要、任务快照、分段冻结）
 - `services/consolidation_queue.py` — 轮末 debounce 整合队列
 - `services/message_manager.py` — 落盘、窗口回放、会话内检索
 - `services/consolidation.py` — 记忆整合
@@ -60,7 +61,7 @@ memory/
 
 ## Dependencies And Collaboration
 
-- 消费方：`core/agent`（in-context 窗口与压缩、任务锚点）、`tools/memory/` 与 `tools/recall/`（记忆工具 / 只读召回）、`terminal/repl`（轮末 enqueue 与退出 flush）。
+- 消费方：`core/agent`（in-context 窗口与压缩）、`tools/memory/` 与 `tools/recall/`（记忆工具 / 只读召回）、`terminal/repl`（轮末 enqueue 与退出 flush）。
 - 与 `core/llm` 的关系是单向的：消费它的消息类型做落盘与回放。
 - 与 RAG 无耦合：记忆检索是 SQL，不用向量。
 
@@ -92,6 +93,7 @@ conda run -n paperflow python -m pytest tests/memory -q
 ## References
 
 - [`storage/`](storage/)
+- [`domain/entity/`](domain/entity/)
 - [`services/compaction.py`](services/compaction.py)
 - [`services/consolidation.py`](services/consolidation.py)
 - [`schemas/`](schemas/)

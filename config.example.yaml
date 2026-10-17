@@ -96,7 +96,7 @@ compaction:
     type: messages
     value: 20
   trim_tokens_to_summarize: 4000   # 送给摘要模型的输入上限
-  summary_max_words: 2000          # 单份摘要词数上限
+  summary_max_words: 2000          # 单份摘要 token 上限（字段名沿用历史叫法）
   summary_model_name: null         # 摘要专用轻量模型；null = 主模型
   tool_results:
     persist_threshold_chars: 50000 # 单条工具结果超过此字符数时外置

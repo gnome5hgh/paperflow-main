@@ -1,28 +1,30 @@
 """上下文压缩：对话超窗时压缩 in-context 窗口（驱逐旧对话 + 插摘要）。
 
-作用于 agent 的 in-context 窗口：保留头部 system + 冻结的历史摘要段 +
-新摘要 + 近期尾部。只改窗口，绝不删 SQL 原始消息（Recall 完整保留可追溯）。
+作用于 agent 的 in-context 窗口：保留冻结的历史摘要段、追加一份新摘要与
+一条任务快照，再按 keep 配置保留近期尾部。只改窗口，绝不删 SQL 原始消息
+（Recall 完整保留可追溯）。
 
-摘要对齐 Claude Code 的 9 节结构；其中「All user messages」由代码从 SQL
-逐字插入，不让模型转述；旧摘要段冻结，只压新增段，避免递归重摘要与摘要段丢失。
+摘要固定 9 节；模型只写其中 8 节，第 6 节「All user messages」由代码从 SQL
+逐字拼入。旧摘要段冻结，只压新增段，避免递归重摘要与摘要段丢失。任务快照
+与摘要由同一次结构化调用产出，但渲染成窗口末尾的独立消息；每次压缩只保留
+最新一条快照，旧快照随窗口替换移出。
 """
 from __future__ import annotations
 
 import json
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING
 
 from paperflow.config.schemas.sections import CompactionSettings, ContextSize
 from paperflow.core.llm import Message, SystemMessage, UserMessage
 from paperflow.core.common.services.tokenization import get_token_encoder
-
-if TYPE_CHECKING:
-    from paperflow.core.agent.domain import SummarySchema
+from paperflow.core.memory.domain.entity.compaction_result import CompactionResult
+from paperflow.core.memory.domain.entity.summary import Summary
+from paperflow.core.memory.domain.entity.task_snapshot import TaskSnapshot
 
 __all__ = ["CompactionSettings", "ContextSize", "estimate_tokens",
            "blend_token_ratio", "should_compress", "run_compaction",
-           "deterministic_trim", "format_task_anchor"]
+           "deterministic_trim"]
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,8 @@ _SUMMARY_OPENING = (
 )
 #: 摘要正文里的中文可见标记（不是识别依据，只供人读）。
 _SUMMARY_LABEL = "[对话摘要]"
+#: 任务快照消息的起始标记；用来把快照与普通 system 消息区分开。
+_SNAPSHOT_MARKER = "<task_snapshot>"
 
 #: 每条消息的协议开销（3 条消息框架 + 1 个角色名，对齐 OpenAI 的计数口径）。
 _PROTOCOL_OVERHEAD = 4
@@ -60,6 +64,37 @@ def _is_summary(message: Message) -> bool:
     """
     return (message.role == "user"
             and (message.content or "").startswith(_SUMMARY_MARKER))
+
+
+def _is_snapshot(message: Message) -> bool:
+    """判断一条消息是否是任务快照。
+
+    快照是压缩产物的一部分，渲染成 `SystemMessage`，以 `<task_snapshot>`
+    开头。它不参与触发计数、保留尾部与再次摘要；每次压缩只保留最新一条。
+
+    Args:
+        message: 待判断的消息。
+
+    Returns:
+        True 表示这是任务快照消息。
+    """
+    return (message.role == "system"
+            and (message.content or "").startswith(_SNAPSHOT_MARKER))
+
+
+def _is_compaction_artifact(message: Message) -> bool:
+    """判断一条消息是否是压缩产物（摘要或任务快照）。
+
+    两者都不是新的对话轮次：不参与触发计数、不进入近期尾部、不再送回
+    摘要模型。把判断收在一处，避免每个调用点重复写两个否定条件。
+
+    Args:
+        message: 待判断的消息。
+
+    Returns:
+        True 表示这是摘要或任务快照。
+    """
+    return _is_summary(message) or _is_snapshot(message)
 
 
 def estimate_tokens(messages: list[Message]) -> int:
@@ -155,7 +190,9 @@ def should_compress(messages: list[Message], settings: CompactionSettings,
     if estimate is None:
         estimate = estimate_tokens(messages)
     effective = estimate * ratio
-    non_summary_count = sum(1 for m in messages if not _is_summary(m))
+    # 摘要与快照都是压缩产物，不是新的对话轮次，不参与 messages 触发计数。
+    non_summary_count = sum(
+        1 for m in messages if not _is_compaction_artifact(m))
     for trigger in settings.trigger:
         if trigger.type == "messages":
             if non_summary_count >= trigger.value:
@@ -170,79 +207,99 @@ def should_compress(messages: list[Message], settings: CompactionSettings,
 
 
 async def run_compaction(messages: list[Message], settings: CompactionSettings,
-                         llm, structured, summary_text: str | None = None,
+                         structured, summary_text: str | None = None,
                          context_window: int | None = None,
                          user_messages: list[str] | None = None,
                          summary_structured=None,
-                         anchor_sink=None,
-                         summary_schema=None) -> list[Message] | None:
-    """执行压缩：冻结旧摘要段 + 只压新增段 + 保留近期尾部。
+                         message_manager=None,
+                         session_id: str | None = None
+                         ) -> list[Message] | None:
+    """执行压缩：冻结旧摘要段 + 只压新增段 + 保留近期尾部 + 追加任务快照。
 
-    摘要文本可由调用方传入（测试/已有 summary），否则用 StructuredOutput 生成。
-    摘要生成失败时返回 None，调用方应保持原窗口不变并重试。
-    压缩只改 in-context 窗口；SQL 原始消息由 MessageManager 保留（Recall 可追溯）。
+    这是压缩的唯一入口：取会话用户消息、生成摘要与快照、丢弃旧快照、
+    摘要失败后的确定性降级都在这里完成；调用方只负责决定何时触发、把返回
+    的新窗口写回。摘要文本可由调用方传入（测试/已有 summary），否则由
+    StructuredOutput 生成。压缩只改 in-context 窗口；SQL 原始消息由
+    MessageManager 保留（Recall 可追溯）。
 
     Args:
         messages: 当前 in-context 消息列表（将被子集替换）。
         settings: 压缩配置（含 trigger / keep / 摘要参数等）。
-        llm: LLM 客户端（未直接使用，保留供后续扩展）。
-        structured: StructuredOutput 实例，用于生成结构化摘要。
-        summary_text: 可选预生成的摘要正文；若为 None 则调用 _summarize 生成。
+        structured: StructuredOutput 实例，用于生成摘要与任务快照。
+        summary_text: 可选预生成摘要；若为 None 则调用 _summarize 生成。
         context_window: 模型上下文窗口大小（用于计算 keep 的 fraction 预算）。
-        user_messages: 该会话全部 user 消息的逐字文本；None 时从待摘要消息里取。
+        user_messages: 该会话全部 user 消息的逐字文本；None 时由
+            message_manager + session_id 现取，再退回待摘要消息里的 user 消息。
         summary_structured: 摘要专用 StructuredOutput；None 时用 structured。
-        anchor_sink: 可选回调；摘要调用产出任务锚点时以 dict 形式回调一次。
-        summary_schema: 摘要模型的 pydantic schema 类，由 agent 层传入。
-            memory 层不反向依赖 agent 包，所以 schema 不在本模块定义。
+        message_manager: 可选 MessageManager；用于按会话取用户原话。
+        session_id: 会话标识；与 message_manager 一起决定用户原话的作用域。
 
     Returns:
-        压缩后的新消息列表；摘要生成失败或未提供 schema 时返回 None。
+        压缩后的新消息列表；摘要生成失败且未触发降级时返回 None。
     """
     if not settings.enabled:
         return None
 
     # 1. 旧摘要段原样冻结：它们是之前压缩的产物，不再送回摘要模型，避免
-    #    「递归重摘要」把早期细节一层层改写掉。
+    #    「递归重摘要」把早期细节一层层改写掉。旧快照不进入新窗口：每次
+    #    压缩只保留本次生成的那一条。
     summaries = [m for m in messages if _is_summary(m)]
+    snapshots = [m for m in messages if _is_snapshot(m)]
 
-    # 2. 本次真正要压的只有「上次摘要之后」的消息：排除旧摘要。
+    # 2. 本次真正要压的只有「上次摘要之后」的对话：排除旧摘要与旧快照。
     #    这样每次压缩只覆盖新增段，旧摘要段不会被重复消费。
-    to_summarize = [m for m in messages if not _is_summary(m)]
+    to_summarize = [m for m in messages if not _is_compaction_artifact(m)]
     if not to_summarize:
         return None
 
-    # 3. 摘要正文与任务锚点由同一次结构化调用产出：
-    #    - SummarySchema 的 8 个字段对应 9 节里的 8 节：核心意图、关键概念、
-    #      文件/路径、错误与修复、解决过程、待办、当前工作、下一步；
-    #    - 第 6 节「All user messages」不交给模型——由 _render_summary 用 SQL
-    #      里的用户原话逐字拼入，防止转述丢掉硬约束和原始措辞；
-    #    - 任务锚点（目标/硬约束/截止时间/未完成步骤）单独存 AgentState，
-    #      不写进摘要正文，避免和叙事摘要互相覆盖。
-    #    失败返回 None，调用方保持原窗口，下一轮重试。
-    anchor = None
+    # 3. 用户原话优先由调用方给；否则按会话从 SQL 取，保证摘要第 6 节覆盖
+    #    整个会话（含子 agent 的消息），而不是只有当前窗口里的片段。
+    if user_messages is None and message_manager is not None and session_id:
+        user_messages = [
+            m.content or ""
+            for m in message_manager.list_user_messages_for_session(session_id)
+        ]
+    if user_messages is None:
+        user_messages = [(m.content or "") for m in to_summarize
+                         if m.role == "user"]
+
+    snapshot_message = None
     if summary_text is None:
-        if summary_schema is None:
-            logger.warning("未提供摘要 schema，压缩跳过")
-            return None
-        summarized = await _summarize(
+        # 摘要与快照由同一次结构化调用产出；失败时按窗口是否已超硬上限
+        # 决定是否做确定性降级，避免把一次模型失败直接变成超窗请求。
+        # 上一份快照作为抽取输入：硬约束和截止时间往往只在很早的对话里说过，
+        # 那些消息已被移出窗口，不带进来就会在新快照里凭空消失。
+        previous_snapshot = (
+            (snapshots[-1].content or "") if snapshots else None)
+        result = await _summarize(
             to_summarize, summary_structured or structured, settings,
-            user_messages=user_messages, schema=summary_schema)
-        if summarized is None:
+            previous_snapshot=previous_snapshot)
+        if result is None:
+            ctx = settings.resolve_context_size(context_window or 0)
+            hard_limit = 0.95 * ctx if ctx > 0 else 0
+            if hard_limit and estimate_tokens(messages) >= hard_limit:
+                return deterministic_trim(messages, settings, context_window)
             return None
-        summary_text, anchor = summarized
+        summary_text = _render_summary(
+            result.summary, user_messages, settings.summary_max_words)
+        snapshot_message = _snapshot_message(result.snapshot)
+        # 新摘要已生成：旧快照按规则删除。本次抽取为空时不沿用旧值——
+        # 旧快照可能已经过期，保留它会和「只留最新一份」冲突。
+        kept_snapshots = ([snapshot_message]
+                          if snapshot_message is not None else [])
+    else:
+        # 预生成摘要没有新快照；保留最新一条旧快照，避免边界信息凭空消失。
+        kept_snapshots = snapshots[-1:]
+
     if not summary_text:
         return None
 
-    # 4. 锚点由运行层持久化到 AgentState.task_anchor，不进入消息窗口；
-    #    每轮请求时再渲染成 <task_anchor> 注入当前 user task 之前。
-    if anchor is not None and anchor_sink is not None:
-        anchor_sink(anchor)
-
-    # 5. 尾部按 keep 配置保留；没留下的消息就是本次摘要覆盖的「旧段」。
-    #    返回顺序固定为：旧摘要段 → 新摘要 → 近期尾部，保证时间顺序。
+    # 4. 尾部按 keep 配置保留；没留下的消息就是本次摘要覆盖的「旧段」。
+    #    顺序固定为：旧摘要段 → 新摘要 → 近期尾部 → 快照。快照放最后，
+    #    请求组装后它紧挨当前用户任务，边界信息不会被长历史冲淡。
     tail = _recent_tail(to_summarize, settings, context_window)
     summary_message = UserMessage(content=_ensure_summary_envelope(summary_text))
-    return summaries + [summary_message] + tail
+    return summaries + [summary_message] + tail + kept_snapshots
 
 
 def deterministic_trim(messages: list[Message], settings: CompactionSettings,
@@ -250,8 +307,9 @@ def deterministic_trim(messages: list[Message], settings: CompactionSettings,
     """摘要连续失败且窗口超过硬上限时的确定性降级。
 
     保留全部冻结摘要段与配置的近期尾部，把中间被移出的消息数写成一条明确
-    占位；不调 LLM，因此恢复不依赖另一次成功的模型调用。没有可移出的消息时
-    返回 None。
+    占位；不调 LLM，因此恢复不依赖另一次成功的模型调用。没有新摘要可生成时，
+    保留最后一条旧快照（它是当前最新的一份），其余旧快照丢弃。没有可移出的
+    消息时返回 None。
 
     Args:
         messages: 当前 in-context 窗口。
@@ -262,7 +320,8 @@ def deterministic_trim(messages: list[Message], settings: CompactionSettings,
         降级后的窗口；没有可移出内容时返回 None。
     """
     summaries = [m for m in messages if _is_summary(m)]
-    rest = [m for m in messages if not _is_summary(m)]
+    snapshots = [m for m in messages if _is_snapshot(m)]
+    rest = [m for m in messages if not _is_compaction_artifact(m)]
     ctx = settings.resolve_context_size(context_window or 0)
     budget = int(0.8 * ctx) if ctx > 0 else 0
     trim_settings = (replace(settings, keep=ContextSize("tokens", budget))
@@ -274,7 +333,7 @@ def deterministic_trim(messages: list[Message], settings: CompactionSettings,
     placeholder = SystemMessage(content=(
         f"[压缩失败：较早的 {dropped} 条消息已移出窗口；"
         "原文可用 conversation_search 回溯]"))
-    return summaries + [placeholder] + tail
+    return summaries + [placeholder] + tail + snapshots[-1:]
 
 
 def _ensure_summary_envelope(text: str) -> str:
@@ -303,7 +362,7 @@ def _recent_tail(messages: list[Message], settings: CompactionSettings,
       assistant(tool_calls) 里找得到，否则丢弃（覆盖极端轨迹）。
 
     Args:
-        messages: 待保留的消息列表（已排除摘要段与头部 system）。
+        messages: 待保留的消息列表（已排除摘要段、快照与头部 system）。
         settings: 压缩配置（含 keep, context_size）。
         context_window: 模型上下文窗口（用于推导 fraction 预算）。
 
@@ -324,8 +383,8 @@ def _recent_tail(messages: list[Message], settings: CompactionSettings,
     used = 0
     count = 0
     for m in reversed(messages):
-        # 跳过 system 消息与摘要段（摘要由调用方单独保留）
-        if m.role == "system" or _is_summary(m):
+        # 跳过 system 消息与压缩产物（摘要、快照由调用方单独保留）
+        if m.role == "system" or _is_compaction_artifact(m):
             continue
         cost = estimate_tokens([m])
         if count_limit is not None:
@@ -362,24 +421,31 @@ error messages, numbers, and decisions. Do not invent facts.
 
 Do NOT write the "All user messages" section; the system inserts it verbatim.
 
-Return these fields:
+Return these summary fields. The numbers match the final 9-section summary;
+section 6 ("All user messages") is inserted by the system, so do not write it:
 1. primary_request_and_intent — the user's core request and success criteria.
 2. key_technical_concepts — key concepts and domain terms.
 3. files_and_code_sections — papers, notes, data paths, and script snippets involved.
 4. errors_and_fixes — errors encountered and how they were fixed.
 5. problem_solving — the problem-solving process and the reasons behind decisions.
-6. pending_tasks — what remains to be done.
-7. current_work — what was happening immediately before this summary.
-8. optional_next_step — the next step directly in line with the user's most recent request.
+7. pending_tasks — what remains to be done.
+8. current_work — what was happening immediately before this summary.
+9. optional_next_step — the next step directly in line with the user's most recent request.
 
-Also return the task anchor fields:
+Also return the task snapshot fields:
 - goal — the user's core objective in one sentence.
 - hard_constraints — a list of must/must-not constraints, copied verbatim from the user.
   Preserve security- and authorization-relevant instructions exactly.
 - deadline — only if the user explicitly stated one; otherwise null. Never infer it.
 - unfinished_steps — a list of steps that are not yet complete.
 
-Keep the whole summary under {max_words} words.
+Previous task snapshot (carry forward hard constraints and deadline unless the
+new conversation changes them; this is context, not text to copy):
+<previous_snapshot>
+{previous_snapshot}
+</previous_snapshot>
+
+Keep the whole summary under {max_words} tokens.
 
 Conversation to summarize:
 <conversation>
@@ -456,14 +522,17 @@ def _truncate_words(text: str, max_words: int) -> str:
     return enc.decode(tokens[:max_words]) + "\n\n…（摘要超过上限，已截断）"
 
 
-def _render_summary(result: SummarySchema, user_messages: list[str],
+def _render_summary(summary: Summary, user_messages: list[str],
                     max_words: int) -> str:
-    """把 8 个模型字段与代码生成的用户消息拼成 9 节摘要。
+    """把模型写的 8 节与代码生成的第 6 节拼成 9 节摘要。
+
+    第 6 节「All user messages」直接使用数据库里的用户原话，不让模型转述：
+    概括会漏掉硬约束、截止时间和用户的原始措辞，而这些恰恰是最不能走样的。
 
     Args:
-        result: 模型输出的 8 字段。
+        summary: 模型生成的 8 节内容。
         user_messages: 该会话全部 user 消息的逐字文本。
-        max_words: 全篇词数上限。
+        max_words: 全篇 token 上限。
 
     Returns:
         9 节摘要正文（开场白由 run_compaction 统一包装）。
@@ -473,16 +542,16 @@ def _render_summary(result: SummarySchema, user_messages: list[str],
         for text in user_messages if text and text.strip()
     ) or "（无）"
     sections = [
-        ("1. Primary Request and Intent", result.primary_request_and_intent),
-        ("2. Key Technical Concepts", result.key_technical_concepts),
-        ("3. Files and Code Sections", result.files_and_code_sections),
-        ("4. Errors and fixes", result.errors_and_fixes),
-        ("5. Problem Solving", result.problem_solving),
-        # 第 6 节：All user messages——代码从 SQL 逐字拼入，不让模型转述。
+        ("1. Primary Request and Intent", summary.primary_request_and_intent),
+        ("2. Key Technical Concepts", summary.key_technical_concepts),
+        ("3. Files and Code Sections", summary.files_and_code_sections),
+        ("4. Errors and fixes", summary.errors_and_fixes),
+        ("5. Problem Solving", summary.problem_solving),
+        # 第 6 节由代码从 SQL 逐字拼入，是模型没有写的那一节。
         ("6. All user messages", users),
-        ("7. Pending Tasks", result.pending_tasks),
-        ("8. Current Work", result.current_work),
-        ("9. Optional Next Step", result.optional_next_step),
+        ("7. Pending Tasks", summary.pending_tasks),
+        ("8. Current Work", summary.current_work),
+        ("9. Optional Next Step", summary.optional_next_step),
     ]
     body = "\n\n".join(
         f"## {title}\n{text.strip() or '（无）'}" for title, text in sections)
@@ -505,56 +574,74 @@ def _truncate_chars(text: str, limit: int) -> str:
     return text[:limit] + "\n…（已截断）"
 
 
-def format_task_anchor(anchor: dict) -> str:
-    """把任务锚点渲染成注入用的 system 块。
+def _render_task_snapshot(snapshot: TaskSnapshot) -> str:
+    """把任务快照渲染成带标记的文本块。
 
-    硬约束逐字保留；截止时间只在用户明确说过时出现；整体限制在约 2000 字符。
+    硬约束逐字保留；截止时间只在用户明确说过时出现；整体限制在约 2000 字符，
+    避免边界清单挤掉窗口里的对话内容。
 
     Args:
-        anchor: 含 goal / hard_constraints / deadline / unfinished_steps 的 dict。
+        snapshot: 压缩时抽出的任务边界清单。
 
     Returns:
-        渲染后的 `<task_anchor>` 文本；没有可用字段时返回空串。
+        带 `<task_snapshot>` 标记的文本；四项全空时返回空串。
     """
-    goal = str(anchor.get("goal") or "").strip()
-    constraints = [str(c).strip() for c in (anchor.get("hard_constraints") or [])
-                   if str(c).strip()]
-    deadline = str(anchor.get("deadline") or "").strip()
-    steps = [str(s).strip() for s in (anchor.get("unfinished_steps") or [])
-             if str(s).strip()]
+    goal = (snapshot.goal or "").strip()
+    constraints = [c.strip() for c in snapshot.hard_constraints if c.strip()]
+    deadline = (snapshot.deadline or "").strip()
+    steps = [s.strip() for s in snapshot.unfinished_steps if s.strip()]
     if not (goal or constraints or deadline or steps):
         return ""
-    parts = ["<task_anchor>", "这是压缩前快照；当前对话优先。"]
+    parts = [
+        _SNAPSHOT_MARKER,
+        "This snapshot reflects the conversation at summary time; "
+        "the current conversation takes precedence.",
+    ]
     if goal:
-        parts.append(f"目标：{goal}")
+        parts.append(f"Goal: {goal}")
     if constraints:
-        parts.append("硬约束：")
+        parts.append("Hard constraints:")
         parts.extend(f"- {c}" for c in constraints)
     if deadline:
-        parts.append(f"截止时间：{deadline}")
+        parts.append(f"Deadline: {deadline}")
     if steps:
-        parts.append("未完成步骤：")
+        parts.append("Unfinished steps:")
         parts.extend(f"- {s}" for s in steps)
-    parts.append("</task_anchor>")
+    parts.append("</task_snapshot>")
     return _truncate_chars("\n".join(parts), 2000)
+
+
+def _snapshot_message(snapshot: TaskSnapshot) -> SystemMessage | None:
+    """把任务快照渲染成一条 system 消息；四项全空时返回 None。
+
+    快照是框架给的上下文，不是用户这一轮说的话，所以用 SystemMessage；
+    它放在窗口末尾，请求组装后紧挨当前用户任务。
+
+    Args:
+        snapshot: 压缩时抽出的任务边界清单。
+
+    Returns:
+        以 `<task_snapshot>` 开头的 SystemMessage，或 None。
+    """
+    text = _render_task_snapshot(snapshot)
+    return SystemMessage(content=text) if text else None
 
 
 async def _summarize(messages: list[Message], structured,
                      settings: CompactionSettings, *,
-                     schema,
-                     user_messages: list[str] | None = None
-                     ) -> tuple[str, dict] | None:
-    """生成 9 节摘要与任务锚点；失败或结果为空时返回 None。
+                     previous_snapshot: str | None = None
+                     ) -> CompactionResult | None:
+    """用一次结构化调用生成摘要与任务快照；失败或摘要为空时返回 None。
 
     Args:
-        messages: 待摘要的消息列表（已排除旧摘要与头部 system）。
+        messages: 待摘要的消息列表（已排除旧摘要、旧快照与头部 system）。
         structured: StructuredOutput 实例（支持 extract 方法）。
         settings: 压缩配置（含 trim_tokens_to_summarize / summary_max_words）。
-        schema: 摘要模型的 pydantic schema 类（由 agent 层传入）。
-        user_messages: 该会话全部 user 消息；None 时从 messages 里取。
+        previous_snapshot: 上一份任务快照的文本；作为抽取输入，避免早期
+            硬约束因相关消息已被移出窗口而消失。None 表示没有旧快照。
 
     Returns:
-        (完整摘要文本, 任务锚点 dict)；失败时返回 None。
+        摘要与任务快照的整合结果；失败时返回 None。
     """
     if structured is None:
         return None
@@ -563,9 +650,10 @@ async def _summarize(messages: list[Message], structured,
     prompt = _SUMMARY_PROMPT.format(
         max_words=settings.summary_max_words,
         conversation="\n".join(lines) or "（无）",
+        previous_snapshot=previous_snapshot or "（无）",
     )
     try:
-        result = await structured.extract(prompt=prompt, schema=schema)
+        result = await structured.extract(prompt=prompt, schema=CompactionResult)
     except Exception as exc:
         logger.warning("压缩摘要生成失败，窗口保持不变: %r", exc)
         return None
@@ -574,17 +662,8 @@ async def _summarize(messages: list[Message], structured,
         "files_and_code_sections", "errors_and_fixes", "problem_solving",
         "pending_tasks", "current_work", "optional_next_step",
     )
-    if not any(str(getattr(result, name)).strip() for name in summary_fields):
+    if not any(str(getattr(result.summary, name)).strip()
+               for name in summary_fields):
         logger.warning("压缩摘要为空，窗口保持不变")
         return None
-    users = user_messages if user_messages is not None else [
-        (m.content or "") for m in messages if m.role == "user"]
-    anchor = {
-        "goal": (result.goal or "").strip(),
-        "hard_constraints": [c.strip() for c in result.hard_constraints
-                             if c.strip()],
-        "deadline": (result.deadline or "").strip() or None,
-        "unfinished_steps": [s.strip() for s in result.unfinished_steps
-                             if s.strip()],
-    }
-    return _render_summary(result, users, settings.summary_max_words), anchor
+    return result

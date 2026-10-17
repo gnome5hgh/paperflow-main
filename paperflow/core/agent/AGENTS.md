@@ -18,8 +18,7 @@ agent/
 │                #   + state.py（运行期状态容器）+ context_window.py + tool_executor.py
 ├─ constants/    # base_prompt.py（BASE_PROMPT 行为基座）+ enums/（引擎事件类型）
 ├─ config/       # AgentConfig：插件配置（组件自有参数）
-├─ domain/dto/   # 引擎事件（AgentEvent）
-└─ domain/entity/ # 跨包数据模型（SummarySchema）
+└─ domain/dto/   # 引擎事件（AgentEvent）
 ```
 
 ## Responsibilities
@@ -53,7 +52,7 @@ agent/
 - **改 head 构造顺序会同时动多种行为**（意图注入、记忆块、可派发清单、技能清单）——顺序是有意的，改动要说明理由。
 - **新增构造参数要保持 `None` = 关的语义**，并让相关路径零开销跳过；调用方（装配层与派发工具）要同时更新。
 - **派发出去的子 agent 继承哪些、不继承哪些是刻意的**：继承安全中间件、`session_id`、确认回调、技能注册表与工具结果外置回调；**不传**意图管线与会话历史（子任务是结构化任务，不是用户意图）。子 agent 各自持有独立 `conversation_id`（消息不污染父窗口），但共享父 `session_id`（会话内可检索）。改动这个继承面等于改子 agent 的能力与审计归属。
-- **任务锚点是请求级注入**：首次压缩后每轮从 `AgentState.task_anchor` 渲染，紧挨当前 user task 之前；**不放进 `window.messages`**，否则会被下一次压缩驱逐。锚点只由压缩链路写，别在别处改。
+- **压缩产物归 memory 模块**：agent 只调 `run_compaction` 并写回窗口，不认识摘要/快照实体；摘要与任务快照由 memory 侧的 `CompactionResult` 生成，快照是窗口末尾的 `SystemMessage`。
 - **工具结果外置在 after 钩子之后**：`ToolExecutor` 看到完整结果并跑完审计后才交给 `offloader`；offloader 失败时保留原结果，不阻断工具调用。
 - 新增状态项先问「它属于会话还是属于一次任务」，再决定放哪个容器，别顺手加模块级变量。
 

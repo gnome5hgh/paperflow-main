@@ -550,7 +550,7 @@ class CompactionSettings:
         trigger: list[ContextSize]，触发条件列表（tokens / messages / fraction）
         keep: ContextSize，压缩后保留的近期上下文计量
         trim_tokens_to_summarize: int，送给摘要模型的最大输入 token 数
-        summary_max_words: int，单份摘要的词数上限
+        summary_max_words: int，单份摘要的 token 上限
         summary_model_name: str | None，摘要专用模型名；None 用主模型
         context_size: int，显式有效窗口；0 表示用模型窗口
         tool_results: ToolResultArchiveConfig，大工具结果外置配置
@@ -569,7 +569,7 @@ class CompactionSettings:
     #: 摘要输入上限：超长历史先按这个预算裁剪，再交给摘要模型。
     trim_tokens_to_summarize: int = 4000
 
-    #: 单份摘要的词数上限（对齐 Claude Code 的 2000 词）。
+    #: 单份摘要的 token 上限（字段名沿用历史叫法；实际按 token 计）。
     summary_max_words: int = 2000
 
     #: 摘要模型名；None 时沿用主模型，配置后可换轻量模型。

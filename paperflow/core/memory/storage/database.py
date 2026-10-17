@@ -71,7 +71,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id, created_at);
 _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("messages", "meta", "meta TEXT"),
     ("messages", "session_id", "session_id TEXT"),
-    ("agent_state", "task_anchor", "task_anchor TEXT"),
 )
 
 

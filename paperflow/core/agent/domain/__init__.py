@@ -4,6 +4,5 @@
 这里只放「数据长什么样」的对象，插件配置在 `../config/`。
 """
 from paperflow.core.agent.domain.dto import AgentEvent
-from paperflow.core.agent.domain.entity import SummarySchema
 
-__all__ = ["AgentEvent", "SummarySchema"]
+__all__ = ["AgentEvent"]

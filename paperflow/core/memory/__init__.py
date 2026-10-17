@@ -8,6 +8,9 @@ from paperflow.core.memory.schemas.block import BaseBlock, Block
 from paperflow.core.memory.schemas.memory import Memory
 from paperflow.core.memory.schemas.stored_message import StoredMessage
 from paperflow.core.memory.schemas.agent import AgentState
+from paperflow.core.memory.domain.entity.compaction_result import CompactionResult
+from paperflow.core.memory.domain.entity.summary import Summary
+from paperflow.core.memory.domain.entity.task_snapshot import TaskSnapshot
 from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.services.block_manager import BlockManager, GitEnabledBlockManager
 from paperflow.core.memory.services.memfs import MemFS
@@ -21,6 +24,7 @@ from paperflow.core.memory import constants
 __all__ = [
     "BaseBlock", "Block", "Memory", "StoredMessage",
     "AgentState", "MemoryDB",
+    "CompactionResult", "Summary", "TaskSnapshot",
     "BlockManager", "GitEnabledBlockManager", "MemFS", "MessageManager",
     "AgentManager",
     "CompactionSettings", "ContextSize", "MemoryConsolidator", "constants",

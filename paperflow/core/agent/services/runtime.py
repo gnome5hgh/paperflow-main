@@ -56,7 +56,6 @@ from paperflow.core.agent.services.context_window import (
 from paperflow.core.agent.services.tool_executor import ToolExecutor
 from paperflow.core.agent.constants import AgentEventKind
 from paperflow.core.agent.domain.dto.agent_event import AgentEvent
-from paperflow.core.agent.domain.entity.summary import SummarySchema
 from paperflow.core.agent.services.registry import AgentRegistry
 from paperflow.core.skills import SkillRegistry
 from paperflow.core.agent.constants.base_prompt import BASE_PROMPT
@@ -279,10 +278,6 @@ class Agent:
         self.summary_structured = summary_structured
         #: 大工具结果外置回调（callable | None）：None 时跳过
         self.offloader = offloader
-
-        #: 任务锚点缓存：首次压缩后由摘要调用写入，之后每轮注入。
-        self._task_anchor: dict | None = None
-        self._task_anchor_loaded = False
 
         #: token 估算的校准系数：本地估算与实际用量的比值，每次拿到真实 prompt_tokens
         #: 就更新一次（见 _calibrate_token_ratio）。1.0 = 未校准。
@@ -560,66 +555,6 @@ class Agent:
         self._token_ratio = blend_token_ratio(
             self._token_ratio, actual, self._last_sent_estimate)
 
-    def _load_task_anchor(self) -> dict | None:
-        """从 AgentState 读取任务锚点（首次使用时加载并缓存）。
-
-        Returns:
-            锚点 dict；从未压缩过或没有 agent_manager 时返回 None。
-        """
-        if not self._task_anchor_loaded:
-            self._task_anchor_loaded = True
-            if self.agent_manager is not None:
-                try:
-                    self._task_anchor = self.agent_manager.get_agent(
-                        self.conversation_id).task_anchor
-                except KeyError:
-                    self._task_anchor = None
-        return self._task_anchor
-
-    def _set_task_anchor(self, anchor: dict) -> None:
-        """写入任务锚点：更新内存缓存并持久化到 AgentState。
-
-        Args:
-            anchor: 摘要调用产出的锚点 dict。
-        """
-        self._task_anchor = anchor
-        self._task_anchor_loaded = True
-        if self.agent_manager is not None:
-            self.agent_manager.update_agent(
-                self.conversation_id, task_anchor=anchor)
-
-    def _anchor_message(self) -> Message | None:
-        """把任务锚点渲染成请求级的 system 消息；没有锚点时返回 None。
-
-        Returns:
-            一条 `<task_anchor>` SystemMessage，或 None。
-        """
-        anchor = self._load_task_anchor()
-        if not anchor:
-            return None
-        from paperflow.core.memory.services.compaction import format_task_anchor
-        text = format_task_anchor(anchor)
-        return SystemMessage(content=text) if text else None
-
-    def _assemble_messages(self, head: list[Message]) -> list[Message]:
-        """组装一次 LLM 请求：head 前段 + 窗口 + 任务锚点 + 当前 user task。
-
-        锚点是请求级的：不进入 window.messages，不参与压缩；每轮从 AgentState
-        重新渲染，紧挨当前用户任务，避免落到窗口中部被忽略。
-
-        Args:
-            head: 本轮构建的 head 消息列表（末位是当前 user task）。
-
-        Returns:
-            实际发给 LLM 的消息列表。
-        """
-        messages = list(head[:-1]) + self.window.messages
-        anchor = self._anchor_message()
-        if anchor is not None:
-            messages.append(anchor)
-        messages.append(head[-1])
-        return messages
-
     async def run(self, task: str) -> str:
         """
         执行 ReAct 循环，返回 LLM 的最终文本回答。
@@ -648,7 +583,7 @@ class Agent:
             3. 从 MessageManager 加载该会话的 in-context 消息（跨轮回放），当前
                user task 落盘；消息归属 self.window（in-context 窗口）
             4. 调用 LLM 前检查压缩（compaction.should_compress → run_compaction
-               驱逐旧对话 + 插摘要，只改 in-context 窗口、不删 SQL），随后调用 LLM
+               驱逐旧对话 + 插摘要与任务快照，只改 in-context 窗口、不删 SQL），随后调用 LLM
             5. 如果无 tool_calls → 顺序执行各中间件的 on_finish 钩子，最终回答
                落盘后返回改写后的 content（LLM 判定任务完成）
             6. 如果有 tool_calls → 并发执行（gather，结果按调用顺序返回），将
@@ -695,55 +630,33 @@ class Agent:
             self._refresh_head_memory(head)
 
             #: LLM 输入 = head 前段(AGENT/SKILLS/memory/INTENT) + in-context 回放历史 +
-            #: 任务锚点(首次压缩后) + 末尾当前 user task(恒末位——否则 LLM 会把回放
-            #: 历史里的旧任务误当当前任务)。
-            messages = self._assemble_messages(head)
+            #: 末尾当前 user task(恒末位——否则 LLM 会把回放历史里的旧任务误当当前任务)。
+            messages = list(head[:-1]) + self.window.messages + [head[-1]]
 
-            # 压缩检查:只改 in-context 窗口(驱逐旧对话 + 插摘要),SQL 原始消息由 MessageManager 保留(Recall 可追溯)。
-            # structured 未注入(摘要生成器缺失) 时压缩不触发——避免 None.extract 崩溃,CLI 接线后恢复。
+            # 压缩检查:只改 in-context 窗口(驱逐旧对话 + 插摘要 + 追加任务快照),
+            # SQL 原始消息由 MessageManager 保留(Recall 可追溯)。取用户原话、
+            # 生成摘要与快照、失败降级全部在 run_compaction 内部完成。
+            # structured 未注入(摘要生成器缺失) 时压缩不触发,避免无谓的失败重试。
             if self._needs_compaction(messages) and self.structured is not None:
                 # 截断续写与压缩重建互斥:压缩可能驱逐"半截+续写提示"(in-context 重建),先弃掉累积器里的半截——续写无参照即完整重答,避免「半截 + 完整重答」重复交付。
                 accumulated.clear()
                 from paperflow.core.memory.services.compaction import run_compaction
-                # 摘要的第 6 节是「All user messages」（本次会话全部用户原话）；
-                # 由代码从 SQL 逐字拼入摘要，不让模型转述或概括，避免漏掉硬约束
-                # 与原始措辞。这里把会话内所有 user 消息（含子 agent 的）取出来。
-                user_messages = None
-                if self.message_manager is not None:
-                    user_messages = [
-                        m.content or ""
-                        for m in self.message_manager.list_user_messages_for_session(
-                            self.session_id)
-                    ]
                 new_window = await run_compaction(
-                    self.window.messages, self.compaction, self.llm, self.structured,
+                    self.window.messages, self.compaction, self.structured,
                     context_window=self.llm.context_window,
-                    user_messages=user_messages,
-                    summary_structured=self.summary_structured,
-                    anchor_sink=self._set_task_anchor,
-                    summary_schema=SummarySchema)
-                # 整体替换窗口：摘要先落盘、id 列表更新为「摘要 + 保留尾部」——压缩
-                # 产物跨轮持久，下轮回放摘要、不回放被驱逐旧消息（SQL 原始消息仍全量
-                # 保留，Recall 完整）。「认领旧 id」与「替换」的先后关系封在 replace 内。
-                # 摘要生成失败时 new_window 为 None：通常保持原窗口、下一轮重试；
-                # 但若窗口已超过硬上限，走确定性降级（不依赖另一次成功的 LLM 调用）。
-                if new_window is None:
-                    from paperflow.core.memory.services.compaction import (
-                        deterministic_trim, estimate_tokens)
-                    hard_limit = 0.95 * self.compaction.resolve_context_size(
-                        self.llm.context_window)
-                    if estimate_tokens(self.window.messages) >= hard_limit:
-                        new_window = deterministic_trim(
-                            self.window.messages, self.compaction,
-                            self.llm.context_window)
+                    message_manager=self.message_manager,
+                    session_id=self.session_id,
+                    summary_structured=self.summary_structured)
+                # 整体替换窗口：摘要与快照先落盘、id 列表更新为「摘要 + 保留尾部 +
+                # 快照」——压缩产物跨轮持久，下轮回放摘要、不回放被驱逐旧消息
+                # (SQL 原始消息仍全量保留，Recall 完整)。「认领旧 id」与「替换」的
+                # 先后关系封在 replace 内。摘要失败时的确定性降级已在
+                # run_compaction 内部处理，这里只负责把结果写回。
                 if new_window is not None:
                     self.window.replace(new_window)
 
-                # head[:-1]：① AGENT（AGENT.md 系统提示）② SKILLS 清单块（若有可见 skill）③ Memory Blocks（核心记忆块，如 assistant/profile）④ INTENT Block（意图识别结果，若启用）
-                # window.messages：从 MessageManager（SQL 持久化层）加载的该会话历史消息，加上本轮已产生的 assistant/tool 交互消息
-                # 任务锚点：本轮压缩刚写入，重建请求让它在同一轮就生效
-                # head[-1]：当前的 user task 消息
-                messages = self._assemble_messages(head)
+                # 重新组装，让本轮刚产出的摘要与快照立刻生效。
+                messages = list(head[:-1]) + self.window.messages + [head[-1]]
 
             # 流式门控：挂了 stream_callback 才走 chat_stream（否则保持 chat()）。
             # mock LLM 只有 chat 方法，无条件换 chat_stream 会让 MagicMock 不可
