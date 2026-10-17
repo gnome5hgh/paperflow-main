@@ -5,6 +5,7 @@
 import asyncio
 import sys
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 from rich.console import Console
@@ -25,12 +26,15 @@ from paperflow.core.security import (
     ContentGuardMiddleware, CommandGuardMiddleware, PolicyEngineMiddleware,
 )
 from paperflow.core.llm import StructuredOutput
+from paperflow.core.tool.services.offload import make_tool_result_offloader
+from paperflow.core.tool.services.tool_result_store import make_tool_result_store
 from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.services.block_manager import GitEnabledBlockManager
 from paperflow.core.memory.services.message_manager import MessageManager
 from paperflow.tools.memory import set_memory_context, MemoryToolsContext
 from paperflow.core.memory.services.agent_manager import AgentManager
 from paperflow.core.memory.services.consolidation import MemoryConsolidator
+from paperflow.core.memory.services.consolidation_queue import ConsolidationQueue
 from paperflow.core.intent.services.jev import JevClient, JevUnavailable
 from paperflow.core.intent.services.service import IntentService
 from paperflow.core.intent.rules.taxonomy import TaxonomyError, load_taxonomy
@@ -172,7 +176,7 @@ def main(argv: list[str] | None = None) -> int | None:
     # agents 插件目录：配置路径不存在时回退安装根（从非仓库目录启动也能找到插件；
     # 与 _find_compose_dir 的「cwd 优先、安装根回退」同一模式）
     agents_dir = (config.runtime.agents_dir if Path(config.runtime.agents_dir).is_dir()
-                  else str(Path(__file__).resolve().parents[1] / "agents"))
+                  else str(Path(__file__).resolve().parents[3] / "agents"))
     registry = AgentRegistry(agents_dir)
 
     # Skill 体系装配：单级扫描（<cwd>/.paperflow/skills/），skill 工具
@@ -270,10 +274,24 @@ def main(argv: list[str] | None = None) -> int | None:
 
     structured = StructuredOutput(llm)
 
+    # 摘要专用模型：配置了 compaction.summary_model_name 时另建一个结构化输出，
+    # 让压缩摘要走轻量端点；未配置则沿用主模型。
+    summary_structured = None
+    if config.compaction.summary_model_name:
+        summary_llm = LLMClient(
+            replace(config.llm, model=config.compaction.summary_model_name))
+        summary_structured = StructuredOutput(summary_llm)
+
+    # 大工具结果外置：原文进对象存储（本地回退），消息里只留指针。
+    tool_result_store = make_tool_result_store(config)
+    tool_result_offloader = make_tool_result_offloader(
+        tool_result_store, config.compaction.tool_results)
+
     set_memory_context(MemoryToolsContext(
         agent_id=session_id,
         block_manager=block_manager,
         message_manager=message_manager,
+        tool_result_store=tool_result_store,
     ))
 
     # 安全管道：四中间件（经验记忆中间件已移除——工具调用经验不再注入 prompt，
@@ -342,6 +360,8 @@ def main(argv: list[str] | None = None) -> int | None:
         message_manager=message_manager,
         compaction=config.compaction,
         structured=structured,
+        summary_structured=summary_structured,
+        offloader=tool_result_offloader,
         security_middleware=middlewares,
         intent_service=intent_service,
         confirm_callback=_make_confirm_callback(io, renderer, center),
@@ -350,10 +370,15 @@ def main(argv: list[str] | None = None) -> int | None:
     consolidator = MemoryConsolidator(
         agent_state, block_manager, message_manager,
         structured, enable=config.memory.consolidation_enabled)
+    consolidation_queue = ConsolidationQueue(
+        consolidator, session_id,
+        debounce_seconds=config.memory.debounce_seconds,
+        max_delay_seconds=config.memory.max_delay_seconds)
 
     try:
         asyncio.run(_repl(supervisor,
                           io=io, renderer=renderer, consolidator=consolidator,
+                          consolidation_queue=consolidation_queue,
                           config=config, resume_hint=resume_hint,
                           confirm_center=center, resume_replay=resume_replay,
                           mcp_manager=mcp_manager))

@@ -10,6 +10,7 @@
 """
 import re
 from dataclasses import dataclass, field, fields
+from typing import Literal
 
 
 @dataclass
@@ -496,16 +497,145 @@ class RagConfig:
 # ── memory / session / agents ───────────────────────────────────────────────
 
 @dataclass
+class ContextSize:
+    """压缩触发或保留量的计量方式。
+
+    Attributes:
+        type: str，计量类型：tokens（绝对 token 数）/ messages（消息条数）/
+            fraction（有效窗口的比例，0~1）
+        value: int | float，对应的数值；fraction 为比例，其余为绝对数
+    """
+
+    type: Literal["tokens", "messages", "fraction"] = "messages"
+    value: int | float = 20
+
+    def __post_init__(self) -> None:
+        """校验类型与数值范围。
+
+        Raises:
+            ValueError: 类型不在三种之内，或数值为负。
+        """
+        if self.type not in ("tokens", "messages", "fraction"):
+            raise ValueError(f"未知的 ContextSize 类型: {self.type!r}")
+        if self.value < 0:
+            raise ValueError(f"ContextSize 不能为负: {self.value!r}")
+
+
+@dataclass
+class ToolResultArchiveConfig:
+    """大工具结果外置配置。
+
+    Attributes:
+        persist_threshold_chars: int，单条工具结果超过此字符数时外置
+        preview_chars: int，指针里保留的预览字符数
+        bucket: str，MinIO 桶名（与图表原图的桶分开）
+        local_dir: str，本地回退目录；空串表示 `<workspace>/tool-results`
+    """
+
+    persist_threshold_chars: int = 50000
+    preview_chars: int = 2000
+    bucket: str = "paperflow-tool-results"
+    local_dir: str = ""
+
+
+@dataclass
+class CompactionSettings:
+    """上下文压缩的触发与保留配置。
+
+    trigger 是列表，任一条件满足即触发（OR 逻辑）；keep 决定压缩后保留多少
+    近期上下文。有效窗口默认就是模型窗口——不再取一半，余量由 fraction 承担。
+
+    Attributes:
+        enabled: bool，压缩总开关
+        trigger: list[ContextSize]，触发条件列表（tokens / messages / fraction）
+        keep: ContextSize，压缩后保留的近期上下文计量
+        trim_tokens_to_summarize: int，送给摘要模型的最大输入 token 数
+        summary_max_words: int，单份摘要的词数上限
+        summary_model_name: str | None，摘要专用模型名；None 用主模型
+        context_size: int，显式有效窗口；0 表示用模型窗口
+        tool_results: ToolResultArchiveConfig，大工具结果外置配置
+    """
+
+    enabled: bool = True
+
+    #: 任一条件满足即触发；默认在有效窗口用到 80% 时压缩。
+    trigger: list[ContextSize] = field(
+        default_factory=lambda: [ContextSize("fraction", 0.8)])
+
+    #: 压缩后保留最近 20 条消息（tool 消息会连同其 assistant 调用成对保留）。
+    keep: ContextSize = field(
+        default_factory=lambda: ContextSize("messages", 20))
+
+    #: 摘要输入上限：超长历史先按这个预算裁剪，再交给摘要模型。
+    trim_tokens_to_summarize: int = 4000
+
+    #: 单份摘要的词数上限（对齐 Claude Code 的 2000 词）。
+    summary_max_words: int = 2000
+
+    #: 摘要模型名；None 时沿用主模型，配置后可换轻量模型。
+    summary_model_name: str | None = None
+
+    #: 显式有效窗口（token）；0 表示由模型窗口推导。保留给测试与特殊模型。
+    context_size: int = 0
+
+    #: 大工具结果外置（MinIO 主存 + 本地回退）。
+    tool_results: ToolResultArchiveConfig = field(
+        default_factory=ToolResultArchiveConfig)
+
+    def __post_init__(self) -> None:
+        """把 YAML 里可能出现的裸 dict 归一化成 ContextSize。"""
+        self.normalize()
+
+    def normalize(self) -> "CompactionSettings":
+        """归一化 trigger / keep：接受 dict、单个 dict 或 ContextSize 实例。
+
+        YAML 覆写会把整个 list 替换成裸 dict 列表；`_merge` 不负责实例化列表
+        元素，因此在配置加载完成后必须再调一次本方法。
+
+        Returns:
+            归一化后的自身（便于链式调用）。
+        """
+        if isinstance(self.trigger, dict):
+            self.trigger = [self.trigger]
+        self.trigger = [
+            t if isinstance(t, ContextSize) else ContextSize(**t)
+            for t in self.trigger
+        ]
+        if isinstance(self.keep, dict):
+            self.keep = ContextSize(**self.keep)
+        return self
+
+    def resolve_context_size(self, model_window: int) -> int:
+        """返回实际使用的有效窗口：显式配置优先，否则用模型窗口。
+
+        Args:
+            model_window: 模型的最大上下文窗口（token 数）。
+
+        Returns:
+            压缩判定与 fraction 预算使用的有效窗口。
+        """
+        return self.context_size if self.context_size > 0 else model_window
+
+
+@dataclass
 class MemoryConfig:
     """记忆系统配置。
 
     Attributes:
         consolidation_enabled: bool，记忆整合开关（每轮对话结束后整合一次）
+        debounce_seconds: int，轮末整合的静默窗口（秒）
+        max_delay_seconds: int，连续活跃会话的最大延迟（秒），超时强制执行
     """
 
     #: 记忆整合开关。开着即每轮对话结束后跑一次整合（本轮无新消息则不调 LLM）；
     #: 关掉则整条整合路径不触发，记忆只靠 self-editing 维护。
     consolidation_enabled: bool = True
+
+    #: 轮末 enqueue 后的静默窗口：连续多轮在窗口内只合并成一次整合。
+    debounce_seconds: int = 30
+
+    #: 会话一直活跃、等不到静默窗口时的强制整合上限。
+    max_delay_seconds: int = 300
 
 
 @dataclass

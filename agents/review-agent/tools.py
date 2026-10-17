@@ -17,10 +17,11 @@ from paperflow.tools import (
     LookupVenueRankTool, SubmitDownloadReviewTool, GlobTool, GrepTool,
 )
 from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
+from paperflow.tools.recall import get_recall_tools
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
     ReadFileTool, ReadPdfTool, FormatCheckTool, SubmitReviewTool,
     LookupVenueRankTool, SubmitDownloadReviewTool, GlobTool, GrepTool,
     SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts,
                    max_turns=PaperFlowConfig.from_env().agents.max_turns),
-])
+]) + get_recall_tools()

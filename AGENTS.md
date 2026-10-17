@@ -84,10 +84,12 @@ paperFlow-main/
 - **写工具必须声明安全元数据**（`risk_level` / `side_effects` / `provenance` 等），注册表加载时校验合法值。
 - **路径检查与写盘共用同一份解析结果**：检查通过的路径参数就地归一化为解析后的绝对路径（防 TOCTOU）。
 - **SQL 是记忆真相源，markdown 是投影**：压缩与窗口驱逐**永不删 SQL 行**；读—改—写类块写入必须经一次持锁事务，不能「读旧值→算新值→写回」分三步做。
-- **领域产物的读写各自归口**：记忆归 `memory-agent`、语料索引归 `rag-agent`、引用库归 `citation-agent`；这三类工具**其余 agent 一件不装**。supervisor 不持有任何执行类工具。
+- **压缩只改窗口，摘要段只追加不重摘**：旧摘要段冻结、只压新增段；9 节摘要的「All user messages」由代码从 SQL 逐字插入，不让模型转述；摘要失败时保持原窗口，不拿空摘要替换历史。
+- **召回只搜当前会话**：`conversation_search` 永远带 `session_id` 过滤，不提供跨会话参数；跨会话知识只走记忆块（blocks）。工具结果外置后的指针只在窗口内可回取，摘要不携带工具引用 ID。
+- **领域产物的读写各自归口**：记忆写入归 `memory-agent`、语料索引归 `rag-agent`、引用库归 `citation-agent`；这三类工具**其余 agent 一件不装**。只读召回（会话检索、工具结果回取）是例外：它不产生领域产物，装配给所有 agent；supervisor 因此持有 spawn + 只读召回，仍不持有执行类工具。
 - **`allowed_spawns` 与风险档位由框架强制**，不靠提示词自律；批量同类对象**一个对象一路**派发。
 - **意图只作信号**：不决定派发顺序、不作派发门禁、不持跨轮状态；spawn 对意图零引用，子 agent 不做意图识别。
-- **同一会话的 `session_id` 三处必须一致**（CLI / AgentManager / `Agent.session_id`），错位会让各自读到空数据。
+- **同一会话的 `session_id` 三处必须一致**（CLI / AgentManager / `Agent.session_id`），错位会让各自读到空数据；子 agent 共享父 `session_id`（同一会话可检索），但各自持有独立 `conversation_id`（消息不互相污染窗口）。
 - **流式零开销**：`stream_callback` / `telemetry_callback` 为 `None` 时，全链路保持非流式行为。
 - **常量与配置的落点**：一个枚举一个文件（`constants/enums/<name>.py`，`__init__` 只再导出）；常量**有第二个消费方才**进 `constants/`；可调参数进顶层 `paperflow/config/`，组件自己的行为参数跟组件走。
 - **标题宁空勿错**：论文标题来自解析器出口，取不到就如实为空；**绝不回退到 PDF 文件名**。

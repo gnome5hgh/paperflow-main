@@ -15,10 +15,11 @@ from paperflow.tools import (
     FetchPdfTool, DeleteFileTool, GlobTool, GrepTool, ReadPdfTool, ExtractTitleTool,
 )
 from paperflow.tools.vision.analyze_figures import AnalyzeFiguresTool
+from paperflow.tools.recall import get_recall_tools
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
     FetchPdfTool, DeleteFileTool, GlobTool, GrepTool,
     ReadPdfTool, ExtractTitleTool,
     AnalyzeFiguresTool(),
 ]) + [SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts,
-                   max_turns=PaperFlowConfig.from_env().agents.max_turns)]
+                   max_turns=PaperFlowConfig.from_env().agents.max_turns)] + get_recall_tools()

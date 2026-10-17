@@ -1,9 +1,8 @@
 """配置加载与派生：三级优先级 + 递归合并 + env 按路径派生。
 
 优先级从低到高：dataclass 默认值（``sections.py``）→ ``config.yaml``（可选、纯覆盖）
-→ 环境变量（``PAPERFLOW_`` + 配置路径大写，``_`` 连接）。只认标量覆写：dict/list
-（``agents.timeouts`` / ``mcp_servers``）仅 YAML 可配，非标量自定义对象（``compaction``）
-既不吃 env 也不吃 YAML。
+→ 环境变量（``PAPERFLOW_`` + 配置路径大写，``_`` 连接）。嵌套 dataclass 逐层递归；
+dict/list 自由字段仅 YAML 可配；标量字段两者都可覆写。
 """
 import os
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -14,6 +13,7 @@ from dotenv import load_dotenv
 
 from paperflow.config.schemas.sections import (
     AgentsConfig,
+    CompactionSettings,
     CorpusConfig,
     IntentConfig,
     LLMConfig,
@@ -29,21 +29,12 @@ from paperflow.config.schemas.sections import (
 )
 
 
-def _default_compaction():
-    """CompactionSettings 惰性导入——compaction.py 依赖 llm.py、llm.py 依赖本模块，
-    顶层 import 会构成 config→compaction→llm→config 循环（部分初始化导入失败）。
-    字段默认值走此工厂，把导入推迟到首次构造时，此刻 config 已完整加载。"""
-    from paperflow.core.memory.services.compaction import CompactionSettings
-    return CompactionSettings()
-
-
 # ── 通用合并原语 ────────────────────────────────────────────────────────────
 
 def _is_scalar(val) -> bool:
     """标量判定：str/int/float/bool/None——只有这些才允许 YAML/env 覆写。
 
-    非 dataclass、非 dict/list 的自定义对象（如 ``compaction`` 的
-    ``CompactionSettings`` 普通类实例）没有通用覆写语义：把 YAML/env 值直接
+    非 dataclass、非 dict/list 的自定义对象没有通用覆写语义：把 YAML/env 值直接
     setattr 成裸 dict/str 会静默破坏其行为，必须跳过。
 
     Args:
@@ -85,7 +76,7 @@ def _merge(node, raw) -> None:
     - 字段当前值是 dataclass → 递归（要求 raw 为 dict，否则跳过）；
     - 自由 dict/list 字段 → 整体赋值；
     - 标量 → 按目标字段当前类型转换（``_coerce``）；
-    - 其余自定义对象（``compaction``）→ 跳过（见 ``_is_scalar``）；
+    - 其余自定义对象 → 跳过（见 ``_is_scalar``）；
     - raw 里的未知键被忽略（沿用现有 hasattr 守卫精神，运行期不因陌生键崩）。
 
     Args:
@@ -105,7 +96,7 @@ def _merge(node, raw) -> None:
             setattr(node, f.name, val)
         elif _is_scalar(cur):
             setattr(node, f.name, _coerce(cur, val))
-        # else：非 dataclass 非集合非标量的自定义对象（compaction）跳过覆写，
+        # else：非 dataclass 非集合非标量的自定义对象跳过覆写，
         #       不得把 YAML 值 setattr 成裸 dict/str。
 
 
@@ -160,8 +151,8 @@ class PaperFlowConfig:
     #: 子 agent 配置（timeouts 为 YAML-only 自由 dict）
     agents: AgentsConfig = field(default_factory=AgentsConfig)
 
-    #: 上下文压缩配置（惰性工厂见 _default_compaction——延迟导入切断循环依赖）
-    compaction: "CompactionSettings" = field(default_factory=_default_compaction)
+    #: 上下文压缩配置（触发/保留/摘要参数；YAML 与 env 均可覆写）
+    compaction: CompactionSettings = field(default_factory=CompactionSettings)
 
     #: MCP server 接入配置（config.yaml 顶层 mcp_servers；仅 YAML，无环境变量形态）
     mcp_servers: dict[str, "McpServerConfig"] = field(default_factory=dict)
@@ -184,6 +175,9 @@ class PaperFlowConfig:
         config = cls()
         config._load_yaml(config_path)  # 第一步：YAML 文件（优先级最低）
         config._load_env()               # 第二步：环境变量（覆盖 YAML 值）
+        # trigger/keep 在 YAML 里是裸 dict，_merge 只做整体赋值、不实例化列表元素；
+        # 加载完成后归一化成 ContextSize，后续判定才能直接读 .type/.value。
+        config.compaction.normalize()
         # 留空继承：rag.query_rewrite ← llm、rag.rerank ← rag.embedding。
         # 必须在 YAML/env 全部加载后做——否则 env 覆盖会被继承值抢先顶掉。
         emb = config.rag.embedding
@@ -255,7 +249,7 @@ def _apply_env(node, prefix: tuple[str, ...]) -> None:
         if isinstance(cur, (dict, list)):
             continue  # YAML-only 自由集合
         if not _is_scalar(cur):
-            continue  # 非标量自定义对象（compaction）不派生 env、不覆写
+            continue  # 非标量自定义对象不派生 env、不覆写
         env_name = "PAPERFLOW_" + "_".join(p.upper() for p in path)
         val = os.getenv(env_name)
         if val:

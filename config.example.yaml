@@ -83,3 +83,29 @@ mcp_servers:
     write_tools: [download_with_fallback, download_semantic, read_arxiv_paper, read_pubmed_paper]
     env:
       PAPER_SEARCH_MCP_UNPAYWALL_EMAIL: ""   # 按需填入 Unpaywall 请求邮箱
+
+# 上下文压缩（YAML / env 均可覆写；默认值以 config/schemas/sections.py 为准）
+compaction:
+  enabled: true
+  # 任一条件满足即触发（OR）：tokens / messages / fraction
+  trigger:
+    - type: fraction
+      value: 0.8
+  # 压缩后保留多少近期上下文：messages / tokens / fraction
+  keep:
+    type: messages
+    value: 20
+  trim_tokens_to_summarize: 4000   # 送给摘要模型的输入上限
+  summary_max_words: 2000          # 单份摘要词数上限
+  summary_model_name: null         # 摘要专用轻量模型；null = 主模型
+  tool_results:
+    persist_threshold_chars: 50000 # 单条工具结果超过此字符数时外置
+    preview_chars: 2000            # 指针里的预览长度
+    bucket: paperflow-tool-results # MinIO 桶（与图表原图分开）
+    local_dir: ""                  # 空 = <workspace>/tool-results
+
+# 记忆整合（后台 debounce 队列）
+memory:
+  consolidation_enabled: true
+  debounce_seconds: 30             # 静默窗口：连续多轮合并成一次整合
+  max_delay_seconds: 300           # 连续活跃会话的强制整合上限

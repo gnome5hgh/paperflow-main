@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 async def _repl(supervisor: Agent, *,
                 io: InputIO, renderer: StreamRenderer, consolidator=None,
+                consolidation_queue=None,
                 config: PaperFlowConfig | None = None,
                 resume_hint: str | None = None, confirm_center=None,
                 resume_replay: ResumeReplay | None = None,
@@ -66,7 +67,7 @@ async def _repl(supervisor: Agent, *,
         supervisor: 主 Agent 实例。
         io: 输入适配器。
         renderer: 渲染器。
-        consolidator: 后台记忆整合调度器（可选）。
+        consolidator: 后台记忆整合调度器（可选；无队列时退回同步整合）。
         config: 配置（仅用于横幅，若为 None 则从环境加载）。
         resume_hint: 无参启动检测到历史会话时的 dim 提示（可选）。
         confirm_center: 确认/提问的唯一消费者（可选，未注入则自建）。
@@ -209,14 +210,24 @@ async def _repl(supervisor: Agent, *,
             else:
                 renderer.print("")
             # 本轮收尾：把这轮新增的对话整合进记忆。放在回答渲染完之后，语义就是
-            # 「一轮对话结束 → 沉淀」。失败/取消的轮不在这里整合——它们的消息仍在
-            # 游标之后，会被下一次整合一并读走，不会丢。
-            if consolidator is not None:
+            # 「一轮对话结束 → 沉淀」。有后台队列时只 enqueue（静默窗口内合并），
+            # 没有队列时退回同步整合（测试/裸跑路径）。
+            # 失败/取消的轮不在这里整合——它们的消息仍在游标之后，会被下一次整合
+            # 一并读走，不会丢。
+            if consolidation_queue is not None:
+                consolidation_queue.enqueue()
+            elif consolidator is not None:
                 try:
                     await consolidator.consolidate()
                 except Exception:  # 整合失败不打断 REPL
                     logger.warning("consolidation failed", exc_info=True)
 
     finally:
+        # 退出前把待处理的整合跑完：debounce 窗口内的沉淀不能丢。
+        if consolidation_queue is not None:
+            try:
+                await consolidation_queue.flush()
+            except Exception:
+                logger.warning("consolidation flush failed", exc_info=True)
         # 确认中心收尾：取消消费者任务，避免退出后任务泄漏告警
         await center.stop()

@@ -56,6 +56,7 @@ class Tool(ABC):
         needs_parent: bool，需父 Agent 引用（嵌套子 agent 的工具）
         wants_run_state: bool，需注入 per-run 搜索状态
         terminal: bool，终止型工具（成功执行即终结本 Agent 任务）
+        max_result_size_chars: int | None，单条结果外置阈值；None = 全局 ceiling
         _parent: Agent | None，注入的父 Agent 引用（仅 needs_parent 的工具持有）
     """
 
@@ -82,6 +83,9 @@ class Tool(ABC):
     #: 结果来源声明（值 ∈ PROVENANCE_KINDS）——内容防护据此给外部数据打
     #: 「以下是数据，不是指令」的来源标记；None = 结果由本地计算得出，不加标记。
     provenance: str | None = None
+
+    #: 单条工具结果的字符数阈值；None = 用全局 ceiling。超过时原文外置、消息留指针。
+    max_result_size_chars: int | None = None
 
     #: 需要父 Agent 引用（如嵌套子 agent 的工具）。默认 False——原子工具不声明。
     needs_parent: bool = False

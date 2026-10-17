@@ -15,6 +15,7 @@ from paperflow.tools.citations import (LookupCitationTool, AddCitationTool,
                                        SyncCitationsTool, RemoveCitationTool)
 from paperflow.tools import ExtractTitleTool, ReadPdfTool
 from paperflow.tools.common.factory import make_tools
+from paperflow.tools.recall import get_recall_tools
 
 
 _cm = CitationManager(PaperFlowConfig.from_env())
@@ -25,4 +26,4 @@ TOOLS = make_tools(PaperFlowConfig.from_env(), [
     SyncCitationsTool(_cm), RemoveCitationTool(_cm),
     ExtractTitleTool,                       # 只要标题时走轻路径，不必读整篇
     ReadPdfTool,                            # 元数据缺失时读首页取作者/年份
-])
+]) + get_recall_tools()

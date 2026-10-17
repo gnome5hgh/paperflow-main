@@ -18,7 +18,8 @@
 - `citations/` — 引用工具（只装配给 `citation-agent`）
 - `rag/` — 检索、看图、入库、全量收敛、索引体检（只装配给 `rag-agent`）
 - `vision/` — 图表提取与看图分析
-- `memory/` — 记忆工具集（只装配给 `memory-agent`）
+- `memory/` — 记忆写入/管理工具集（8 件，只装配给 `memory-agent`）
+- `recall/` — 只读召回包（`conversation_search` + `read_tool_result`，装配给所有 agent）
 - `orchestration/` — 子 agent 派发（唯一的调度工具）
 - `skills/` — 加载 skill 正文与资源
 - `common/` — 装配工厂与共享 HTTP 基础设施
@@ -44,12 +45,13 @@
 
 - `common/` — 装配工厂
 - `orchestration/spawn.py` — 派发工具与五道闸
-- `memory/` — 记忆工具集（惰性单例）
+- `memory/` — 记忆写入/管理工具集（惰性单例，8 件）
+- `recall/` — 只读召回包（会话检索 + 工具结果回取）
 - `__init__.py` — 全量再导出
 
 ## Usage And Change Notes
 
-- 新增工具：写文件 → 声明安全元数据与参数格式 → 在包 `__init__` 登记 → 在装配层决定装给谁。**只装给该领域责任人**，其余角色需要时派发它。
+- 新增工具：写文件 → 声明安全元数据与参数格式 → 在包 `__init__` 登记 → 在装配层决定装给谁。**领域写入只装给该领域责任人**，其余角色需要时派发它；只读召回（会话检索 / 工具结果回取）是例外，装给所有 agent。
 - 工具的运行时上下文（记忆、review 所需的 skill 注册表等）由装配层注入；缺失时要降级为提示，不要抛异常。
 - 工具的依赖注入点是 `_config` 与各运行时上下文，不要在工具内直接构造重量组件。
 
@@ -62,7 +64,7 @@
 ## Investigation Rule
 
 1. 先看目标工具的文件头与安全元数据声明，再看它的 `execute`。
-2. 装配问题看 `common/`；派发问题看 `orchestration/spawn.py`；记忆工具集看 `memory/`。
+2. 装配问题看 `common/`；派发问题看 `orchestration/spawn.py`；记忆写入看 `memory/`，只读召回看 `recall/`。
 3. 工具读 PDF / 抽标题的实现不在本层，在 `core/rag/parsers/`——本层只是把它封成 Tool。
 4. 文档与代码冲突时以代码事实为准。
 

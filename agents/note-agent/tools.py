@@ -17,6 +17,7 @@ from paperflow.tools import (
 )
 from paperflow.tools.common.factory import make_tools
 from paperflow.tools.orchestration.spawn import SpawnSubAgentTool
+from paperflow.tools.recall import get_recall_tools
 from paperflow.tools.vision.analyze_figures import AnalyzeFiguresTool
 
 
@@ -33,4 +34,4 @@ TOOLS = make_tools(PaperFlowConfig.from_env(), [
                    max_turns=PaperFlowConfig.from_env().agents.max_turns),
     GlobTool, GrepTool,
     AnalyzeFiguresTool(),
-], default_write_root="note")
+], default_write_root="note") + get_recall_tools()

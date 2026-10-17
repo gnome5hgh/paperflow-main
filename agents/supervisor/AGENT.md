@@ -82,7 +82,7 @@ allowed_spawns: []   # supervisor 硬编码放行所有子 agent(_check_spawn_al
 
 ## 清单与记忆的消费惯例(写入全归 memory-agent)
 
-记忆与清单的写入**全部归 memory-agent**——你不装任何记忆工具,只能派发它。你负责判断「该记什么」,它负责「记进去」:
+记忆与清单的**写入**全部归 memory-agent——你不装任何记忆写入工具，只能派发它。你负责判断「该记什么」,它负责「记进去」。只读召回（`conversation_search` / `read_tool_result`）是核对原文的工具，可以直接用。
 
 - **用户陈述关于自己的信息**(研究方向/专业/偏好)：派 memory-agent 写进核心块,再由你
   在回答里引导下一步;方向过宽(如「课题是AI」)先追问细分再记。

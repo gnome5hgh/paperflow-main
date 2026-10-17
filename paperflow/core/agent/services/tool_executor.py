@@ -101,7 +101,8 @@ class ToolExecutor:
     """
 
     def __init__(self, *, middleware, agent_type: str, session_id: str,
-                 instance_id: str, has_human_confirm: bool):
+                 instance_id: str, has_human_confirm: bool,
+                 offloader=None):
         """
         Args:
             middleware: list，安全中间件链
@@ -109,12 +110,14 @@ class ToolExecutor:
             session_id: str，会话标识
             instance_id: str，实例唯一标识（写占用按它认持有者）
             has_human_confirm: bool，构造时是否有真实人工确认回调
+            offloader: callable | None，大工具结果外置回调；None 时跳过
         """
         self._middleware = middleware
         self._agent_type = agent_type
         self._session_id = session_id
         self._instance_id = instance_id
         self._has_human_confirm = has_human_confirm
+        self._offloader = offloader
 
     async def execute(self, tool_call: dict, *, trace_id: str | None,
                       turn: int = 0, confirm_lock: asyncio.Lock | None = None,
@@ -199,6 +202,7 @@ class ToolExecutor:
             agent_type=self._agent_type,
             tool=tool,
             tool_name=name,
+            tool_call_id=tool_call.get("id") or "",
             timestamp=datetime.now().isoformat(),
             started_at=time.monotonic(),
             turn=turn,
@@ -381,6 +385,15 @@ class ToolExecutor:
 
         # 8. after 阶段（逆序 = 洋葱模型，后注册的中间件先看到结果）
         await self._run_after_hooks(ctx)
+        # 9. 大结果外置：after 钩子已看到原文，模型只看到指针。
+        #    外置失败时保留原结果（降级为完整文本），不阻断工具调用。
+        if self._offloader is not None and ctx.result is not None:
+            try:
+                ctx.result = await asyncio.to_thread(
+                    self._offloader, ctx.tool_name, ctx.tool_call_id,
+                    ctx.session_id, ctx.result, tool)
+            except Exception as e:
+                print(f"[tool offload] failed: {e}", file=sys.stderr)
         # 完成摘要（写/编辑工具）不再单独发事件：并入调用方 finally 收口的
         # tool_end 事件文本（_tool_end_event），保证每条工具调用恰好一条收口。
         return ctx.result

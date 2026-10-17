@@ -74,7 +74,7 @@ def _port_open(host: str, port: int, timeout: float = _PROBE_TIMEOUT_S) -> bool:
 def _find_compose_dir() -> Path | None:
     """定位 docker-compose.yml 所在目录：优先当前工作目录，回退安装根
     （editable 安装后在任意目录启动也能找到仓库内的 compose 文件）。"""
-    for base in (Path.cwd(), Path(__file__).resolve().parents[1]):
+    for base in (Path.cwd(), Path(__file__).resolve().parents[3]):
         if any((base / name).is_file()
                for name in ("docker-compose.yml", "docker-compose.yaml")):
             return base

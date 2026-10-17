@@ -14,6 +14,7 @@ from paperflow.tools import (
     DeleteFileTool, GlobTool, GrepTool,
 )
 from paperflow.tools.common.factory import make_tools
+from paperflow.tools.recall import get_recall_tools
 
 
 TOOLS = make_tools(PaperFlowConfig.from_env(), [
@@ -22,4 +23,4 @@ TOOLS = make_tools(PaperFlowConfig.from_env(), [
     GlobTool, GrepTool,
     SpawnSubAgentTool(agent_timeouts=PaperFlowConfig.from_env().agents.timeouts,
                    max_turns=PaperFlowConfig.from_env().agents.max_turns),
-], default_write_root="research")
+], default_write_root="research") + get_recall_tools()

@@ -46,11 +46,13 @@ class AgentManager:
         self.db = db
         self.block_manager = block_manager
         self.message_manager = message_manager
-        # 幂等建表：agent_id 为主键，message_ids 存储 JSON 数组
+        # 幂等建表：agent_id 为主键，message_ids / task_anchor 存储 JSON
         db.execute("CREATE TABLE IF NOT EXISTS agent_state ("
                    "agent_id TEXT PRIMARY KEY, name TEXT, description TEXT,"
                    "system TEXT, model TEXT, context_window_limit INTEGER,"
-                   "message_ids TEXT, created_at TEXT)")
+                   "message_ids TEXT, task_anchor TEXT, created_at TEXT)")
+        # 老库补列走统一增量迁移表（建表语句只管新库）。
+        db._migrate_additive_columns()
 
     def _row_to_state(self, row: dict) -> AgentState:
         """把 DB 行转回 AgentState：memory 从 block_manager 现读最新块动态构建。
@@ -75,6 +77,7 @@ class AgentManager:
             model=row["model"],
             context_window_limit=row["context_window_limit"],
             message_ids=json.loads(row["message_ids"]) if row["message_ids"] else [],
+            task_anchor=json.loads(row["task_anchor"]) if row["task_anchor"] else None,
             memory=Memory(blocks=self.block_manager.list_blocks()),
             created_at=row["created_at"],
         )
@@ -121,7 +124,7 @@ class AgentManager:
         Args:
             agent_id: 目标 agent 标识。
             **kwargs: 允许更新的字段，包括 name, description, system, model,
-                context_window_limit, message_ids。其中 message_ids 若为 list 则
+                context_window_limit, message_ids, task_anchor。其中 list/dict
                 自动转为 JSON 字符串。
 
         Returns:
@@ -134,7 +137,7 @@ class AgentManager:
             - 本方法不更新 memory，因为 memory 由 _row_to_state 动态生成。
         """
         allowed = {"name", "description", "system", "model", "context_window_limit",
-                   "message_ids"}
+                   "message_ids", "task_anchor"}
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         for key, val in updates.items():
             # 将 list/dict 序列化为 JSON 字符串以存入数据库

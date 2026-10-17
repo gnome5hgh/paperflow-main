@@ -164,12 +164,15 @@ class Agent:
         confirm_callback: Callable[[ConfirmRequired], bool] | None = None,
         intent_service: "IntentService | None" = None,
         session_id: str | None = None,
+        conversation_id: str | None = None,
         memory=None,                # Memory | None
         agent_manager=None,         # AgentManager | None
         block_manager=None,         # BlockManager | None
         message_manager=None,       # MessageManager | None
         compaction=None,            # CompactionSettings | None
         structured=None,            # StructuredOutput | None
+        summary_structured=None,    # StructuredOutput | None（摘要专用模型）
+        offloader=None,             # callable | None（大工具结果外置）
         max_turns: int = 20,
         stream_callback: Callable[[AgentEvent], None] | None = None,
         skill_registry: SkillRegistry | None = None,   # Skill 注册表；None = 无 skill 体系
@@ -186,12 +189,16 @@ class Agent:
                 开头调 begin、收尾调 finish；None 时整套意图层不存在
                 （纯 ReAct，无 INTENT 块、无澄清、无追问继承）。
             session_id: 会话标识,跨多次 run 保持一致,便于审计聚合;None 时 自动生成 8 位 hex
+            conversation_id: 具体对话标识（消息落盘与窗口追踪用）；None 时回退为 session_id。
+                子 agent 共享父 session_id，但各自持有独立 conversation_id，互不污染窗口。
             memory: Memory 实例(可选),compile() 输出 system 记忆块注入 head (每轮重建);None 时跳过
             agent_manager: AgentManager 实例(可选),当前仅持有供上层(CLI)取用
             block_manager: BlockManager 实例(可选),记忆块 CRUD 的服务句柄 (记忆工具经它读写核心记忆)
             message_manager: MessageManager 实例(可选),对话落盘(Recall) + in-context 跨轮回放;None 时记忆相关路径零开销跳过
             compaction: CompactionSettings 实例(可选),触发时只压缩 in-context 窗口(驱逐旧对话 + 插摘要),不删 SQL 原始消息
             structured: StructuredOutput 实例(可选),compaction 摘要生成路径 消费;None 时压缩不触发(降级,CLI 接线后恢复)
+            summary_structured: StructuredOutput 实例(可选),摘要专用模型;None 时沿用 structured
+            offloader: callable | None，大工具结果外置回调；None 时不做外置
             max_turns: ReAct 循环最大轮数,防止死循环
             stream_callback: 流式事件回调(CLI 渲染器消费);None = 非流式路径 ——run() 保持调 chat(),mock/无 UI 调用方零影响
             skill_registry: Skill 注册表(可选)。提供时按 agent_type 计算 L1 <available_skills> 清单块注入 head(静态,每轮重建 head 时原样携带);None 时整块省略零开销
@@ -255,6 +262,8 @@ class Agent:
 
         #: 会话标识：跨多轮 run 保持一致，供中间件审计日志聚合
         self.session_id = session_id or uuid.uuid4().hex[:8]
+        #: 具体对话标识：消息落盘与窗口追踪用；子 agent 共享父 session、各自独立对话
+        self.conversation_id = conversation_id or self.session_id
 
         #: 核心记忆挂载（Memory | None）：compile() 输出 <memory_blocks> 注入 head
         self.memory = memory
@@ -265,6 +274,14 @@ class Agent:
         self.compaction = compaction
         #: 结构化输出（StructuredOutput | None）：compaction 摘要生成路径消费
         self.structured = structured
+        #: 摘要专用结构化输出（StructuredOutput | None）：None 时沿用 structured
+        self.summary_structured = summary_structured
+        #: 大工具结果外置回调（callable | None）：None 时跳过
+        self.offloader = offloader
+
+        #: 任务锚点缓存：首次压缩后由摘要调用写入，之后每轮注入。
+        self._task_anchor: dict | None = None
+        self._task_anchor_loaded = False
 
         #: token 估算的校准系数：本地估算与实际用量的比值，每次拿到真实 prompt_tokens
         #: 就更新一次（见 _calibrate_token_ratio）。1.0 = 未校准。
@@ -277,7 +294,8 @@ class Agent:
         #: 跨 run 累积）；消息与 id 的一致性由它内部保证，见 ContextWindow。
         self.window = ContextWindow(message_manager=message_manager,
                                     agent_manager=agent_manager,
-                                    session_id=self.session_id)
+                                    session_id=self.session_id,
+                                    agent_id=self.conversation_id)
 
         #: 当前 run 的追踪 ID，每次 run 开始时重新生成，注入 ToolContext
         self._trace_id: str | None = None
@@ -308,6 +326,7 @@ class Agent:
             session_id=self.session_id,
             instance_id=self._instance_id,
             has_human_confirm=self._has_human_confirm,
+            offloader=self.offloader,
         )
 
         # opt-in 注入：仅对声明 needs_parent 的工具注入父引用。
@@ -540,6 +559,66 @@ class Agent:
         self._token_ratio = blend_token_ratio(
             self._token_ratio, actual, self._last_sent_estimate)
 
+    def _load_task_anchor(self) -> dict | None:
+        """从 AgentState 读取任务锚点（首次使用时加载并缓存）。
+
+        Returns:
+            锚点 dict；从未压缩过或没有 agent_manager 时返回 None。
+        """
+        if not self._task_anchor_loaded:
+            self._task_anchor_loaded = True
+            if self.agent_manager is not None:
+                try:
+                    self._task_anchor = self.agent_manager.get_agent(
+                        self.conversation_id).task_anchor
+                except KeyError:
+                    self._task_anchor = None
+        return self._task_anchor
+
+    def _set_task_anchor(self, anchor: dict) -> None:
+        """写入任务锚点：更新内存缓存并持久化到 AgentState。
+
+        Args:
+            anchor: 摘要调用产出的锚点 dict。
+        """
+        self._task_anchor = anchor
+        self._task_anchor_loaded = True
+        if self.agent_manager is not None:
+            self.agent_manager.update_agent(
+                self.conversation_id, task_anchor=anchor)
+
+    def _anchor_message(self) -> Message | None:
+        """把任务锚点渲染成请求级的 system 消息；没有锚点时返回 None。
+
+        Returns:
+            一条 `<task_anchor>` SystemMessage，或 None。
+        """
+        anchor = self._load_task_anchor()
+        if not anchor:
+            return None
+        from paperflow.core.memory.services.compaction import format_task_anchor
+        text = format_task_anchor(anchor)
+        return SystemMessage(content=text) if text else None
+
+    def _assemble_messages(self, head: list[Message]) -> list[Message]:
+        """组装一次 LLM 请求：head 前段 + 窗口 + 任务锚点 + 当前 user task。
+
+        锚点是请求级的：不进入 window.messages，不参与压缩；每轮从 AgentState
+        重新渲染，紧挨当前用户任务，避免落到窗口中部被忽略。
+
+        Args:
+            head: 本轮构建的 head 消息列表（末位是当前 user task）。
+
+        Returns:
+            实际发给 LLM 的消息列表。
+        """
+        messages = list(head[:-1]) + self.window.messages
+        anchor = self._anchor_message()
+        if anchor is not None:
+            messages.append(anchor)
+        messages.append(head[-1])
+        return messages
+
     async def run(self, task: str) -> str:
         """
         执行 ReAct 循环，返回 LLM 的最终文本回答。
@@ -615,8 +694,9 @@ class Agent:
             self._refresh_head_memory(head)
 
             #: LLM 输入 = head 前段(AGENT/SKILLS/memory/INTENT) + in-context 回放历史 +
-            #: 末尾当前 user task(恒末位——否则 LLM 会把回放历史里的旧任务误当当前任务)。
-            messages = list(head[:-1]) + self.window.messages + [head[-1]]
+            #: 任务锚点(首次压缩后) + 末尾当前 user task(恒末位——否则 LLM 会把回放
+            #: 历史里的旧任务误当当前任务)。
+            messages = self._assemble_messages(head)
 
             # 压缩检查:只改 in-context 窗口(驱逐旧对话 + 插摘要),SQL 原始消息由 MessageManager 保留(Recall 可追溯)。
             # structured 未注入(摘要生成器缺失) 时压缩不触发——避免 None.extract 崩溃,CLI 接线后恢复。
@@ -624,17 +704,42 @@ class Agent:
                 # 截断续写与压缩重建互斥:压缩可能驱逐"半截+续写提示"(in-context 重建),先弃掉累积器里的半截——续写无参照即完整重答,避免「半截 + 完整重答」重复交付。
                 accumulated.clear()
                 from paperflow.core.memory.services.compaction import run_compaction
+                # 用户消息逐字交给摘要：第 6 节由代码从 SQL 取，不让模型转述。
+                user_messages = None
+                if self.message_manager is not None:
+                    user_messages = [
+                        m.content or ""
+                        for m in self.message_manager.list_user_messages_for_session(
+                            self.session_id)
+                    ]
                 new_window = await run_compaction(
-                    self.window.messages, self.compaction, self.llm, self.structured)
+                    self.window.messages, self.compaction, self.llm, self.structured,
+                    context_window=self.llm.context_window,
+                    user_messages=user_messages,
+                    summary_structured=self.summary_structured,
+                    anchor_sink=self._set_task_anchor)
                 # 整体替换窗口：摘要先落盘、id 列表更新为「摘要 + 保留尾部」——压缩
                 # 产物跨轮持久，下轮回放摘要、不回放被驱逐旧消息（SQL 原始消息仍全量
                 # 保留，Recall 完整）。「认领旧 id」与「替换」的先后关系封在 replace 内。
-                self.window.replace(new_window)
+                # 摘要生成失败时 new_window 为 None：通常保持原窗口、下一轮重试；
+                # 但若窗口已超过硬上限，走确定性降级（不依赖另一次成功的 LLM 调用）。
+                if new_window is None:
+                    from paperflow.core.memory.services.compaction import (
+                        deterministic_trim, estimate_tokens)
+                    hard_limit = 0.95 * self.compaction.resolve_context_size(
+                        self.llm.context_window)
+                    if estimate_tokens(self.window.messages) >= hard_limit:
+                        new_window = deterministic_trim(
+                            self.window.messages, self.compaction,
+                            self.llm.context_window)
+                if new_window is not None:
+                    self.window.replace(new_window)
 
                 # head[:-1]：① AGENT（AGENT.md 系统提示）② SKILLS 清单块（若有可见 skill）③ Memory Blocks（核心记忆块，如 assistant/profile）④ INTENT Block（意图识别结果，若启用）
                 # window.messages：从 MessageManager（SQL 持久化层）加载的该会话历史消息，加上本轮已产生的 assistant/tool 交互消息
+                # 任务锚点：本轮压缩刚写入，重建请求让它在同一轮就生效
                 # head[-1]：当前的 user task 消息
-                messages = list(head[:-1]) + self.window.messages + [head[-1]]
+                messages = self._assemble_messages(head)
 
             # 流式门控：挂了 stream_callback 才走 chat_stream（否则保持 chat()）。
             # mock LLM 只有 chat 方法，无条件换 chat_stream 会让 MagicMock 不可

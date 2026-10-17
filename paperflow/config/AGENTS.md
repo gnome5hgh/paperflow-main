@@ -26,7 +26,8 @@
 
 - **`schemas/sections.py` 是默认值的唯一声明点**：新增可调参数先在这里加字段，消费模块直接读，**不要在模块内另设常量副本**。
 - **加载优先级固定为 默认值 < `config.yaml` < 环境变量**。
-- **只认标量覆写**：dict / list 只能整段写在 YAML 里，env 与 YAML 都不吃非标量对象。
+- **只认标量覆写**：dict / list 只能整段写在 YAML 里；嵌套 dataclass（如 `compaction` 的 `trigger`/`keep`）逐层递归，标量叶两者都可覆写。
+- **`compaction` 是配置 dataclass**：trigger（tokens/messages/fraction，OR）、keep、摘要参数与 `tool_results` 外置阈值都在 `schemas/sections.py`；`memory.debounce_seconds` / `max_delay_seconds` 控制后台整合队列。消费模块不要再定义默认值副本。
 - **环境变量名不另设映射表**，按配置路径派生：`PAPERFLOW_` + 路径大写、`_` 连接（`rag.storage.uri` → `PAPERFLOW_RAG_STORAGE_URI`）。自由 dict 型配置（各 agent 超时表、MCP server 声明）**没有 env 形态**。
 - **路径字段在加载出口绝对化**：`workspace` 一类路径在 `from_env()` 末尾解析成绝对路径，其他模块不要再自行拼相对路径。
 

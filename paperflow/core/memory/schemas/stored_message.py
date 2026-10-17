@@ -34,6 +34,7 @@ class StoredMessage(BaseModel):
 
     Attributes:
         id: str，唯一标识（"message-<hex>" 自动生成，messages 表主键）
+        session_id: str | None，会话分组（同一会话的 supervisor 与子 agent 共享）
         role: MessageRole，消息角色
         content: str | None，消息文本（多模态/结构化内容已拍平为字符串）
         tool_calls: list[dict]，assistant 携带的工具调用列表（落盘为 JSON）
@@ -48,6 +49,9 @@ class StoredMessage(BaseModel):
     # 自动生成唯一 ID（格式："message-<32位hex>"）
     # 由 ORM 层在插入时使用，不作为业务主键（实际上确实是主键）
     id: str = Field(default_factory=lambda: f"message-{uuid.uuid4().hex}")
+
+    #: 会话分组：同一会话的 supervisor 与子 agent 共享；旧行可能为 NULL，读取方回退 agent_id。
+    session_id: str | None = None
 
     # 消息角色（枚举）
     role: MessageRole

@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import threading
 import time
+import uuid
 from typing import Callable
 
 from pydantic import BaseModel
@@ -688,7 +689,14 @@ class SpawnSubAgentTool(Tool):
                 llm=parent.llm, agent_registry=parent.agent_registry,
                 skill_registry=getattr(parent, "skill_registry", None),
                 agent_type=agent_type, security_middleware=parent.security_middleware,
-                session_id=parent.session_id, confirm_callback=parent.confirm_callback,
+                session_id=parent.session_id,
+                # 子 agent 与父共享 session_id（同一会话可检索），但各自独立 conversation_id，
+                # 消息互不污染窗口；传入 message_manager 让子 agent 轨迹落盘。
+                conversation_id=(
+                    f"{parent.session_id}:{agent_type}:{uuid.uuid4().hex[:8]}"),
+                message_manager=getattr(parent, "message_manager", None),
+                offloader=getattr(parent, "offloader", None),
+                confirm_callback=parent.confirm_callback,
                 stream_callback=_make_child_stream_callback(parent),
                 # 轮数预算按角色取配置（表外角色回到 Agent 默认 20）：单次派发内要串联
                 # 多阶段的角色（如 research-agent 的选题链路）在默认额度内做不完，

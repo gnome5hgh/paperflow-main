@@ -67,5 +67,9 @@ class AgentState(BaseModel):
     # 若列表为空，则回退为加载全部持久化消息（首次运行或未压缩状态）。
     message_ids: list[str] = Field(default_factory=list)
 
+    #: 任务锚点（目标/硬约束/截止时间/未完成步骤）的 JSON 快照。
+    # 首次压缩时由摘要调用一并抽取，之后每轮注入；不写入消息表、不参与压缩。
+    task_anchor: dict | None = None
+
     # ---------- 审计 ----------
     created_at: datetime | None = None              # 创建时间（由 DB 或调用方赋值）

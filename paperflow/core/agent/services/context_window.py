@@ -65,18 +65,21 @@ class ContextWindow:
             「只落盘不进缓冲」的消息 id）
     """
 
-    def __init__(self, message_manager=None, agent_manager=None, session_id: str = ""):
+    def __init__(self, message_manager=None, agent_manager=None, session_id: str = "",
+                 agent_id: str | None = None):
         """
         Args:
             message_manager: MessageManager | None，对话落盘与窗口回放；None 时
                 所有 SQL 动作降级为空操作
             agent_manager: AgentManager | None，窗口 id 列表（AgentState.message_ids）
                 的持久化；None 时只维护内存
-            session_id: str，会话标识（MessageManager 侧就是 agent_id）
+            session_id: str，会话分组标识（同一会话的 supervisor 与子 agent 共享）
+            agent_id: str | None，具体对话标识；None 时回退为 session_id（旧行为）
         """
         self._mm = message_manager
         self._am = agent_manager
         self._session_id = session_id
+        self._agent_id = agent_id or session_id
         self.messages: list[Message] = []
         self.ids: list[str] = []
 
@@ -99,7 +102,7 @@ class ContextWindow:
         self.ids = []
         if self._mm is None:
             return
-        loaded = self._mm.get_in_context_messages(self._session_id)
+        loaded = self._mm.get_in_context_messages(self._agent_id)
         self.messages = [_schema_to_wire(m) for m in loaded]
         self.ids = [m.id for m in loaded]
         self._patch_orphans()
@@ -130,13 +133,14 @@ class ContextWindow:
             return
         if isinstance(msgs, Message):
             msgs = [msgs]
-        added = [self._mm.add_message(self._session_id, m).id for m in msgs]
+        added = [self._mm.add_message(
+            self._agent_id, m, session_id=self._session_id).id for m in msgs]
         if self._am is None:
             return
         for mid in added:
             if mid not in self.ids:
                 self.ids.append(mid)
-        self._am.update_agent(self._session_id, message_ids=self.ids)
+        self._am.update_agent(self._agent_id, message_ids=self.ids)
 
     def append_and_persist(self, msgs) -> None:
         """进缓冲并落盘取 id——run() 里每个「新消息」分支的唯一入口。
@@ -168,11 +172,12 @@ class ContextWindow:
         for m in new_window:
             mid = old_id_by_msg.get(id(m))
             if mid is None:
-                mid = self._mm.add_message(self._session_id, m).id
+                mid = self._mm.add_message(
+                    self._agent_id, m, session_id=self._session_id).id
             new_ids.append(mid)
         self.messages = new_window
         self.ids = new_ids
-        self._am.update_agent(self._session_id, message_ids=new_ids)
+        self._am.update_agent(self._agent_id, message_ids=new_ids)
 
     def _patch_orphans(self) -> None:
         """回放校验：为孤儿 tool_calls 就地补合成 tool 消息（历史自愈兜底）。
@@ -206,10 +211,12 @@ class ContextWindow:
                     synth = ToolMessage(content=CANCELLED_TOOL_MSG,
                                         tool_call_id=tc["id"])
                     new_ids.append(
-                        self._mm.add_message(self._session_id, synth).id)
+                        self._mm.add_message(
+                            self._agent_id, synth,
+                            session_id=self._session_id).id)
                     new_msgs.append(synth)
         if changed:
             self.messages = new_msgs
             self.ids = new_ids
             if self._am is not None:
-                self._am.update_agent(self._session_id, message_ids=new_ids)
+                self._am.update_agent(self._agent_id, message_ids=new_ids)

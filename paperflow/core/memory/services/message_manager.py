@@ -41,7 +41,7 @@ def _sanitize_response_meta(meta: ResponseMeta) -> ResponseMeta:
     return replace(meta, **values)
 
 
-def _wire_to_schema(wire: Message) -> StoredMessage:
+def _wire_to_schema(wire: Message, session_id: str | None = None) -> StoredMessage:
     """把 wire 消息转成 StoredMessage：补 role 枚举 / 空 tool_calls / 时间戳。
 
     持久化是全角色的**并集**：表里 tool_calls / tool_call_id / meta 每一行都有列，
@@ -50,11 +50,13 @@ def _wire_to_schema(wire: Message) -> StoredMessage:
 
     Args:
         wire: LLM 层的原始消息（各角色子类之一）。
+        session_id: 会话分组标识；None 时由调用方回退为 agent_id。
 
     Returns:
         StoredMessage 对象，自动填充当前 UTC 时间作为 created_at。
     """
     return StoredMessage(
+        session_id=session_id,
         role=MessageRole(wire.role),
         content=wire.content,
         tool_calls=getattr(wire, "tool_calls", None) or [],  # 确保为列表，避免 None
@@ -85,7 +87,8 @@ def _row_to_schema(row: dict) -> StoredMessage:
     """
     import json
     return StoredMessage(
-        id=row["id"], role=MessageRole(row["role"]), content=row["content"],
+        id=row["id"], session_id=row.get("session_id") or row.get("agent_id"),
+        role=MessageRole(row["role"]), content=row["content"],
         tool_calls=json.loads(row["tool_calls"]) if row["tool_calls"] else [],
         tool_call_id=row["tool_call_id"], step_id=row["step_id"],
         run_id=row["run_id"], otid=row["otid"], created_at=row["created_at"],
@@ -112,7 +115,8 @@ class MessageManager:
         self.db = db
         self.agent_manager = agent_manager  # 可选：读 AgentState.message_ids（in-context 窗口）
 
-    def add_message(self, agent_id: str, wire: Message) -> StoredMessage:
+    def add_message(self, agent_id: str, wire: Message,
+                    session_id: str | None = None) -> StoredMessage:
         """落盘一条消息并返回持久化版本（全部消息持久化的唯一漏斗）。
 
         信任边界：清洗代理码点（surrogateescape 残留）——messages 表严格 UTF-8
@@ -121,8 +125,9 @@ class MessageManager:
         副本，不改调用方 wire）。信封里的思维链与拒答同样是模型自由文本，走同一道清洗。
 
         Args:
-            agent_id: 所属 agent 标识。
+            agent_id: 所属 agent 标识（具体对话）。
             wire: LLM 层的原始消息。
+            session_id: 会话分组标识；None 时回退为 agent_id（旧行为）。
 
         Returns:
             持久化后的 StoredMessage 对象（含生成的 id 和 created_at）。
@@ -136,7 +141,7 @@ class MessageManager:
         meta = getattr(wire, "meta", None)
         if meta is not None:
             wire = replace(wire, meta=_sanitize_response_meta(meta))
-        m = _wire_to_schema(wire)
+        m = _wire_to_schema(wire, session_id or agent_id)
         message_orm.insert_message(self.db, agent_id, m)
         return m
 
@@ -187,28 +192,45 @@ class MessageManager:
         # 降级：返回全部消息（首轮/未压缩场景）
         return self.get_messages_by_agent_id(agent_id, limit=limit)
 
-    def search_messages(self, agent_id: str, query: str,
-                        roles: list[str] | None = None, limit: int = 5,
-                        start_date: str | None = None,
-                        end_date: str | None = None) -> list[StoredMessage]:
-        """按内容 LIKE 检索消息（供 conversation_search 工具使用）。
+    def get_messages_by_session(self, session_id: str,
+                                limit: int | None = None) -> list[StoredMessage]:
+        """按会话分组取消息（覆盖 supervisor 与子 agent）。
 
         Args:
-            agent_id: agent 标识。
+            session_id: 会话标识。
+            limit: 可选返回条数上限。
+
+        Returns:
+            StoredMessage 列表，按时间升序。
+        """
+        rows = message_orm.select_messages_by_session(
+            self.db, session_id, limit=limit)
+        return [_row_to_schema(r) for r in rows]
+
+    def search_messages(self, agent_id: str | None, query: str,
+                        roles: list[str] | None = None, limit: int = 5,
+                        start_date: str | None = None,
+                        end_date: str | None = None,
+                        session_id: str | None = None) -> list[StoredMessage]:
+        """按 agent 或会话 + 内容 LIKE 检索消息（供 conversation_search 工具使用）。
+
+        Args:
+            agent_id: agent 标识；session_id 为空时按它过滤。
             query: 搜索关键词（LIKE 匹配）。
             roles: 可选的角色过滤列表（如 ["user", "assistant"]）。
             limit: 返回条数上限（默认 5）。
             start_date: 起始时间（ISO 字符串，含日期即可）。
             end_date: 结束时间（ISO 字符串）。
+            session_id: 会话标识；提供时按会话分组过滤（旧行回退 agent_id）。
 
         Returns:
             StoredMessage 列表，按时间倒序（最新的在前）。
 
         注意：此检索为纯 SQL LIKE 模式，不支持复杂语义搜索；如需语义检索可后续扩展。
         """
-        rows = message_orm.search_messages(self.db, agent_id, query, roles=roles,
-                                           limit=limit, start_date=start_date,
-                                           end_date=end_date)
+        rows = message_orm.search_messages(
+            self.db, agent_id, query, roles=roles, limit=limit,
+            start_date=start_date, end_date=end_date, session_id=session_id)
         return [_row_to_schema(r) for r in rows]
 
     def size(self, agent_id: str) -> int:
@@ -233,3 +255,18 @@ class MessageManager:
         """
         rows = message_orm.select_messages_by_agent(self.db, agent_id)
         return [_row_to_schema(r) for r in rows if r["role"] == "user"]
+
+    def list_user_messages_for_session(self, session_id: str) -> list[StoredMessage]:
+        """返回该会话（含子 agent）的全部 user 消息。
+
+        压缩摘要第 6 节要覆盖整个会话的用户原话，因此按 session_id 取，而不是
+        只取 supervisor 自己的对话。
+
+        Args:
+            session_id: 会话标识。
+
+        Returns:
+            仅 role=user 的 StoredMessage 列表（按时间升序）。
+        """
+        return [m for m in self.get_messages_by_session(session_id)
+                if m.role.value == "user"]

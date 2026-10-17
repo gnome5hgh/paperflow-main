@@ -1,4 +1,4 @@
-"""memory-agent 的工具装配：记忆读写全集（9 件）+ 读块内容的只读工具。
+"""memory-agent 的工具装配：8 件记忆写入/管理工具 + 只读召回包 + 读块内容的只读工具。
 
 记忆是一类产物（核心块 + 未读清单），按「一个 worker = 一类产物的责任人」，
 它的读写只装配给本角色——其他角色一件不装，想记录只能派发本角色来记，所以
@@ -18,7 +18,9 @@ from paperflow.config import PaperFlowConfig
 from paperflow.tools import GlobTool, ReadFileTool
 from paperflow.tools.common.factory import make_tools
 from paperflow.tools.memory import get_memory_tools
+from paperflow.tools.recall import get_recall_tools
 
-#: 记忆读写全集（blocks 编辑 6 + 对话检索 1 + 未读清单 2）+ 读块内容的只读工具。
+#: 记忆写入/管理 8 件 + 只读召回包 + 读块内容的只读工具。
 # 记忆工具是无状态类、执行时才取运行时上下文，直接实例化；读工具经 make_tools 注入 _config。
-TOOLS = get_memory_tools() + make_tools(PaperFlowConfig.from_env(), [ReadFileTool, GlobTool])
+TOOLS = get_memory_tools() + get_recall_tools() + make_tools(
+    PaperFlowConfig.from_env(), [ReadFileTool, GlobTool])

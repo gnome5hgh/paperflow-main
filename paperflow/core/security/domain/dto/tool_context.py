@@ -21,6 +21,7 @@ class ToolContext:
         agent_type: str，当前 Agent 类型（如 supervisor/paper-agent）
         tool: Tool | None，当前执行的 Tool；None 表示未知工具（幻觉或注入）
         tool_name: str，工具名（tool 为 None 时仍可记录）
+        tool_call_id: str，协议层的工具调用 ID（工具结果外置的确定性键）
         args: dict，已解析的工具参数字典
         timestamp: str | None，ISO 格式的调用发起时间（审计的 started_at）
         started_at: float | None，time.monotonic() 起始时刻，用于算耗时
@@ -46,6 +47,7 @@ class ToolContext:
     agent_type: str                    # 当前 Agent 的类型（如 "supervisor"、"paper-agent"）
     tool: Tool | None = None           # 当前执行的 Tool 实例；None 表示未知工具（LLM 幻觉或注入）
     tool_name: str = ""                # 工具名称（用于审计，即使 tool 为 None 也能记录）
+    tool_call_id: str = ""             # 协议层的工具调用 ID（工具结果外置的确定性键）
     args: dict = field(default_factory=dict)  # 工具调用的参数字典（已解析 JSON）
 
     # --- 生命周期时间戳（由 Agent 在调用前后记录） ---

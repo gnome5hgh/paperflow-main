@@ -13,7 +13,8 @@ from paperflow.core.memory.services.block_manager import BlockManager, GitEnable
 from paperflow.core.memory.services.memfs import MemFS
 from paperflow.core.memory.services.message_manager import MessageManager
 from paperflow.core.memory.services.agent_manager import AgentManager
-from paperflow.core.memory.services.compaction import CompactionSettings, SummarySchema
+from paperflow.core.memory.services.compaction import (
+    CompactionSettings, ContextSize, SummarySchema)
 from paperflow.core.memory.services.consolidation import MemoryConsolidator
 from paperflow.core.memory import constants
 
@@ -22,5 +23,5 @@ __all__ = [
     "AgentState", "MemoryDB",
     "BlockManager", "GitEnabledBlockManager", "MemFS", "MessageManager",
     "AgentManager",
-    "CompactionSettings", "SummarySchema", "MemoryConsolidator", "constants",
+    "CompactionSettings", "ContextSize", "SummarySchema", "MemoryConsolidator", "constants",
 ]

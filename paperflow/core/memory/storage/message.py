@@ -6,6 +6,7 @@ services/message_manager.py 持有。
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timezone
 
 from paperflow.core.common.constants import MessageRole
@@ -13,8 +14,8 @@ from paperflow.core.llm.domain.dto import response_meta_to_dict
 from paperflow.core.memory.storage.database import MemoryDB
 from paperflow.core.memory.schemas.stored_message import StoredMessage
 
-__all__ = ["insert_message", "select_messages_by_agent", "select_messages_by_ids",
-           "search_messages", "count_messages"]
+__all__ = ["insert_message", "select_messages_by_agent", "select_messages_by_session",
+           "select_messages_by_ids", "search_messages", "count_messages"]
 
 
 def _now() -> str:
@@ -53,9 +54,10 @@ def insert_message(db: MemoryDB, agent_id: str, m: StoredMessage) -> None:
         - created_at 若未显式设置，则使用当前 UTC 时间。
     """
     db.execute(
-        "INSERT INTO messages (id, agent_id, role, content, tool_calls, tool_call_id,"
-        " step_id, run_id, otid, meta, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (m.id, agent_id, m.role.value,
+        "INSERT INTO messages (id, agent_id, session_id, role, content, tool_calls,"
+        " tool_call_id, step_id, run_id, otid, meta, created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (m.id, agent_id, m.session_id, m.role.value,
          # 若 content 是 list/dict，转为 JSON 字符串；否则原样保留
          json.dumps(m.content, ensure_ascii=False)
          if isinstance(m.content, (list, dict)) else m.content,
@@ -122,20 +124,94 @@ def select_messages_by_ids(db: MemoryDB, ids: list[str]) -> list[dict]:
     return rows
 
 
-def search_messages(db: MemoryDB, agent_id: str, query: str,
-                    roles: list[str] | None = None, limit: int = 5,
-                    start_date: str | None = None,
-                    end_date: str | None = None) -> list[dict]:
-    """按 agent + 内容 LIKE 检索，支持 roles/时间区间过滤，结果按时间倒序限量。
+def select_messages_by_session(db: MemoryDB, session_id: str,
+                               limit: int | None = None) -> list[dict]:
+    """按会话分组取消息（覆盖 supervisor 与子 agent），按时间升序。
 
     Args:
         db: 数据库连接。
-        agent_id: agent 标识。
+        session_id: 会话标识。
+        limit: 可选返回条数上限。
+
+    Returns:
+        消息行 dict 列表，按 created_at、rowid 升序。
+    """
+    sql = ("SELECT * FROM messages WHERE COALESCE(session_id, agent_id)=?"
+           " ORDER BY created_at, rowid")
+    params: list = [session_id]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    return [dict(r) for r in db.execute(sql, tuple(params)).fetchall()]
+
+
+def _search_fts(db: MemoryDB, agent_id: str | None, query: str,
+                roles: list[str] | None, limit: int,
+                start_date: str | None, end_date: str | None,
+                session_id: str | None) -> list[dict] | None:
+    """用 FTS5 检索；索引不可用或查询语法不支持时返回 None（由调用方回退 LIKE）。
+
+    Args:
+        db: 数据库连接。
+        agent_id: agent 标识（session_id 为空时使用）。
+        query: 搜索关键词。
+        roles: 角色过滤。
+        limit: 返回条数上限。
+        start_date: 起始时间。
+        end_date: 结束时间。
+        session_id: 会话标识。
+
+    Returns:
+        命中行；FTS 不可用时为 None。
+    """
+    if len(query) >= 3:
+        # trigram 索引需要 >=3 字符才有意义；用带引号的短语走 MATCH，
+        # 真正利用 FTS 索引。短查询回退 LIKE（trigram 无法建立 2 字符索引）。
+        clauses = ["f.content MATCH ?"]
+        params: list = [f'"{query.replace(chr(34), chr(34) * 2)}"']
+    else:
+        clauses = ["f.content LIKE ?"]
+        params = [f"%{query}%"]
+    if session_id is not None:
+        clauses.append("f.session_id = ?")
+        params.append(session_id)
+    else:
+        clauses.append("f.agent_id = ?")
+        params.append(agent_id)
+    if roles:
+        clauses.append("f.role IN (%s)" % ",".join("?" for _ in roles))
+        params.extend(roles)
+    if start_date:
+        clauses.append("m.created_at >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("m.created_at <= ?")
+        params.append(end_date)
+    sql = ("SELECT m.* FROM messages_fts f JOIN messages m ON m.rowid=f.rowid"
+           f" WHERE {' AND '.join(clauses)} ORDER BY m.created_at DESC LIMIT ?")
+    params.append(limit)
+    try:
+        return [dict(r) for r in db.execute(sql, tuple(params)).fetchall()]
+    except sqlite3.OperationalError:
+        return None
+
+
+def search_messages(db: MemoryDB, agent_id: str | None, query: str,
+                    roles: list[str] | None = None, limit: int = 5,
+                    start_date: str | None = None,
+                    end_date: str | None = None,
+                    session_id: str | None = None) -> list[dict]:
+    """按 agent 或会话 + 内容 LIKE 检索，支持 roles/时间区间过滤。
+
+    Args:
+        db: 数据库连接。
+        agent_id: agent 标识；session_id 为空时按它过滤。
         query: 搜索关键词（自动包裹 % 进行 LIKE 匹配）。
         roles: 可选角色列表（如 ["user", "assistant"]），若提供则只返回这些角色的消息。
         limit: 返回条数上限（默认 5）。
         start_date: 起始时间（ISO 格式字符串），筛选 created_at >= start_date。
         end_date: 结束时间（ISO 格式字符串），筛选 created_at <= end_date。
+        session_id: 会话标识；提供时按会话分组过滤（旧行回退 agent_id）。
 
     Returns:
         消息行 dict 列表，按 created_at 降序（最新优先），最多 limit 条。
@@ -145,8 +221,17 @@ def search_messages(db: MemoryDB, agent_id: str, query: str,
         - roles 列表使用 IN 子句，若 roles 为空则不添加该条件。
         - 时间区间比较直接使用字符串字典序（ISO 格式有效）。
     """
-    sql = "SELECT * FROM messages WHERE agent_id=? AND content LIKE ?"
-    params: list = [agent_id, f"%{query}%"]
+    if getattr(db, "fts_available", False):
+        rows = _search_fts(db, agent_id, query, roles, limit,
+                           start_date, end_date, session_id)
+        if rows is not None:
+            return rows
+    if session_id is not None:
+        sql = "SELECT * FROM messages WHERE COALESCE(session_id, agent_id)=? AND content LIKE ?"
+        params: list = [session_id, f"%{query}%"]
+    else:
+        sql = "SELECT * FROM messages WHERE agent_id=? AND content LIKE ?"
+        params = [agent_id, f"%{query}%"]
 
     # 角色过滤：若提供了 roles，生成 IN 子句
     if roles:

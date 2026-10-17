@@ -20,11 +20,13 @@ class MemoryToolsContext:
         agent_id: str，归属会话标识（消息检索/落盘按它键控）
         block_manager: BlockManager，块 CRUD 服务句柄
         message_manager: MessageManager，对话落盘与检索句柄
+        tool_result_store: object | None，大工具结果存档（read_tool_result 用）
     """
 
     agent_id: str = ""
     block_manager: object = None
     message_manager: object = None
+    tool_result_store: object = None
 
 
 _memory_context: MemoryToolsContext | None = None
