@@ -11,14 +11,16 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
-
-from pydantic import BaseModel, Field
+from typing import TYPE_CHECKING
 
 from paperflow.config.schemas.sections import CompactionSettings, ContextSize
 from paperflow.core.llm import Message, SystemMessage, UserMessage
 from paperflow.core.common.services.tokenization import get_token_encoder
 
-__all__ = ["CompactionSettings", "ContextSize", "SummarySchema", "estimate_tokens",
+if TYPE_CHECKING:
+    from paperflow.core.agent.domain import SummarySchema
+
+__all__ = ["CompactionSettings", "ContextSize", "estimate_tokens",
            "blend_token_ratio", "should_compress", "run_compaction",
            "deterministic_trim", "format_task_anchor"]
 
@@ -32,8 +34,8 @@ _SUMMARY_OPENING = (
     f"{_SUMMARY_MARKER}\n"
     "The summary below covers the earlier portion of the conversation...\n\n"
 )
-#: 兼容旧版 SystemMessage 摘要的标记。
-_LEGACY_SUMMARY_MARKER = "[对话摘要]"
+#: 摘要正文里的中文可见标记（不是识别依据，只供人读）。
+_SUMMARY_LABEL = "[对话摘要]"
 
 #: 每条消息的协议开销（3 条消息框架 + 1 个角色名，对齐 OpenAI 的计数口径）。
 _PROTOCOL_OVERHEAD = 4
@@ -44,41 +46,11 @@ _RATIO_MIN, _RATIO_MAX = 0.5, 2.0
 _RATIO_WEIGHT = 0.5
 
 
-class SummarySchema(BaseModel):
-    """模型输出的 8 个摘要字段。
-
-    第 6 节「All user messages」不在这里：它由代码从 SQL 逐字插入，避免模型
-    转述用户原话或漏掉安全/授权类约束。
-
-    Attributes:
-        primary_request_and_intent: str，用户的核心请求与成功标准
-        key_technical_concepts: str，关键技术概念与领域术语
-        files_and_code_sections: str，涉及的论文/笔记/数据路径/脚本片段
-        errors_and_fixes: str，错误与修复过程
-        problem_solving: str，问题解决过程与决策依据
-        pending_tasks: str，待办任务
-        current_work: str，压缩前一刻正在做的事
-        optional_next_step: str，与最近用户请求直接相关的下一步
-    """
-
-    primary_request_and_intent: str
-    key_technical_concepts: str
-    files_and_code_sections: str
-    errors_and_fixes: str
-    problem_solving: str
-    pending_tasks: str
-    current_work: str
-    optional_next_step: str
-
-    #: 任务锚点：与摘要同一次调用产出，随后由运行层单独持久化并每轮注入。
-    goal: str = ""
-    hard_constraints: list[str] = Field(default_factory=list)
-    deadline: str | None = None
-    unfinished_steps: list[str] = Field(default_factory=list)
-
-
 def _is_summary(message: Message) -> bool:
-    """判断一条消息是否是压缩摘要（新版 UserMessage 或旧版 SystemMessage）。
+    """判断一条消息是否是压缩摘要。
+
+    摘要统一是 `UserMessage`，内容以 Claude Code 的续接开场白开头；旧版
+    `SystemMessage` 摘要已确认不存在于本地库，不再保留兼容分支。
 
     Args:
         message: 待判断的消息。
@@ -86,10 +58,8 @@ def _is_summary(message: Message) -> bool:
     Returns:
         True 表示这是摘要消息，不参与触发计数、保留尾部与再次摘要。
     """
-    content = message.content or ""
-    if message.role == "user" and content.startswith(_SUMMARY_MARKER):
-        return True
-    return message.role == "system" and content.startswith(_LEGACY_SUMMARY_MARKER)
+    return (message.role == "user"
+            and (message.content or "").startswith(_SUMMARY_MARKER))
 
 
 def estimate_tokens(messages: list[Message]) -> int:
@@ -204,7 +174,8 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
                          context_window: int | None = None,
                          user_messages: list[str] | None = None,
                          summary_structured=None,
-                         anchor_sink=None) -> list[Message] | None:
+                         anchor_sink=None,
+                         summary_schema=None) -> list[Message] | None:
     """执行压缩：冻结旧摘要段 + 只压新增段 + 保留近期尾部。
 
     摘要文本可由调用方传入（测试/已有 summary），否则用 StructuredOutput 生成。
@@ -221,9 +192,11 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
         user_messages: 该会话全部 user 消息的逐字文本；None 时从待摘要消息里取。
         summary_structured: 摘要专用 StructuredOutput；None 时用 structured。
         anchor_sink: 可选回调；摘要调用产出任务锚点时以 dict 形式回调一次。
+        summary_schema: 摘要模型的 pydantic schema 类，由 agent 层传入。
+            memory 层不反向依赖 agent 包，所以 schema 不在本模块定义。
 
     Returns:
-        压缩后的新消息列表；摘要生成失败时返回 None。
+        压缩后的新消息列表；摘要生成失败或未提供 schema 时返回 None。
     """
     if not settings.enabled:
         return None
@@ -255,9 +228,12 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
     #    失败返回 None，调用方保持原窗口，下一轮重试。
     anchor = None
     if summary_text is None:
+        if summary_schema is None:
+            logger.warning("未提供摘要 schema，压缩跳过")
+            return None
         summarized = await _summarize(
             to_summarize, summary_structured or structured, settings,
-            user_messages=user_messages)
+            user_messages=user_messages, schema=summary_schema)
         if summarized is None:
             return None
         summary_text, anchor = summarized
@@ -325,9 +301,9 @@ def _ensure_summary_envelope(text: str) -> str:
     if text.startswith(_SUMMARY_MARKER):
         return text
     body = text
-    if body.startswith(_LEGACY_SUMMARY_MARKER):
-        body = body[len(_LEGACY_SUMMARY_MARKER):].lstrip("\n")
-    return f"{_SUMMARY_OPENING}{_LEGACY_SUMMARY_MARKER}\n{body}"
+    if body.startswith(_SUMMARY_LABEL):
+        body = body[len(_SUMMARY_LABEL):].lstrip("\n")
+    return f"{_SUMMARY_OPENING}{_SUMMARY_LABEL}\n{body}"
 
 
 def _recent_tail(messages: list[Message], settings: CompactionSettings,
@@ -579,7 +555,8 @@ def format_task_anchor(anchor: dict) -> str:
 
 
 async def _summarize(messages: list[Message], structured,
-                     settings: CompactionSettings,
+                     settings: CompactionSettings, *,
+                     schema,
                      user_messages: list[str] | None = None
                      ) -> tuple[str, dict] | None:
     """生成 9 节摘要与任务锚点；失败或结果为空时返回 None。
@@ -588,6 +565,7 @@ async def _summarize(messages: list[Message], structured,
         messages: 待摘要的消息列表（已排除旧摘要与头部 system）。
         structured: StructuredOutput 实例（支持 extract 方法）。
         settings: 压缩配置（含 trim_tokens_to_summarize / summary_max_words）。
+        schema: 摘要模型的 pydantic schema 类（由 agent 层传入）。
         user_messages: 该会话全部 user 消息；None 时从 messages 里取。
 
     Returns:
@@ -602,7 +580,7 @@ async def _summarize(messages: list[Message], structured,
         conversation="\n".join(lines) or "（无）",
     )
     try:
-        result = await structured.extract(prompt=prompt, schema=SummarySchema)
+        result = await structured.extract(prompt=prompt, schema=schema)
     except Exception as exc:
         logger.warning("压缩摘要生成失败，窗口保持不变: %r", exc)
         return None

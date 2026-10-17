@@ -17,7 +17,7 @@ core.memory / core.security / core.intent；反向（它们 import 本包）不�
 
 from paperflow.core.agent.constants import AgentEventKind
 from paperflow.core.agent.config import AgentConfig
-from paperflow.core.agent.domain import AgentEvent
+from paperflow.core.agent.domain import AgentEvent, SummarySchema
 from paperflow.core.agent.services.registry import AgentRegistry
 from paperflow.core.agent.services.runtime import Agent, MaxTurnsExceeded
 from paperflow.core.agent.services.state import get_run_state, get_session_state
@@ -29,6 +29,7 @@ __all__ = [
     "MaxTurnsExceeded",
     "AgentEvent",
     "AgentEventKind",
+    "SummarySchema",
     "get_run_state",
     "get_session_state",
 ]

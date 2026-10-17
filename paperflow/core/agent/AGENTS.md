@@ -18,7 +18,8 @@ agent/
 │                #   + state.py（运行期状态容器）+ context_window.py + tool_executor.py
 ├─ constants/    # base_prompt.py（BASE_PROMPT 行为基座）+ enums/（引擎事件类型）
 ├─ config/       # AgentConfig：插件配置（组件自有参数）
-└─ domain/dto/   # 引擎事件（AgentEvent）
+├─ domain/dto/   # 引擎事件（AgentEvent）
+└─ domain/entity/ # 跨包数据模型（SummarySchema）
 ```
 
 ## Responsibilities

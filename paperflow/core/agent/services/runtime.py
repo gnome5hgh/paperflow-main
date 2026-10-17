@@ -56,6 +56,7 @@ from paperflow.core.agent.services.context_window import (
 from paperflow.core.agent.services.tool_executor import ToolExecutor
 from paperflow.core.agent.constants import AgentEventKind
 from paperflow.core.agent.domain.dto.agent_event import AgentEvent
+from paperflow.core.agent.domain.entity.summary import SummarySchema
 from paperflow.core.agent.services.registry import AgentRegistry
 from paperflow.core.skills import SkillRegistry
 from paperflow.core.agent.constants.base_prompt import BASE_PROMPT
@@ -719,7 +720,8 @@ class Agent:
                     context_window=self.llm.context_window,
                     user_messages=user_messages,
                     summary_structured=self.summary_structured,
-                    anchor_sink=self._set_task_anchor)
+                    anchor_sink=self._set_task_anchor,
+                    summary_schema=SummarySchema)
                 # 整体替换窗口：摘要先落盘、id 列表更新为「摘要 + 保留尾部」——压缩
                 # 产物跨轮持久，下轮回放摘要、不回放被驱逐旧消息（SQL 原始消息仍全量
                 # 保留，Recall 完整）。「认领旧 id」与「替换」的先后关系封在 replace 内。
