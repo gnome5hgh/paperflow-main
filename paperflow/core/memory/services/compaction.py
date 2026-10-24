@@ -4,9 +4,10 @@
 一条任务快照，再按 keep 配置保留近期尾部。只改窗口，绝不删 SQL 原始消息
 （Recall 完整保留可追溯）。
 
-摘要固定 9 节；模型只写其中 8 节，第 6 节「All user messages」由代码从 SQL
-逐字拼入。旧摘要段冻结，只压新增段，避免递归重摘要与摘要段丢失。任务快照
-与摘要由同一次结构化调用产出，但渲染成窗口末尾的独立消息；每次压缩只保留
+摘要固定 8 节，全部由模型生成；用户原话不进摘要——硬约束、截止时间等
+边界信息由任务快照逐字保留，其余原话靠 SQL + conversation_search 回溯。
+旧摘要段冻结，只压新增段，避免递归重摘要与摘要段丢失。任务快照与摘要
+由同一次结构化调用产出，但渲染成窗口末尾的独立消息；每次压缩只保留
 最新一条快照，旧快照随窗口替换移出。
 """
 from __future__ import annotations
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 #: 新版摘要的开场标记（Claude Code 的续接说明）；UserMessage 以此识别。
 _SUMMARY_MARKER = (
     "This session is being continued from a previous conversation that ran out of context.")
-#: 摘要的完整开场白；后面接 9 节正文。
+#: 摘要的完整开场白；后面接 8 节正文。
 _SUMMARY_OPENING = (
     f"{_SUMMARY_MARKER}\n"
     "The summary below covers the earlier portion of the conversation...\n\n"
@@ -209,18 +210,14 @@ def should_compress(messages: list[Message], settings: CompactionSettings,
 async def run_compaction(messages: list[Message], settings: CompactionSettings,
                          structured, summary_text: str | None = None,
                          context_window: int | None = None,
-                         user_messages: list[str] | None = None,
-                         summary_structured=None,
-                         message_manager=None,
-                         session_id: str | None = None
-                         ) -> list[Message] | None:
+                         summary_structured=None) -> list[Message] | None:
     """执行压缩：冻结旧摘要段 + 只压新增段 + 保留近期尾部 + 追加任务快照。
 
-    这是压缩的唯一入口：取会话用户消息、生成摘要与快照、丢弃旧快照、
-    摘要失败后的确定性降级都在这里完成；调用方只负责决定何时触发、把返回
-    的新窗口写回。摘要文本可由调用方传入（测试/已有 summary），否则由
-    StructuredOutput 生成。压缩只改 in-context 窗口；SQL 原始消息由
-    MessageManager 保留（Recall 可追溯）。
+    这是压缩的唯一入口：生成摘要与快照、丢弃旧快照、摘要失败后的确定性
+    降级都在这里完成；调用方只负责决定何时触发、把返回的新窗口写回。
+    摘要文本可由调用方传入（测试/已有 summary），否则由 StructuredOutput
+    生成。压缩只改 in-context 窗口；SQL 原始消息由 MessageManager 保留
+    （Recall 可追溯）。
 
     Args:
         messages: 当前 in-context 消息列表（将被子集替换）。
@@ -228,11 +225,7 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
         structured: StructuredOutput 实例，用于生成摘要与任务快照。
         summary_text: 可选预生成摘要；若为 None 则调用 _summarize 生成。
         context_window: 模型上下文窗口大小（用于计算 keep 的 fraction 预算）。
-        user_messages: 该会话全部 user 消息的逐字文本；None 时由
-            message_manager + session_id 现取，再退回待摘要消息里的 user 消息。
         summary_structured: 摘要专用 StructuredOutput；None 时用 structured。
-        message_manager: 可选 MessageManager；用于按会话取用户原话。
-        session_id: 会话标识；与 message_manager 一起决定用户原话的作用域。
 
     Returns:
         压缩后的新消息列表；摘要生成失败且未触发降级时返回 None。
@@ -252,17 +245,6 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
     if not to_summarize:
         return None
 
-    # 3. 用户原话优先由调用方给；否则按会话从 SQL 取，保证摘要第 6 节覆盖
-    #    整个会话（含子 agent 的消息），而不是只有当前窗口里的片段。
-    if user_messages is None and message_manager is not None and session_id:
-        user_messages = [
-            m.content or ""
-            for m in message_manager.list_user_messages_for_session(session_id)
-        ]
-    if user_messages is None:
-        user_messages = [(m.content or "") for m in to_summarize
-                         if m.role == "user"]
-
     snapshot_message = None
     if summary_text is None:
         # 摘要与快照由同一次结构化调用产出；失败时按窗口是否已超硬上限
@@ -281,7 +263,7 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
                 return deterministic_trim(messages, settings, context_window)
             return None
         summary_text = _render_summary(
-            result.summary, user_messages, settings.summary_max_words)
+            result.summary, settings.summary_max_words)
         snapshot_message = _snapshot_message(result.snapshot)
         # 新摘要已生成：旧快照按规则删除。本次抽取为空时不沿用旧值——
         # 旧快照可能已经过期，保留它会和「只留最新一份」冲突。
@@ -419,18 +401,15 @@ _SUMMARY_PROMPT = """You are compressing a research assistant conversation into 
 Write in the user's language. Be specific: keep paper titles, file paths, tool names,
 error messages, numbers, and decisions. Do not invent facts.
 
-Do NOT write the "All user messages" section; the system inserts it verbatim.
-
-Return these summary fields. The numbers match the final 9-section summary;
-section 6 ("All user messages") is inserted by the system, so do not write it:
+Return these summary fields. The numbers match the final 8-section summary:
 1. primary_request_and_intent — the user's core request and success criteria.
 2. key_technical_concepts — key concepts and domain terms.
 3. files_and_code_sections — papers, notes, data paths, and script snippets involved.
 4. errors_and_fixes — errors encountered and how they were fixed.
 5. problem_solving — the problem-solving process and the reasons behind decisions.
-7. pending_tasks — what remains to be done.
-8. current_work — what was happening immediately before this summary.
-9. optional_next_step — the next step directly in line with the user's most recent request.
+6. pending_tasks — what remains to be done.
+7. current_work — what was happening immediately before this summary.
+8. optional_next_step — the next step directly in line with the user's most recent request.
 
 Also return the task snapshot fields:
 - goal — the user's core objective in one sentence.
@@ -522,36 +501,29 @@ def _truncate_words(text: str, max_words: int) -> str:
     return enc.decode(tokens[:max_words]) + "\n\n…（摘要超过上限，已截断）"
 
 
-def _render_summary(summary: Summary, user_messages: list[str],
-                    max_words: int) -> str:
-    """把模型写的 8 节与代码生成的第 6 节拼成 9 节摘要。
+def _render_summary(summary: Summary, max_words: int) -> str:
+    """把模型写的 8 节内容拼成摘要。
 
-    第 6 节「All user messages」直接使用数据库里的用户原话，不让模型转述：
-    概括会漏掉硬约束、截止时间和用户的原始措辞，而这些恰恰是最不能走样的。
+    用户原话不进摘要：硬约束、截止时间等边界由任务快照逐字保留，其余
+    原话靠 SQL + conversation_search 回溯。概括会走样，所以任何不能走样的
+    内容都不走摘要这条通道。
 
     Args:
         summary: 模型生成的 8 节内容。
-        user_messages: 该会话全部 user 消息的逐字文本。
         max_words: 全篇 token 上限。
 
     Returns:
-        9 节摘要正文（开场白由 run_compaction 统一包装）。
+        8 节摘要正文（开场白由 run_compaction 统一包装）。
     """
-    users = "\n".join(
-        f"- {_truncate_chars(text.strip(), 2000)}"
-        for text in user_messages if text and text.strip()
-    ) or "（无）"
     sections = [
         ("1. Primary Request and Intent", summary.primary_request_and_intent),
         ("2. Key Technical Concepts", summary.key_technical_concepts),
         ("3. Files and Code Sections", summary.files_and_code_sections),
         ("4. Errors and fixes", summary.errors_and_fixes),
         ("5. Problem Solving", summary.problem_solving),
-        # 第 6 节由代码从 SQL 逐字拼入，是模型没有写的那一节。
-        ("6. All user messages", users),
-        ("7. Pending Tasks", summary.pending_tasks),
-        ("8. Current Work", summary.current_work),
-        ("9. Optional Next Step", summary.optional_next_step),
+        ("6. Pending Tasks", summary.pending_tasks),
+        ("7. Current Work", summary.current_work),
+        ("8. Optional Next Step", summary.optional_next_step),
     ]
     body = "\n\n".join(
         f"## {title}\n{text.strip() or '（无）'}" for title, text in sections)

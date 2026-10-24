@@ -1,17 +1,16 @@
 """压缩摘要中由模型生成的 8 节内容。
 
-摘要固定 9 节，模型只写其中 8 节：
 1. 核心请求与意图（primary_request_and_intent）
 2. 关键技术概念（key_technical_concepts）
 3. 文件与代码片段（files_and_code_sections）
 4. 错误与修复（errors_and_fixes）
 5. 解决过程（problem_solving）
-7. 待办任务（pending_tasks）
-8. 压缩前正在做的事（current_work）
-9. 下一步（optional_next_step）
+6. 待办任务（pending_tasks）
+7. 压缩前正在做的事（current_work）
+8. 下一步（optional_next_step）
 
-第 6 节「All user messages」不在这里：那一节由代码从数据库逐字拼入，
-不让模型转述，避免概括时漏掉硬约束和用户的原始措辞。
+用户原话不进摘要：硬约束、截止时间等边界由任务快照逐字保留，
+其余原话靠 SQL + conversation_search 回溯。
 """
 from pydantic import BaseModel
 

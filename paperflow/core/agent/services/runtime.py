@@ -644,8 +644,6 @@ class Agent:
                 new_window = await run_compaction(
                     self.window.messages, self.compaction, self.structured,
                     context_window=self.llm.context_window,
-                    message_manager=self.message_manager,
-                    session_id=self.session_id,
                     summary_structured=self.summary_structured)
                 # 整体替换窗口：摘要与快照先落盘、id 列表更新为「摘要 + 保留尾部 +
                 # 快照」——压缩产物跨轮持久，下轮回放摘要、不回放被驱逐旧消息

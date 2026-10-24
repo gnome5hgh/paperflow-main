@@ -256,17 +256,3 @@ class MessageManager:
         rows = message_orm.select_messages_by_agent(self.db, agent_id)
         return [_row_to_schema(r) for r in rows if r["role"] == "user"]
 
-    def list_user_messages_for_session(self, session_id: str) -> list[StoredMessage]:
-        """返回该会话（含子 agent）的全部 user 消息。
-
-        压缩摘要第 6 节要覆盖整个会话的用户原话，因此按 session_id 取，而不是
-        只取 supervisor 自己的对话。
-
-        Args:
-            session_id: 会话标识。
-
-        Returns:
-            仅 role=user 的 StoredMessage 列表（按时间升序）。
-        """
-        return [m for m in self.get_messages_by_session(session_id)
-                if m.role.value == "user"]

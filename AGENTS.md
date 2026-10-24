@@ -84,7 +84,7 @@ paperFlow-main/
 - **写工具必须声明安全元数据**（`risk_level` / `side_effects` / `provenance` 等），注册表加载时校验合法值。
 - **路径检查与写盘共用同一份解析结果**：检查通过的路径参数就地归一化为解析后的绝对路径（防 TOCTOU）。
 - **SQL 是记忆真相源，markdown 是投影**：压缩与窗口驱逐**永不删 SQL 行**；读—改—写类块写入必须经一次持锁事务，不能「读旧值→算新值→写回」分三步做。
-- **压缩只改窗口，摘要段只追加不重摘**：旧摘要段冻结、只压新增段；9 节摘要的「All user messages」由代码从 SQL 逐字插入，不让模型转述；摘要失败时保持原窗口，不拿空摘要替换历史。
+- **压缩只改窗口，摘要段只追加不重摘**：旧摘要段冻结、只压新增段；摘要不携带用户原话（业界无代码插全量原话的先例，实测还会挤爆摘要预算）——硬约束、截止时间等边界由任务快照逐字保留，原话靠 SQL + conversation_search 回溯；摘要失败时保持原窗口，不拿空摘要替换历史。
 - **召回只搜当前会话**：`conversation_search` 永远带 `session_id` 过滤，不提供跨会话参数；跨会话知识只走记忆块（blocks）。工具结果外置后的指针只在窗口内可回取，摘要不携带工具引用 ID。
 - **领域产物的读写各自归口**：记忆写入归 `memory-agent`、语料索引归 `rag-agent`、引用库归 `citation-agent`；这三类工具**其余 agent 一件不装**。只读召回（会话检索、工具结果回取）是例外：它不产生领域产物，装配给所有 agent；supervisor 因此持有 spawn + 只读召回，仍不持有执行类工具。
 - **`allowed_spawns` 与风险档位由框架强制**，不靠提示词自律；批量同类对象**一个对象一路**派发。
@@ -193,6 +193,7 @@ conda activate paperflow && paperflow     # 等价：python -m paperflow（同�
 
 - [`README.md`](README.md)
 - [`config.example.yaml`](config.example.yaml)
+- [`REVIEW.md`](REVIEW.md)（代码审查的仓库定制层：重点盯防区域 / 输出约束 / 风险分流，供 cross-review 等审查流程读取）
 - [`docker-compose.yml`](docker-compose.yml)
 - [`pyproject.toml`](pyproject.toml)
 - [`paperflow/AGENTS.md`](paperflow/AGENTS.md)
