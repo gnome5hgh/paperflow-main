@@ -8,9 +8,10 @@
 边界信息由任务快照逐字保留，其余原话靠 SQL + conversation_search 回溯。
 输出受 summary_max_words 总预算约束：快照按固定份额单独立账，超支或快照
 缺失时带反馈重调一次，渲染层逐节水填保证「8 节齐全 + 总量合规」。
-旧摘要段冻结，只压新增段，避免递归重摘要与摘要段丢失。任务快照与摘要
-由同一次结构化调用产出，但渲染成窗口末尾的独立消息；每次压缩只保留
-最新一条快照，旧快照随窗口替换移出。
+旧摘要并入下一次摘要输入重摘（Claude Code 式，集成指令约束漂移）：窗口
+恒只有一份最新摘要，多次压缩不累积；不可再生的边界住快照、不住摘要，所以
+重摘只损耗可再生的叙述。任务快照与摘要由同一次结构化调用产出，但渲染成
+窗口末尾的独立消息；每次压缩只保留最新一条快照，旧快照随窗口替换移出。
 """
 from __future__ import annotations
 
@@ -248,7 +249,7 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
                          structured, summary_text: str | None = None,
                          context_window: int | None = None,
                          summary_structured=None) -> list[Message] | None:
-    """执行压缩：冻结旧摘要段 + 只压新增段 + 保留近期尾部 + 追加任务快照。
+    """执行压缩：旧摘要并入重摘 + 保留近期尾部 + 追加任务快照。
 
     这是压缩的唯一入口：生成摘要与快照、丢弃旧快照、摘要失败后的确定性
     降级都在这里完成；调用方只负责决定何时触发、把返回的新窗口写回。
@@ -270,15 +271,15 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
     if not settings.enabled:
         return None
 
-    # 1. 旧摘要段原样冻结：它们是之前压缩的产物，不再送回摘要模型，避免
-    #    「递归重摘要」把早期细节一层层改写掉。旧快照不进入新窗口：每次
-    #    压缩只保留本次生成的那一条。
-    summaries = [m for m in messages if _is_summary(m)]
+    # 1. 旧摘要并入本次重摘（Claude Code 式）：它们是上次压缩的产物，作为
+    #    重摘底稿送回摘要模型，由集成指令约束漂移；不可再生的边界信息不住
+    #    摘要、住快照，所以重摘只损耗可再生的叙述。窗口因此恒只有一份最新
+    #    摘要，多次压缩不累积。旧快照不进入新窗口：每次压缩只保留本次生成
+    #    的那一条。
     snapshots = [m for m in messages if _is_snapshot(m)]
 
-    # 2. 本次真正要压的只有「上次摘要之后」的对话：排除旧摘要与旧快照。
-    #    这样每次压缩只覆盖新增段，旧摘要段不会被重复消费。
-    to_summarize = [m for m in messages if not _is_compaction_artifact(m)]
+    # 2. 本次要压的是「旧摘要（如有）+ 上次压缩之后的对话」：排除全部快照。
+    to_summarize = [m for m in messages if not _is_snapshot(m)]
     if not to_summarize:
         return None
 
@@ -318,15 +319,14 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
         return None
 
     # 4. 尾部按 keep 配置保留；没留下的消息就是本次摘要覆盖的「旧段」。
-    #    顺序固定为：旧摘要段 → 新摘要 → 近期尾部 → 快照。快照放最后，
-    #    请求组装后它紧挨当前用户任务，边界信息不会被长历史冲淡。
+    #    顺序固定为：新摘要 → 近期尾部 → 快照。快照放最后，请求组装后它
+    #    紧挨当前用户任务，边界信息不会被长历史冲淡。
     tail = _recent_tail(to_summarize, settings, context_window)
     summary_message = UserMessage(content=_ensure_summary_envelope(summary_text))
-    new_window = summaries + [summary_message] + tail + kept_snapshots
+    new_window = [summary_message] + tail + kept_snapshots
     # 后置检查：压缩后窗口若仍满足触发条件，说明「摘要 + 尾部 + 快照」之和
-    # 降不到触发线以下——keep=messages 时尾部按条数计、token 无上界，冻结
-    # 摘要段还会逐次累积。只暴露问题不自动行为；连环出现应检查 keep 配置
-    # 或工具结果外置阈值。
+    # 降不到触发线以下——keep=messages 时尾部按条数计、token 无上界。
+    # 只暴露问题不自动行为；连环出现应检查 keep 配置或工具结果外置阈值。
     if context_window and should_compress(new_window, settings, context_window):
         logger.warning(
             "压缩后窗口仍满足触发条件（约 %d token）：尾部与累积摘要过大，"
@@ -475,6 +475,12 @@ new conversation changes them; this is context, not text to copy):
 {previous_snapshot}
 </previous_snapshot>
 
+The conversation may begin with an earlier summary (a user message starting "This
+session is being continued..."). Treat it as your working draft, not just source
+material: integrate it — carry forward all still-relevant facts, decisions, and
+numbers; never lose established constraints; where newer history supersedes older
+information, keep the newer and drop the stale. The final summary must stand alone.
+
 The WHOLE output — the 8 summary sections plus the task snapshot fields — MUST stay
 under {max_words} tokens in total: keep the summary sections under {body_budget} tokens
 and the task snapshot under {snapshot_budget} tokens. Always fill the task snapshot
@@ -511,6 +517,10 @@ def _format_messages(messages: list[Message]) -> list[str]:
             except (json.JSONDecodeError, TypeError):
                 pass
             label = "tool"
+        if _is_summary(m):
+            # 旧摘要是重摘的底稿，逐条截断会削掉底稿，豁免截断。
+            lines.append(f"{m.role}: {content}")
+            continue
         limit = 500 if m.role == "tool" else 2000
         if len(content) > limit:
             content = content[:limit] + "…"
@@ -761,8 +771,14 @@ async def _summarize(messages: list[Message], structured,
     """
     if structured is None:
         return None
-    lines = _trim_lines(_format_messages(messages),
+    # 摘要行豁免裁剪：_trim_lines 从最老的一端丢弃，而旧摘要恰在最老端，
+    # 不豁免就会被先裁掉，重摘就没有底稿了。
+    summary_msgs = [m for m in messages if _is_summary(m)]
+    rest = [m for m in messages if not _is_summary(m)]
+    lines = _trim_lines(_format_messages(rest),
                         settings.trim_tokens_to_summarize)
+    if summary_msgs:
+        lines = _format_messages(summary_msgs) + lines
     snapshot_budget = _snapshot_budget(settings.summary_max_words)
     base_prompt = _SUMMARY_PROMPT.format(
         max_words=settings.summary_max_words,
