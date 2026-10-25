@@ -35,7 +35,7 @@ memory/
 
 - **SQL 是真相源，markdown 是投影**：MemFS 生成的 markdown 可手工编辑并回写块，但方向永远是「块 → 文件」是派生，别把真相源搞反。
 - **块写入是持锁的原子读—改—写 + 写入 CAS**：追加/替换类操作把「读旧值→算新值→写回」整段放进一次事务（未经该入口直接写库，会让两个并发写者互相抹掉）。写前留历史快照（供撤销），只读块拒绝读写，块长有上限。
-- **压缩只动 in-context 窗口，永不删 SQL 行**：冻结旧摘要段、只压新增段，保留近期尾部；摘要对齐 Claude Code 的 9 节，其中「All user messages」由代码从 SQL 逐字插入；并保持 tool 消息与它对应的结果成对，别留下孤儿。摘要生成失败时保持原窗口，不拿空摘要替换历史。
+- **压缩只动 in-context 窗口，永不删 SQL 行**：冻结旧摘要段、只压新增段，保留近期尾部；摘要是对齐 Claude Code 的 8 节，不携带用户原话——硬约束/截止时间由任务快照逐字保留，原话靠 SQL 检索回溯；并保持 tool 消息与它对应的结果成对，别留下孤儿。摘要生成失败时保持原窗口，不拿空摘要替换历史。
 - **召回只搜当前会话**：`session_id` 是检索的作用域边界，不提供跨会话参数；跨会话知识由 blocks 承担。FTS5 用 trigram（中文子串），索引不可用时回退 SQL LIKE。
 - **整合是后台 debounce 队列**：轮末只 enqueue（按会话合并，默认 30s 静默窗口、300s 最大延迟），退出/SIGINT/异常路径必须 flush；整合算法本身仍是游标 + 行级编辑，队列不承载消息。
 - **任务快照是窗口末尾的独立消息**：压缩时与摘要同一次调用抽出目标/硬约束/截止时间/未完成步骤，渲染成 `SystemMessage` 放在窗口最后；每次压缩只保留最新一条，旧快照随窗口替换移出（SQL 行保留）。它不写 `AgentState`，也不做请求级注入。
@@ -47,7 +47,7 @@ memory/
 ## Key Entry Points
 
 - `storage/` — 库、表结构与增量迁移
-- `services/compaction.py` — 上下文压缩（9 节摘要、任务快照、分段冻结）
+- `services/compaction.py` — 上下文压缩（8 节摘要、任务快照、分段冻结）
 - `services/consolidation_queue.py` — 轮末 debounce 整合队列
 - `services/message_manager.py` — 落盘、窗口回放、会话内检索
 - `services/consolidation.py` — 记忆整合
