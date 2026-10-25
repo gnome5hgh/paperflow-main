@@ -299,10 +299,13 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
             if hard_limit and estimate_tokens(messages) >= hard_limit:
                 return deterministic_trim(messages, settings, context_window)
             return None
+        # 预算记账在渲染层同样生效：正文预算 = 总预算 − 快照预留。校验层
+        # （_budget_violations）与渲染层必须用同一套账本，否则快照的单独立账
+        # 只拦得住重调、拦不住水填，总量会超出 summary_max_words。
+        snapshot_budget = _snapshot_budget(settings.summary_max_words)
         summary_text = _render_summary(
-            result.summary, settings.summary_max_words)
-        snapshot_message = _snapshot_message(
-            result.snapshot, _snapshot_budget(settings.summary_max_words))
+            result.summary, settings.summary_max_words - snapshot_budget)
+        snapshot_message = _snapshot_message(result.snapshot, snapshot_budget)
         # 新摘要已生成：旧快照按规则删除。本次抽取为空时不沿用旧值——
         # 旧快照可能已经过期，保留它会和「只留最新一份」冲突。
         kept_snapshots = ([snapshot_message]
