@@ -6,6 +6,8 @@
 
 摘要固定 8 节，全部由模型生成；用户原话不进摘要——硬约束、截止时间等
 边界信息由任务快照逐字保留，其余原话靠 SQL + conversation_search 回溯。
+输出受 summary_max_words 总预算约束：快照按固定份额单独立账，超支或快照
+缺失时带反馈重调一次，渲染层逐节水填保证「8 节齐全 + 总量合规」。
 旧摘要段冻结，只压新增段，避免递归重摘要与摘要段丢失。任务快照与摘要
 由同一次结构化调用产出，但渲染成窗口末尾的独立消息；每次压缩只保留
 最新一条快照，旧快照随窗口替换移出。
@@ -46,9 +48,44 @@ _SNAPSHOT_MARKER = "<task_snapshot>"
 _PROTOCOL_OVERHEAD = 4
 
 #: 校准系数的夹紧区间与 EMA 权重：单次观测可能偏得离谱（缓存命中、端点口径差异），
-#: 夹紧后折半并入，不让一次异常带偏整体估算。
+#: 夹紧后折半并入，不让一次异常带偏整体。
 _RATIO_MIN, _RATIO_MAX = 0.5, 2.0
 _RATIO_WEIGHT = 0.5
+
+#: 任务快照在 summary_max_words 里的预留份额。快照是「硬约束逐字」的载体，
+#: 预算上单独立账——摘要正文写得再长也挤不掉它。
+_SNAPSHOT_BUDGET_SHARE = 0.2
+
+#: 摘要各节的正文份额（占「总预算 − 快照预留 − 节标题开销」）。6/7/8 节内容
+#: 天然短小。份额只是渲染层的内部分配策略，不进提示词——模型只面对总预算。
+_SECTION_SHARES: tuple[tuple[str, float], ...] = (
+    ("1. Primary Request and Intent", 0.20),
+    ("2. Key Technical Concepts", 0.15),
+    ("3. Files and Code Sections", 0.20),
+    ("4. Errors and fixes", 0.15),
+    ("5. Problem Solving", 0.15),
+    ("6. Pending Tasks", 0.08),
+    ("7. Current Work", 0.04),
+    ("8. Optional Next Step", 0.03),
+)
+
+#: 节内容/快照超预算时追加的标记；标记本身计入预算，总量不变量不被破坏。
+_TRUNCATION_MARKER = "…（本节已按预算截断）"
+
+#: 摘要超支/快照缺失时的带反馈重调次数；重调仍违规由渲染层水填兜底。
+_SUMMARY_FEEDBACK_RETRIES = 1
+
+
+def _snapshot_budget(max_words: int) -> int:
+    """从摘要总预算里划出任务快照的预留份额。
+
+    Args:
+        max_words: summary_max_words，模型单次结构化输出的 token 总预算。
+
+    Returns:
+        快照的 token 上限；其余部分是摘要 8 节的正文预算。
+    """
+    return int(max_words * _SNAPSHOT_BUDGET_SHARE)
 
 
 def _is_summary(message: Message) -> bool:
@@ -264,7 +301,8 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
             return None
         summary_text = _render_summary(
             result.summary, settings.summary_max_words)
-        snapshot_message = _snapshot_message(result.snapshot)
+        snapshot_message = _snapshot_message(
+            result.snapshot, _snapshot_budget(settings.summary_max_words))
         # 新摘要已生成：旧快照按规则删除。本次抽取为空时不沿用旧值——
         # 旧快照可能已经过期，保留它会和「只留最新一份」冲突。
         kept_snapshots = ([snapshot_message]
@@ -281,7 +319,17 @@ async def run_compaction(messages: list[Message], settings: CompactionSettings,
     #    请求组装后它紧挨当前用户任务，边界信息不会被长历史冲淡。
     tail = _recent_tail(to_summarize, settings, context_window)
     summary_message = UserMessage(content=_ensure_summary_envelope(summary_text))
-    return summaries + [summary_message] + tail + kept_snapshots
+    new_window = summaries + [summary_message] + tail + kept_snapshots
+    # 后置检查：压缩后窗口若仍满足触发条件，说明「摘要 + 尾部 + 快照」之和
+    # 降不到触发线以下——keep=messages 时尾部按条数计、token 无上界，冻结
+    # 摘要段还会逐次累积。只暴露问题不自动行为；连环出现应检查 keep 配置
+    # 或工具结果外置阈值。
+    if context_window and should_compress(new_window, settings, context_window):
+        logger.warning(
+            "压缩后窗口仍满足触发条件（约 %d token）：尾部与累积摘要过大，"
+            "连续出现请调整 keep 配置或工具结果外置阈值",
+            estimate_tokens(new_window))
+    return new_window
 
 
 def deterministic_trim(messages: list[Message], settings: CompactionSettings,
@@ -424,7 +472,10 @@ new conversation changes them; this is context, not text to copy):
 {previous_snapshot}
 </previous_snapshot>
 
-Keep the whole summary under {max_words} tokens.
+The WHOLE output — the 8 summary sections plus the task snapshot fields — MUST stay
+under {max_words} tokens in total: keep the summary sections under {body_budget} tokens
+and the task snapshot under {snapshot_budget} tokens. Always fill the task snapshot
+fields (goal, hard_constraints, unfinished_steps when present); never leave them all empty.
 
 Conversation to summarize:
 <conversation>
@@ -482,40 +533,123 @@ def _trim_lines(lines: list[str], budget: int) -> list[str]:
     return lines
 
 
-def _truncate_words(text: str, max_words: int) -> str:
-    """按 token 上限截断摘要（中文按 token 计，避免 split() 把整段当一个词）。
+def _fit_budget(text: str, cap: int, enc) -> str:
+    """把文本压到 token 预算内；超限时截断并附标记，标记本身计入预算。
 
     Args:
-        text: 摘要正文。
-        max_words: token 上限（字段名为兼容保留）；<=0 表示不限制。
+        text: 待截断的文本。
+        cap: token 上限；标记长度从中扣除，保证结果总量不超。
+        enc: token 编码器（调用方复用同一实例，避免重复加载）。
 
     Returns:
-        截断后的正文。
+        预算内的文本；未超限时原样返回。
     """
-    if max_words <= 0:
-        return text
-    enc = get_token_encoder()
     tokens = enc.encode(text)
-    if len(tokens) <= max_words:
+    if len(tokens) <= cap:
         return text
-    return enc.decode(tokens[:max_words]) + "\n\n…（摘要超过上限，已截断）"
+    keep = max(0, cap - len(enc.encode("\n" + _TRUNCATION_MARKER)))
+    return enc.decode(tokens[:keep]) + "\n" + _TRUNCATION_MARKER
 
 
 def _render_summary(summary: Summary, max_words: int) -> str:
-    """把模型写的 8 节内容拼成摘要。
+    """把模型写的 8 节内容水填成不超预算的完整摘要。
 
     用户原话不进摘要：硬约束、截止时间等边界由任务快照逐字保留，其余
-    原话靠 SQL + conversation_search 回溯。概括会走样，所以任何不能走样的
-    内容都不走摘要这条通道。
+    原话靠 SQL + conversation_search 回溯。
+
+    预算记账：summary_max_words 先扣掉节标题的实际 token 开销，余下按
+    _SECTION_SHARES 分给各节正文；内容短于份额的节把闲置预算水填给被截的
+    节。两条不变量由构造保证——每节都进渲染循环（8 个标题恒在场）、每节
+    ≤ 分得份额（总量 ≤ 预算）。极小预算连标题都放不下时完整性优先：
+    原样渲染全部节，预算不变量让位于完整性。
 
     Args:
         summary: 模型生成的 8 节内容。
-        max_words: 全篇 token 上限。
+        max_words: 摘要正文总预算（token；开场白不计入）。
 
     Returns:
         8 节摘要正文（开场白由 run_compaction 统一包装）。
     """
-    sections = [
+    sections = [(title, (text or "").strip() or "（无）")
+                for title, text in _summary_sections(summary)]
+    enc = get_token_encoder()
+    # 预算切分要计入全部结构性开销：节标题行、标题后的换行、节间空行——
+    # 漏掉任何一项，总量不变量就会差几个 token。
+    joiner = len(enc.encode("\n\n"))
+    header_cost = (sum(len(enc.encode(f"## {title}\n")) for title, _ in sections)
+                   + (len(sections) - 1) * joiner)
+    body_budget = max_words - header_cost
+    if body_budget <= 0:
+        return "\n\n".join(f"## {title}\n{text}" for title, text in sections)
+
+    caps = {title: int(body_budget * share)
+            for title, share in _SECTION_SHARES}
+    # 首轮：短节原样保留并交回闲置份额；超长节记下原长，等水填。
+    overflow: dict[str, int] = {}
+    leftover = 0
+    for title, text in sections:
+        cost = len(enc.encode(text))
+        if cost <= caps[title]:
+            leftover += caps[title] - cost
+        else:
+            overflow[title] = cost
+    # 水填：闲置预算按被截节的原长比例回流。
+    if overflow and leftover > 0:
+        total = sum(overflow.values())
+        for title, cost in overflow.items():
+            caps[title] += int(leftover * cost / total)
+    return "\n\n".join(
+        f"## {title}\n{_fit_budget(text, caps[title], enc)}"
+        for title, text in sections)
+
+
+def _render_task_snapshot(snapshot: TaskSnapshot, max_tokens: int) -> str:
+    """把任务快照渲染成带标记的文本块。
+
+    硬约束逐字保留；截止时间只在用户明确说过时出现。整体受快照预留预算
+    （summary_max_words 的固定份额）约束，超限截断并标记——预算独立于摘要
+    正文，摘要写得再长也挤不掉快照。
+
+    Args:
+        snapshot: 压缩时抽出的任务边界清单。
+        max_tokens: 快照的 token 上限（见 _snapshot_budget）。
+
+    Returns:
+        带 `<task_snapshot>` 标记的文本；四项全空时返回空串。
+    """
+    text = _snapshot_parts(snapshot)
+    if not text:
+        return ""
+    return _fit_budget(text, max_tokens, get_token_encoder())
+
+
+def _snapshot_message(snapshot: TaskSnapshot, max_tokens: int) -> SystemMessage | None:
+    """把任务快照渲染成一条 system 消息；四项全空时返回 None。
+
+    快照是框架给的上下文，不是用户这一轮说的话，所以用 SystemMessage；
+    它放在窗口末尾，请求组装后紧挨当前用户任务。
+
+    Args:
+        snapshot: 压缩时抽出的任务边界清单。
+        max_tokens: 快照的 token 上限（见 _snapshot_budget）。
+
+    Returns:
+        以 `<task_snapshot>` 开头的 SystemMessage，或 None。
+    """
+    text = _render_task_snapshot(snapshot, max_tokens)
+    return SystemMessage(content=text) if text else None
+
+
+def _summary_sections(summary: Summary) -> list[tuple[str, str]]:
+    """把模型写的 8 节排成 (标题, 正文) 列表；顺序与编号即最终摘要结构。
+
+    Args:
+        summary: 结构化输出里的 Summary 实体。
+
+    Returns:
+        渲染与预算校验共用的节列表。
+    """
+    return [
         ("1. Primary Request and Intent", summary.primary_request_and_intent),
         ("2. Key Technical Concepts", summary.key_technical_concepts),
         ("3. Files and Code Sections", summary.files_and_code_sections),
@@ -525,38 +659,16 @@ def _render_summary(summary: Summary, max_words: int) -> str:
         ("7. Current Work", summary.current_work),
         ("8. Optional Next Step", summary.optional_next_step),
     ]
-    body = "\n\n".join(
-        f"## {title}\n{text.strip() or '（无）'}" for title, text in sections)
-    body = _truncate_words(body, max_words)
-    return body
 
 
-def _truncate_chars(text: str, limit: int) -> str:
-    """按字符数截断文本，超限时附明确说明。
-
-    Args:
-        text: 原文。
-        limit: 字符上限；<=0 表示不限制。
-
-    Returns:
-        截断后的文本。
-    """
-    if limit <= 0 or len(text) <= limit:
-        return text
-    return text[:limit] + "\n…（已截断）"
-
-
-def _render_task_snapshot(snapshot: TaskSnapshot) -> str:
-    """把任务快照渲染成带标记的文本块。
-
-    硬约束逐字保留；截止时间只在用户明确说过时出现；整体限制在约 2000 字符，
-    避免边界清单挤掉窗口里的对话内容。
+def _snapshot_parts(snapshot: TaskSnapshot) -> str:
+    """把任务快照四项拼成完整文本块（不截断）；四项全空返回空串。
 
     Args:
         snapshot: 压缩时抽出的任务边界清单。
 
     Returns:
-        带 `<task_snapshot>` 标记的文本；四项全空时返回空串。
+        带 `<task_snapshot>` 标记的完整文本，或空串。
     """
     goal = (snapshot.goal or "").strip()
     constraints = [c.strip() for c in snapshot.hard_constraints if c.strip()]
@@ -580,30 +692,59 @@ def _render_task_snapshot(snapshot: TaskSnapshot) -> str:
         parts.append("Unfinished steps:")
         parts.extend(f"- {s}" for s in steps)
     parts.append("</task_snapshot>")
-    return _truncate_chars("\n".join(parts), 2000)
+    return "\n".join(parts)
 
 
-def _snapshot_message(snapshot: TaskSnapshot) -> SystemMessage | None:
-    """把任务快照渲染成一条 system 消息；四项全空时返回 None。
+def _budget_violations(result: CompactionResult, body_budget: int,
+                       snapshot_budget: int) -> str:
+    """检查一次结构化输出是否超预算或缺快照，产出回喂模型的反馈文本。
 
-    快照是框架给的上下文，不是用户这一轮说的话，所以用 SystemMessage；
-    它放在窗口末尾，请求组装后紧挨当前用户任务。
+    校验三项：摘要正文（含节标题）超正文预算、快照渲染超快照预留、快照
+    四项全空。反馈带具体 token 数字，供带反馈重调使用。
 
     Args:
-        snapshot: 压缩时抽出的任务边界清单。
+        result: 模型的结构化输出。
+        body_budget: 摘要 8 节的 token 上限。
+        snapshot_budget: 任务快照的 token 上限。
 
     Returns:
-        以 `<task_snapshot>` 开头的 SystemMessage，或 None。
+        违规描述（逐条列表）；完全合规时返回空串。
     """
-    text = _render_task_snapshot(snapshot)
-    return SystemMessage(content=text) if text else None
+    enc = get_token_encoder()
+    problems: list[str] = []
+    body = "\n\n".join(
+        f"## {title}\n{(text or '').strip() or '（无）'}"
+        for title, text in _summary_sections(result.summary))
+    body_tokens = len(enc.encode(body))
+    if body_tokens > body_budget:
+        problems.append(
+            f"- The 8 summary sections render to {body_tokens} tokens, over the "
+            f"{body_budget}-token budget. Compress the longest sections.")
+    raw_snapshot = _snapshot_parts(result.snapshot)
+    if raw_snapshot:
+        snapshot_tokens = len(enc.encode(raw_snapshot))
+        if snapshot_tokens > snapshot_budget:
+            problems.append(
+                f"- The task snapshot renders to {snapshot_tokens} tokens, over its "
+                f"{snapshot_budget}-token reserve. Keep hard constraints verbatim; "
+                "compress the other fields.")
+    else:
+        problems.append(
+            "- The task snapshot is empty. Extract goal, hard_constraints and "
+            "unfinished_steps from the conversation; never leave all four fields empty.")
+    return "\n".join(problems)
 
 
 async def _summarize(messages: list[Message], structured,
                      settings: CompactionSettings, *,
                      previous_snapshot: str | None = None
                      ) -> CompactionResult | None:
-    """用一次结构化调用生成摘要与任务快照；失败或摘要为空时返回 None。
+    """用结构化调用生成摘要与任务快照；超支/缺失时带反馈重调一次。
+
+    预算记账：summary_max_words 按固定份额拆成快照预留与摘要正文两个账本，
+    输出违反任一账本或快照整体缺失时，把具体数字作为反馈追加进 prompt 重调
+    （最多 _SUMMARY_FEEDBACK_RETRIES 次）。重调仍违规则交由渲染层兜底——
+    逐节水填与快照截断保证总量不变量，不无限重试。
 
     Args:
         messages: 待摘要的消息列表（已排除旧摘要、旧快照与头部 system）。
@@ -613,22 +754,39 @@ async def _summarize(messages: list[Message], structured,
             硬约束因相关消息已被移出窗口而消失。None 表示没有旧快照。
 
     Returns:
-        摘要与任务快照的整合结果；失败时返回 None。
+        摘要与任务快照的整合结果；模型调用失败或摘要整体为空时返回 None。
     """
     if structured is None:
         return None
     lines = _trim_lines(_format_messages(messages),
                         settings.trim_tokens_to_summarize)
-    prompt = _SUMMARY_PROMPT.format(
+    snapshot_budget = _snapshot_budget(settings.summary_max_words)
+    base_prompt = _SUMMARY_PROMPT.format(
         max_words=settings.summary_max_words,
+        body_budget=settings.summary_max_words - snapshot_budget,
+        snapshot_budget=snapshot_budget,
         conversation="\n".join(lines) or "（无）",
         previous_snapshot=previous_snapshot or "（无）",
     )
-    try:
-        result = await structured.extract(prompt=prompt, schema=CompactionResult)
-    except Exception as exc:
-        logger.warning("压缩摘要生成失败，窗口保持不变: %r", exc)
-        return None
+    result: CompactionResult | None = None
+    feedback = ""
+    for attempt in range(_SUMMARY_FEEDBACK_RETRIES + 1):
+        try:
+            result = await structured.extract(
+                prompt=base_prompt + feedback, schema=CompactionResult)
+        except Exception as exc:
+            logger.warning("压缩摘要生成失败，窗口保持不变: %r", exc)
+            return None
+        violations = _budget_violations(
+            result, settings.summary_max_words - snapshot_budget, snapshot_budget)
+        if not violations:
+            break
+        if attempt < _SUMMARY_FEEDBACK_RETRIES:
+            logger.info("压缩摘要超预算或缺快照，带反馈重调: %s", violations)
+            feedback = (
+                "\n\nYour previous output violated the constraints below. "
+                "Regenerate ALL fields of the JSON, fixing exactly these problems:\n"
+                + violations)
     summary_fields = (
         "primary_request_and_intent", "key_technical_concepts",
         "files_and_code_sections", "errors_and_fixes", "problem_solving",
